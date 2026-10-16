@@ -140,7 +140,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | **M5** | 会话管理、锁屏、通知、日常可用 | `inox-session`, `inox-lock`, `inox-notifications` | `inox-session` 拉起完整会话；锁屏可解锁；通知弹出与超时正确 |
 | **M6** | 集成测试、性能优化、打包 | `inox-integration`、所有 | 端到端测试全绿；满足性能预算；产出至少 2 种分发物 |
 
-当前状态：**M0 已完成，M1 进行中**。M1 在 `inox-compositor` 中实现 headless 合成器：创建输出、渲染纯色帧、收到终止信号后干净退出（退出码 0），渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖（下游以锁定 `v0.1.0` 的 Git 依赖引入）。
+当前状态：**M0 已完成，M1（headless 合成器）已实现**，`inox-xwayland` 亦已落地 XWayland 集成服务。M1 在 `inox-compositor` 中实现 headless 合成器：创建输出、渲染纯色帧、收到终止信号后干净退出（退出码 0），渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)。同期 `inox-xwayland` 实现 PRD M3 的 XWayland 侧：以**监督外部 `xwayland-satellite` 进程**（运行时系统依赖）的方式集成无根 XWayland，不链接其 crate，决策见 [ADR 0007](./docs/adr/0007-xwayland-satellite-integration.md)；其端到端验证在 headless 第三方合成器（weston）上进行，剪贴板/拖放与 `-listenfd` 按需激活仍待后续里程碑。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖（下游以锁定 `v0.1.0` 的 Git 依赖引入）。
 
 ---
 

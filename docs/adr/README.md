@@ -40,6 +40,7 @@ proposed ──► accepted ──► superseded
 | [0003](./0003-technology-stack.md) | 技术栈：Rust 2024 + Smithay + calloop + Iced | accepted | 2026-10-16 |
 | [0004](./0004-m0-skeleton-and-dependency-policy.md) | M0 骨架与依赖策略（不引入跨仓库/重型依赖） | accepted | 2026-10-16 |
 | [0005](./0005-headless-compositor-runtime.md) | M1 的 headless 渲染路径（自建 surfaceless EGL 与离屏渲染目标） | proposed | 2026-10-16 |
+| [0007](./0007-xwayland-satellite-integration.md) | XWayland 集成采用监督外部 xwayland-satellite 进程（不链接其 crate） | proposed | 2026-10-16 |
 
 ## 相关文档
 
