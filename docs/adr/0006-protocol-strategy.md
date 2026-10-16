@@ -1,6 +1,6 @@
 # ADR 0006: Wayland 协议策略与 inox-ipc（协议绑定集中于 inox-protocols）
 
-- 状态：proposed
+- 状态：accepted
 - 日期：2026-10-16
 - 决策者：架构组
 
