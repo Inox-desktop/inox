@@ -1,0 +1,9 @@
+# Inox 组件兼容矩阵（Integration compatibility matrix）
+# 由 inox-integration 消费；M0 阶段尚未发布，version 为占位。
+
+[meta]
+version = "0.1.0"
+updated = "2026-10-16"
+
+[components]
+# 组件发布后在此登记：<name> = "<tag>"
