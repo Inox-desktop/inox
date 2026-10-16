@@ -174,10 +174,12 @@ Inox 采用分层架构，自底向上分为四层：
 
 - 每个仓库独立 `Cargo.toml`，版本遵循 SemVer。
 - 跨仓库依赖使用 Git 依赖，锁定 `tag` 或 `rev`，例如：
+
   ```toml
   [dependencies]
   inox-config = { git = "https://github.com/Inox-desktop/inox-config", tag = "v0.1.0" }
   ```
+
 - `inox-integration` 仓库通过 Git 依赖拉取所有组件，构建完整系统并运行端到端测试。
 - AI 代理可自动更新依赖版本并创建 PR。
 

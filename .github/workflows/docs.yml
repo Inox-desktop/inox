@@ -19,4 +19,4 @@ jobs:
           node-version: "20"
 
       - name: Lint Markdown
-        run: npx --yes markdownlint-cli2 "**/*.md" "!repos/**" "!node_modules/**"
+        run: npx --yes markdownlint-cli2 "**/*.md" "!repos/**" "!.commandcode/**" "!node_modules/**"

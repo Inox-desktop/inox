@@ -131,9 +131,11 @@ L4  inox-session, inox-idle, inox-greet
 ## 8. 依赖管理
 
 - 跨仓库依赖使用 Git 依赖并锁定 `tag` 或 `rev`：
+
   ```toml
   inox-config = { git = "https://github.com/Inox-desktop/inox-config", tag = "v0.1.0" }
   ```
+
   禁止使用未锁定的 `branch = "main"`。
 - 新增依赖需在 PR 描述中说明用途与许可证；优先选择已有生态中被广泛使用的 crate。
 - 不随意升级 major 版本；升级需跑通 CI 并说明破坏性影响。
