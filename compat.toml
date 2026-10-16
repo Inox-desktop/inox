@@ -1,5 +1,7 @@
 # Inox 组件兼容矩阵（Integration compatibility matrix）
 # 由 inox-integration 消费；组件发布后在 [components] 段登记 <name> = "<tag>"。
+# 登记的是「各组件当前发布的最新 tag」，不代表这些版本已被集成验证（M6 起由 inox-integration 负责）；
+# 版本号语义与发布流程见 docs/adr/0010-versioning-and-release-policy.md。
 
 [meta]
 version = "0.1.0"

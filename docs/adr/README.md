@@ -44,6 +44,7 @@ proposed ──► accepted ──► superseded
 | [0007](./0007-xwayland-satellite-integration.md) | XWayland 集成采用监督外部 xwayland-satellite 进程（不链接其 crate） | proposed | 2026-10-16 |
 | [0008](./0008-m2-input-windows-tiling.md) | M2 的输入事件、多窗口与平铺布局（在 headless 路径上扩展） | proposed | 2026-10-16 |
 | [0009](./0009-configuration-model-and-reload.md) | 配置模型、设计令牌与热重载（L1 配置格式） | proposed | 2026-10-16 |
+| [0010](./0010-versioning-and-release-policy.md) | 版本号语义与发布流程（0.x 的 minor 为不兼容段） | proposed | 2026-10-16 |
 
 ## 相关文档
 

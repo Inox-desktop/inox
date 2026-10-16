@@ -187,9 +187,9 @@ Inox 采用分层架构，自底向上分为四层：
 
 - 主分支：`main`，保护分支，要求 CI 通过。
 - 功能分支：`feat/xxx`、`fix/xxx`、`chore/xxx`、`docs/xxx`。
-- 发布：使用 `cargo-release` 打 tag，格式 `vX.Y.Z`。
+- 发布：使用 `cargo-release` 打 tag，格式 `vX.Y.Z`；**版本号语义、发布触发条件、tag 不可变性与执行责任见 [ADR 0010](./docs/adr/0010-versioning-and-release-policy.md)**（0.x 阶段 minor 为不兼容段、兼容变更走 patch）。
 - 每个仓库独立发布，集成仓库定期发布元版本。
-- 版本兼容：集成仓库维护一份组件兼容矩阵（`inox` 元仓库 `compat.toml`）。
+- 版本兼容：集成仓库维护一份组件兼容矩阵（`inox` 元仓库 `compat.toml`）；该矩阵是**已发布版本的登记表**，在 M6 之前不代表已验证的兼容组合。
 
 ### 3.4 典型仓库目录结构
 
