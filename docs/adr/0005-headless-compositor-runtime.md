@@ -1,6 +1,6 @@
 # ADR 0005: M1 的 headless 渲染路径（自建 surfaceless EGL 与离屏渲染目标）
 
-- 状态：proposed
+- 状态：accepted
 - 日期：2026-10-16
 - 决策者：架构组
 
