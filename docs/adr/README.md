@@ -39,7 +39,8 @@ proposed ──► accepted ──► superseded
 | [0002](./0002-layering-and-dependency-direction.md) | L1–L4 分层与依赖只能向下 | accepted | 2026-10-16 |
 | [0003](./0003-technology-stack.md) | 技术栈：Rust 2024 + Smithay + calloop + Iced | accepted | 2026-10-16 |
 | [0004](./0004-m0-skeleton-and-dependency-policy.md) | M0 骨架与依赖策略（不引入跨仓库/重型依赖） | accepted | 2026-10-16 |
-| [0005](./0005-headless-compositor-runtime.md) | M1 的 headless 渲染路径（自建 surfaceless EGL 与离屏渲染目标） | proposed | 2026-10-16 |
+| [0005](./0005-headless-compositor-runtime.md) | M1 的 headless 渲染路径（自建 surfaceless EGL 与离屏渲染目标） | accepted | 2026-10-16 |
+| [0006](./0006-protocol-strategy.md) | Wayland 协议策略与 inox-ipc（协议绑定集中于 inox-protocols） | accepted | 2026-10-16 |
 | [0007](./0007-xwayland-satellite-integration.md) | XWayland 集成采用监督外部 xwayland-satellite 进程（不链接其 crate） | proposed | 2026-10-16 |
 
 ## 相关文档
