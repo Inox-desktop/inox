@@ -7,3 +7,4 @@ updated = "2026-10-16"
 
 [components]
 inox-common = "v0.1.0"
+inox-compositor = "v0.1.0"
