@@ -140,7 +140,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | **M5** | 会话管理、锁屏、通知、日常可用 | `inox-session`, `inox-lock`, `inox-notifications` | `inox-session` 拉起完整会话；锁屏可解锁；通知弹出与超时正确 |
 | **M6** | 集成测试、性能优化、打包 | `inox-integration`、所有 | 端到端测试全绿；满足性能预算；产出至少 2 种分发物 |
 
-当前状态：**M0**。各组件仓库处于骨架阶段，仅包含仓库结构、CI 与文档；功能实现从后续里程碑开始。
+当前状态：**M0 已完成，M1 进行中**。M1 在 `inox-compositor` 中实现 headless 合成器：创建输出、渲染纯色帧、收到终止信号后干净退出（退出码 0），渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖（下游以锁定 `v0.1.0` 的 Git 依赖引入）。
 
 ---
 
