@@ -8,6 +8,8 @@
 - **许可证**：BSD 3-Clause（见 [`LICENSE`](./LICENSE)）
 - **本仓库**：`inox` 元仓库（项目总览、路线图、PRD、ADR、组件兼容矩阵）
 
+产品质量要求见 [PRD 1.2](./PRD.md)、[桌面验收规范](./docs/quality/acceptance.md)与[验收报告模板](./docs/quality/acceptance-report.md)。本轮参考 [Plasma Desktop 固定快照](./docs/quality/plasma-reference.md)，新增 [ADR 0011–0015](./docs/adr/README.md) 均为 proposed，待人类评审；文档中的新门槛不代表 CI 已接线或产品已通过。
+
 > 本仓库是**元仓库**：它不包含产品代码，只承载跨仓库的架构决策与文档。
 > 各组件仓库是组织 `Inox-desktop` 下彼此独立的 GitHub 仓库；本地并行开发时它们聚合在本仓库的 `repos/` 目录中，该目录已被本仓库 `.gitignore` 忽略，不进入元仓库的版本控制。
 
@@ -30,7 +32,7 @@ Inox 是一个现代 Wayland 桌面环境，目标是构建模块化、可维护
 - 不在项目初期支持所有 Wayland 协议或 X11 全部特性。
 - 不追求与 GNOME/KDE 功能对等，优先保证核心体验稳定。
 - 不进行本地编译验证；开发者与 AI 均依赖 CI 反馈。
-- 不商业化；1.0 之前不提供完整无障碍（AT-SPI 全量）、多语言与主题市场能力，仅保留可扩展接口。
+- 不商业化；1.0 前不追求全部辅助技术、语言与主题市场。M4 起须验收核心键盘任务、实际语义导出、字体缩放/高对比与 en-US/zh-CN 文案。
 
 ### 设计原则
 
@@ -130,15 +132,20 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 ## 4. 里程碑
 
-| 里程碑 | 目标 | 涉及仓库 | 验收标准（DoD） |
-|--------|------|----------|-----------------|
-| **M0** | 组织与仓库初始化，CI 模板，`AGENTS.md`，`LICENSE` | `.github`、所有仓库骨架 | 所有仓库含骨架、`AGENTS.md`、`LICENSE`、CI；空提交 CI 全绿 |
-| **M1** | Headless 合成器：创建输出、渲染纯色、干净退出 | `inox-compositor` | CI 中 headless 创建输出并渲染帧，收到终止信号后退出码 0，clippy 无警告 |
-| **M2** | 输入事件、多窗口、平铺布局 | `inox-compositor` | 处理键盘/指针事件；管理 ≥2 窗口；平铺布局通过 proptest |
-| **M3** | XWayland 集成、剪贴板、拖放 | `inox-xwayland`, `inox-compositor` | headless 中启动并映射一个 X11 应用；剪贴板双向同步；拖放端到端通过 |
-| **M4** | Iced Shell：面板、启动器、设置 | `inox-shell`, `inox-panel`, `inox-launcher`, `inox-settings` | 面板显示时钟/托盘；启动器可搜索并启动应用；设置读写并热重载；waydriver 截图验证通过 |
-| **M5** | 会话管理、锁屏、通知、日常可用 | `inox-session`, `inox-lock`, `inox-notifications` | `inox-session` 拉起完整会话；锁屏可解锁；通知弹出与超时正确 |
-| **M6** | 集成测试、性能优化、打包 | `inox-integration`、所有 | 端到端测试全绿；满足性能预算；产出至少 2 种分发物 |
+下表概括提议的新口径，完整范围与证据以 [PRD §13](./PRD.md#13-里程碑)和[验收规范](./docs/quality/acceptance.md)为准，避免在总览维护第二份标准。
+
+| 里程碑 | 交付目标 | 必要证据与结论边界 |
+|--------|----------|--------------------|
+| **M0** | 工程基线 | 真实 CI、骨架/许可证/约束；不代表运行能力 |
+| **M1** | Headless 渲染/生命周期 | 输出与像素断言、失败清理、信号退出；不代表真机 |
+| **M2** | 窗口/输入语义 | 真实客户端生命周期、popup/焦点、布局边界、坏客户端隔离 |
+| **M2.5** | 真实设备闭环 | 后端 CI 覆盖 + 人类真机、可见指针、VT/设备恢复、硬件建档 |
+| **M3** | X11/剪贴板/拖放 | Inox 会话真实互通、MIME/取消/异常退出 |
+| **M4** | Shell 任务/双屏/配置 | 任务/焦点恢复、热插拔/混合 DPI、配置应用/回退、双语/实际语义 |
+| **M5** | 安全会话与日常可用 | 锁屏/认证/挂起故障、权限拒绝、进程监督与稳定性开始验收 |
+| **M6** | 发布候选 | 性能/长稳原始数据、支持矩阵、升级/回退、两种分发渠道与人类批准 |
+
+以下“已完成”仅保留历史标准下的进展；新标准的差距与阻塞见 [ADR 复核清单](./docs/adr/README.md#既有提案的复核与实施阻塞)，本次未追认通过。
 
 当前状态：**M0、M1、M2 已完成**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main` 且 CI 全绿，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）；协议绑定集中于 `inox-protocols`（标准 `wl_*` 再导出 + 私有 `inox-ipc`，见 [ADR 0006](./docs/adr/0006-protocol-strategy.md)，状态 `accepted`），合成器以其为唯一协议来源。M2 在同一 headless 路径上扩展 `inox-compositor`：经 `wl_seat` 处理键盘/指针事件、以 `xdg-shell` toplevel 管理 ≥2 个窗口、按 master/stack 平铺布局（`proptest` 验证），决策见 [ADR 0008](./docs/adr/0008-m2-input-windows-tiling.md)；真实输入设备（libinput/udev）与 DRM/KMS 真实输出仍待后续里程碑。同期 `inox-xwayland` 实现 PRD M3 的 XWayland 侧：以**监督外部 `xwayland-satellite` 进程**（运行时系统依赖）的方式集成无根 XWayland，不链接其 crate，决策见 [ADR 0007](./docs/adr/0007-xwayland-satellite-integration.md)；其端到端验证在 headless 第三方合成器（weston）上进行，剪贴板/拖放与 `-listenfd` 按需激活仍待后续里程碑。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖；`inox-common` `v0.1.0`、`inox-compositor` `v0.1.0` 与 `inox-protocols` `v0.1.0` 均已发布并登记于 [`compat.toml`](./compat.toml)。
 
