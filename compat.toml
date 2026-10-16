@@ -6,6 +6,8 @@ version = "0.1.0"
 updated = "2026-10-16"
 
 [components]
-inox-common = "v0.1.0"
+# inox-common v0.2.0 为最新发布（新增 paths 模块，非破坏性）；
+# inox-compositor v0.1.0 仍锁定 v0.1.0，按根级 §8 逐层升级。
+inox-common = "v0.2.0"
 inox-compositor = "v0.1.0"
 inox-protocols = "v0.1.0"
