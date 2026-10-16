@@ -140,7 +140,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | **M5** | 会话管理、锁屏、通知、日常可用 | `inox-session`, `inox-lock`, `inox-notifications` | `inox-session` 拉起完整会话；锁屏可解锁；通知弹出与超时正确 |
 | **M6** | 集成测试、性能优化、打包 | `inox-integration`、所有 | 端到端测试全绿；满足性能预算；产出至少 2 种分发物 |
 
-当前状态：**M0、M1 已完成，M2 尚未开始**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main` 且 CI 全绿，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖；`inox-common` `v0.1.0` 与 `inox-compositor` `v0.1.0` 均已发布并登记于 [`compat.toml`](./compat.toml)。
+当前状态：**M0、M1 已完成，M2（输入事件、多窗口、平铺布局）已实现**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main`，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）。M2 在同一 headless 路径上扩展 `inox-compositor`：经 `wl_seat` 处理键盘/指针事件、以 `xdg-shell` toplevel 管理 ≥2 个窗口、按 master/stack 平铺布局（`proptest` 验证），决策见 [ADR 0008](./docs/adr/0008-m2-input-windows-tiling.md)；真实输入设备（libinput/udev）与 DRM/KMS 真实输出仍待后续里程碑。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖；`inox-common` `v0.1.0` 与 `inox-compositor` `v0.1.0` 均已发布并登记于 [`compat.toml`](./compat.toml)。
 
 ---
 

@@ -40,6 +40,7 @@ proposed ──► accepted ──► superseded
 | [0003](./0003-technology-stack.md) | 技术栈：Rust 2024 + Smithay + calloop + Iced | accepted | 2026-10-16 |
 | [0004](./0004-m0-skeleton-and-dependency-policy.md) | M0 骨架与依赖策略（不引入跨仓库/重型依赖） | accepted | 2026-10-16 |
 | [0005](./0005-headless-compositor-runtime.md) | M1 的 headless 渲染路径（自建 surfaceless EGL 与离屏渲染目标） | accepted | 2026-10-16 |
+| [0008](./0008-m2-input-windows-tiling.md) | M2 的输入事件、多窗口与平铺布局（在 headless 路径上扩展） | proposed | 2026-10-16 |
 
 ## 相关文档
 
