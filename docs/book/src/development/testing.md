@@ -76,7 +76,10 @@ let pixels = Headless::screenshot(&mut renderer, Size::new(1280, 32), 1.0, Color
 |------|----------|
 | `inox-compositor` | 命令行解析、按键映射、平铺布局、窗口簿记、合成器状态的 `#[cfg(test)]` 单元测试；布局与窗口簿记的 `proptest` 属性测试；`tests/headless_render.rs`（创建输出并渲染一帧）、`tests/signal_shutdown.rs`（终止信号与帧预算都以退出码 0 结束）、`tests/window_management.rs`（真实客户端多窗口、平铺与输入） |
 | `inox-common` | `logging` 与 `paths` 的单元测试。`XdgEnv::from_process` 刻意不做单元测试：edition 2024 下改写进程环境是 `unsafe`，而该 crate `forbid(unsafe_code)`，因此解析逻辑全部经注入的环境快照验证 |
-| 其余 crate | 仍是骨架，尚无业务逻辑可测 |
+| `inox-config` | 默认值、解析、字段路径与行列定位、范围校验、主题解析与 `ConfigStore` 热重载的单元测试（含「重载失败保留旧值」） |
+| `inox-protocols` | `tests/standard_bindings.rs` 断言再导出的接口名与版本；`tests/ipc_roundtrip.rs` 在真实连接上跑私有协议的往返 |
+| L3 组件（七个） | 纯逻辑的单元测试 + `proptest` 属性测试（导航栈、快照/请求代次、任务分组是划分、缩放几何、搜索排序、通知队列的终态、锁状态机的安全不变量）；每个组件的 `tests/catalog.rs` 用 `compare_catalogs` 钉住 `en-US`/`zh-CN` 的 id 与占位符；六个有界面的组件另有 `tests/render.rs`（离屏渲染的像素与事件断言，见上一节） |
+| L4 组件（`inox-session`、`inox-idle`、`inox-greet`） | 仍是骨架，尚无业务逻辑可测 |
 | 本站点（`docs/book/`） | 无单元测试要求。文档正确性由 CI 的 `book` job（`mdbook build`）保证，站点结构由 `SUMMARY.md` 与实际章节文件的一致性约束 |
 
 ## 新增行为时的要求
