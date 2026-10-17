@@ -169,6 +169,11 @@ pub struct Position {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct InputConfig {
+    /// Trusted input method executable and arguments for the next physical session.
+    /// Empty disables automatic startup; explicit `--input-method` takes precedence.
+    /// Arguments are passed directly over the compositor's existing private connection.
+    #[serde(deserialize_with = "validate_input_method")]
+    pub input_method: Vec<String>,
     /// xkb layout, for example `us` or `de`.
     pub keyboard_layout: String,
     /// xkb variant of [`InputConfig::keyboard_layout`]; empty means none.
@@ -188,6 +193,7 @@ pub struct InputConfig {
 impl Default for InputConfig {
     fn default() -> Self {
         Self {
+            input_method: Vec::new(),
             keyboard_layout: DEFAULT_KEYBOARD_LAYOUT.to_owned(),
             keyboard_variant: String::new(),
             keyboard_repeat_delay_ms: DEFAULT_REPEAT_DELAY_MS,
@@ -246,6 +252,19 @@ impl LayoutConfig {
             gap: self.gap.max(GAP_MIN),
         }
     }
+}
+
+fn validate_input_method<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let argv = Vec::<String>::deserialize(deserializer)?;
+    if argv.first().is_some_and(String::is_empty) || argv.iter().any(|arg| arg.contains('\0')) {
+        return Err(serde::de::Error::custom(
+            "input method executable must be nonempty and arguments cannot contain NUL",
+        ));
+    }
+    Ok(argv)
 }
 
 fn validate_repeat_timing<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -319,7 +338,7 @@ where
 {
     let coordinate = i32::deserialize(deserializer)?;
 
-    if coordinate.abs() > MAX_COORDINATE {
+    if !(-MAX_COORDINATE..=MAX_COORDINATE).contains(&coordinate) {
         return Err(serde::de::Error::custom(format!(
             "a position coordinate must be between -{MAX_COORDINATE} and {MAX_COORDINATE}, found {coordinate}"
         )));
@@ -990,6 +1009,42 @@ mod tests {
 
         for (written, expected) in cases {
             assert_eq!(written.sanitised(), expected, "sanitising {written:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod coordinate_regression {
+    #[test]
+    fn minimum_signed_coordinate_is_an_error_instead_of_overflowing() {
+        let text = "[[outputs]]\nposition = { x = -2147483648, y = 0 }\n";
+        let error = toml::from_str::<super::CompositorConfig>(text).expect_err("out of range");
+        assert!(error.to_string().contains("position coordinate"));
+    }
+}
+
+#[cfg(test)]
+mod input_method_preferences {
+    use super::CompositorConfig;
+    #[test]
+    fn saved_input_method_is_explicit_literal_and_defaults_to_disabled() {
+        let empty: CompositorConfig = toml::from_str("").expect("default config");
+        assert!(empty.input.input_method.is_empty());
+        let config: CompositorConfig =
+            toml::from_str("[input]\ninput_method = ['fcitx5', '--replace', 'literal $(date)']\n")
+                .expect("explicit input method");
+        assert_eq!(
+            config.input.input_method,
+            ["fcitx5", "--replace", "literal $(date)"]
+        );
+        for source in [
+            "[input]\ninput_method = ['']",
+            "[input]\ninput_method = [\"bad\\u0000path\"]",
+        ] {
+            assert!(
+                toml::from_str::<CompositorConfig>(source).is_err(),
+                "{source}"
+            );
         }
     }
 }

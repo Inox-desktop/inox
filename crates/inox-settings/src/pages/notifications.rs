@@ -26,6 +26,14 @@ pub const FIELDS: &[Field] = &[
     Field::NotificationsLowTimeout,
     Field::NotificationsNormalTimeout,
     Field::NotificationsCriticalTimeout,
+    Field::NotificationsMaxVisible,
+    Field::NotificationsWidth,
+    Field::NotificationsMargin,
+    Field::NotificationsIconSize,
+    Field::NotificationsMaxPending,
+    Field::NotificationsQueuePolicy,
+    Field::NotificationsShowActions,
+    Field::NotificationsHideBodyWhenLocked,
 ];
 
 /// Draws the page: its heading and the fields listed above, in that order.

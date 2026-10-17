@@ -11,10 +11,10 @@
 //! |---|---|
 //! | [`draft`] | the values a user is editing, over the ones the files hold — pure, fully tested |
 //! | [`mod@validate`] | what a draft has to satisfy before it may be written, as Fluent ids |
-//! | [`document`] | the three configuration files as they were read, and the keys a save rewrites |
+//! | [`document`] | the four configuration files as they were read, and the keys a save rewrites |
 //! | [`persist`] | the atomic write: temporary file, flush, rename, directory sync, conflict detection |
 //! | [`apply`] | the difference between saved and in effect, per component, with generations |
-//! | [`pages`] | the four pages, each a pure description plus its view builder |
+//! | [`pages`] | the settings pages, each a pure description plus its view builder |
 //! | [`view_model`] | the projection from state to what the window draws |
 //! | [`app`] | `State`, `Message`, `update` (Elm) — no I/O, only [`app::OutgoingCommand`] |
 //! | [`view`] | iced widgets, built from the view model and the tokens |
@@ -91,3 +91,8 @@ pub use crate::view_model::{
 
 /// The crate version as reported by Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Structured configuration editors and their authoritative schema checks.
+pub mod collections;
+
+mod focus;

@@ -142,3 +142,35 @@ pub(super) fn register(
             reason: error.to_string(),
         })
 }
+
+/// CLI choices override saved preferences; explicit headless runs keep deterministic defaults.
+pub(super) fn selected_argv(
+    cli: &[String],
+    saved: Option<&inox_config::InputConfig>,
+) -> Vec<String> {
+    if cli.is_empty() {
+        saved
+            .map(|input| input.input_method.clone())
+            .unwrap_or_default()
+    } else {
+        cli.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::selected_argv;
+    #[test]
+    fn explicit_command_wins_and_headless_does_not_read_saved_preferences() {
+        let input = inox_config::InputConfig {
+            input_method: vec!["fcitx5".into(), "--replace".into()],
+            ..Default::default()
+        };
+        assert_eq!(selected_argv(&[], Some(&input)), input.input_method);
+        assert_eq!(
+            selected_argv(&["custom-engine".into()], Some(&input)),
+            ["custom-engine"]
+        );
+        assert!(selected_argv(&[], None).is_empty());
+    }
+}

@@ -22,7 +22,7 @@
 //!   to hold on to the toolkit's focus to be reachable by keyboard.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, Row, button, container, text};
+use iced::widget::{Column, Row, button, container, scrollable, text, text_input};
 use iced::{Element, Length, Padding};
 use inox_config::Theme as Tokens;
 
@@ -108,10 +108,12 @@ pub fn settings<'a>(model: SettingsViewModel, tokens: &'a Tokens) -> Element<'a,
     // is also what keeps them in the same place as the user moves between pages.
     let body = container(
         Column::with_children([
-            container(crate::pages::view(model.page, &model, tokens))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
+            container(
+                scrollable(crate::pages::view(model.page, &model, tokens)).id("settings-content"),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
             status_line(&model, tokens, &geometry),
             action_row(&model, tokens, &geometry),
         ])
@@ -149,11 +151,13 @@ pub fn page_section<'a>(
             .into(),
     ];
 
-    children.extend(
-        fields
-            .iter()
-            .map(|field| field_row(field, tokens, &geometry)),
-    );
+    children.extend(fields.iter().map(|field| {
+        container(field_row(field, tokens, &geometry))
+            .id(crate::focus::target_id(
+                crate::view_model::FocusTarget::Field(field.field),
+            ))
+            .into()
+    }));
 
     Column::with_children(children)
         .spacing(geometry.spacing)
@@ -191,6 +195,30 @@ fn field_row<'a>(
     tokens: &'a Tokens,
     geometry: &SettingsGeometry,
 ) -> Element<'a, Message> {
+    if field.field.is_collection() {
+        let mut contents = vec![
+            text(field.label.clone())
+                .size(geometry.font_size)
+                .color(theme::text(tokens))
+                .into(),
+            control_widget(field, tokens, geometry),
+        ];
+        if let Some(error) = &field.error {
+            contents.push(
+                text(error.clone())
+                    .size(geometry.font_size)
+                    .color(theme::danger_text(tokens))
+                    .into(),
+            );
+        }
+        if let Some(reset) = &field.reset {
+            contents.push(reset_button(field, reset, tokens, geometry));
+        }
+        return Column::with_children(contents)
+            .spacing(geometry.spacing)
+            .width(Length::Fill)
+            .into();
+    }
     let label_colour = if field.enabled {
         theme::text(tokens)
     } else {
@@ -201,7 +229,7 @@ fn field_row<'a>(
         text(field.label.clone())
             .size(geometry.font_size)
             .color(label_colour)
-            .wrapping(Wrapping::None),
+            .wrapping(Wrapping::Word),
     )
     .width(Length::Fixed(geometry.label_width));
 
@@ -245,6 +273,130 @@ fn control_widget<'a>(
     geometry: &SettingsGeometry,
 ) -> Element<'a, Message> {
     match &field.control {
+        ControlView::Collection {
+            focused,
+            rows,
+            columns,
+            add,
+            remove,
+            help,
+        } => {
+            let key = field.field;
+            let focused = *focused;
+            let field_focused = field.focused;
+            let mut entries: Vec<Element<'a, Message>> = vec![
+                text(help.clone())
+                    .size(geometry.font_size)
+                    .color(theme::muted_text(tokens))
+                    .into(),
+            ];
+            for (row, cells) in rows.iter().enumerate() {
+                let mut inputs: Vec<Element<'a, Message>> = Vec::new();
+                for (column, (value, label)) in cells.iter().zip(columns).enumerate() {
+                    inputs.push(
+                        Column::with_children([
+                            text(label.clone())
+                                .size(geometry.font_size)
+                                .color(theme::text(tokens))
+                                .into(),
+                            text_input("", value)
+                                .id(crate::focus::target_id(
+                                    crate::view_model::FocusTarget::Cell(key, row, column),
+                                ))
+                                .on_submit(Message::FocusNext)
+                                .on_input_maybe(field.enabled.then_some(move |text| {
+                                    Message::CellEdited {
+                                        field: key,
+                                        row,
+                                        column,
+                                        text,
+                                    }
+                                }))
+                                .size(geometry.font_size)
+                                .padding(Padding::from(geometry.control_padding))
+                                .style(move |_theme, status| theme::input(tokens, status))
+                                .into(),
+                        ])
+                        .spacing(geometry.control_padding)
+                        .into(),
+                    );
+                }
+                inputs.push(
+                    container(
+                        button(text(remove.clone()).size(geometry.font_size))
+                            .padding(Padding::from(geometry.control_padding))
+                            .on_press_maybe(
+                                field
+                                    .enabled
+                                    .then_some(Message::RowRemoved { field: key, row }),
+                            )
+                            .style(move |_theme, status| {
+                                theme::control(
+                                    tokens,
+                                    Emphasis {
+                                        selected: false,
+                                        focused: focused
+                                            == Some(crate::view_model::FocusTarget::RemoveRow(
+                                                key, row,
+                                            )),
+                                    },
+                                    status,
+                                )
+                            }),
+                    )
+                    .id(crate::focus::target_id(
+                        crate::view_model::FocusTarget::RemoveRow(key, row),
+                    ))
+                    .into(),
+                );
+                entries.push(
+                    container(Column::with_children(inputs).spacing(geometry.control_padding))
+                        .padding(Padding::from(geometry.control_padding))
+                        .width(Length::Fill)
+                        .into(),
+                );
+            }
+            entries.push(
+                container(
+                    button(text(add.clone()).size(geometry.font_size))
+                        .padding(Padding::from(geometry.control_padding))
+                        .on_press_maybe(field.enabled.then_some(Message::RowAdded(key)))
+                        .style(move |_theme, status| {
+                            theme::control(
+                                tokens,
+                                Emphasis {
+                                    selected: false,
+                                    focused: field_focused,
+                                },
+                                status,
+                            )
+                        }),
+                )
+                .id(crate::focus::target_id(
+                    crate::view_model::FocusTarget::Field(key),
+                ))
+                .into(),
+            );
+            Column::with_children(entries)
+                .spacing(geometry.spacing)
+                .width(Length::Fill)
+                .into()
+        }
+        ControlView::Text(value) => {
+            let key = field.field;
+            text_input("", value)
+                .id(input_id(key))
+                .on_submit(Message::FocusNext)
+                .on_input_maybe(field.enabled.then_some(move |value| Message::FieldSet {
+                    field: key,
+                    value: Value::Text(value),
+                }))
+                .size(geometry.font_size)
+                .padding(Padding::from(geometry.control_padding))
+                .width(Length::Fill)
+                .style(move |_theme, status| theme::input(tokens, status))
+                .into()
+        }
         ControlView::Choices(options) => Row::with_children(
             options
                 .iter()
@@ -272,6 +424,7 @@ fn control_widget<'a>(
         )
         .spacing(geometry.control_padding)
         .align_y(iced::alignment::Vertical::Center)
+        .wrap()
         .into(),
         ControlView::Flag { on, label } => {
             let emphasis = Emphasis {
@@ -293,23 +446,33 @@ fn control_widget<'a>(
             .into()
         }
         ControlView::Number {
+            unit,
+            input,
             value,
             min,
             max,
-            display,
+            display: _,
             decrease,
             increase,
         } => {
-            let colour = if field.enabled {
-                theme::text(tokens)
-            } else {
-                theme::muted_text(tokens)
-            };
+            let key = field.field;
             Row::with_children([
                 step_button(decrease, field, -1, tokens, geometry, *value > *min),
-                container(text(display.clone()).size(geometry.font_size).color(colour))
+                text_input("", input)
+                    .id(input_id(key))
+                    .on_input_maybe(
+                        field
+                            .enabled
+                            .then_some(move |text| Message::NumberEdited { field: key, text }),
+                    )
+                    .size(geometry.font_size)
+                    .padding(Padding::from(geometry.control_padding))
                     .width(Length::Fixed(geometry.label_width))
-                    .center_x(Length::Fixed(geometry.label_width))
+                    .style(move |_theme, status| theme::input(tokens, status))
+                    .into(),
+                text(unit.clone())
+                    .size(geometry.font_size)
+                    .color(theme::muted_text(tokens))
                     .into(),
                 step_button(increase, field, 1, tokens, geometry, *value < *max),
             ])
@@ -363,14 +526,19 @@ fn reset_button<'a>(
     };
     let target = field.field;
 
-    button(
-        text(label.to_owned())
-            .size(geometry.font_size)
-            .wrapping(Wrapping::None),
+    container(
+        button(
+            text(label.to_owned())
+                .size(geometry.font_size)
+                .wrapping(Wrapping::None),
+        )
+        .padding(Padding::from(geometry.control_padding))
+        .on_press_maybe(field.enabled.then_some(Message::FieldReset(target)))
+        .style(move |_theme, status| theme::control(tokens, emphasis, status)),
     )
-    .padding(Padding::from(geometry.control_padding))
-    .on_press_maybe(field.enabled.then_some(Message::FieldReset(target)))
-    .style(move |_theme, status| theme::control(tokens, emphasis, status))
+    .id(crate::focus::target_id(
+        crate::view_model::FocusTarget::Reset(target),
+    ))
     .into()
 }
 
@@ -459,6 +627,11 @@ pub fn action_message(action: Action) -> Message {
         Action::ResetAll => Message::AllReset,
         Action::Reload => Message::Reload,
     }
+}
+
+/// The stable widget identifier used to focus a field's text input.
+pub fn input_id(field: crate::draft::Field) -> String {
+    format!("settings-{}-{}", field.file().name(), field.path())
 }
 
 #[cfg(test)]

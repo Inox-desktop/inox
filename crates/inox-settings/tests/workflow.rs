@@ -454,6 +454,17 @@ fn any_edit() -> impl Strategy<Value = (Field, Value)> {
             let field = Field::ALL[index];
 
             let value = match field.control().kind {
+                inox_settings::draft::ValueKind::Collection => Value::Collection(if flag {
+                    vec![inox_settings::collections::default_row(field)]
+                } else {
+                    vec![]
+                }),
+                inox_settings::draft::ValueKind::Text => Value::Text(match choice % 4 {
+                    0 => String::new(),
+                    1 => "us".to_owned(),
+                    2 => "测试 path \"quoted\"".to_owned(),
+                    _ => "%H:%M".to_owned(),
+                }),
                 inox_settings::draft::ValueKind::Choice => {
                     let choices = field.control().choices;
 

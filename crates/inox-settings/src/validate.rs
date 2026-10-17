@@ -79,21 +79,68 @@ pub fn validate(settings: &Settings) -> Vec<FieldError> {
 
 /// The rule for one field, or `None` when the field is within its schema.
 pub fn validate_field(field: Field, settings: &Settings) -> Option<FieldError> {
-    match field {
-        Field::PanelHeight => range_error(field, settings, "settings-error-height-range"),
-        Field::NotificationsLowTimeout
-        | Field::NotificationsNormalTimeout
-        | Field::NotificationsCriticalTimeout => {
-            range_error(field, settings, "settings-error-timeout-range")
+    if field.is_collection() {
+        let Value::Collection(rows) = field.value(settings) else {
+            return None;
+        };
+        let valid_rows = |rows: &[Vec<String>]| {
+            crate::collections::toml(field, rows).is_some_and(|value| {
+                let source =
+                    crate::document::patch("", &[crate::document::Edit::set(field, value)]);
+                match field.file() {
+                    crate::document::SettingFile::Compositor => {
+                        toml::from_str::<inox_config::CompositorConfig>(&source).is_ok()
+                    }
+                    crate::document::SettingFile::Shell => {
+                        toml::from_str::<inox_config::ShellConfig>(&source).is_ok()
+                    }
+                    _ => false,
+                }
+            })
+        };
+        if valid_rows(&rows) {
+            return None;
         }
-        Field::LocaleLanguage => locale_error(settings),
-        Field::ThemeAppearance
-        | Field::PanelPosition
-        | Field::PanelAutohide
-        | Field::PanelShowClock
-        | Field::NotificationsDoNotDisturb
-        | Field::NotificationsPosition => None,
+        let row = (0..rows.len())
+            .find(|index| !valid_rows(&rows[..=*index]))
+            .unwrap_or(0);
+        return Some(FieldError {
+            path: field.path(),
+            message: ValidationMessage::new(
+                "settings-error-collection",
+                vec![("row", Arg::from((row + 1) as i64))],
+            ),
+        });
     }
+    if field.control().range.is_some() {
+        let id = match field {
+            Field::PanelHeight => "settings-error-height-range",
+            Field::NotificationsLowTimeout
+            | Field::NotificationsNormalTimeout
+            | Field::NotificationsCriticalTimeout => "settings-error-timeout-range",
+            _ => "settings-error-number-range",
+        };
+        return range_error(field, settings, id);
+    }
+    if field == Field::LocaleLanguage {
+        return locale_error(settings);
+    }
+    if field == Field::PanelClockFormat {
+        let source = crate::document::patch(
+            "",
+            &[crate::document::Edit::set(
+                field,
+                crate::document::Toml::String(settings.panel_clock_format.clone()),
+            )],
+        );
+        if toml::from_str::<inox_config::ShellConfig>(&source).is_err() {
+            return Some(FieldError {
+                path: field.path(),
+                message: ValidationMessage::new("settings-error-clock-format", vec![]),
+            });
+        }
+    }
+    None
 }
 
 /// Whether the draft is in a state that may be written.
@@ -167,6 +214,56 @@ fn is_a_language(tag: &str) -> bool {
 ///
 /// `tests` uses it to check that every number field has a rule, which is the
 /// property that keeps a new field from being added without one.
+/// Checks the complete candidate against its schema and verifies every requested edit.
+///
+/// This catches invalid patches before any file in a multi-file save is queued.
+///
+/// # Errors
+///
+/// Returns a diagnostic naming the file or key that failed parsing or readback.
+pub fn document(
+    file: crate::document::SettingFile,
+    source: &str,
+    edits: &[crate::document::Edit],
+) -> Result<(), String> {
+    use crate::document::SettingFile;
+    let parsed = match file {
+        SettingFile::Root => toml::from_str::<inox_config::RootConfig>(source).map(|_| ()),
+        SettingFile::Compositor => {
+            toml::from_str::<inox_config::CompositorConfig>(source).map(|_| ())
+        }
+        SettingFile::Shell => toml::from_str::<inox_config::ShellConfig>(source).map(|_| ()),
+        SettingFile::Notifications => {
+            toml::from_str::<inox_config::NotificationsConfig>(source).map(|_| ())
+        }
+    };
+    parsed.map_err(|error| format!("{}: {error}", file.name()))?;
+    let actual: toml::Value = toml::from_str(source).map_err(|error| error.to_string())?;
+    for edit in edits {
+        let found = edit
+            .path()
+            .split('.')
+            .try_fold(&actual, |value, key| value.get(key));
+        let expected = edit
+            .value()
+            .map(|value| {
+                toml::from_str::<toml::Value>(&format!("value = {}", value.render()))
+                    .map(|mut table| table.get_mut("value").map(|value| value.clone()))
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .flatten();
+        if found != expected.as_ref() {
+            return Err(format!(
+                "{}: `{}` does not match the requested edit",
+                file.name(),
+                edit.path()
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn number_fields() -> Vec<Field> {
     Field::ALL

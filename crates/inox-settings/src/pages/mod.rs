@@ -6,7 +6,7 @@
 //! come from [`crate::draft`], what the page shows comes from
 //! [`crate::view_model`], and the widgets come from [`crate::view`].
 //!
-//! The four pages are the areas of PRD §9 the settings application owns:
+//! The settings pages are the areas of PRD §9 the settings application owns:
 //!
 //! | page | file | what it edits |
 //! |---|---|---|
@@ -35,6 +35,19 @@ use crate::view_model::{FieldView, PageView, SettingsViewModel};
 /// One page of the settings window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PageId {
+    /// Trusted input method startup settings.
+    InputMethod,
+    /// Saved output preferences for the next compositor start.
+    Displays,
+    /// Input preferences.
+    Input,
+    /// Layout preferences.
+    Layout,
+    /// Launcher preferences.
+    Launcher,
+    /// Wallpaper preferences.
+    Wallpaper,
+
     /// Which theme the session uses.
     Appearance,
     /// The panel's edge, height and clock.
@@ -47,16 +60,49 @@ pub enum PageId {
 
 impl PageId {
     /// Every page, in the order the navigation list draws them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 10] = [
         Self::Appearance,
         Self::Panel,
         Self::Notifications,
         Self::Locale,
+        Self::Input,
+        Self::Layout,
+        Self::Launcher,
+        Self::Wallpaper,
+        Self::Displays,
+        Self::InputMethod,
     ];
 
     /// The fields the page edits.
     pub fn fields(self) -> &'static [Field] {
         match self {
+            Self::InputMethod => &[Field::InputMethodCommand],
+            Self::Displays => &[Field::Outputs],
+            Self::Input => &[
+                Field::KeyboardLayout,
+                Field::KeyboardVariant,
+                Field::KeyboardRepeatDelay,
+                Field::KeyboardRepeatRate,
+                Field::TapToClick,
+                Field::NaturalScroll,
+            ],
+            Self::Layout => &[
+                Field::LayoutMasterRatio,
+                Field::LayoutMasterCount,
+                Field::LayoutGap,
+            ],
+            Self::Launcher => &[
+                Field::LauncherTerminal,
+                Field::LauncherMaxResults,
+                Field::LauncherIconSize,
+                Field::LauncherIncludeHidden,
+                Field::LauncherMaxQueryChars,
+            ],
+            Self::Wallpaper => &[
+                Field::WallpaperImage,
+                Field::WallpaperMode,
+                Field::WallpaperPerOutput,
+            ],
             Self::Appearance => appearance::FIELDS,
             Self::Panel => panel::FIELDS,
             Self::Notifications => notifications::FIELDS,
@@ -67,6 +113,12 @@ impl PageId {
     /// The message id of the page's name.
     pub const fn label_id(self) -> &'static str {
         match self {
+            Self::InputMethod => "settings-page-input-method",
+            Self::Displays => "settings-page-displays",
+            Self::Input => "settings-page-input",
+            Self::Layout => "settings-page-layout",
+            Self::Launcher => "settings-page-launcher",
+            Self::Wallpaper => "settings-page-wallpaper",
             Self::Appearance => "settings-page-appearance",
             Self::Panel => "settings-page-panel",
             Self::Notifications => "settings-page-notifications",
@@ -110,6 +162,12 @@ pub fn view<'a>(
         .collect();
 
     match page {
+        PageId::InputMethod
+        | PageId::Displays
+        | PageId::Input
+        | PageId::Layout
+        | PageId::Launcher
+        | PageId::Wallpaper => crate::view::page_section(&entry, &fields, tokens),
         PageId::Appearance => appearance::view(&entry, &fields, tokens),
         PageId::Panel => panel::view(&entry, &fields, tokens),
         PageId::Notifications => notifications::view(&entry, &fields, tokens),

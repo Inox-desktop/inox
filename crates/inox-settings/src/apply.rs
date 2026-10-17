@@ -76,6 +76,7 @@ impl Component {
     /// session-wide: every component loaded it, so every component is asked.
     pub fn consumers_of(file: SettingFile) -> &'static [Self] {
         match file {
+            SettingFile::Compositor => &[Self::Compositor],
             SettingFile::Root => &Self::ALL,
             SettingFile::Shell => &[Self::Shell],
             SettingFile::Notifications => &[Self::Notifications],

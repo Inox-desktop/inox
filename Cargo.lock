@@ -1723,6 +1723,8 @@ dependencies = [
  "proptest",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
+ "toml_edit 0.22.27",
  "tracing",
  "tracing-subscriber",
 ]

@@ -11,7 +11,8 @@
 PRD 原将输入法安排在 1.0 之后。按当前开发会话要求，提前实现标准
 `text-input-v3`、`input-method-v2`、`virtual-keyboard-v1`，覆盖应用文本上下文、
 预编辑、提交、删除周边文本、键盘抓取、候选窗及焦点/退出/锁屏生命周期。
-不新增 Inox crate、不改变分层或私有 IPC/持久化配置格式、不链接输入法引擎。
+不新增 Inox crate、不改变分层或私有 IPC、不链接输入法引擎。
+设置的持久化启动偏好是后续增量，见 ADR 0024。
 
 维持原排期会让中文等文本输入长期不可用；只依赖 GTK/Qt 模块不能覆盖原生
 Wayland 应用；直接广告 Smithay 0.7 的管理器不能独立解决过期提交、重复实例、
@@ -25,7 +26,8 @@ Wayland 应用；直接广告 Smithay 0.7 的管理器不能独立解决过期�
 - 合成器拥有焦点、活动文本对象、输入法实例、候选表面和抓键状态。
   每个座席只有一个输入法；第二个对象收到 unavailable，销毁它不影响原对象。
   所有属于焦点客户端的文本对象收到 enter/leave；禁用、失焦、销毁均清理组合状态。
-- 输入法仅通过显式 `--input-method <EXECUTABLE>` 启动，参数逐项传递
+- 输入法通过显式 `--input-method <EXECUTABLE>` 或用户保存的 `[input] input_method` 启动；
+  命令行优先，配置默认空，headless 后端只读命令行。命令行参数逐项传递
   `--input-method-arg <ARG>`，不使用 shell。用 Unix socket pair 将子进程 stdin
   作为 `WAYLAND_SOCKET=0` 传递，服务端连接带合成器设置的权限标记。
   普通监听套接字上的连接没有该标记；不按 PID、进程名、app_id 授权。
@@ -46,7 +48,8 @@ inox-compositor 的真实 Unix socket 客户端测试覆盖中文预编辑/提�
 CI 是唯一验收入口，本地 fmt/check 仅作参考。另设 Fcitx5 拼音 CI 任务，
 使用发行版外部进程验证真实 nihao 预编辑与 你好 提交，关闭云拼音等联网插件。
 
-用户只需移除启动参数即可回退，不存在磁盘配置迁移。Fcitx5/IBus 与 GTK/Qt/
+仅使用命令行时移除启动参数即可停用；使用设置保存的偏好时清空
+`[input] input_method`。旧程序会拒绝该新键，降级时先删除它，见 ADR 0024。Fcitx5/IBus 与 GTK/Qt/
 XWayland 的真实桌面验收尚需人类使用 CI 产物逐项记录；没有该证据时只声明
 协议实现待验收，不将测试输入法替身当成外部引擎兼容证明。
 

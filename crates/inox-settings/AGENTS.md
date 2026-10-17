@@ -6,7 +6,7 @@
 
 系统设置应用：Inox 中**唯一写入配置的组件**。所属层级：**L3**。
 
-它编辑 `config.toml`、`shell.toml` 与 `notifications.toml` 中用户可改的字段，按 ADR 0014 区分「已保存」与「已生效」，按 ADR 0013 用快照/代次/命令结果建模与各组件的契约。它不持有 schema、默认值或校验规则的权威——那些都在 L1 的 `inox-config`。
+它编辑 `config.toml`、`compositor.toml`、`shell.toml` 与 `notifications.toml` 中用户可改的字段，按 ADR 0014 区分「已保存」与「已生效」，按 ADR 0013 用快照/代次/命令结果建模与各组件的契约。它不持有 schema、默认值或校验规则的权威——那些都在 L1 的 `inox-config`。
 
 ## crate 特有约束
 
@@ -62,11 +62,13 @@ crates/inox-settings/
   src/
     app.rs         State / Message / update（Elm，无 I/O）+ OutgoingCommand
     apply.rs       已保存 vs 已生效的状态机、代次、每组件结果
-    document.rs    三个配置文件作为文档、只改被编辑键的 TOML 补丁
+    document.rs    四个配置文件作为文档、只改被编辑键的 TOML 补丁
     draft.rs       字段注册表、值、草稿叠加与改动记录
     persist.rs     原子写入、内容摘要、外部编辑检测
     validate.rs    镜像 inox-config 的校验与 FieldError
-    pages/         四个页面：description + view builder
+    collections.rs  显示器、输入法 argv、终端 argv、分屏壁纸的结构化编辑与转换
+    focus.rs        控件真实布局边界、输入焦点与自动滚动
+    pages/         十个页面：description + view builder
     view_model.rs  状态 → 界面所画内容的投影
     view.rs        iced 控件与布局几何
     theme.rs       令牌 → iced 主题与样式（ADR 0018 允许的每组件一份）

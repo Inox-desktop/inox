@@ -44,6 +44,10 @@ pub const MAX_LABEL_CHARS: usize = 96;
 /// keyboard only" (acceptance Q01) is testable without a compositor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FocusTarget {
+    /// An editable cell of a structured collection.
+    Cell(Field, usize, usize),
+    /// The remove action for a collection row.
+    RemoveRow(Field, usize),
     /// An entry of the navigation list.
     Page(PageId),
     /// A field, which activating changes.
@@ -138,6 +142,23 @@ pub struct ChoiceView {
 /// How a field is drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlView {
+    /// Structured rows with localized column labels and actions.
+    Collection {
+        /// Editable row values.
+        rows: Vec<Vec<String>>,
+        /// Labels for each column.
+        columns: Vec<String>,
+        /// The add-row button label.
+        add: String,
+        /// The remove-row button label.
+        remove: String,
+        /// Explanation of how saved values will be used.
+        help: String,
+        /// The active keyboard target within this collection.
+        focused: Option<FocusTarget>,
+    },
+    /// Editable text, kept exactly as entered.
+    Text(String),
     /// A row of options.
     Choices(Vec<ChoiceView>),
     /// A switch and the word it is showing.
@@ -149,6 +170,10 @@ pub enum ControlView {
     },
     /// A number between two limits, and the unit it is in.
     Number {
+        /// The localized unit shown next to the numeric input.
+        unit: String,
+        /// The editable text, including incomplete input.
+        input: String,
         /// The number itself.
         value: i64,
         /// Smallest the schema accepts.
@@ -335,6 +360,14 @@ impl SettingsInput<'_> {
 
         if !busy {
             for field in self.page.fields() {
+                if let Value::Collection(rows) = self.draft.field(*field) {
+                    for (row, cells) in rows.iter().enumerate() {
+                        for column in 0..cells.len() {
+                            order.push(FocusTarget::Cell(*field, row, column));
+                        }
+                        order.push(FocusTarget::RemoveRow(*field, row));
+                    }
+                }
                 order.push(FocusTarget::Field(*field));
 
                 if self.draft.origin(*field).is_some() {
@@ -385,7 +418,13 @@ impl SettingsInput<'_> {
         FieldView {
             field,
             label: localizer.message(field.label_id()),
-            control: control_view(field, &value, focused, localizer),
+            control: {
+                let mut control = control_view(field, &value, focused, localizer);
+                if let ControlView::Number { input, .. } = &mut control {
+                    *input = self.draft.number_input(field);
+                }
+                control
+            },
             modified: origin.is_some(),
             focused: focused == Some(FocusTarget::Field(field)),
             reset: origin
@@ -625,6 +664,29 @@ fn control_view(
     let control = field.control();
 
     match control.kind {
+        ValueKind::Collection => ControlView::Collection {
+            focused,
+            rows: match value {
+                Value::Collection(rows) => rows.clone(),
+                _ => vec![],
+            },
+            columns: crate::collections::columns(field)
+                .iter()
+                .map(|id| localizer.message(id))
+                .collect(),
+            add: localizer.message("settings-list-add"),
+            remove: localizer.message("settings-list-remove"),
+            help: localizer.message(match field {
+                Field::InputMethodCommand => "settings-input-method-help",
+                Field::Outputs => "settings-outputs-help",
+                Field::LauncherTerminal => "settings-terminal-help",
+                _ => "settings-wallpapers-help",
+            }),
+        },
+        ValueKind::Text => ControlView::Text(match value {
+            Value::Text(text) => text.clone(),
+            _ => String::new(),
+        }),
         ValueKind::Flag => ControlView::Flag {
             on: matches!(value, Value::Flag(true)),
             label: localizer.message(if matches!(value, Value::Flag(true)) {
@@ -646,6 +708,8 @@ fn control_view(
             });
 
             ControlView::Number {
+                unit: localizer.message(range.unit_id),
+                input: number.to_string(),
                 value: number,
                 min: range.min,
                 max: range.max,
@@ -787,6 +851,25 @@ pub fn message_ids() -> Vec<&'static str> {
         "settings-error-height-range",
         "settings-error-timeout-range",
         "settings-error-locale",
+        "settings-input-method-help",
+        "settings-error-collection",
+        "settings-output-name",
+        "settings-output-width",
+        "settings-output-height",
+        "settings-output-refresh",
+        "settings-output-scale",
+        "settings-output-x",
+        "settings-output-y",
+        "settings-terminal-argument",
+        "settings-wallpaper-path",
+        "settings-list-add",
+        "settings-list-remove",
+        "settings-outputs-help",
+        "settings-terminal-help",
+        "settings-wallpapers-help",
+        "settings-error-integer",
+        "settings-error-number-range",
+        "settings-error-clock-format",
     ];
 
     for page in PageId::ALL {
@@ -1064,6 +1147,7 @@ mod tests {
                 display,
                 decrease,
                 increase,
+                ..
             } => {
                 assert_eq!(*value, 32);
                 assert_eq!((*min, *max), (8, 256));
@@ -1146,6 +1230,9 @@ mod tests {
         ] {
             for target in &model.focus_order {
                 match target {
+                    FocusTarget::Cell(field, _, _) | FocusTarget::RemoveRow(field, _) => {
+                        assert!(model.field(*field).expect("collection field").enabled)
+                    }
                     FocusTarget::Page(page) => assert!(
                         model.pages.iter().any(|view| view.page == *page),
                         "{state}: the walk holds a page that is not drawn"

@@ -297,6 +297,33 @@ pub fn action(
     )
 }
 
+/// Styles editable fields using the same tokens as the surrounding controls.
+pub fn input(
+    tokens: &Tokens,
+    status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
+    let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
+    iced::widget::text_input::Style {
+        background: color(tokens.colors.surface).into(),
+        border: border(
+            tokens,
+            color(if focused {
+                tokens.colors.accent
+            } else {
+                tokens.colors.border
+            }),
+        ),
+        icon: text(tokens),
+        placeholder: muted_text(tokens),
+        value: if status == iced::widget::text_input::Status::Disabled {
+            muted_text(tokens)
+        } else {
+            text(tokens)
+        },
+        selection: color(tokens.colors.accent),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
