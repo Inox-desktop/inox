@@ -9,6 +9,9 @@ fn actual_headless_session_reaches_compositor_ready_and_logs_out() {
         return;
     };
     let root = tempfile::tempdir().expect("runtime");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("private runtime permissions");
     let log_path = root.path().join("session.log");
     let log = std::fs::File::create(&log_path).expect("log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_inox-session"))

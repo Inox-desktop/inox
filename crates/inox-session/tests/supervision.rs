@@ -33,6 +33,14 @@ if os.environ.get('CRASH') == '1':
 while True: time.sleep(1)
 "#;
 
+fn private_runtime() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().expect("runtime root");
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("private runtime permissions");
+    root
+}
+
 fn command(program: &str, arguments: &[&str]) -> CommandSpec {
     CommandSpec {
         program: program.into(),
@@ -72,7 +80,7 @@ fn no_runtime_left(root: &Path) {
 
 #[test]
 fn protocol_readiness_crash_isolation_budgets_and_cleanup() {
-    let root = tempfile::tempdir().expect("runtime root");
+    let root = private_runtime();
     let marker = root.path().join("starts");
     let script = format!("printf x >> '{}'; exit 1", marker.display());
     let mut session = spec(
@@ -147,7 +155,7 @@ fn protocol_readiness_crash_isolation_budgets_and_cleanup() {
 
 #[test]
 fn failed_spawn_and_invalid_runtime_leave_no_children_or_directory() {
-    let root = tempfile::tempdir().expect("runtime root");
+    let root = private_runtime();
     let mut session = spec(root.path(), vec![]);
     session.compositor = CommandSpec::new("/nonexistent/inox-compositor");
     assert!(matches!(run(session, bounded(1)), Err(SessionError::Io(_))));
@@ -169,7 +177,7 @@ fn failed_spawn_and_invalid_runtime_leave_no_children_or_directory() {
 
 #[test]
 fn successful_bootstrap_runs_once_and_signal_masks_do_not_leak_to_children() {
-    let root = tempfile::tempdir().expect("runtime root");
+    let root = private_runtime();
     let marker = root.path().join("bootstrap");
     let script = format!("printf x >> '{}'", marker.display());
     let session = spec(
@@ -196,7 +204,7 @@ fn successful_bootstrap_runs_once_and_signal_masks_do_not_leak_to_children() {
 fn actual_supervisor_signal_shutdown_is_graceful_and_cleans_its_runtime() {
     use rustix::process::{Pid, Signal, kill_process};
     use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().expect("runtime root");
+    let root = private_runtime();
     let binaries = tempfile::tempdir().expect("fake system boundary binaries");
     let compositor = binaries.path().join("inox-compositor");
     std::fs::write(&compositor, format!("#!/usr/bin/env python3\n{PEER}"))
@@ -257,7 +265,7 @@ fn actual_supervisor_signal_shutdown_is_graceful_and_cleans_its_runtime() {
 
 #[test]
 fn unresponsive_service_is_killed_within_the_logout_budget() {
-    let root = tempfile::tempdir().expect("runtime root");
+    let root = private_runtime();
     let session = spec(
         root.path(),
         vec![service(
