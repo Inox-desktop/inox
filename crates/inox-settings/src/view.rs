@@ -73,7 +73,9 @@ impl SettingsGeometry {
             padding,
             spacing: f32::from(tokens.spacing.md),
             control_padding: f32::from(tokens.spacing.sm),
-            nav_width: f32::from(tokens.spacing.xl) * NAV_WIDTH_STEPS,
+            nav_width: f32::from(tokens.spacing.xl)
+                * NAV_WIDTH_STEPS
+                * tokens.typography.scale.max(1.0),
             label_width: f32::from(tokens.spacing.xl) * LABEL_WIDTH_STEPS,
             row_height: font_size * ROW_HEIGHT_STEPS,
         }
@@ -184,7 +186,7 @@ fn page_entry<'a>(
         button(
             text(page.label.clone())
                 .size(geometry.font_size)
-                .wrapping(Wrapping::Word),
+                .wrapping(Wrapping::WordOrGlyph),
         )
         .width(Length::Fill)
         .padding(Padding::from(geometry.control_padding))
@@ -237,7 +239,7 @@ fn field_row<'a>(
         text(field.label.clone())
             .size(geometry.font_size)
             .color(label_colour)
-            .wrapping(Wrapping::Word),
+            .wrapping(Wrapping::WordOrGlyph),
     )
     .width(Length::Fixed(geometry.label_width));
 
@@ -690,6 +692,7 @@ mod tests {
         let scaled = SettingsGeometry::new(&tokens);
 
         assert!(scaled.font_size > plain.font_size);
+        assert!(scaled.nav_width > plain.nav_width);
         assert!(scaled.row_height > plain.row_height);
         assert!(scaled.heading_size > plain.heading_size);
     }
