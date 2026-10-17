@@ -27,13 +27,9 @@ resolver = "3"
 # to revisit.
 version = "0.1.1"
 edition = "2024"
-# Raised to 1.88 for the L3 milestone: `iced` 0.14 — the GUI toolkit ADR 0003
-# fixes for the shell components — declares `rust-version = "1.88"`, and so does
-# `image` 0.25, which the wallpaper and icon paths pull in. 1.86 was the floor
-# before that (`inox-protocols`' wayland-protocols 0.32 and `inox-compositor`'s
-# calloop 0.14 via smithay 0.7). Only the declared floor moves; CI tracks
-# `stable`. See docs/adr/0018-l3-component-architecture.md.
-rust-version = "1.88"
+# zbus 6 folds the retired zvariant/zbus_names crates into its maintained API
+# and requires Rust 1.89 (ADR 0027). Members inherit this single workspace floor.
+rust-version = "1.89"
 license = "BSD-3-Clause"
 repository = "https://github.com/Inox-desktop/inox"
 readme = "README.md"
@@ -126,19 +122,18 @@ zeroize = "1"
 # The notification daemon is the process behind `org.freedesktop.Notifications`,
 # so it needs a real D-Bus client and server (M5, acceptance D06). zbus is the
 # pure-Rust implementation: no `libdbus` system library, no FFI, no `unsafe` of
-# ours. Only the blocking API and the internal `async-io` runtime are used, which
-# is what lets the service run on an ordinary thread next to the iced application
-# instead of pulling an async runtime into the whole workspace (ADR 0022 §5).
+# ours. Transport threads drive its async API through `zbus::block_on`; Iced
+# state remains on the application thread (ADR 0022 §5, amended by ADR 0027).
 #
-# Pinned to the 5.x line on purpose: zbus 6.0 declares `rust-version = "1.89"`,
-# above this workspace's 1.88, so taking it would raise the MSRV in the same
-# change that adds the dependency. `p2p` is what the crate's tests use to serve
-# and call the interface over a socket pair, so a test needs no running bus
-# daemon.
-zbus = { version = "5.19", default-features = false, features = [
-    "async-io",
-    "blocking-api",
+# zbus 6 has an async API driven by `block_on` on the transport threads.
+# Keep the default runtime, proxies, services and tracing explicit; p2p is used
+# by the real socket-pair tests without requiring a session bus (ADR 0027).
+zbus = { version = "6.0", default-features = false, features = [
+    "default-rt",
+    "proxy",
+    "service",
     "p2p",
+    "tracing",
 ] }
 
 # Project Fluent (ADR 0003, PRD §11.2): every user-visible string is a message

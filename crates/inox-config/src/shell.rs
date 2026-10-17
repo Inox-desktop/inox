@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Default height of the panel, in logical pixels.
 const DEFAULT_PANEL_HEIGHT: u16 = 32;
@@ -101,7 +101,7 @@ pub const CLOCK_DIRECTIVES: [char; 15] = [
 /// The default of a section is the default of each of its fields, so this type
 /// derives it: an empty `shell.toml` is the same configuration as no
 /// `shell.toml` at all.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ShellConfig {
     /// The panel: a strip on one edge of every output.
@@ -113,7 +113,7 @@ pub struct ShellConfig {
 }
 
 /// The panel, a strip along one edge of every output.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PanelConfig {
     /// Edge the panel sits on.
@@ -161,7 +161,7 @@ impl Default for PanelConfig {
 }
 
 /// The edge a [`PanelConfig`] sits on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PanelPosition {
     /// Along the top edge.
@@ -172,7 +172,7 @@ pub enum PanelPosition {
 }
 
 /// The launcher: the application search overlay.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LauncherConfig {
     /// Number of results shown at once, between 1 and 64.
@@ -214,7 +214,7 @@ impl Default for LauncherConfig {
 ///
 /// Every field's default is its type's default — [`WallpaperMode::Fill`], no
 /// image and no per-output entry — so this type derives [`Default`].
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WallpaperConfig {
     /// How [`WallpaperConfig::image`] is fitted to an output.
@@ -229,7 +229,7 @@ pub struct WallpaperConfig {
 }
 
 /// How a wallpaper image is fitted to an output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WallpaperMode {
     /// Scale the image to cover the output, cropping the overflow.

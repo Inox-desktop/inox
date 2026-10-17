@@ -30,11 +30,34 @@ use inox_wallpaper::{app, i18n, theme, view};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod reload;
+
+#[derive(Debug, Clone)]
+enum RuntimeMessage {
+    App(app::Message),
+    Reload(Box<reload::Request>),
+}
+type ReloadResource = (Preview, inox_wallpaper::apply::Preparation);
+fn prepare_reload(config: &InoxConfig, paths: &ConfigPaths) -> Result<ReloadResource, String> {
+    let preview = Preview::from_config(&config.shell.wallpaper, paths.root(), PREVIEW_SIZE);
+    let preparation = inox_wallpaper::apply::prepare(
+        preview.output.clone(),
+        &preview.selection,
+        preview.mode,
+        preview.size,
+    );
+    if let inox_wallpaper::apply::Preparation::Degraded { reason, .. } = &preparation {
+        return Err(format!("wallpaper.image: {reason:?}"));
+    }
+    Ok((preview, preparation))
+}
+
 fn main() -> Result<()> {
     init_logging();
 
     let paths = ConfigPaths::discover().context("locating the Inox configuration directory")?;
     let (config, problem) = read_configuration(&paths);
+    let reload_host = reload::Host::start(paths.clone())?;
 
     let localizer = Rc::new(
         i18n::localizer(config.locale.clone())
@@ -63,10 +86,13 @@ fn main() -> Result<()> {
             let mut state = state.clone();
             let task = app::boot(&mut state);
 
-            (state, task)
+            (
+                state,
+                iced::Task::batch([task.map(RuntimeMessage::App), reload_host.task()]),
+            )
         },
-        app::update,
-        view::view,
+        update_runtime,
+        view_runtime,
     )
     .title(view::title)
     .theme(|state: &State| theme::iced_theme(state.theme()))
@@ -126,4 +152,34 @@ fn fallback_configuration() -> InoxConfig {
         notifications: NotificationsConfig::default(),
         locale: LocaleConfig::default().resolve(),
     }
+}
+
+fn update_runtime(state: &mut State, message: RuntimeMessage) -> iced::Task<RuntimeMessage> {
+    match message {
+        RuntimeMessage::App(message) => app::update(state, message).map(RuntimeMessage::App),
+        RuntimeMessage::Reload(request) => {
+            let result = (|| {
+                if !request.is_current() {
+                    return Err("configuration reload expired".to_owned());
+                }
+                let localizer = Rc::new(
+                    i18n::localizer(request.config.locale.clone()).map_err(|e| e.to_string())?,
+                );
+                state
+                    .apply_configuration(
+                        Arc::new(request.config.theme.clone()),
+                        localizer,
+                        request.resource.0.clone(),
+                        request.resource.1.clone(),
+                    )
+                    .map_err(|e| format!("{e:?}"))
+            })();
+            request.finish(result);
+            iced::Task::none()
+        }
+    }
+}
+
+fn view_runtime(state: &State) -> iced::Element<'_, RuntimeMessage> {
+    view::view(state).map(RuntimeMessage::App)
 }

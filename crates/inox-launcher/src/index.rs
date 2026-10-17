@@ -142,6 +142,11 @@ pub struct AppIndex {
 }
 
 impl AppIndex {
+    /// Associates a prepared index with the live application's newest scan.
+    pub(crate) fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
     /// The applications, in the order the scan found them.
     ///
     /// The order is deterministic (directories in precedence order, files

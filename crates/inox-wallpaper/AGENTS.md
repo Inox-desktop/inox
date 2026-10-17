@@ -34,7 +34,7 @@
 - **被阻塞（E2/E3）**：合成器不广告 `wlr-layer-shell-unstable-v1`，`iced_layershell` 也无法针对
   当前 `iced` 代际编译（ADR 0018），因此二进制以普通窗口运行、只打印一条 `warn!`，
   `placement` 的策略不被应用。**不得**在文档或 PR 中把这一状态说成「壁纸已作为背景层生效」。
-- **未实现**：配置热重载（`SIGHUP` / `inoxctl reload`）、E2 级 GUI 证据、语义树导出。
+- 配置热重载由二进制的 `reload.rs` 接入 `SIGHUP` / 会话 D-Bus（`inoxctl reload`）；资源准备成功后才提交。**未实现**：E2 级 GUI 证据、语义树导出。
 
 ## 主要依赖
 

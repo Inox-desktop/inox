@@ -11,6 +11,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+calloop.workspace = true
+zbus.workspace = true
 # The wallpaper is an L3 component: it reads configuration from L1 and never
 # depends on the compositor or on another L3 crate (ADR 0002 rules 1, 6).
 inox-common.workspace = true

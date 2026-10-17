@@ -140,6 +140,31 @@ pub struct State {
 }
 
 impl State {
+    /// Commits an already prepared wallpaper and invalidates earlier image requests.
+    ///
+    /// # Errors
+    /// A resource failure leaves the visible frame and all preferences unchanged.
+    pub fn apply_configuration(
+        &mut self,
+        theme: Arc<Theme>,
+        localizer: Rc<Localizer>,
+        preview: Preview,
+        preparation: Preparation,
+    ) -> Result<(), crate::model::Unusable> {
+        if let Preparation::Degraded { reason, .. } = &preparation {
+            return Err(reason.clone());
+        }
+        self.generation = self.generation.next();
+        self.queued = None;
+        self.in_flight = None;
+        self.theme = theme;
+        self.localizer = localizer;
+        self.preview = preview;
+        self.configuration = None;
+        self.accept(self.generation, preparation);
+        Ok(())
+    }
+
     /// A state that has not loaded anything yet.
     ///
     /// `configuration` is the reason the configuration could not be read, when
@@ -436,6 +461,47 @@ mod tests {
             WallpaperMode::Fill,
             PREVIEW_SIZE,
         )
+    }
+
+    #[test]
+    fn live_wallpaper_commit_invalidates_old_loads_and_failure_keeps_preferences() {
+        let dir = tempfile::tempdir().expect("directory");
+        let mut state = state(Selection::Image(dir.path().join("old.png")));
+        let old = state.take_request().expect("initial image request");
+        let next = Preview::from_config(&WallpaperConfig::default(), dir.path(), PREVIEW_SIZE);
+        let preparation = prepared(dir.path(), next.output.as_str(), 8, 8);
+        let localizer = Rc::clone(&state.localizer);
+        state
+            .apply_configuration(
+                Arc::new(Theme::builtin_light()),
+                localizer.clone(),
+                next.clone(),
+                preparation,
+            )
+            .expect("prepared image");
+        let current = state.snapshot.clone();
+        state.accept(old.generation, Preparation::Nothing { output: old.output });
+        assert_eq!(
+            state.snapshot, current,
+            "a superseded decode cannot clear the new frame"
+        );
+        let error = Preparation::Degraded {
+            output: next.output.clone(),
+            path: dir.path().join("missing"),
+            reason: Unusable::Missing,
+        };
+        assert_eq!(
+            state.apply_configuration(
+                Arc::new(Theme::builtin_dark()),
+                localizer,
+                next.clone(),
+                error
+            ),
+            Err(Unusable::Missing)
+        );
+        assert_eq!(state.theme(), &Theme::builtin_light());
+        assert_eq!(state.preview(), &next);
+        assert_eq!(state.snapshot, current);
     }
 
     #[test]

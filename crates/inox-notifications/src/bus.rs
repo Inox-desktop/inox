@@ -1,7 +1,7 @@
 //! The D-Bus service: `org.freedesktop.Notifications` on the session bus.
 //!
-//! This is the transport ADR 0022 decision 5 asks for. It is a translation
-//! layer and nothing else: a method call becomes a [`Request`] the application
+//! This is the transport ADR 0022 decision 5 asks for, migrated by ADR 0027.
+//! It is a translation layer and nothing else: a method call becomes a [`Request`] the application
 //! answers, the answer becomes a D-Bus reply or error, and a [`Signal`] becomes
 //! `NotificationClosed` or `ActionInvoked`. Every decision about what a
 //! notification *is* — identifiers, lifetimes, the bound, the policy, the
@@ -93,11 +93,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use iced::futures::StreamExt;
 use tracing::{debug, info, warn};
-use zbus::blocking::{Connection, MessageIterator};
 use zbus::fdo;
 use zbus::message::{Header, Message, Type};
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::{Connection, MessageStream};
+use zbus::{OwnedVariant, Variant};
 
 use crate::actions::ActionError;
 use crate::app::{Inbox, Message as AppMessage};
@@ -289,8 +290,8 @@ impl Service {
     /// [`BusError::NameTaken`] when another daemon already owns the name — the
     /// daemon must not start "successfully" and then never be called.
     pub fn serve(inbox: Inbox) -> Result<Self, BusError> {
-        let connection =
-            Connection::session().map_err(|error| BusError::Connect(Box::new(error)))?;
+        let connection = zbus::block_on(Connection::session())
+            .map_err(|error| BusError::Connect(Box::new(error)))?;
         claim(&connection)?;
 
         info!(
@@ -418,9 +419,7 @@ impl Service {
 /// [`BusError::NameTaken`] when another daemon owns it, [`BusError::Claim`] for
 /// anything else the bus says.
 pub fn claim(connection: &Connection) -> Result<(), BusError> {
-    connection
-        .request_name(protocol::BUS_NAME)
-        .map_err(name_error)
+    zbus::block_on(connection.request_name(protocol::BUS_NAME)).map_err(name_error)
 }
 
 /// Reads the bus's refusal to hand over a name as one of ours.
@@ -449,9 +448,9 @@ fn bus_loop(
     deadline: Arc<AtomicU64>,
     stats: Arc<Stats>,
 ) {
-    let mut messages = MessageIterator::from(&connection);
+    let mut messages = MessageStream::from(&connection);
 
-    for message in messages.by_ref() {
+    while let Some(message) = zbus::block_on(messages.next()) {
         let message = match message {
             Ok(message) => message,
             Err(error) => {
@@ -483,9 +482,6 @@ fn answer(
     stats: &Stats,
 ) {
     let header = message.header();
-    // The identity a reply is correlated with is the serial of the call as it
-    // arrived; zbus 5 spells that `Header::primary().serial_num()` (zbus 6's
-    // `Header::serial()`), and it is never invented here.
     let call = CallId::new(u64::from(header.primary().serial_num().get()));
     Stats::bump(&stats.calls);
 
@@ -615,22 +611,32 @@ fn await_reply(
 /// The signals thread: emit what the daemon decided, in the order it decided it.
 fn signal_loop(connection: Connection, signals: Receiver<Signal>, stats: Arc<Stats>) {
     while let Ok(signal) = signals.recv() {
-        let emitted = match signal {
-            Signal::NotificationClosed { id, reason } => connection.emit_signal(
-                None::<()>,
-                protocol::OBJECT_PATH,
-                protocol::INTERFACE,
-                protocol::NOTIFICATION_CLOSED.name,
-                &(id.get(), reason.code()),
-            ),
-            Signal::ActionInvoked { id, action } => connection.emit_signal(
-                None::<()>,
-                protocol::OBJECT_PATH,
-                protocol::INTERFACE,
-                protocol::ACTION_INVOKED.name,
-                &(id.get(), action.as_str()),
-            ),
-        };
+        let emitted = zbus::block_on(async {
+            match signal {
+                Signal::NotificationClosed { id, reason } => {
+                    connection
+                        .emit_signal(
+                            None::<()>,
+                            protocol::OBJECT_PATH,
+                            protocol::INTERFACE,
+                            protocol::NOTIFICATION_CLOSED.name,
+                            &(id.get(), reason.code()),
+                        )
+                        .await
+                }
+                Signal::ActionInvoked { id, action } => {
+                    connection
+                        .emit_signal(
+                            None::<()>,
+                            protocol::OBJECT_PATH,
+                            protocol::INTERFACE,
+                            protocol::ACTION_INVOKED.name,
+                            &(id.get(), action.as_str()),
+                        )
+                        .await
+                }
+            }
+        });
 
         match emitted {
             Ok(()) => {
@@ -745,7 +751,7 @@ type NotifyArguments = (
     String,
     String,
     Vec<String>,
-    HashMap<String, OwnedValue>,
+    HashMap<String, OwnedVariant>,
     i32,
 );
 
@@ -781,7 +787,7 @@ fn read_notify(message: &Message, stats: &Stats) -> Result<NotifyRequest, fdo::E
 /// [`HintValue`]. The standard keys of [`crate::protocol::HINT_KEYS`] are kept
 /// ahead of everything else, in a fixed order, so the result does not depend on
 /// how a hash table happened to iterate.
-fn read_hints(hints: HashMap<String, OwnedValue>, stats: &Stats) -> Vec<(String, HintValue)> {
+fn read_hints(hints: HashMap<String, OwnedVariant>, stats: &Stats) -> Vec<(String, HintValue)> {
     let mut standard = Vec::new();
     let mut other = Vec::new();
 
@@ -819,51 +825,59 @@ fn is_standard(key: &str) -> bool {
 /// variant, a file descriptor — is `None`, because coercing it would be this
 /// daemon inventing a value the client did not send, and a count of dropped
 /// hints is a better answer than a wrong one.
-fn hint_value(value: &OwnedValue) -> Option<HintValue> {
+fn hint_value(value: &OwnedVariant) -> Option<HintValue> {
     match &**value {
-        Value::U8(raw) => Some(HintValue::Byte(*raw)),
-        Value::Bool(flag) => Some(HintValue::Boolean(*flag)),
-        Value::I32(raw) => Some(HintValue::Int(*raw)),
-        Value::U32(raw) => Some(HintValue::Unsigned(*raw)),
-        Value::Str(text) => Some(HintValue::Text(text.as_str().to_owned())),
-        Value::I16(_)
-        | Value::U16(_)
-        | Value::I64(_)
-        | Value::U64(_)
-        | Value::F64(_)
-        | Value::Signature(_)
-        | Value::ObjectPath(_)
-        | Value::Value(_)
-        | Value::Array(_)
-        | Value::Dict(_)
-        | Value::Structure(_)
-        | Value::Fd(_) => None,
+        Variant::U8(raw) => Some(HintValue::Byte(*raw)),
+        Variant::Bool(flag) => Some(HintValue::Boolean(*flag)),
+        Variant::I32(raw) => Some(HintValue::Int(*raw)),
+        Variant::U32(raw) => Some(HintValue::Unsigned(*raw)),
+        Variant::Str(text) => Some(HintValue::Text(text.as_str().to_owned())),
+        Variant::I16(_)
+        | Variant::U16(_)
+        | Variant::I64(_)
+        | Variant::U64(_)
+        | Variant::F64(_)
+        | Variant::Signature(_)
+        | Variant::ObjectPath(_)
+        | Variant::Variant(_)
+        | Variant::Array(_)
+        | Variant::Dict(_)
+        | Variant::Structure(_)
+        | Variant::Fd(_) => None,
     }
 }
 
 /// Answers a call with what the daemon decided.
 fn reply_with(connection: &Connection, header: &Header<'_>, body: ReplyBody) -> zbus::Result<()> {
-    match body {
-        ReplyBody::Notified { id } => connection.reply(header, &id.get()),
-        // The specification gives `CloseNotification` no return value, so the
-        // daemon's `closed` boolean is not on the wire: see the module
-        // documentation.
-        ReplyBody::Closed { .. } => connection.reply(header, &()),
-        ReplyBody::Capabilities { capabilities } => connection.reply(header, &capabilities),
-        ReplyBody::ServerInformation { information } => connection.reply(
-            header,
-            &(
-                information.name,
-                information.vendor,
-                information.version,
-                information.spec_version,
-            ),
-        ),
-        ReplyBody::Rejected { reason } => {
-            let name = rejection(&reason);
-            reply_error(connection, header, name)
+    zbus::block_on(async {
+        match body {
+            ReplyBody::Notified { id } => connection.reply(header, &id.get()).await,
+            // The specification gives `CloseNotification` no return value, so the
+            // daemon's `closed` boolean is not on the wire: see the module
+            // documentation.
+            ReplyBody::Closed { .. } => connection.reply(header, &()).await,
+            ReplyBody::Capabilities { capabilities } => {
+                connection.reply(header, &capabilities).await
+            }
+            ReplyBody::ServerInformation { information } => {
+                connection
+                    .reply(
+                        header,
+                        &(
+                            information.name,
+                            information.vendor,
+                            information.version,
+                            information.spec_version,
+                        ),
+                    )
+                    .await
+            }
+            ReplyBody::Rejected { reason } => {
+                let name = rejection(&reason);
+                connection.reply_dbus_error(header, name).await
+            }
         }
-    }
+    })
 }
 
 /// The D-Bus error an unusable request becomes.
@@ -877,7 +891,7 @@ fn reply_error(
     header: &Header<'_>,
     error: impl zbus::DBusError,
 ) -> zbus::Result<()> {
-    connection.reply_dbus_error(header, error)
+    zbus::block_on(async { connection.reply_dbus_error(header, error).await })
 }
 
 /// The interface a reflection-based proxy asks about first.
@@ -905,14 +919,20 @@ const PING: &str = "Ping";
 /// they are answered here instead of travelling through the application and
 /// waiting for a frame to be drawn.
 fn reply_direct(connection: &Connection, header: &Header<'_>, direct: &Direct) -> zbus::Result<()> {
-    match direct {
-        Direct::Introspection => connection.reply(header, &introspection_xml()),
-        // An empty table is the whole truth: `org.freedesktop.Notifications` has
-        // no properties, and a proxy that asked for them must not be told the
-        // call failed.
-        Direct::Properties => connection.reply(header, &HashMap::<String, OwnedValue>::new()),
-        Direct::Ping => connection.reply(header, &()),
-    }
+    zbus::block_on(async {
+        match direct {
+            Direct::Introspection => connection.reply(header, &introspection_xml()).await,
+            // An empty table is the whole truth: `org.freedesktop.Notifications` has
+            // no properties, and a proxy that asked for them must not be told the
+            // call failed.
+            Direct::Properties => {
+                connection
+                    .reply(header, &HashMap::<String, OwnedVariant>::new())
+                    .await
+            }
+            Direct::Ping => connection.reply(header, &()).await,
+        }
+    })
 }
 
 /// The introspection XML this service answers with.
@@ -980,13 +1000,13 @@ mod tests {
     use crate::protocol::Hints;
     use crate::protocol::{HINT_CATEGORY, HINT_URGENCY, Urgency};
 
-    fn owned(value: HintValue) -> OwnedValue {
+    fn owned(value: HintValue) -> OwnedVariant {
         match value {
-            HintValue::Byte(raw) => OwnedValue::from(raw),
-            HintValue::Boolean(flag) => OwnedValue::from(flag),
-            HintValue::Int(raw) => OwnedValue::from(raw),
-            HintValue::Unsigned(raw) => OwnedValue::from(raw),
-            HintValue::Text(text) => OwnedValue::from(zbus::zvariant::Str::from(text)),
+            HintValue::Byte(raw) => OwnedVariant::from(raw),
+            HintValue::Boolean(flag) => OwnedVariant::from(flag),
+            HintValue::Int(raw) => OwnedVariant::from(raw),
+            HintValue::Unsigned(raw) => OwnedVariant::from(raw),
+            HintValue::Text(text) => OwnedVariant::from(zbus::Str::from(text)),
         }
     }
 
@@ -1048,8 +1068,8 @@ mod tests {
         let mut pairs = HashMap::new();
         // A double and a 64-bit integer: both are legal D-Bus hint values and
         // neither has a `HintValue` form, so neither is guessed at.
-        pairs.insert(HINT_URGENCY.to_owned(), OwnedValue::from(1.5_f64));
-        pairs.insert(HINT_CATEGORY.to_owned(), OwnedValue::from(2_i64));
+        pairs.insert(HINT_URGENCY.to_owned(), OwnedVariant::from(1.5_f64));
+        pairs.insert(HINT_CATEGORY.to_owned(), OwnedVariant::from(2_i64));
 
         let hints = Hints::from_pairs(&read_hints(pairs, &stats));
 

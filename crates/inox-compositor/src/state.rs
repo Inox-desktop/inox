@@ -358,6 +358,8 @@ pub struct InoxState {
     lock_claim_refusals: u64,
     /// Lock requests refused, for the same reason.
     lock_refusals: u64,
+    pub(crate) reload_requests:
+        Option<std::sync::mpsc::SyncSender<crate::runtime::reload::Trigger>>,
     input_config: inox_config::InputConfig,
     cursor_image: CursorImageStatus,
     cursor_visible: bool,
@@ -491,6 +493,41 @@ struct LayerEntry {
 const LAYER_ORDER: [Layer; 4] = [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background];
 
 impl InoxState {
+    /// Applies live keyboard, layout and theme preferences, preserving clients and focus.
+    ///
+    /// # Errors
+    /// An invalid keymap or repeat setting leaves the previous preferences in force.
+    pub fn apply_configuration(
+        &mut self,
+        config: &inox_config::InoxConfig,
+    ) -> Result<(), StateError> {
+        let input = &config.compositor.input;
+        let delay = i32::try_from(input.keyboard_repeat_delay_ms).map_err(|_| {
+            StateError::InputConfig("input.keyboard_repeat_delay_ms exceeds i32::MAX".into())
+        })?;
+        let rate = i32::try_from(input.keyboard_repeat_rate_hz).map_err(|_| {
+            StateError::InputConfig("input.keyboard_repeat_rate_hz exceeds i32::MAX".into())
+        })?;
+        let keyboard = self.keyboard.clone();
+        if input.keyboard_layout != self.input_config.keyboard_layout
+            || input.keyboard_variant != self.input_config.keyboard_variant
+        {
+            keyboard.set_xkb_config(self, keyboard_config(input))?;
+        }
+        keyboard.change_repeat_info(rate, delay);
+        self.input_config = input.clone();
+        self.layout = LayoutConfig {
+            master_ratio: config.compositor.layout.master_ratio,
+            master_count: config.compositor.layout.master_count as usize,
+            gap: config.compositor.layout.gap,
+        };
+        self.cursor_buffer = crate::cursor::fallback(&config.theme);
+        self.background = rgba_floats(config.theme.colors.background);
+        self.arrange_windows();
+        self.repaint = true;
+        Ok(())
+    }
+
     /// Build the state, the headless outputs, the seat and the render target.
     ///
     /// # Errors
@@ -619,6 +656,7 @@ impl InoxState {
             ipc_clients: Vec::new(),
             lock_claim_refusals: 0,
             lock_refusals: 0,
+            reload_requests: None,
             input_config: input,
             cursor_image: CursorImageStatus::default_named(),
             cursor_visible: false,
@@ -1011,7 +1049,7 @@ impl InoxState {
             let elements = self
                 .scene_elements(renderer.renderer_mut(), &output)
                 .map_err(RenderError::from)?;
-            renderer.render_elements(&name, size, scale, &elements)?;
+            renderer.render_elements(&name, size, scale, self.background, &elements)?;
         }
 
         Ok(())
@@ -2621,11 +2659,8 @@ fn inox_ipc_version() -> u32 {
 
 /// Service the private `inox-ipc` control protocol.
 ///
-/// M1 only has to prove the compositor genuinely consumes `inox-protocols`, so the
-/// handler is deliberately small: `get_version` reports the protocol version, and
-/// `reload_config` is answered with [`ReloadResult::Unsupported`] because
-/// configuration reloading arrives in a later milestone. Answering explicitly lets
-/// the shell tell "not implemented yet" apart from a transport failure.
+/// Reload preparation runs off the event loop; the runtime answers only after
+/// applying the candidate, or rejecting it with the previous state intact.
 impl Dispatch<InoxIpc, ()> for InoxState {
     fn request(
         state: &mut Self,
@@ -2641,7 +2676,16 @@ impl Dispatch<InoxIpc, ()> for InoxState {
             // request has been dispatched, so there is nothing to clean up here.
             InoxIpcRequest::Destroy => {}
             InoxIpcRequest::GetVersion => resource.version(inox_ipc_version()),
-            InoxIpcRequest::ReloadConfig => resource.config_reloaded(ReloadResult::Unsupported),
+            InoxIpcRequest::ReloadConfig => {
+                let result = state.reload_requests.as_ref().map(|sender| {
+                    sender.try_send(crate::runtime::reload::Trigger::wayland(resource.clone()))
+                });
+                match result {
+                    Some(Ok(())) => {}
+                    Some(Err(_)) => resource.config_reloaded(ReloadResult::Rejected),
+                    None => resource.config_reloaded(ReloadResult::Unsupported),
+                }
+            }
             // The first privileged request the compositor accepts (acceptance S04,
             // ADR 0015's privilege table). The token is a capability the session
             // delivered; what the client says about itself is not consulted, and a

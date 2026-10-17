@@ -17,7 +17,7 @@
 //! deterministic input defaults. Timing values must fit the signed Wayland seat
 //! protocol representation; zero repeat rate disables repeat.
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Default width of an output, in pixels.
 const DEFAULT_WIDTH: i32 = 1280;
@@ -79,7 +79,7 @@ const MASTER_COUNT_MIN: u32 = 1;
 const GAP_MIN: i32 = 0;
 
 /// Everything `compositor.toml` describes.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct CompositorConfig {
     /// Outputs to create, in the order they should be matched.
@@ -105,7 +105,7 @@ pub struct CompositorConfig {
 ///
 /// An entry with no `position` is placed by the compositor automatically, to the
 /// right of everything already placed (ADR 0019).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OutputConfig {
     /// Connector to match, for example `HDMI-A-1`. `None` matches the outputs
@@ -151,7 +151,7 @@ impl Default for OutputConfig {
 /// origin, or above it, is ordinary. Both fields are checked while the file is
 /// parsed, and each is limited to ±4194304 logical pixels: far beyond any real
 /// arrangement, while leaving the compositor room to add them up safely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Position {
     /// Horizontal offset in logical pixels, between -4194304 and 4194304.
@@ -166,7 +166,7 @@ pub struct Position {
 ///
 /// Keyboard timing must fit the signed seat protocol fields (0..=i32::MAX).
 /// Device-specific support for tap/scroll settings is checked by the real backend.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct InputConfig {
     /// Trusted input method executable and arguments for the next physical session.
@@ -210,7 +210,7 @@ impl Default for InputConfig {
 /// value is a parse error naming the field rather than a silent correction
 /// (ADR 0009, decision 4): a master ratio outside 10..=90, a master count below
 /// 1 and a negative gap are all rejected by [`crate::store::InoxConfig::load`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LayoutConfig {
     /// Percentage of the work area width assigned to the master column,

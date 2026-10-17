@@ -148,7 +148,7 @@ L4  inox-session, inox-idle, inox-greet
   path 依赖必须带显式 `version`，否则其隐式 `*` 会被 `deny.toml` 的 `[bans] wildcards = "deny"` 判为通配符依赖而失败。**禁止**再对 Inox crate 使用 git 依赖或 `tag` 锁定。
 - 第三方依赖同样只在 `[workspace.dependencies]` 声明版本，成员用 `{ workspace = true }` 引用并按需追加自己的 feature。版本升级只改这一处；禁止成员各自绑定不同版本。
 - 工作区**外部**的依赖仍必须锁定 `tag` 或 `rev`；禁止使用未锁定的 `branch = "main"`。
-- MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一取值（当前 1.86）：成员一律 `rust-version.workspace = true`，不得各自声明。
+- MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一取值（当前 1.89）：成员一律 `rust-version.workspace = true`，不得各自声明。
 - 新增依赖需在 PR 描述中说明用途与许可证；优先选择已有生态中被广泛使用的 crate。
 - 不随意升级 major 版本；升级需跑通 CI 并说明破坏性影响。
 - 依赖安全：`cargo deny check`（许可证 + RUSTSEC 漏洞 + 重复版本）针对**完整依赖图**必须通过。

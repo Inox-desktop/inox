@@ -23,7 +23,7 @@
 - **对外契约（不可轻改）**：`Field` 的 `path()` 必须始终是 `inox-config` 解析错误里用的点号路径；`validate` 的规则必须镜像 `inox-config` 而不是自行发明（`tests/workflow.rs` 用真实解析器逐条核对边界）；`apply` 的陈旧回执必须被丢弃。
 - **`document::patch` 必须认出 TOML 允许的每一种键写法**：裸键、引号键、点号键、内联表成员、引号表头（含 `[[表]]` 形式的表头，按表读以免再造一个同名表）。漏认一种，同一个键就会被写第二遍——那份配置 `inox-config` 读不回来，而窗口还会说它保存成功。删掉任何一种识别路径都必须同时删掉对应的 `document.rs` 单元测试与 `tests/workflow.rs` 的回读用例。
 - **键盘只能落在窗口画为可用的控件上**：`view_model::focus_order` 只收 `enabled` 的控件（禁用控件不画焦点，落上去等于键盘落在空处），`app::State::activate` 对已离开该序列的目标不执行任何事。写盘在途时不存在能撤销它的动作：`Cancel` 不可用（写明原因），`app::State::cancel` 也拒绝在途请求——取消不能阻止一次已经在写的保存。
-- 本 crate 是**普通 `xdg-shell` 窗口**，不是 layer-shell 客户端，因此不需要放置策略。缺失的是到各组件的传输，启动时以 `tracing::warn!` 说明（ADR 0018）。
+- 本 crate 是**普通 `xdg-shell` 窗口**，不是 layer-shell 客户端，因此不需要放置策略。配置应用传输由二进制 `live.rs` 通过会话 D-Bus 执行，只有当前代次与语义快照都匹配才确认；窗口服务与 layer-shell 的限制仍按 ADR 0018 报告。
 
 ## 主要依赖
 
@@ -73,6 +73,8 @@ crates/inox-settings/
     view.rs        iced 控件与布局几何
     theme.rs       令牌 → iced 主题与样式（ADR 0018 允许的每组件一份）
     i18n.rs        Fluent 目录装配
+    live.rs        受影响消费方选择、保存后冲突检测与 D-Bus 回读
+    bin/inoxctl.rs 手工配置重载入口
     main.rs        日志、配置、目录，以及执行 OutgoingCommand 的运行时
   i18n/en-US/settings.ftl, i18n/zh-CN/settings.ftl
   tests/          render.rs, workflow.rs, catalog.rs, support/mod.rs

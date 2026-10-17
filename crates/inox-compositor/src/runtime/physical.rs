@@ -83,6 +83,7 @@ pub(super) struct PhysicalState {
 }
 
 pub(super) struct Prepared {
+    pub(super) configuration: InoxConfig,
     pub(super) outputs: Vec<OutputDescriptor>,
     pub(super) input: InputConfig,
     pub(super) theme: Theme,
@@ -130,6 +131,7 @@ pub(super) fn prepare() -> Result<Prepared, RunError> {
         InputDevices::new(session.clone(), config.compositor.input.clone()).map_err(failure)?;
 
     Ok(Prepared {
+        configuration: config.clone(),
         layout: crate::layout::LayoutConfig {
             master_ratio: config.compositor.layout.master_ratio,
             master_count: config.compositor.layout.master_count as usize,
@@ -903,5 +905,15 @@ pub(super) fn shutdown(handle: &Handle, data: &mut CalloopData) {
         if let Some(token) = session_token {
             handle.remove(token);
         }
+    }
+}
+
+pub(super) fn apply_input(
+    data: &mut CalloopData,
+    config: inox_config::InputConfig,
+) -> Result<(), String> {
+    match data.physical.as_mut() {
+        Some(physical) => physical.input.reconfigure(config),
+        None => Ok(()),
     }
 }

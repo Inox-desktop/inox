@@ -19,7 +19,7 @@
   `src/backend/drm.rs::create_renderer` 新增物理 GPU 的 `EGLDisplay::new` / `GlesRenderer::new` 最小胶水，仍只在命名函数局部 `allow` 并有 SAFETY 注释。`DrmDevice::new`、`GbmDevice::new`、libinput udev 构造与 fd 转换均使用安全 API。ADR 0012 已在 2026-10-17 当前开发会话获人类批准，取代 ADR 0010 的预授权数量/API 假设；不得把文件白名单读作任意 unsafe 的授权。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`；面向 CLI 的输出（如 `--help`）用显式 stdout 写入。
-- MSRV：工作区统一为 `[workspace.package] rust-version = "1.86"`（`smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86），本 crate 通过 `rust-version.workspace = true` 继承。工作区内不再存在两个 MSRV。
+- MSRV：工作区统一为 `[workspace.package] rust-version = "1.89"`（zbus 6 的下限，ADR 0027），本 crate 通过 `rust-version.workspace = true` 继承。工作区内不再存在两个 MSRV。
 - 工作区内依赖：`inox-common`、`inox-config` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源（ADR 0002 规则 4）。
   - **注意 `inox-compositor -> inox-protocols` 是 L2 → L2 的同层边**：ADR 0002 规则 1 禁止同层依赖，而协议集中到 `inox-protocols`（规则 4）又要求它。该边已登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`，规则 1 的裁决（层内顺序）尚未完成。
 - **`test-input` feature（默认关闭）**：`--test-input <PATH>` 只在启用该 feature 的构建里存在，用于让端到端测试驱动**正在运行的合成器进程**（`key`/`motion`/`button`/`dump-frame`，见 `src/test_input.rs`）。约束：默认构建必须直接以 `ConfigError` 拒绝该选项；该通道**不得**成为 Wayland 全局、不得自动启用、不得暴露除「向调用者指定 socket 写命令」以外的能力。修改它时必须同步 `README.md`、本文件与模块文档。

@@ -6,37 +6,27 @@
 //! machine the unit tests drive is the one a user drives — there is no second
 //! implementation of "write the file" or "ask the component" anywhere.
 //!
-//! One thing about how this binary runs today is deliberate and is logged at
-//! startup rather than implied: **there is no transport to the components.** A
-//! change can be written to the configuration files, and nothing in this
-//! milestone can tell the compositor, the shell or the notification daemon to
-//! apply it (ADR 0018). The window reports exactly that — saved, not in effect
-//! — instead of showing a success it cannot substantiate.
-
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use iced::Task;
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use inox_settings::app::{self, Message, OutgoingCommand, SaveRequest, State};
+use inox_settings::apply::Generation;
 use inox_settings::document::Documents;
+use inox_settings::draft::Field;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+mod live;
 use inox_settings::{i18n, persist, theme};
 
 /// The size the window opens at, which is the size acceptance Q02 snapshots are
 /// taken at.
 const WINDOW_SIZE: (f32, f32) = (1280.0, 720.0);
-
-/// Why a component could not be asked to apply a change.
-///
-/// A constant rather than a sentence built here: it is data handed to the
-/// status line, which renders it inside a localized message (root `AGENTS.md`
-/// §7.3).
-const NO_TRANSPORT: &str = "there is no transport from the settings application to this \
-     component in this milestone (ADR 0018)";
 
 fn main() -> Result<()> {
     initialise_logging()?;
@@ -62,18 +52,12 @@ fn main() -> Result<()> {
         theme = %config.theme.name,
         "starting Inox settings"
     );
-    warn!(
-        "ADR 0018: no transport to the compositor, the shell or the notification daemon \
-         exists in this milestone, so a change is written to the configuration files and \
-         reported as saved but not confirmed to be in effect"
-    );
-
     let documents = Documents::open(&config, &paths)
         .context("reading the configuration files this window can write")?;
 
     let runtime = Runtime {
-        config: config.clone(),
         paths: paths.clone(),
+        changes: RefCell::new(BTreeMap::new()),
     };
 
     // iced asks for the initial state through a factory, so the window's pieces
@@ -117,8 +101,8 @@ fn main() -> Result<()> {
 /// reads the same directory the window opened — a `[components]` path the user
 /// pointed elsewhere is honoured rather than silently replaced by the default.
 struct Runtime {
-    config: InoxConfig,
     paths: ConfigPaths,
+    changes: RefCell<BTreeMap<Generation, BTreeSet<Field>>>,
 }
 
 impl Runtime {
@@ -129,16 +113,24 @@ impl Runtime {
             state
                 .take_outgoing()
                 .into_iter()
-                .map(|command| self.perform(command)),
+                .map(|command| self.perform(state, command)),
         );
 
         Task::batch(tasks)
     }
 
     /// Carries out one command.
-    fn perform(&self, command: OutgoingCommand) -> Task<Message> {
+    fn perform(&self, state: &State, command: OutgoingCommand) -> Task<Message> {
         match command {
             OutgoingCommand::Save(request) => {
+                // The state machine serializes saves; keep only the current generation.
+                let mut changes = self.changes.borrow_mut();
+                changes.retain(|generation, _| *generation == request.generation);
+                changes
+                    .entry(request.generation)
+                    .or_default()
+                    .extend(request.fields.iter().copied());
+                drop(changes);
                 let SaveRequest {
                     generation,
                     file,
@@ -167,18 +159,24 @@ impl Runtime {
                 generation,
                 component,
             } => {
-                warn!(
-                    component = component.label_id(),
-                    generation = generation.get(),
-                    "no transport exists to apply the configuration; the change stays saved \
-                     but is not confirmed to be in effect"
-                );
-
-                Task::done(Message::ComponentUnreachable {
-                    generation,
-                    component,
-                    reason: NO_TRANSPORT.to_owned(),
-                })
+                let paths = self.paths.clone();
+                let documents = state.documents().clone();
+                let expected = state.draft().settings().clone();
+                let changes = self.changes.borrow();
+                let fields = changes
+                    .get(&generation)
+                    .or_else(|| changes.values().next())
+                    .cloned()
+                    .unwrap_or_default();
+                drop(changes);
+                Task::perform(
+                    async move {
+                        live::apply(
+                            &paths, &documents, &expected, &fields, generation, component,
+                        )
+                    },
+                    std::convert::identity,
+                )
             }
             OutgoingCommand::Reload => self.reload(),
         }
@@ -187,7 +185,7 @@ impl Runtime {
     /// Reads the configuration and the three files again.
     fn reload(&self) -> Task<Message> {
         let paths = self.paths.clone();
-        let appearance = self.config.root.theme.appearance;
+        let appearance = Appearance::System;
 
         Task::perform(
             async move {
@@ -299,7 +297,6 @@ impl DisplayEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inox_settings::apply::Component;
 
     fn env(wayland: Option<&str>, runtime: Option<&str>, x11: Option<&str>) -> DisplayEnv {
         DisplayEnv {
@@ -365,24 +362,5 @@ mod tests {
     #[test]
     fn the_window_opens_at_the_size_the_snapshots_use() {
         assert_eq!(WINDOW_SIZE, (1280.0, 720.0));
-    }
-
-    #[test]
-    fn the_answer_to_an_apply_command_says_the_component_could_not_be_reached() {
-        // The runtime has nothing else it can honestly say: it cannot ask, so
-        // it reports that, and the window shows the change as saved but not in
-        // effect (ADR 0018).
-        let answer = Message::ComponentUnreachable {
-            component: Component::Shell,
-            generation: inox_settings::apply::Generation::new(1),
-            reason: NO_TRANSPORT.to_owned(),
-        };
-
-        match answer {
-            Message::ComponentUnreachable { reason, .. } => {
-                assert!(reason.contains("ADR 0018"), "reason `{reason}`");
-            }
-            other => panic!("expected a reachability failure, got {other:?}"),
-        }
     }
 }

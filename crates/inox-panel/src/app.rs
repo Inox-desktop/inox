@@ -102,6 +102,19 @@ pub struct State {
 }
 
 impl State {
+    /// Applies validated preferences and catalogs without discarding tasks or tray items.
+    pub fn apply_configuration(
+        &mut self,
+        config: PanelConfig,
+        tokens: Tokens,
+        localizer: Rc<Localizer>,
+    ) {
+        self.config = config;
+        self.tokens = tokens;
+        self.localizer = localizer;
+        self.refresh_clock();
+    }
+
     /// A panel with no data yet.
     ///
     /// It starts connected to nothing, and asks for a snapshot before anything
@@ -630,6 +643,27 @@ mod tests {
         );
 
         state
+    }
+
+    #[test]
+    fn live_configuration_preserves_windows_and_refreshes_clock_theme_and_locale() {
+        let mut state = connected();
+        let before = state.tasks().windows().count();
+        let locale = inox_common::i18n::Locale::parse("zh-CN").expect("locale");
+        let mut config = state.config.clone();
+        config.height = 48;
+        config.show_clock = false;
+        let tokens = Tokens::builtin_light();
+        state.apply_configuration(
+            config.clone(),
+            tokens.clone(),
+            Rc::new(crate::i18n::load(&locale).expect("catalog")),
+        );
+        assert_eq!(state.config(), &config);
+        assert_eq!(state.tokens(), &tokens);
+        assert_eq!(state.tasks().windows().count(), before);
+        assert!(state.clock().is_none());
+        assert_eq!(state.localizer().locale(), &locale);
     }
 
     #[test]
