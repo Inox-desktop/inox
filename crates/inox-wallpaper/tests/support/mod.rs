@@ -199,16 +199,25 @@ pub fn dump(scenario: &str, pixels: Vec<u8>, size: Size<f32>) -> Vec<u8> {
 
     let width = size.width as u32;
     let height = size.height as u32;
+
+    // The directory is created here rather than by the caller: CI points the
+    // variable at a path that does not exist yet, and a `save` into a missing
+    // directory fails with ENOENT — which, reported as a warning inside a
+    // passing test, is invisible. The failures below are therefore panic-worthy:
+    // when the variable is set, producing the artefact *is* what the helper was
+    // asked to do, and a test that claims Q02 evidence it did not write is worse
+    // than one that fails.
+    std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
+        panic!("the snapshot directory {directory} cannot be created: {error}")
+    });
     let path = std::path::Path::new(&directory).join(format!("inox-wallpaper-{scenario}.png"));
 
-    match image::RgbaImage::from_raw(width, height, pixels.clone()) {
-        Some(image) => {
-            if let Err(error) = image.save(&path) {
-                tracing::warn!(path = %path.display(), %error, "the screenshot was not written");
-            }
-        }
-        None => tracing::warn!(scenario, "the pixel buffer was not the size it claimed"),
-    }
+    let image = image::RgbaImage::from_raw(width, height, pixels.clone()).unwrap_or_else(|| {
+        panic!("{scenario}: the pixel buffer is not {width}x{height} as it claimed")
+    });
+    image
+        .save(&path)
+        .unwrap_or_else(|error| panic!("the snapshot {} was not written: {error}", path.display()));
 
     pixels
 }
