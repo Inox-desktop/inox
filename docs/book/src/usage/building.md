@@ -1,6 +1,6 @@
 # 构建与运行
 
-> **这不是一份「安装桌面环境」的指南。** Inox 目前只有 headless 合成器可以运行，还没有会话管理器或显示管理器；七个 L3 组件（Shell 框架、面板、启动器、通知、设置、锁屏、壁纸）已经实现并且可以构建和启动，但它们还不是 layer-shell 客户端、也还没有人监督它们启动，因此**屏幕上看不到一个可用的桌面**。X11 应用可以在 Inox 会话内运行（XWayland 由外部 `xwayland-satellite` 提供），但同样只在离屏缓冲中渲染。本页说明今天可以构建并运行什么，以及哪些能力尚不存在。
+> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；L3 目前以普通窗口运行，layer-shell 客户端与完整服务 ready 尚未接线。真实登录、安全锁屏和挂起仍受认证/权限审查与协议实现阻塞。本页说明可运行路径及其限制。
 
 ## 今天能跑到什么程度
 
@@ -10,11 +10,24 @@
 | 在物理显示器上看到画面 | **不行**：没有 DRM/KMS 后端，输出是逻辑输出，渲染到离屏缓冲 |
 | 用真实键盘/鼠标操作 | **不行**：没有 libinput/udev 后端；输入事件只能由测试注入（M3 起经测试专用套接字，需 `test-input` feature 构建） |
 | 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件都已实现，`cargo run -p inox-panel` 会打开一个普通窗口；由于合成器尚未广告 `zwlr_layer_shell_v1` 且 `iced_layershell` 当前无法编译（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)），它们**不是** layer-shell 客户端，放置策略只被建模与测试、未被应用；`inox-lock` 会以可读错误非零退出（协议腿与认证边界未实现） |
-| 登录会话 | **不行**：`inox-session`、`inox-idle`、`inox-greet` 仍是骨架（计划 M5） |
+| 启动与监督会话 | **部分可以**：`inox-session` 能启动合成器及桌面组件，提供有限重启、故障隔离和注销；尚无完整服务 ready，也未接入 XWayland 的 DISPLAY 发布 |
+| 真实登录、自动锁定与挂起 | **不行**：`inox-greet` 默认拒绝认证，只有显式预览；`inox-idle` 有协议客户端与策略，但 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线 |
 | 锁定会话、收发通知 | **不行**：`inox-lock` 的状态机与凭据处理、`inox-notifications` 的队列与脱敏策略都已实现并有测试，但前者缺 `ext-session-lock-v1` 客户端与认证边界（ADR 0015 要求人类安全审查），后者缺 D-Bus 服务（属 M5） |
 | 运行 X11 应用 | **可以，但看不到画面**：合成器已广告 satellite 所需的宿主协议（含 `wp_viewporter`），`inox-xwayland` 可在会话中启动并监督它；运行时需自备 `xwayland-satellite`（≥ v0.8.3）与 `Xwayland` |
 | 剪贴板与拖放 | **可以（仅限 headless 内）**：剪贴板读取权跟随键盘焦点；Wayland↔Wayland 拖放与 X11 内部拖放可用；跨 X11/Wayland 边界的拖放**不可用**（上游 satellite 未实现 XDND） |
 | 构建本站点 | **可以**：`mdbook build` |
+
+## L4 会话入口
+
+使用同一次 CI 产出的完整二进制目录，在当前用户私有的 `XDG_RUNTIME_DIR` 下运行：
+
+```bash
+dbus-run-session -- /path/to/bin/inox-session --headless
+```
+
+`--headless` 显式选择软件渲染；省略它会要求真实设备后端。`--bin-dir PATH` 可以选择另一套完整二进制，默认使用 session 自身所在目录。SIGINT/SIGTERM 请求注销；`--exit-after-seconds N` 从启动时开始计时，到期请求正常注销。合成器故障会结束会话，不恢复已断开的应用连接。`inox-idle` 是可选服务，宿主缺少空闲协议时会有限重试后报告退化。
+
+在可用 Wayland 宿主中，`inox-greet --preview` 打开普通预览窗口；它不采集密码、不认证、不启动用户会话。安全接线与证据边界见 [ADR 0021](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0021-l4-session-services.md)。
 
 ## 前置条件
 

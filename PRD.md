@@ -540,6 +540,8 @@ O02/O03 的虚拟拓扑、几何与像素证据由 `crates/inox-compositor/tests
 
 ---
 
+L4 首版实现边界见 [ADR 0021](docs/adr/0021-l4-session-services.md)：会话监督、标准空闲通知客户端、登录状态模型与预览已经提供；完整服务 ready、真实认证、安全锁屏及 logind 挂起仍待审查/实现，不能视为 M5 验收通过。
+
 ## 14. 风险与缓解
 
 | 风险 | 影响 | 缓解 |

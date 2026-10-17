@@ -67,6 +67,7 @@ proposed ──► accepted ──► superseded
 | [0018](./0018-l3-component-architecture.md) | L3 组件的独立性、共享 UI 边界与 layer-shell 宿主 | proposed | 2026-10-16 |
 | [0019](./0019-multi-output-topology-and-multi-gpu.md) | 多输出拓扑、按输出的帧生命周期与多 GPU 设备模型 | proposed | 2026-10-17 |
 | [0020](./0020-fractional-scaling.md) | 分数缩放采用 `wp_fractional_scale_v1` 与按输出的缓冲区像素 | proposed | 2026-10-17 |
+| [0021](./0021-l4-session-services.md) | L4 会话监督、空闲策略与登录边界的首版实现 | proposed | 2026-10-17 |
 
 ## 既有提案的复核与实施阻塞
 

@@ -12,7 +12,7 @@
 | **M2.5** | 真实输出、输入与设备生命周期 | `inox-compositor` | CI 后端覆盖 + 人类真机（O01/O04、H01 建档），不以 headless 代真机 | 单输出物理后端已实现，CI 验证逻辑边界；E4 真机验收未执行 |
 | **M3** | XWayland 集成、剪贴板、拖放 | `inox-xwayland`、`inox-compositor` | 真实 X11 往返/输入、双向 MIME、拖放接受/取消与异常退出（X01–X03） | **已实现**（ADR 0017 仍为 `proposed`）：Inox 会话内的 X11 客户端、焦点跟随剪贴板、Wayland↔Wayland 拖放与真实 X11 往返就绪判定均已落地；跨 X11/Wayland 边界的拖放被上游阻塞，X03 仅部分交付 |
 | **M4** | Iced Shell：面板、启动器、设置 | L3 组件、`inox-compositor`、`inox-config` | W05、O02–O03、D01–D05、C01–C03、Q01–Q03 | **部分交付**：七个 L3 组件与 `shell.toml`/`notifications.toml`/`[locale]` 已实现（E0/E1 + 离屏渲染）；L3 的 Iced layer 客户端与 GUI 驱动证据仍阻塞 E2/E3，W05/O02–O03 与 D01–D05、Q01–Q03 的宿主侧证据均未取得。见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md) |
-| **M5** | 会话管理、锁屏、通知、日常可用 | `inox-session`、`inox-idle`、`inox-lock`、`inox-notifications` | D06、S01–S05、H02 | 未开始 |
+| **M5** | 会话管理、锁屏、通知、日常可用 | `inox-session`、`inox-idle`、`inox-lock`、`inox-notifications` | D06、S01–S05、H02 | 部分实现：L4 监督、空闲与登录模型；真实认证/锁屏/挂起及完整服务 ready 待审查和验证（ADR 0021） |
 | **M6** | 发布候选：集成测试、性能、打包 | `inox-integration` 与全部 crate | C04、P01–P05、H01–H03、L01–L03 | 未开始 |
 
 验收标准的完整前置、断言与证据要求见[验收规范](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md)；本表只概括，不维护第二份标准。

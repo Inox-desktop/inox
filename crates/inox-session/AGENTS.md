@@ -15,7 +15,7 @@
 
 ## 主要依赖
 
-`anyhow`, `tracing`, `tracing-subscriber`
+`anyhow`, `tracing`, `tracing-subscriber`；`calloop`、`rustix`、`wayland-client`、`inox-common`、`inox-config`、`inox-protocols`、`thiserror`。
 
 ## 命令
 
@@ -38,7 +38,8 @@
 
 - 纯逻辑必须有单元测试（`#[cfg(test)]`）。
 - 测试代码不受“禁止 unwrap/expect/panic”约束。
-- M0 骨架阶段暂无业务逻辑，测试随功能里程碑补充。
+- 监督/策略/登录状态与边界失败必须有测试；证据以 CI 为准，限制见 ADR 0021。
+- 真实认证、锁屏与挂起接线必须先满足 ADR 0015 的人类安全审查前提。
 
 ## 目录结构
 

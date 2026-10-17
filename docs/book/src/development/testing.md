@@ -79,7 +79,7 @@ let pixels = Headless::screenshot(&mut renderer, Size::new(1280, 32), 1.0, Color
 | `inox-config` | 默认值、解析、字段路径与行列定位、范围校验、主题解析与 `ConfigStore` 热重载的单元测试（含「重载失败保留旧值」） |
 | `inox-protocols` | `tests/standard_bindings.rs` 断言再导出的接口名与版本；`tests/ipc_roundtrip.rs` 在真实连接上跑私有协议的往返 |
 | L3 组件（七个） | 纯逻辑的单元测试 + `proptest` 属性测试（导航栈、快照/请求代次、任务分组是划分、缩放几何、搜索排序、通知队列的终态、锁状态机的安全不变量）；每个组件的 `tests/catalog.rs` 用 `compare_catalogs` 钉住 `en-US`/`zh-CN` 的 id 与占位符；六个有界面的组件另有 `tests/render.rs`（离屏渲染的像素与事件断言，见上一节） |
-| L4 组件（`inox-session`、`inox-idle`、`inox-greet`） | 仍是骨架，尚无业务逻辑可测 |
+| L4 组件（`inox-session`、`inox-idle`、`inox-greet`） | 重启预算、进程组/注销/目录清理、Wayland 线协议 idle 通知、锁前挂起与登录状态；greeter 双主题/语言/字号离屏渲染；独立 CI job 验证真实 Inox headless 启动/注销。认证、锁屏与挂起 E3/E4 尚未完成 |
 | 本站点（`docs/book/`） | 无单元测试要求。文档正确性由 CI 的 `book` job（`mdbook build`）保证，站点结构由 `SUMMARY.md` 与实际章节文件的一致性约束 |
 
 ## 新增行为时的要求
