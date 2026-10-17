@@ -102,7 +102,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::CompositorConfig,
-    input::{Action, action_for_key},
+    input::{Action, SwallowedPresses, action_for_key},
     layout::LayoutConfig,
     render::{HeadlessRenderer, RenderError},
     workspace::{WindowId, Workspace},
@@ -183,6 +183,11 @@ pub struct InoxState {
     work_area: Rectangle<i32, Logical>,
     /// Last location reported for the pointer, in workspace coordinates.
     pointer_location: Point<f64, Logical>,
+
+    /// Which bound chords this compositor has already swallowed the press of.
+    ///
+    /// See [`InoxState::inject_key`] for why the press has to be remembered.
+    swallowed_presses: SwallowedPresses,
 
     renderer: HeadlessRenderer,
     /// Monotonic origin the frame callbacks are timed against.
@@ -270,6 +275,7 @@ impl InoxState {
             layout: LayoutConfig::default(),
             work_area,
             pointer_location: Point::from((0.0, 0.0)),
+            swallowed_presses: SwallowedPresses::default(),
             renderer,
             start_time: Instant::now(),
             frames_rendered: 0,
@@ -431,17 +437,17 @@ impl InoxState {
     /// Feed a key press or release into the seat.
     ///
     /// Returns the compositor [`Action`] the key resolved to, or `None` when the
-    /// event was not bound and was forwarded to the focused client.
+    /// event was not bound (and was forwarded to the focused client) or when the
+    /// release of a swallowed chord arrived.
     ///
-    /// Smithay runs the filter for a release exactly as it does for a press, so a
-    /// bound chord is swallowed in both directions and acted on once, on the
-    /// press. Acting on the release as well would run the binding twice — the
-    /// focus would move forward and straight back — and forwarding only the
-    /// release would hand the client half of a chord it never saw begin.
+    /// Smithay runs the filter for a release exactly as it does for a press, and it
+    /// resolves the binding from the modifier state of the moment, which can change
+    /// between the two halves of one chord. So the press decides whether the chord is
+    /// the compositor's, [`SwallowedPresses`] carries that decision to the release, and
+    /// only a press can trigger an [`Action`].
     pub fn inject_key(&mut self, keycode: Keycode, state: KeyState) -> Option<Action> {
         let keyboard = self.keyboard.clone();
         let serial = SERIAL_COUNTER.next_serial();
-        let pressed = matches!(state, KeyState::Pressed);
 
         let action = keyboard
             .input(
@@ -450,9 +456,20 @@ impl InoxState {
                 state,
                 serial,
                 0,
-                |_, modifiers, keysym| match action_for_key(keysym.modified_sym(), modifiers) {
-                    Some(action) => FilterResult::Intercept(pressed.then_some(action)),
-                    None => FilterResult::Forward,
+                |data, modifiers, keysym| {
+                    let action = match state {
+                        KeyState::Pressed => action_for_key(keysym.modified_sym(), modifiers),
+                        KeyState::Released => None,
+                    };
+
+                    if data
+                        .swallowed_presses
+                        .swallow(keycode, state, action.is_some())
+                    {
+                        FilterResult::Intercept(action)
+                    } else {
+                        FilterResult::Forward
+                    }
                 },
             )
             .flatten();
@@ -600,10 +617,17 @@ impl InoxState {
             .map(Cow::into_owned);
 
         // The selection protocols follow the keyboard focus: a client is only offered the
-        // clipboard (and only allowed to set one) while it is focused, and clearing the
-        // focus with `None` takes the offer away again. This is what makes the X11
-        // clipboard bridge work: `xwayland-satellite` is an ordinary Wayland client, so
-        // the focus handed to it here is the only thing that lets X11 selections through.
+        // clipboard (and only allowed to set one) while it is focused. This is what makes
+        // the X11 clipboard bridge work: `xwayland-satellite` is an ordinary Wayland
+        // client, so the focus handed to it here is the only thing that lets X11
+        // selections through.
+        //
+        // What this buys is that an unfocused client is never *granted* the selection.
+        // Smithay does not revoke an offer a client already holds: `send_selection`
+        // only ever targets the newly focused client, so the client that lost the focus
+        // is sent nothing at all — not even when the focus is set to `None`. Dropping
+        // the offer is the client's own duty, and the protocol states it plainly
+        // ("the data_offer is valid ... until the client loses keyboard focus").
         let client = focused.as_ref().and_then(|surface| surface.client());
 
         let serial = SERIAL_COUNTER.next_serial();

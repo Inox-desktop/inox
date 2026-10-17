@@ -71,7 +71,7 @@ M3 的输入注入套接字（非默认 feature `test-input` + `--test-input <PA
 | X02 | M3 / 同上 | Wayland↔X11 及 Wayland↔Wayland 双向复制 UTF-8 文本、图像；source 退出、接收方拒绝、锁屏时读剪贴板 | 受支持 MIME 内容逐字节一致；不支持类型明确拒绝；异步传输可取消、无 FD 泄漏/事件循环阻塞；未授权或锁定客户端不可读取 | E2+E3；测试数据哈希、焦点/权限事件 |
 | X03 | M3 / 同上 | 拖放文本及 `text/uri-list` 文件 URI；测试 accept/drop、reject/cancel、目标销毁 | 每次拖放至多一次完成；取消无副作用；焦点/grab 清理；源与目标退出不拖垮会话 | E3；双端事件序列 |
 
-X02 的「锁屏时读剪贴板」断言**在 M3 不可验证**：`ext-session-lock-v1` 与 `inox-lock` 尚不存在，该断言移至 M5 的 S02（[ADR 0017](../adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。M3 交付的是它的结构性前提 —— 焦点门控的选区读取；这是延期，不是通过。
+X02 的「锁屏时读剪贴板」断言**在 M3 不可验证**：`ext-session-lock-v1` 与 `inox-lock` 尚不存在，该断言移至 M5 的 S02（[ADR 0017](../adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。M3 交付的是它的结构性前提 —— 焦点门控的选区**授予**（未获焦点的客户端不会被授予选区；撤销已发出的 offer 不在 M3 内，边界见该 ADR 第 2 条）；这是延期，不是通过。
 
 X03 的**跨 X11/Wayland 边界拖放腿被上游阻塞**：`xwayland-satellite` v0.8.3 未实现 XDND，该腿的 E3 用例延期（[ADR 0017](../adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。M3 的通过结论**不得声称该腿已通过**；已交付的是 Wayland↔Wayland 拖放与 X11 内部（X 客户端之间）拖放。
 

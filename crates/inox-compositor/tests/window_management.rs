@@ -45,6 +45,7 @@ const KEY_LEFT_ALT: u32 = 56 + 8;
 const KEY_LEFT_META: u32 = 125 + 8;
 const KEY_TAB: u32 = 15 + 8;
 const KEY_Q: u32 = 16 + 8;
+const KEY_LEFT_SHIFT: u32 = 42 + 8;
 
 /// The client's application state. It only needs the registry dispatch, because
 /// the test never reads events after the initial roundtrip.
@@ -201,6 +202,32 @@ fn manages_client_windows_and_input() {
         "releasing the bound key must not run the binding a second time"
     );
     state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Released);
+
+    // Alt+Shift+Tab walks the focus back. `Shift` moves `Tab` to its second level,
+    // which the seat reports as `ISO_Left_Tab` rather than `Tab` — so a binding that
+    // matched only `Tab` would leave this direction unreachable.
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_LEFT_SHIFT), KeyState::Pressed),
+        None
+    );
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Pressed),
+        None
+    );
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_TAB), KeyState::Pressed),
+        Some(inox_compositor::Action::FocusPrev)
+    );
+    assert_eq!(state.focused_window(), Some(master));
+
+    state.inject_key(Keycode::new(KEY_TAB), KeyState::Released);
+    state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Released);
+    state.inject_key(Keycode::new(KEY_LEFT_SHIFT), KeyState::Released);
+    assert_eq!(
+        state.focused_window(),
+        Some(master),
+        "releasing the chord must not move the focus again"
+    );
 
     // Super+Q asks the compositor to shut down cleanly.
     assert_eq!(
