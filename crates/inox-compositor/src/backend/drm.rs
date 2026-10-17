@@ -411,6 +411,7 @@ impl DrmBackend {
         if let Some(scanout) = &mut self.scanout {
             scanout.buffers.reset_buffers();
             scanout.damage = OutputDamageTracker::from_output(&scanout.output);
+            scanout.scene_damage = OutputDamageTracker::from_output(&scanout.output);
             scanout.in_flight = None;
         }
     }
