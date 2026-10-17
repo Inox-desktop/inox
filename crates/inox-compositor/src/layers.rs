@@ -164,7 +164,7 @@ mod tests {
         #[test]
         fn arbitrary_geometry_has_positive_representable_endpoints(
             width in 1i32..16384, height in 1i32..16384,
-            requested_width in any::<i32>(), requested_height in any::<i32>(),
+            requested_width in 0i32..=i32::MAX, requested_height in 0i32..=i32::MAX,
             bits in 0u32..16, top in any::<i32>(), right in any::<i32>(),
             bottom in any::<i32>(), left in any::<i32>(),
         ) {

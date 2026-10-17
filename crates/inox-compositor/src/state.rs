@@ -61,7 +61,10 @@ use inox_protocols::{
         core::server::{
             wl_buffer::WlBuffer, wl_output::WlOutput, wl_seat::WlSeat, wl_surface::WlSurface,
         },
-        wlr::layer_shell::server::zwlr_layer_surface_v1,
+        wlr::layer_shell::server::{
+            zwlr_layer_shell_v1::ZwlrLayerShellV1,
+            zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
+        },
     },
 };
 use smithay::{
@@ -106,7 +109,8 @@ use smithay::{
         shell::{
             wlr_layer::{
                 KeyboardInteractivity, Layer, LayerSurface, LayerSurfaceCachedState,
-                LayerSurfaceConfigure, WlrLayerShellHandler, WlrLayerShellState,
+                LayerSurfaceConfigure, WlrLayerShellGlobalData, WlrLayerShellHandler,
+                WlrLayerShellState, WlrLayerSurfaceUserData,
             },
             xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         },
@@ -810,13 +814,18 @@ impl InoxState {
         let Some((surface, _)) = self.surface_under(self.pointer_location) else {
             return;
         };
-        if let Some(entry) = self
-            .layers
-            .iter()
-            .find(|entry| entry.mapped && entry.surface.wl_surface() == &surface)
-        {
+        if let Some(entry) = self.layers.iter().find(|entry| {
+            entry.mapped
+                && entry
+                    .surface
+                    .surface_under(
+                        self.pointer_location - entry.geometry.loc.to_f64(),
+                        WindowSurfaceType::ALL,
+                    )
+                    .is_some_and(|(target, _)| target == surface)
+        }) {
             if entry.surface.can_receive_keyboard_focus() {
-                self.layer_focus = Some(surface);
+                self.layer_focus = Some(entry.surface.wl_surface().clone());
             }
         } else if let Some(id) = self.window_id_for_surface(&surface) {
             self.layer_focus = None;
@@ -1353,7 +1362,46 @@ smithay::delegate_compositor!(InoxState);
 smithay::delegate_output!(InoxState);
 smithay::delegate_seat!(InoxState);
 smithay::delegate_xdg_shell!(InoxState);
-smithay::delegate_layer_shell!(InoxState);
+smithay::reexports::wayland_server::delegate_dispatch!(InoxState: [ZwlrLayerShellV1: ()] => WlrLayerShellState);
+smithay::reexports::wayland_server::delegate_global_dispatch!(InoxState: [ZwlrLayerShellV1: WlrLayerShellGlobalData] => WlrLayerShellState);
+
+impl Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData> for InoxState {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &ZwlrLayerSurfaceV1,
+        request: zwlr_layer_surface_v1::Request,
+        data: &WlrLayerSurfaceUserData,
+        handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        // Smithay 0.7 casts these unsigned protocol values to signed Size fields,
+        // whose constructor asserts nonnegative dimensions in debug builds.
+        if let zwlr_layer_surface_v1::Request::SetSize { width, height } = &request
+            && (*width > i32::MAX as u32 || *height > i32::MAX as u32)
+        {
+            resource.post_error(
+                zwlr_layer_surface_v1::Error::InvalidSize,
+                "layer dimensions exceed the supported coordinate range",
+            );
+            return;
+        }
+        <WlrLayerShellState as Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData, Self>>::request(
+            state, client, resource, request, data, handle, data_init,
+        );
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &ZwlrLayerSurfaceV1,
+        data: &WlrLayerSurfaceUserData,
+    ) {
+        <WlrLayerShellState as Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData, Self>>::destroyed(
+            state, client, resource, data,
+        );
+    }
+}
 smithay::delegate_shm!(InoxState);
 smithay::delegate_viewporter!(InoxState);
 smithay::delegate_data_device!(InoxState);

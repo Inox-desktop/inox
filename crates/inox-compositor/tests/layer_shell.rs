@@ -332,6 +332,38 @@ fn click(state: &mut InoxState, x: f64, y: f64) {
     state.inject_pointer_button(0x110, ButtonState::Released);
 }
 
+fn rejected(
+    display: &mut Display<InoxState>,
+    state: &mut InoxState,
+    peer: &mut Peer,
+    code: layer::Error,
+) {
+    peer.connection.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        display.dispatch_clients(state).unwrap();
+        display.flush_clients().unwrap();
+        if let Some(guard) = peer.connection.prepare_read() {
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(error))
+                    if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+        }
+        if peer.queue.dispatch_pending(&mut peer.state).is_err() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "invalid client was not rejected");
+    }
+    let error = peer
+        .connection
+        .protocol_error()
+        .expect("expected a protocol error");
+    assert_eq!(error.object_interface, "zwlr_layer_surface_v1");
+    assert_eq!(error.code, u32::from(code));
+}
+
 #[test]
 fn layers_render_reserve_focus_and_release_resources() {
     let event_loop: EventLoop<'static, ()> = EventLoop::try_new().unwrap();
@@ -445,29 +477,31 @@ fn layers_render_reserve_focus_and_release_resources() {
     unacked.surface.commit();
     configured(&mut display, &mut state, &mut invalid, 0);
     unacked.attach(&invalid, RED);
-    invalid.connection.flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        display.dispatch_clients(&mut state).unwrap();
-        display.flush_clients().unwrap();
-        if let Some(guard) = invalid.connection.prepare_read() {
-            match guard.read() {
-                Ok(_) => {}
-                Err(wayland_client::backend::WaylandError::Io(error))
-                    if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(_) => break,
-            }
-        }
-        if invalid.queue.dispatch_pending(&mut invalid.state).is_err() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "unacknowledged buffer was not rejected"
-        );
-    }
+    rejected(
+        &mut display,
+        &mut state,
+        &mut invalid,
+        layer::Error::InvalidSurfaceState,
+    );
     drop(unacked);
     drop(invalid);
+    let mut oversized = Peer::connect(&mut handle);
+    until(
+        &mut display,
+        &mut state,
+        &mut [&mut oversized],
+        |_, peers| peers[0].state.globals.contains_key("zwlr_layer_shell_v1"),
+    );
+    let huge = oversized.layer(0, shell::Layer::Overlay, None);
+    huge.role.set_size(u32::MAX, 20);
+    rejected(
+        &mut display,
+        &mut state,
+        &mut oversized,
+        layer::Error::InvalidSize,
+    );
+    drop(huge);
+    drop(oversized);
     assert_eq!(state.layer_count(), 3);
     pixel(&mut state, 20, 80, RED);
     pixel(&mut state, 1, 200, BLUE);
