@@ -80,6 +80,12 @@ smithay = { version = "0.7.0", default-features = false, features = [
 proptest = "1"
 tempfile = "3"
 serde_json = "1"
+# The M3 end-to-end tests in `inox-integration` drive a real X11 client
+# (`tests/support/x11_client.rs`). x11rb is the pure-Rust X11 client library
+# (MIT/Apache-2.0), so the tests need no external X11 command line tools for
+# their assertions. Its default feature set drives the `RustConnection`, which
+# links no libxcb.
+x11rb = "0.13"
 
 [workspace.lints.rust]
 # Root AGENTS.md §3.2. `inox-compositor` and `inox-xwayland` are the two

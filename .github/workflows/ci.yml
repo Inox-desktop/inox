@@ -179,6 +179,64 @@ jobs:
       - name: Headless end-to-end test
         run: INOX_XWAYLAND_E2E=1 cargo test -p inox-xwayland --all-features --test headless_x11_mapping -- --nocapture
 
+  m3-e2e:
+    name: M3 end-to-end (X11 interop)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The M3 job drives the real Inox compositor, which renders through
+      # EGL/GLES, so it needs the same system libraries as the `test` shards
+      # plus the X11 side: `xwayland` (spawned by xwayland-satellite),
+      # `x11-apps` for `xeyes` and `x11-utils` for `xwininfo`, and the xcb
+      # packages `clang` needs to build xwayland-satellite from source.
+      - uses: ./.github/actions/system-deps
+        with:
+          egl: "true"
+      - name: X11 and build dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            xwayland x11-apps x11-utils \
+            clang libxcb1 libxcb-cursor0 libxcb-cursor-dev pkg-config
+      # Same tag as the weston job: clipboard support needs >= v0.4, the
+      # UTF8_STRING alias and X11->Wayland INCR >= v0.5.1, primary selection
+      # >= v0.7 and Wayland->X11 INCR >= v0.8 (see ADR 0017).
+      - name: Install xwayland-satellite
+        run: cargo install --locked --git https://github.com/Supreeeme/xwayland-satellite --tag v0.8.3 xwayland-satellite
+      # A default-feature build must *reject* the test-only option rather than
+      # quietly accept it, and every other CI job builds with `--all-features`,
+      # so this is the only place that path is ever exercised. It runs before the
+      # feature build below because both write the same binary path.
+      - name: A default build rejects the test-only option
+        run: |
+          cargo build -p inox-compositor
+          if target/debug/inox-compositor --test-input /tmp/inox-must-be-rejected.sock 2>stderr.txt; then
+            echo "a default-feature build accepted --test-input" >&2
+            exit 1
+          fi
+          grep -q "test-input" stderr.txt || {
+            echo "the rejection did not name the option:" >&2
+            cat stderr.txt >&2
+            exit 1
+          }
+      # The tests drive the compositor and the XWayland service as processes and
+      # find them next to their own executable, so both binaries must be built
+      # first. `test-input` is the non-default, test-only input injection source
+      # the M3 tests need (ADR 0017 decision 7); it is inert without the flag.
+      - name: Build the binaries under test
+        run: |
+          cargo build --workspace --features inox-compositor/test-input
+      # E3 evidence (docs/quality/acceptance.md §1): a third-party host is not
+      # enough, so this runs the Inox compositor itself with a real X11 client,
+      # the satellite bridge and real Wayland clients.
+      - name: M3 interop end-to-end
+        env:
+          INOX_M3_E2E: "1"
+          # Also run the `xeyes`/`xwininfo` leg (a real X11 application).
+          INOX_M3_E2E_REAL_APPS: "1"
+        run: cargo test -p inox-integration --all-features -- --nocapture
+
   book:
     name: mdbook
     runs-on: ubuntu-latest

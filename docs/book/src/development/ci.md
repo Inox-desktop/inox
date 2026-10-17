@@ -9,13 +9,14 @@
 | job | 命令 | 作用 |
 |-----|------|------|
 | `fmt` | `cargo fmt --all -- --check` | 默认 rustfmt 配置，不允许自定义覆盖 |
-| `clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 零警告；因不链接而不安装系统库 |
+| `clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 零警告；不链接最终二进制，但依赖的构建脚本仍需要系统库（`libudev.pc` 等），因此与 `build`/`test` 一样安装 |
 | `deny` | `cargo deny check` | 许可证白名单、RUSTSEC 漏洞、重复版本，针对**完整依赖图** |
 | `doc` | `cargo doc --workspace --no-deps --all-features` | 配合 `RUSTDOCFLAGS=-D warnings`，缺失文档注释会失败 |
 | `build` | `cargo build --workspace --release --all-features` | 发布构建（安装链接所需系统库） |
 | `plan` | 由层级表推导测试矩阵 | 覆盖不全或矩阵为空即失败 |
 | `test` | `cargo test -p <crate> --all-features`，**每 crate 一个分片** | 失败可归因、可局部复现 |
 | `xwayland-e2e` | `INOX_XWAYLAND_E2E=1 cargo test -p inox-xwayland --test headless_x11_mapping` | X11 映射端到端（宿主为第三方 headless 合成器，仅 E2 等级） |
+| `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
 | `book` | `mdbook build docs/book` | 本站点构建 |
 
 触发条件：`push` 到 `main`、`pull_request`。**任一 job 失败即阻止合并**（分支保护的检查名需按新的 job 集合维护 —— 见 ADR 0016 实施记录中「尚未完成、需要人类动作」）。
@@ -35,6 +36,12 @@
 - **headless 集成测试**：验证输出创建、渲染（以离屏像素读回断言）、输入事件与干净退出；测试进程需要随时可用的私有 `XDG_RUNTIME_DIR`。
 
 各 crate 的 `AGENTS.md` 记录该 crate 特有的 CI 依赖与命令，以它们为准。
+
+## M3 端到端（E3）分片
+
+`m3-e2e` 是唯一在 **Inox 合成器自身**上跑的端到端 job：它先按 `--features inox-compositor/test-input` 构建工作区二进制，再运行 `inox-integration` 的 M3 用例。因此它需要三份额外的东西 —— 合成器的软件渲染依赖（与 `test` 分片相同，故复用 `system-deps` action 并开启 `egl`）、`xwayland`/`x11-apps`/`x11-utils`（`xeyes` 与 `xwininfo`）、以及构建 `xwayland-satellite` 所需的 `clang`/`libxcb*`。
+
+`test-input` 是**非默认** feature，只供该 job 使用：它给合成器加一个测试专用输入注入套接字（默认构建不含、默认运行关闭、不是 Wayland 全局），M3 的用例靠它切焦点、向 X11 窗口输入并进行指针拖放。用例以子进程方式驱动二进制，因此 `inox-integration` **不新增任何 Cargo 依赖边**，分片矩阵与 `graphics` 判定都不受影响。未设置 `INOX_M3_E2E` 时这些用例打印跳过并返回，所以常规的 `test (inox-integration)` 分片保持廉价、也不会因缺少 X11 工具而变红。
 
 ## 分层方向检查
 
