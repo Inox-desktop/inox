@@ -97,7 +97,7 @@ impl Endpoint {
 }
 
 pub(super) struct Host {
-    _connection: Option<zbus::blocking::Connection>,
+    _connection: Option<zbus::Connection>,
     receiver: std::cell::RefCell<Option<mpsc::Receiver<Request>>>,
 }
 impl Host {
@@ -142,10 +142,12 @@ impl Host {
                 }
             })?;
         started.recv()?;
-        let connection = zbus::blocking::connection::Builder::session()
-            .and_then(|builder| builder.name("org.inox.Panel"))
-            .and_then(|builder| builder.serve_at("/org/inox/Configuration", endpoint))
-            .and_then(|builder| builder.build());
+        let connection = zbus::block_on(
+            zbus::connection::Builder::session()
+                .name("org.inox.Panel")
+                .serve_at("/org/inox/Configuration", endpoint)
+                .build(),
+        );
         let connection = match connection {
             Ok(connection) => Some(connection),
             Err(error) => {
@@ -272,34 +274,42 @@ mod tests {
             std::os::unix::net::UnixStream::pair().expect("sockets");
         let guid = zbus::Guid::generate();
         let server = std::thread::spawn(move || {
-            zbus::blocking::connection::Builder::async_io_unix_stream(server_socket)
-                .server(guid)
-                .expect("guid")
-                .p2p()
-                .serve_at("/org/inox/Configuration", endpoint)
-                .expect("interface")
-                .build()
-                .expect("server")
+            zbus::block_on(
+                zbus::connection::Builder::unix_stream(server_socket)
+                    .server(guid)
+                    .p2p()
+                    .serve_at("/org/inox/Configuration", endpoint)
+                    .build(),
+            )
+            .expect("server")
         });
-        let client = zbus::blocking::connection::Builder::async_io_unix_stream(client_socket)
-            .p2p()
-            .method_timeout(Duration::from_secs(6))
-            .build()
-            .expect("client");
+        let client = zbus::block_on(
+            zbus::connection::Builder::unix_stream(client_socket)
+                .p2p()
+                .method_timeout(Duration::from_secs(6))
+                .build(),
+        )
+        .expect("client");
         let _server = server.join().expect("thread");
         let wanted = expected.clone();
         let (sent, result) = std::sync::mpsc::channel();
+        let (call, requests) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let proxy = zbus::blocking::Proxy::new(
+            let proxy = zbus::block_on(zbus::Proxy::new(
                 &client,
                 "org.inox.Panel",
                 "/org/inox/Configuration",
                 "org.inox.Configuration1",
-            )
+            ))
             .expect("proxy");
-            sent.send(proxy.call::<_, _, (u64, String)>("Reload", &(42u64, wanted)))
+            for () in requests {
+                sent.send(zbus::block_on(
+                    proxy.call::<_, _, (u64, String)>("Reload", &(42u64, wanted.clone())),
+                ))
                 .expect("send");
+            }
         });
+        call.send(()).expect("first reload");
         let deadline = Instant::now() + Duration::from_secs(5);
         let request = loop {
             if let Ok(request) = receiver.try_recv() {
@@ -324,5 +334,24 @@ mod tests {
             .expect("success");
         assert_eq!(generation, 42);
         assert_eq!(actual, expected);
+        std::fs::write(
+            dir.path().join("shell.toml"),
+            "[panel]\nheight = 'broken'\n",
+        )
+        .expect("invalid candidate");
+        call.send(()).expect("second reload");
+        let error = result
+            .recv_timeout(Duration::from_secs(6))
+            .expect("bounded rejection")
+            .expect_err("the consumer refuses malformed configuration");
+        assert!(
+            matches!(error, zbus::Error::FDO(ref error) if matches!(error.as_ref(), zbus::fdo::Error::Failed(reason) if reason.contains("panel.height"))),
+            "standard errors retain their typed rejection and field: {error:?}"
+        );
+        assert_eq!(
+            state.config().height,
+            48,
+            "a rejected D-Bus reload keeps the running preferences"
+        );
     }
 }

@@ -89,9 +89,11 @@ pub(super) fn apply(
             };
         }
     };
-    let connection = match zbus::blocking::connection::Builder::session()
-        .and_then(|b| b.method_timeout(Duration::from_secs(6)).build())
-    {
+    let connection = match zbus::block_on(
+        zbus::connection::Builder::session()
+            .method_timeout(Duration::from_secs(6))
+            .build(),
+    ) {
         Ok(connection) => connection,
         Err(error) => {
             return Message::ComponentUnreachable {
@@ -104,20 +106,20 @@ pub(super) fn apply(
     let mut unavailable = Vec::new();
     let mut rejected = Vec::new();
     for destination in destinations(component, fields) {
-        let result = (|| -> Result<(u64, String), zbus::Error> {
-            let proxy = zbus::blocking::Proxy::new(&connection, destination, PATH, INTERFACE)?;
-            proxy.call("Reload", &(generation.get(), &snapshot))
-        })();
+        let result: Result<(u64, String), zbus::Error> = zbus::block_on(async {
+            let proxy = zbus::Proxy::new(&connection, destination, PATH, INTERFACE).await?;
+            proxy.call("Reload", &(generation.get(), &snapshot)).await
+        });
         match result {
             Ok((reply_generation, applied))
                 if reply_generation == generation.get() && applied == snapshot => {}
             Ok(_) => rejected.push(format!(
                 "{destination}: configuration readback or generation mismatch"
             )),
-            Err(zbus::Error::MethodError(name, message, _))
-                if name.as_str() == "org.freedesktop.DBus.Error.Failed" =>
+            Err(zbus::Error::FDO(error))
+                if matches!(error.as_ref(), zbus::fdo::Error::Failed(_)) =>
             {
-                rejected.push(format!("{destination}: {}", message.unwrap_or_default()));
+                rejected.push(format!("{destination}: {error}"));
             }
             Err(error) => unavailable.push(format!("{destination}: {error}")),
         }

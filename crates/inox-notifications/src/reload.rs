@@ -97,7 +97,7 @@ impl Endpoint {
 }
 
 pub(super) struct Host {
-    _connection: Option<zbus::blocking::Connection>,
+    _connection: Option<zbus::Connection>,
     receiver: std::cell::RefCell<Option<mpsc::Receiver<Request>>>,
 }
 impl Host {
@@ -142,10 +142,12 @@ impl Host {
                 }
             })?;
         started.recv()?;
-        let connection = zbus::blocking::connection::Builder::session()
-            .and_then(|builder| builder.name("org.inox.Notifications"))
-            .and_then(|builder| builder.serve_at("/org/inox/Configuration", endpoint))
-            .and_then(|builder| builder.build());
+        let connection = zbus::block_on(
+            zbus::connection::Builder::session()
+                .name("org.inox.Notifications")
+                .serve_at("/org/inox/Configuration", endpoint)
+                .build(),
+        );
         let connection = match connection {
             Ok(connection) => Some(connection),
             Err(error) => {

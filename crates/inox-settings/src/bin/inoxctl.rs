@@ -22,10 +22,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let expected = config.snapshot()?;
-    let connection = zbus::blocking::connection::Builder::session()?
-        .method_timeout(Duration::from_secs(6))
-        .build()
-        .context("connecting to the session bus")?;
+    let connection = zbus::block_on(
+        zbus::connection::Builder::session()
+            .method_timeout(Duration::from_secs(6))
+            .build(),
+    )
+    .context("connecting to the session bus")?;
     let mut failed = false;
     let mut reached = 0;
     for destination in [
@@ -35,22 +37,23 @@ fn main() -> Result<()> {
         "org.inox.Wallpaper",
         "org.inox.Notifications",
     ] {
-        let result = (|| -> Result<(u64, String), zbus::Error> {
-            let proxy = zbus::blocking::Proxy::new(
+        let result: Result<(u64, String), zbus::Error> = zbus::block_on(async {
+            let proxy = zbus::Proxy::new(
                 &connection,
                 destination,
                 "/org/inox/Configuration",
                 "org.inox.Configuration1",
-            )?;
-            proxy.call("Reload", &(1u64, &expected))
-        })();
+            )
+            .await?;
+            proxy.call("Reload", &(1u64, &expected)).await
+        });
         let id = match result {
             Ok((1, snapshot)) if snapshot == expected => {
                 reached += 1;
                 "settings-ctl-applied"
             }
-            Err(zbus::Error::MethodError(name, _, _))
-                if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" =>
+            Err(zbus::Error::FDO(error))
+                if matches!(error.as_ref(), zbus::fdo::Error::ServiceUnknown(_)) =>
             {
                 "settings-ctl-absent"
             }

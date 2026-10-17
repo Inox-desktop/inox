@@ -80,7 +80,7 @@ impl Endpoint {
 
 pub(super) struct Controller {
     sender: mpsc::SyncSender<Trigger>,
-    _connection: Option<zbus::blocking::Connection>,
+    _connection: Option<zbus::Connection>,
 }
 impl Controller {
     pub(super) fn signal(&self) {
@@ -169,10 +169,12 @@ pub(super) fn register(
     let endpoint = Endpoint {
         sender: sender.clone(),
     };
-    let connection = zbus::blocking::connection::Builder::session()
-        .and_then(|b| b.name("org.inox.Compositor"))
-        .and_then(|b| b.serve_at("/org/inox/Configuration", endpoint))
-        .and_then(|b| b.build());
+    let connection = zbus::block_on(
+        zbus::connection::Builder::session()
+            .name("org.inox.Compositor")
+            .serve_at("/org/inox/Configuration", endpoint)
+            .build(),
+    );
     let connection = match connection {
         Ok(connection) => Some(connection),
         Err(error) => {

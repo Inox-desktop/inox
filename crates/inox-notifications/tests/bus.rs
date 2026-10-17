@@ -46,11 +46,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use iced::futures::StreamExt;
 use inox_common::i18n::Locale;
 use inox_config::{NotificationsConfig, Theme as Tokens};
-use zbus::blocking::{Connection, MessageIterator};
+use zbus::OwnedVariant;
 use zbus::message::{Message, Type};
-use zbus::zvariant::OwnedValue;
+use zbus::{Connection, MessageStream};
 
 use inox_notifications::app::{self, Inbox, Message as AppMessage, State};
 use inox_notifications::bus::{Counts, Service};
@@ -87,7 +88,7 @@ struct Notify {
     summary: String,
     body: String,
     actions: Vec<String>,
-    hints: HashMap<String, OwnedValue>,
+    hints: HashMap<String, OwnedVariant>,
     expire_timeout: i32,
 }
 
@@ -137,7 +138,7 @@ impl Notify {
 
     /// The same call, with one more hint.
     #[must_use]
-    fn hint(mut self, key: &str, value: impl Into<OwnedValue>) -> Self {
+    fn hint(mut self, key: &str, value: impl Into<OwnedVariant>) -> Self {
         self.hints.insert(key.to_owned(), value.into());
         self
     }
@@ -172,7 +173,7 @@ type NotifyArguments = (
     String,
     String,
     Vec<String>,
-    HashMap<String, OwnedValue>,
+    HashMap<String, OwnedVariant>,
     i32,
 );
 
@@ -249,18 +250,17 @@ fn connected_pair() -> (Connection, Connection) {
         thread::Builder::new()
             .name("the connection the daemon serves".to_owned())
             .spawn(move || {
-                zbus::blocking::connection::Builder::async_io_unix_stream(server)
-                    .server(guid)
-                    .expect("the serving role")
-                    .p2p()
-                    .build()
+                zbus::block_on(
+                    zbus::connection::Builder::unix_stream(server)
+                        .server(guid)
+                        .p2p()
+                        .build(),
+                )
             })
             .expect("the connecting thread starts")
     };
 
-    let client = zbus::blocking::connection::Builder::async_io_unix_stream(client)
-        .p2p()
-        .build()
+    let client = zbus::block_on(zbus::connection::Builder::unix_stream(client).p2p().build())
         .expect("the client end of the connection");
     let server = serving
         .join()
@@ -332,15 +332,15 @@ impl Harness {
     /// what a body has to be.
     fn call<B>(&self, member: &str, body: &B) -> zbus::Result<Message>
     where
-        B: zbus::export::serde::Serialize + zbus::zvariant::DynamicType,
+        B: zbus::export::serde::Serialize + zbus::DynamicType,
     {
-        self.client.call_method(
+        zbus::block_on(self.client.call_method(
             None::<()>,
             protocol::OBJECT_PATH,
             Some(protocol::INTERFACE),
             member,
             body,
-        )
+        ))
     }
 
     /// Sends a `Notify` call and returns the identifier it was answered with.
@@ -713,11 +713,10 @@ fn an_unknown_method_is_refused_with_the_error_the_specification_names() {
         .call("NoSuchMethod", &())
         .expect_err("an unknown method is refused");
 
-    let zbus::Error::MethodError(name, _, _) = error else {
-        panic!("an unknown method must be an error reply: {error:?}");
-    };
-
-    assert_eq!(name.as_str(), "org.freedesktop.DBus.Error.UnknownMethod");
+    assert!(
+        matches!(error, zbus::Error::FDO(ref error) if matches!(error.as_ref(), zbus::fdo::Error::UnknownMethod(_))),
+        "an unknown method must preserve the standard D-Bus error: {error:?}"
+    );
     assert_eq!(harness.snapshot().transport.unknown, 1);
 }
 
@@ -725,50 +724,44 @@ fn an_unknown_method_is_refused_with_the_error_the_specification_names() {
 fn the_interfaces_a_proxy_asks_about_before_it_calls_are_served() {
     let harness = Harness::start();
 
-    let xml = harness
-        .client
-        .call_method(
-            None::<()>,
-            protocol::OBJECT_PATH,
-            Some("org.freedesktop.DBus.Introspectable"),
-            "Introspect",
-            &(),
-        )
-        .expect("introspection is served")
-        .body()
-        .deserialize::<String>()
-        .expect("introspection answers with a string");
+    let xml = zbus::block_on(harness.client.call_method(
+        None::<()>,
+        protocol::OBJECT_PATH,
+        Some("org.freedesktop.DBus.Introspectable"),
+        "Introspect",
+        &(),
+    ))
+    .expect("introspection is served")
+    .body()
+    .deserialize::<String>()
+    .expect("introspection answers with a string");
 
     assert!(xml.contains(&format!("<interface name=\"{}\">", protocol::INTERFACE)));
     assert!(xml.contains("<method name=\"Notify\">"));
     assert!(xml.contains("<signal name=\"NotificationClosed\">"));
 
-    let properties = harness
-        .client
-        .call_method(
-            None::<()>,
-            protocol::OBJECT_PATH,
-            Some("org.freedesktop.DBus.Properties"),
-            "GetAll",
-            &(protocol::INTERFACE,),
-        )
-        .expect("a proxy's property load succeeds")
-        .body()
-        .deserialize::<HashMap<String, OwnedValue>>()
-        .expect("`GetAll` answers with a variant table");
+    let properties = zbus::block_on(harness.client.call_method(
+        None::<()>,
+        protocol::OBJECT_PATH,
+        Some("org.freedesktop.DBus.Properties"),
+        "GetAll",
+        &(protocol::INTERFACE,),
+    ))
+    .expect("a proxy's property load succeeds")
+    .body()
+    .deserialize::<HashMap<String, OwnedVariant>>()
+    .expect("`GetAll` answers with a variant table");
 
     assert!(properties.is_empty(), "this interface has no properties");
 
-    harness
-        .client
-        .call_method(
-            None::<()>,
-            protocol::OBJECT_PATH,
-            Some("org.freedesktop.DBus.Peer"),
-            "Ping",
-            &(),
-        )
-        .expect("a peer ping is answered");
+    zbus::block_on(harness.client.call_method(
+        None::<()>,
+        protocol::OBJECT_PATH,
+        Some("org.freedesktop.DBus.Peer"),
+        "Ping",
+        &(),
+    ))
+    .expect("a peer ping is answered");
 }
 
 // --- hints, lifetimes, actions and the shape of a session -------------------
@@ -782,10 +775,7 @@ fn hints_the_daemon_can_read_survive_and_the_ones_it_cannot_are_counted() {
     // `HintValue` can carry.
     let mut notify = Notify::default()
         .hint(HINT_URGENCY, Urgency::Critical.raw())
-        .hint(
-            HINT_CATEGORY,
-            zbus::zvariant::Str::from("device".to_owned()),
-        )
+        .hint(HINT_CATEGORY, zbus::Str::from("device".to_owned()))
         .hint("x-a-double", 1.5_f64)
         .hint("x-a-64-bit", 2_i64);
 
@@ -970,14 +960,12 @@ fn the_call_serial_is_what_stops_a_redelivered_call_from_acting_twice() {
     // remembers.
     for _ in 0..2 {
         let message = Message::method_call(protocol::OBJECT_PATH, "Notify")
-            .expect("a method call")
             .interface(protocol::INTERFACE)
-            .expect("the interface")
             .serial(serial)
             .build(&notify.arguments())
             .expect("a well-formed call");
 
-        harness.client.send(&message).expect("the call is sent");
+        zbus::block_on(harness.client.send(&message)).expect("the call is sent");
     }
 
     let snapshot = harness.wait_for("both deliveries were answered", |snapshot| {
@@ -1131,15 +1119,14 @@ fn a_call_nobody_is_reading_is_refused_rather_than_left_unanswered() {
     // has stopped, and the transport says so instead of waiting.
     let service = Service::serve_on(server, Inbox::new()).expect("the service starts");
 
-    let error = client
-        .call_method(
-            None::<()>,
-            protocol::OBJECT_PATH,
-            Some(protocol::INTERFACE),
-            "GetCapabilities",
-            &(),
-        )
-        .expect_err("nobody is reading, so the call cannot be answered");
+    let error = zbus::block_on(client.call_method(
+        None::<()>,
+        protocol::OBJECT_PATH,
+        Some(protocol::INTERFACE),
+        "GetCapabilities",
+        &(),
+    ))
+    .expect_err("nobody is reading, so the call cannot be answered");
 
     let zbus::Error::MethodError(name, _, _) = error else {
         panic!("an unanswerable call must be an error reply: {error:?}");
@@ -1238,18 +1225,22 @@ fn watch_signals(client: &Connection) -> Receiver<OnTheWire> {
     let rule = zbus::MatchRule::builder()
         .msg_type(Type::Signal)
         .interface(protocol::INTERFACE)
-        .expect("the interface name")
-        .build();
+        .build()
+        .expect("a valid signal match rule");
 
-    let mut messages =
-        MessageIterator::for_match_rule(rule, client, Some(64)).expect("a subscription for them");
+    let mut messages = zbus::block_on(MessageStream::for_match_rule(
+        rule,
+        client,
+        std::num::NonZeroUsize::new(64),
+    ))
+    .expect("a subscription for them");
 
     let (sender, receiver) = mpsc::channel();
 
     thread::Builder::new()
         .name("the client's signal reader".to_owned())
         .spawn(move || {
-            for message in messages.by_ref() {
+            while let Some(message) = zbus::block_on(messages.next()) {
                 let Ok(message) = message else {
                     return;
                 };

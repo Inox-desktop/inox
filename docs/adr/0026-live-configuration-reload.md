@@ -10,8 +10,8 @@
 沿用现有 TOML、Cargo 分层、calloop 和组件状态所有权，不新增 crate，
 不修改现有 Wayland 请求或事件。使用标准会话 D-Bus 承载附加的配置接口；
 所有权威 schema、校验及语义快照仍在 inox-config，传输在消费方二进制内。
-不引入 L3 到 L2 或同层 Cargo 边。复用工作区已有 zbus（MIT）与 calloop
-（MIT）版本；Iced 消费方通过消息应用，合成器通过 calloop 通道应用。
+不引入 L3 到 L2 或同层 Cargo 边。复用工作区的 zbus（MIT）与 calloop
+（MIT）；zbus 6 / MSRV 1.89 的已批准迁移由 ADR 0027 单独记录。Iced 消费方通过消息应用，合成器通过 calloop 通道应用。
 这是兼容的增量能力；本提案不将其它 proposed ADR 自动标为 accepted。
 
 ## 契约

@@ -32,6 +32,20 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  msrv:
+    name: msrv (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv-1.89
+      - uses: ./.github/actions/system-deps
+      - run: cargo check --locked --workspace --all-targets --all-features
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest

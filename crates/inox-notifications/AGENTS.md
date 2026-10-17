@@ -14,7 +14,7 @@
 - **D-Bus 服务在本 crate 内**（ADR 0022 决策 5 授权引入 `zbus`；该决策同时固定了线程模型）。`update` 仍然不做 I/O：它把结果放进 `contract::Outgoing` 队列，`State::take_outgoing` 是传输层的唯一出口，`app::Message::Request` 是传输要喂进来的调用，`app::Inbox` 是它进门的那扇门。**传输线程永远不碰 `State`**（它持有 `Rc<Localizer>`，不是 `Send`），`State` 也永远不进传输线程。
 - **一次只服务一个调用**：`src/bus.rs` 的 `bus_loop` 在等待当前调用的答复期间不开始下一个，等待有上限（`REPLY_DEADLINE`），超时回 D-Bus 错误。这是 `app::State` 的出站队列有界且丢最旧造成的：流水线化会让某个客户端的**回复**被丢掉并永远等下去。不要在没有同时改掉那两处之前放宽这条。
 - **`CloseNotification` 在线上的回复是空的**：`protocol::CLOSE_NOTIFICATION` 声明无返回值，真实客户端的代理会按签名校验回复。`ReplyBody::Closed` 的布尔值只存在于契约层，不上线——不要「顺手」把它发出去。
-- **调用身份只来自消息 serial**（`Header::primary().serial_num()`，zbus 5 的写法）：不要在传输层另造计数器或 UUID，去重记忆认的就是它。
+- **调用身份只来自消息 serial**（`Header::primary().serial_num()`）：不要在传输层另造计数器或 UUID，去重记忆认的就是它。
 - **hint 表有上限、有损且可观察**：超过 `bus::MAX_HINTS` 的键被丢弃并计入 `Counts::hints_dropped`，无法用 `HintValue` 表示的 D-Bus 取值（double、64 位整数、嵌套 variant…）被丢弃并计入 `Counts::hints_unsupported`。**不要为了「别丢 hint」而放宽 `HintValue` 或悄悄强转**。
 - **锁状态不是 capability**：`src/lock_state.rs` 只把合成器说的话转达给 `app::State`。没有合成器 / 没有 `inox_ipc` v2 / 连接断开时它如实报 `Tracking::Disabled` 并说明原因，**不得**把未知状态读成 `Unlocked`（`SessionState` 的未知取值一律 `None`），**不得**因此让守护进程退出。锁状态由合成器拥有（ADR 0015）。
 - **正文只经 `markup::sanitize` 进入模型**：`contract::NotifyRequest::draft` 是唯一的 wire → `queue::Draft` 通道，它负责清理正文、展平摘要、解析 hints 与动作。任何新的入队路径都必须同样清理；`Span::Link` 与 `Span::Image` 只允许由 `markup` 构造。
@@ -30,7 +30,7 @@
 ## 主要依赖
 
 - 上游 Inox crate：`inox-common`（Fluent 加载器）、`inox-config`（`notifications.toml` 模型与设计令牌）。
-- 第三方：`iced` 0.14（`tiny-skia` 渲染器）、`zbus` 5.19（仅阻塞 API 与 p2p；ADR 0022 决策 5 记录用途、许可与为何不用 6.x）、`wayland-client` 0.31（读 `inox_ipc`）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
+- 第三方：`iced` 0.14（`tiny-skia` 渲染器）、`zbus` 6.0（异步 API 由传输线程通过 `block_on` 驱动，p2p 用于真实往返测试；ADR 0027 记录迁移与 MSRV）、`wayland-client` 0.31（读 `inox_ipc`）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
 - 测试：`iced_core` / `iced_runtime` / `iced_tiny_skia`（离屏渲染）、`image`（截图产物）、`proptest`、`tempfile`。
 
 ## 命令
@@ -56,7 +56,7 @@
   - 调用：去重记忆只保留最近若干条、未被记录的调用没有答案；
   - 守护进程：任何消息序列下每条通知恰好关闭一次、同一通知的动作至多触发一次、不变量 `created == live + settled`。
 - `tests/catalog.rs`：`compare_catalogs` 的 id 与占位符一致性，加上 `MESSAGES` ↔ 目录的双向检查。
-- `tests/bus.rs`（D06）：点对点 D-Bus 连接 + 真实 `app::State`。断言 Notify 返回队列分配的标识符、替换保留标识符且不发 `NotificationClosed`、关闭返回规范允许的空回复并恰好一个带正确原因的 `NotificationClosed`、关闭未知 id 不报错、`GetCapabilities` / `GetServerInformation` 与 `protocol` 常量逐字一致、不合法动作数组得到本文档记录的错误名、到期由 sweep 以 reason 1 关闭、动作恰好一次、勿扰只抑制呈现、锁屏时弹窗模型里没有任何可以读出正文的字段、每秒 100 条持续 10 s 后队列不越界且 `created == held + settled`、超时回 `Timeout` 错误、无人读取回 `Unavailable`，以及两条信号在**线上**的字面内容。**测试进程内并发跑多个 p2p 连接会让底下的 zbus/async-io 丢唤醒，因此该文件用一把进程内锁串行执行**，并在文件头说明原因。
+- `tests/bus.rs`（D06）：点对点 D-Bus 连接 + 真实 `app::State`。断言 Notify 返回队列分配的标识符、替换保留标识符且不发 `NotificationClosed`、关闭返回规范允许的空回复并恰好一个带正确原因的 `NotificationClosed`、关闭未知 id 不报错、`GetCapabilities` / `GetServerInformation` 与 `protocol` 常量逐字一致、不合法动作数组得到本文档记录的错误名、到期由 sweep 以 reason 1 关闭、动作恰好一次、勿扰只抑制呈现、锁屏时弹窗模型里没有任何可以读出正文的字段、每秒 100 条持续 10 s 后队列不越界且 `created == held + settled`、超时回 `Timeout` 错误、无人读取回 `Unavailable`，以及两条信号在**线上**的字面内容。**该文件保留一把进程内锁串行执行 p2p 用例**（最初用于隔离 zbus 5/async-io 的并发丢唤醒；本次运行时迁移不同时放宽测试并发），并在文件头说明原因。
 - `tests/render.rs`：浅色、深色、空态、锁屏脱敏、溢出、勿扰、禁用动作与角落摆放等场景，在 1280×720 下经真实组件树渲染并断言像素；不得依赖字体度量（断言控件**背景/边框**令牌与「有无墨迹」，而非字形）。含一次点击动作按钮的交互测试：**恰好一个** `ActionInvoked` 消息与一个信号，且弹窗随之关闭。
 - 测试代码不受「禁止 unwrap/expect/panic」约束。
 
