@@ -29,9 +29,9 @@ fn headless_output_creates_and_renders_a_frame() {
         .expect("failed to create the compositor state");
 
     // The output is advertised with the configured mode.
-    let output = state.output();
+    let output = state.output().expect("the headless output is advertised");
 
-    assert_eq!(output.name(), config.output_name);
+    assert_eq!(output.name(), config.output_name());
     assert_eq!(
         output.current_mode().map(|mode| (mode.size.w, mode.size.h)),
         Some((1280, 720)),

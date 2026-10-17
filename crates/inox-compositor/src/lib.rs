@@ -36,15 +36,17 @@ pub mod runtime;
 pub mod state;
 #[cfg(feature = "test-input")]
 pub mod test_input;
+pub mod topology;
 pub mod workspace;
 
-pub use backend::{BackendError, DrmBackend};
-pub use config::{BackendKind, CompositorConfig, ConfigError, Invocation};
+pub use backend::{BackendError, GpuBackend};
+pub use config::{BackendKind, CompositorConfig, ConfigError, HeadlessOutput, Invocation};
 pub use input::Action;
 pub use layout::{LayoutConfig, MASTER_RATIO_MAX, MASTER_RATIO_MIN};
 pub use render::{HeadlessRenderer, RenderError};
 pub use runtime::{RunError, run};
-pub use state::{ClientState, InoxState, StateError};
+pub use state::{ClientState, InoxState, OutputDescriptor, StateError};
+pub use topology::{OutputId, Placement};
 pub use workspace::{WindowId, Workspace};
 
 /// The crate version as reported by Cargo.

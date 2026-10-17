@@ -19,7 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use inox_protocols::standard::wlr::layer_shell::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
+use inox_protocols::standard::{
+    core::client::wl_compositor::WlCompositor,
+    wlr::layer_shell::client::zwlr_layer_shell_v1::ZwlrLayerShellV1,
+    wp::fractional_scale::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+};
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
@@ -42,7 +46,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the client interaction may take before the test gives up.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The globals every build of the compositor advertises, M1 through M3.
+/// The globals every build of the compositor advertises, M1 through M4.
 const EXPECTED_GLOBALS: &[&str] = &[
     "wl_compositor",
     "wl_subcompositor",
@@ -53,6 +57,8 @@ const EXPECTED_GLOBALS: &[&str] = &[
     "zwlr_layer_shell_v1",
     "zxdg_output_manager_v1",
     "inox_ipc",
+    // M4, ADR 0020: the exact scale a surface should render at.
+    "wp_fractional_scale_manager_v1",
 ];
 
 /// A private `XDG_RUNTIME_DIR` for one compositor process.
@@ -162,7 +168,9 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for RegistryClient {
     }
 }
 
+wayland_client::delegate_noop!(RegistryClient: ignore WlCompositor);
 wayland_client::delegate_noop!(RegistryClient: ignore WpViewporter);
+wayland_client::delegate_noop!(RegistryClient: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(RegistryClient: ignore WlDataDeviceManager);
 wayland_client::delegate_noop!(RegistryClient: ignore ZwpPrimarySelectionDeviceManagerV1);
 wayland_client::delegate_noop!(RegistryClient: ignore ZwlrLayerShellV1);
@@ -192,6 +200,10 @@ fn talk_to_compositor(socket_path: &Path) -> anyhow::Result<ClientOutcome> {
             .collect()
     });
 
+    // v6 is what carries `preferred_buffer_scale`; a client that binds lower
+    // cannot be told how large a buffer to render for a scaled output (ADR 0020).
+    let _compositor: WlCompositor = globals.bind(&queue_handle, 6..=6, ())?;
+    let _fractional: WpFractionalScaleManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
     let _viewporter: WpViewporter = globals.bind(&queue_handle, 1..=1, ())?;
     let _data_device: WlDataDeviceManager = globals.bind(&queue_handle, 3..=3, ())?;
     let _primary: ZwpPrimarySelectionDeviceManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
@@ -214,7 +226,7 @@ fn version_of(globals: &[(String, u32)], interface: &str) -> Option<u32> {
 }
 
 #[test]
-fn the_m3_globals_are_advertised_and_bindable() {
+fn the_protocol_surface_is_advertised_and_bindable() {
     let (mut child, _runtime_dir, socket) = spawn("inox-protocol-surface");
     wait_for_socket(&socket);
 
@@ -255,6 +267,18 @@ fn the_m3_globals_are_advertised_and_bindable() {
             "the compositor did not advertise `{interface}`; it advertised {globals:?}"
         );
     }
+
+    // M4: fractional scaling.
+    assert_eq!(
+        version_of(globals, "wl_compositor"),
+        Some(6),
+        "`preferred_buffer_scale` needs `wl_compositor` v6"
+    );
+    assert_eq!(
+        version_of(globals, "wp_fractional_scale_manager_v1"),
+        Some(1),
+        "the exact scale of a non-integer output travels on this manager"
+    );
 
     // M3: what XWayland interop stands on.
     assert_eq!(

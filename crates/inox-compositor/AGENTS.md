@@ -6,7 +6,9 @@
 
 基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
 
-广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor`/`wl_subcompositor`、`wl_shm`、`wl_seat`、`wl_output`+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc`，以及 M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`）。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc`，M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及 ADR 0020 起的 `wp_fractional_scale_manager_v1`）。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+
+输出拓扑按 [ADR 0019](../../docs/adr/0019-multi-output-topology-and-multi-gpu.md)：`InoxState` 持有一张输出表，所有输出映射进同一个 `Space`，位置是全局逻辑坐标（可为负）。分数缩放按 [ADR 0020](../../docs/adr/0020-fractional-scaling.md)：每个输出有自己的缩放因子，渲染、光标与 layer 放置按该因子折算为物理像素，命中测试、平铺与工作区留在逻辑坐标。
 
 ## crate 特有约束
 
@@ -21,7 +23,9 @@
 - 工作区内依赖：`inox-common`、`inox-config` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源（ADR 0002 规则 4）。
   - **注意 `inox-compositor -> inox-protocols` 是 L2 → L2 的同层边**：ADR 0002 规则 1 禁止同层依赖，而协议集中到 `inox-protocols`（规则 4）又要求它。该边已登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`，规则 1 的裁决（层内顺序）尚未完成。
 - **`test-input` feature（默认关闭）**：`--test-input <PATH>` 只在启用该 feature 的构建里存在，用于让端到端测试驱动**正在运行的合成器进程**（`key`/`motion`/`button`/`dump-frame`，见 `src/test_input.rs`）。约束：默认构建必须直接以 `ConfigError` 拒绝该选项；该通道**不得**成为 Wayland 全局、不得自动启用、不得暴露除「向调用者指定 socket 写命令」以外的能力。修改它时必须同步 `README.md`、本文件与模块文档。
-- **后端开关（accepted ADR 0012）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 与 `drm` 都必须得到可用物理输出，失败返回 `RunError::BackendUnavailable`，不得静默回落 headless。CI 进程测试显式 `--headless`；进程内 `InoxState::new` 始终是确定性的 headless 状态。物理路径首版为单 GPU/一个活动输出/scale 1，真实 VT、设备恢复仍须 O01/O04 的 E4 验收。
+- **后端开关（accepted ADR 0012）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 与 `drm` 都必须得到可用物理输出，失败返回 `RunError::BackendUnavailable`，不得静默回落 headless。CI 进程测试显式 `--headless`；进程内 `InoxState::new` 始终是确定性的 headless 状态。
+- **多输出与多 GPU（ADR 0019）**：`InoxState::apply_outputs` 是拓扑变更的**唯一入口**，接受期望的输出集合、按 connector 名与 `Output` 实例复用未变的输出（保留其全局、layer 表面与窗口），并让消失输出的窗口迁移到主存活输出。禁止再新增「全量替换」的输出入口：`replace_output` 只是 `apply_outputs` 的单输出包装，仅为兼容既有调用点。物理后端枚举 seat 上的**每一块**能驱动输出的 GPU，每块用**自己的** libseat 租约、`DrmDevice`、`GbmDevice` 与 EGL/GLES 渲染器驱动自己的 connector；跨 GPU 没有复制路径，这一点在广告 `linux-dmabuf` 之前必须先解决。
+- **缩放（ADR 0020）**：`scale` 取值域为 `0.25..=8.0`，物理后端**不再拒绝**非整数缩放。渲染路径中不得出现硬编码的 `1.0` 缩放：元素位置按输出 scale 折算为物理像素，`draw_render_elements` 也必须收到该 scale（元素的**位置**是物理像素、**尺寸**由逻辑尺寸乘 scale 得出）。
 
 ## 主要依赖
 
@@ -59,9 +63,11 @@
 - 键盘解析依赖 XKB rules 文件（`xkb-data`），CI 必须安装该系统包。
 - 一个测试进程只能持有一个 EGL display，**每个测试二进制中只保留一个创建 EGL 的测试**。
 - 进程级测试必须自备私有 `XDG_RUNTIME_DIR`（Wayland 套接字绑定需要绝对路径的运行时目录），并给子进程设定超时，避免 CI 挂死。
-- **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
+- **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定，`wl_compositor` 必须 ≥ 6 且 `wp_fractional_scale_manager_v1` 可绑定（ADR 0020）。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
 - **layer-shell**（`tests/layer_shell.rs`）：真实客户端覆盖四层像素顺序、独占区与平铺位置、显式/空输出、初次空提交后的 configure/ack、None/Exclusive/OnDemand 焦点、指针命中、frame callback、卸载/重映射、销毁和崩溃释放资源，以及未确认 configure 的客户端隔离。放置/独占区算法的属性测试覆盖极端整数参数；安全锁屏不属于该协议。
 - **物理后端边界**：`backend::frame` 覆盖首帧、空闲、提交中 damage、失败限流、pause/resume、移除与陈旧完成；`backend::input` 覆盖多设备按键引用与移除清理；DRM 模式排序使用 proptest。真实客户端测试补充能力变更、按键清理、软件光标像素和输出移除/恢复；`signal_shutdown` 强制无效 libseat 后端，验证 auto/drm 不回落、不伪报 ready。E4 真机结果不得由这些测试推断。
+- **多输出**（`tests/multi_output.rs`）：进程内、真实客户端——两个不同分辨率/缩放的 headless 输出各有自己的逻辑工作区且互不重叠；窗口落在主输出的工作区内；主输出消失后窗口迁移到存活输出；全部输出消失时窗口仍被托管、恢复后被主输出收养；O02 的 20 轮拔插往返后客户端仍连着、窗口始终在存活工作区内；重复应用同一拓扑集合不改变窗口位置。
+- **分数缩放**（`tests/fractional_scale.rs`）：进程内、真实客户端——1.5x 输出的物理 mode、`zxdg_output_v1` 的逻辑尺寸与 `wl_output.scale` 的上取整分别断言；真实客户端提交 64x64 缓冲后**读回物理像素**，断言红块覆盖物理 `[12, 108)`：这是区分「真的按 1.5 合成」与「只广告了协议」的判别性断言。没有这条像素证据不得声明分数缩放已支持。
 - **剪贴板**（`tests/clipboard.rs`）：进程内、真实客户端——持焦点的客户端设置选择，随后获得焦点的客户端拿到 offer 并经 fd 读回字节（逐字节相等）；未获焦点的客户端**不得**被投递选择（这是 M3 的访问控制属性）。
 - **拖放**（`tests/drag_and_drop.rs`）：进程内、真实客户端——注入指针按下取得隐式抓取序号，客户端 A 发起拖放（两种 mime），指针移到 B 上后 B 收到 enter 与 mime，drop 后传输字节与源一致；另覆盖「指针移出所有表面后取消」（目标恰好收到一次 leave、不再收到 drop）与「拖放途中目标窗口被销毁」（合成器不崩、会话仍可用）。
 - 单线程驱动 + 截止时间：合成器与全部客户端在同一线程交替「收发」与「服务 display」，客户端套接字设为非阻塞，因此**不需要 sleep 排序、也不会有死锁线程**；每个等待都有超时。
@@ -77,18 +83,21 @@ src/
   input.rs        按键 → 合成器动作的纯逻辑（Alt+Tab / Super+Q 等）
   layout.rs       master/stack 平铺几何（纯逻辑 + proptest）
   layers.rs       layer-shell 放置与独占区计算（纯逻辑 + proptest）
-  workspace.rs    窗口簿记与布局顺序（纯逻辑 + proptest）
+  workspace.rs    窗口簿记、每个窗口所属输出与布局顺序（纯逻辑 + proptest）
+  topology.rs     输出放置、指针跨输出钳制与逻辑尺寸折算（纯逻辑 + proptest）
   runtime.rs      calloop 事件循环：后端探测、套接字、信号、帧定时器（headless）
   render.rs       EGL surfaceless + GLES 离屏渲染（unsafe 例外之一）
   state.rs        Smithay 合成器状态、seat/xdg-shell/shm/viewporter/selection handler、窗口管理与输入注入
   test_input.rs   仅测试的控制通道（`--test-input`，`test-input` feature 默认关闭）
   backend/
     mod.rs        后端入口与说明
-    drm.rs        DRM/GBM 扫描输出、模式选择、呈现与 fd 生命周期
+    drm.rs        单个 DRM 设备：libseat 租约、GBM/EGL 渲染器、每 connector 一个 scanout、模式/缩放选择与呈现
     input.rs      libinput 事件、设备能力与多设备按键清理
     frame.rs      与 headless 共用的帧状态机、代次与有限重试
 tests/
   headless_render.rs     创建输出并渲染一帧（进程内）
+  multi_output.rs        进程内真实客户端：双输出平铺、迁移、20 轮拔插往返（O02）
+  fractional_scale.rs    进程内真实客户端：1.5x 输出的逻辑/物理几何与像素落点（O03）
   ipc_global.rs          进程级：广告 inox_ipc 全局并应答 get_version
   signal_shutdown.rs     进程级：终止信号与帧预算都须以退出码 0 结束
   window_management.rs   真实客户端创建 ≥2 窗口，断言平铺与输入（进程内）

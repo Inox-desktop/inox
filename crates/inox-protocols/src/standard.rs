@@ -104,6 +104,19 @@ pub mod wp {
         /// Server-side `idle-inhibit` bindings.
         pub use wayland_protocols::wp::idle_inhibit::zv1::server;
     }
+
+    /// `fractional-scale-v1`: the exact (non-integer) scale a surface should render at.
+    ///
+    /// PRD §2.3 support level: `计划` until ADR 0020's pixel and geometry evidence
+    /// exists; the compositor advertises the global from that ADR's implementation.
+    /// This protocol is a hint: a client may ignore it, so a compositor must composite
+    /// a surface correctly whatever buffer size it is handed.
+    pub mod fractional_scale {
+        /// Client-side `fractional-scale-v1` bindings.
+        pub use wayland_protocols::wp::fractional_scale::v1::client;
+        /// Server-side `fractional-scale-v1` bindings.
+        pub use wayland_protocols::wp::fractional_scale::v1::server;
+    }
 }
 
 /// Miscellaneous protocols (`ext` namespace).

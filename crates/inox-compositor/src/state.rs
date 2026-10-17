@@ -4,17 +4,22 @@
 //!
 //! Every global the compositor creates, and the version it binds at:
 //!
-//! - `wl_compositor` (5) and `wl_subcompositor` (1) — [`CompositorState`], which
-//!   creates both in one call.
+//! - `wl_compositor` (6) and `wl_subcompositor` (1) — [`CompositorState`], which
+//!   creates both in one call. Version 6 is what carries
+//!   `preferred_buffer_scale`: without it a client cannot be told how large a
+//!   buffer to render for a scaled output (ADR 0020).
 //! - `wl_shm` (2) — [`ShmState`], the only buffer transport besides client-provided
 //!   dmabufs, which are not advertised yet.
 //! - `wl_seat` (9) — [`SeatState`], carrying the keyboard and pointer capabilities.
-//! - `wl_output` (4) and `zxdg_output_manager_v1` (3) — the headless output and
-//!   [`OutputManagerState`].
+//! - `wl_output` (4) and `zxdg_output_manager_v1` (3) — one advertisement per
+//!   output and [`OutputManagerState`].
 //! - `xdg_wm_base` (6) — [`XdgShellState`], the surface role managed windows use.
 //! - `zwlr_layer_shell_v1` (4) — [`WlrLayerShellState`], ordinary desktop layers.
 //! - `wp_viewporter` (1) — [`ViewporterState`]. Required by XWayland clients that
 //!   scale themselves (ADR 0007); without it `xwayland-satellite` cannot run here.
+//! - `wp_fractional_scale_manager_v1` (1) — [`FractionalScaleManagerState`], the
+//!   exact scale a surface should render at on an output whose factor is not a
+//!   whole number (ADR 0020).
 //! - `wl_data_device_manager` (3) — [`DataDeviceState`], the clipboard and
 //!   drag-and-drop channel.
 //! - `zwp_primary_selection_device_manager_v1` (1) — [`PrimarySelectionState`], the
@@ -25,6 +30,20 @@
 //! Client toplevels become managed windows: they are registered in a
 //! [`Workspace`], tiled by [`LayoutConfig`] and mapped into a Smithay desktop
 //! `Space` that [`InoxState::render_frame`] composites.
+//!
+//! # Outputs, scaling and the global coordinate space
+//!
+//! The compositor advertises one or more outputs (ADR 0019). Every output has a
+//! position in a single global logical coordinate space, so a window, a popup and
+//! the pointer all live in the same coordinates and a display to the left of the
+//! origin simply has negative ones. Each output carries its own scale factor;
+//! rendering, the cursor and layer placement convert to that output's physical
+//! pixels, while hit testing, tiling and the work areas stay logical (ADR 0020).
+//!
+//! [`InoxState::apply_outputs`] is the single place the topology changes. An
+//! output that survives keeps its `wl_output` global, its layer surfaces and its
+//! windows; one that disappears ends its runtime instance and hands its windows
+//! to the primary survivor.
 //!
 //! # Clipboard, drag-and-drop and focus
 //!
@@ -101,7 +120,13 @@ use smithay::{
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
+        compositor::{
+            CompositorClientState, CompositorHandler, CompositorState, get_parent,
+            send_surface_state, with_states,
+        },
+        fractional_scale::{
+            FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
+        },
         output::{OutputHandler, OutputManagerState},
         seat::WaylandFocus,
         selection::{
@@ -133,6 +158,7 @@ use crate::{
     input::{Action, SwallowedPresses, action_for_key},
     layout::LayoutConfig,
     render::{HeadlessRenderer, RenderError, SceneElement},
+    topology::{self, OutputId, Placement},
     workspace::{WindowId, Workspace},
 };
 
@@ -142,6 +168,12 @@ const PIXELS_PER_INCH: i32 = 96;
 
 /// Millimetres per inch, scaled by ten to keep the conversion in integer arithmetic.
 const MILLIMETRES_PER_INCH_X10: i32 = 254;
+
+/// How far up a surface tree [`InoxState::output_for_surface`] walks.
+///
+/// The protocol forbids parent cycles, so a deeper tree than this cannot occur;
+/// the bound exists so a malformed one cannot spin the compositor.
+const MAX_PARENT_DEPTH: usize = 16;
 
 /// Errors produced while building the compositor state.
 #[derive(Debug, thiserror::Error)]
@@ -191,9 +223,21 @@ pub struct InoxState {
     /// loop, and this handle is cheap to clone.
     display_handle: DisplayHandle,
 
-    output: Output,
-    output_active: bool,
-    output_global: Option<GlobalId>,
+    /// The advertised outputs, primary first (ADR 0019).
+    ///
+    /// Empty only while no display is available: the session and its clients stay
+    /// alive then, and the windows keep their identity until an output returns.
+    outputs: Vec<OutputEntry>,
+    /// Mints [`OutputId`]s, so an output that comes back is a new runtime
+    /// instance even when it reuses a connector name.
+    next_output_id: u64,
+    /// Owns the `wp_fractional_scale_manager_v1` global (ADR 0020).
+    ///
+    /// Like [`InoxState::output_manager_state`], Smithay's dispatch is generic
+    /// over the compositor state, so the value is never read: keeping it is what
+    /// keeps the global alive.
+    #[allow(dead_code)]
+    fractional_scale_state: FractionalScaleManagerState,
     input_config: inox_config::InputConfig,
     cursor_image: CursorImageStatus,
     cursor_visible: bool,
@@ -222,9 +266,7 @@ pub struct InoxState {
 
     /// Tiling parameters, applied whenever the window set changes.
     layout: LayoutConfig,
-    /// Rectangle the windows are tiled into, derived from the output mode.
-    work_area: Rectangle<i32, Logical>,
-    /// Last location reported for the pointer, in workspace coordinates.
+    /// Last location reported for the pointer, in global logical coordinates.
     pointer_location: Point<f64, Logical>,
 
     /// Which bound chords this compositor has already swallowed the press of.
@@ -245,8 +287,63 @@ pub struct InoxState {
     loop_signal: LoopSignal,
 }
 
-struct StateSetup {
+/// One output the compositor should advertise (ADR 0019).
+///
+/// The backends describe *what* they found; the compositor decides *where* it
+/// goes, which keeps placement and identity in one place instead of once per
+/// backend.
+#[derive(Debug, Clone)]
+pub struct OutputDescriptor {
+    /// The Smithay output to create or keep.
+    ///
+    /// An output that is already advertised is recognised by [`Self::key`] and,
+    /// when the very same value comes back, keeps its global and its layer
+    /// surfaces.
+    pub output: Output,
+    /// Position the user asked for, or `None` to place the output automatically.
+    pub position: Option<Point<i32, Logical>>,
+    /// Identity used to recognise this output across topology changes.
+    ///
+    /// Deliberately not the connector name on its own: a machine with two GPUs can
+    /// have a `DP-1` on each, and keying on the name alone would collapse them
+    /// into one output. The compositor treats this as opaque and lets the backend
+    /// choose it — the headless backend uses the configured name, the DRM backend
+    /// pairs the card with the connector.
+    pub key: String,
+}
+
+impl OutputDescriptor {
+    /// Describe `output` under its own name, for backends with no name collisions.
+    pub fn named(output: Output, position: Option<Point<i32, Logical>>) -> Self {
+        Self {
+            key: output.name(),
+            output,
+            position,
+        }
+    }
+}
+
+/// One advertised output and the geometry it occupies.
+#[derive(Debug, Clone)]
+struct OutputEntry {
+    /// Identity the backend reports for this output, used to recognise it again.
+    key: String,
+    /// Runtime identity, stable for as long as the output is advertised.
+    id: OutputId,
     output: Output,
+    /// Its `wl_output` global, present while the output is advertised.
+    global: Option<GlobalId>,
+    /// Top-left corner in the global logical coordinate space.
+    position: Point<i32, Logical>,
+    /// The output's full logical area, reported by the `Space`.
+    area: Rectangle<i32, Logical>,
+    /// The part of the area ordinary windows may tile into, after layer
+    /// exclusive-zone reservations. Computed by [`InoxState::arrange_layers`].
+    work_area: Rectangle<i32, Logical>,
+}
+
+struct StateSetup {
+    outputs: Vec<OutputDescriptor>,
     renderer: Option<HeadlessRenderer>,
     input: inox_config::InputConfig,
     theme: inox_config::Theme,
@@ -258,7 +355,10 @@ fn rgba_floats(color: inox_config::Rgba) -> [f32; 4] {
 }
 
 struct LayerEntry {
+    /// The output this surface asked for or was assigned to.
+    output: OutputId,
     surface: DesktopLayerSurface,
+    /// Placement in the global logical coordinate space.
     geometry: Rectangle<i32, Logical>,
     committed: bool,
     mapped: bool,
@@ -270,7 +370,7 @@ struct LayerEntry {
 const LAYER_ORDER: [Layer; 4] = [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background];
 
 impl InoxState {
-    /// Build the state, the headless output, the seat and the render target.
+    /// Build the state, the headless outputs, the seat and the render target.
     ///
     /// # Errors
     ///
@@ -282,10 +382,9 @@ impl InoxState {
         config: &CompositorConfig,
         loop_signal: LoopSignal,
     ) -> Result<Self, StateError> {
-        let output = create_headless_output(config);
         let setup = StateSetup {
-            output,
-            renderer: Some(HeadlessRenderer::new(config.output_size())?),
+            outputs: create_headless_outputs(config),
+            renderer: Some(HeadlessRenderer::new()?),
             input: inox_config::InputConfig {
                 keyboard_repeat_delay_ms: 200,
                 ..Default::default()
@@ -296,11 +395,12 @@ impl InoxState {
         Self::build(display_handle, config, loop_signal, setup)
     }
 
+    /// Build the state for outputs the physical backend has already enumerated.
     pub(crate) fn new_physical(
         display_handle: &DisplayHandle,
         config: &CompositorConfig,
         loop_signal: LoopSignal,
-        output: Output,
+        outputs: Vec<OutputDescriptor>,
         input: inox_config::InputConfig,
         theme: inox_config::Theme,
         layout: LayoutConfig,
@@ -310,7 +410,7 @@ impl InoxState {
             config,
             loop_signal,
             StateSetup {
-                output,
+                outputs,
                 renderer: None,
                 input,
                 theme,
@@ -329,7 +429,7 @@ impl InoxState {
         setup: StateSetup,
     ) -> Result<Self, StateError> {
         let StateSetup {
-            output,
+            outputs,
             renderer,
             input,
             theme,
@@ -341,9 +441,11 @@ impl InoxState {
         let repeat_rate = i32::try_from(input.keyboard_repeat_rate_hz).map_err(|_| {
             StateError::InputConfig("keyboard repeat rate exceeds i32::MAX".to_owned())
         })?;
-        let compositor_state = CompositorState::new::<Self>(display_handle);
+        // `wl_compositor` v6 carries `preferred_buffer_scale`, which is how a
+        // client is told how large a buffer to render for its output (ADR 0020).
+        let compositor_state = CompositorState::new_v6::<Self>(display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display_handle);
-        let output_global = Some(output.create_global::<Self>(display_handle));
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(display_handle);
         let ipc_version = inox_ipc_version();
         let ipc_global = display_handle.create_global::<Self, InoxIpc, ()>(ipc_version, ());
         debug!(
@@ -367,34 +469,18 @@ impl InoxState {
         let keyboard = seat.add_keyboard(keyboard_config(&input), repeat_delay, repeat_rate)?;
         let pointer = seat.add_pointer();
 
-        let mut space = Space::default();
-        space.map_output(&output, (0, 0));
+        let space = Space::default();
 
-        let work_area = Rectangle::from_size(
-            output
-                .current_mode()
-                .map(|mode| mode.size.to_logical(1))
-                .unwrap_or_default(),
-        );
-
-        info!(
-            output = %output.name(),
-            width = work_area.size.w,
-            height = work_area.size.h,
-            physical,
-            "created compositor output"
-        );
-
-        Ok(Self {
+        let mut state = Self {
             compositor_state,
             output_manager_state,
             viewporter_state,
             data_device_state,
             primary_selection_state,
             display_handle: display_handle.clone(),
-            output,
-            output_active: true,
-            output_global,
+            outputs: Vec::new(),
+            next_output_id: 0,
+            fractional_scale_state,
             input_config: input,
             cursor_image: CursorImageStatus::default_named(),
             cursor_visible: false,
@@ -419,7 +505,6 @@ impl InoxState {
             workspace: Workspace::new(),
             windows: HashMap::new(),
             layout: LayoutConfig::default(),
-            work_area,
             pointer_location: Point::from((0.0, 0.0)),
             swallowed_presses: SwallowedPresses::default(),
             renderer,
@@ -428,41 +513,390 @@ impl InoxState {
             exit_after_frames: config.exit_after_frames,
             exit_requested: false,
             loop_signal,
-        })
+        };
+        state.apply_outputs(&outputs)?;
+
+        info!(
+            outputs = state.outputs.len(),
+            physical, "created compositor outputs"
+        );
+
+        Ok(state)
     }
 
-    /// Render one frame of the headless output.
+    /// Reconcile the advertised outputs with `desired` (ADR 0019).
     ///
-    /// The desktop space is refreshed so that closed windows are dropped, the
-    /// render elements for the whole work area are produced and drawn over the
-    /// background colour, and every mapped window is told that a frame happened.
+    /// This is the single place the output topology changes. An output the
+    /// caller keeps — matched by connector name and by the very same [`Output`]
+    /// value — keeps its `wl_output` global, its layer surfaces and its windows,
+    /// and only has its geometry refreshed. An output that disappears ends its
+    /// runtime instance: its layer surfaces are told to close (their clients
+    /// recreate them on an output that exists), its global is removed, and the
+    /// windows that were on it move to the primary survivor rather than being
+    /// left in a coordinate space nothing covers. Windows left over from a moment
+    /// with no output at all are adopted by the primary one.
+    ///
+    /// Scale changes reach clients through `preferred_buffer_scale` on
+    /// `wl_compositor` v6 and through `wp_fractional_scale_v1`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::InvalidSize`] when an output has no mode or a
+    /// non-positive one. The check runs before anything is touched, so a rejected
+    /// topology leaves the previous one in place.
+    pub fn apply_outputs(&mut self, desired: &[OutputDescriptor]) -> Result<(), RenderError> {
+        for descriptor in desired {
+            let usable = descriptor
+                .output
+                .current_mode()
+                .is_some_and(|mode| mode.size.w > 0 && mode.size.h > 0);
+            if !usable {
+                return Err(RenderError::InvalidSize {
+                    width: 0,
+                    height: 0,
+                });
+            }
+        }
+
+        let placements: Vec<Placement> = desired
+            .iter()
+            .map(|descriptor| Placement {
+                size: topology::logical_size(
+                    descriptor
+                        .output
+                        .current_mode()
+                        .map(|mode| mode.size)
+                        .unwrap_or_default(),
+                    descriptor.output.current_scale().fractional_scale(),
+                ),
+                position: descriptor.position,
+            })
+            .collect();
+        let areas = topology::place(&placements);
+
+        // Take the current table apart: an output that survives is handed over
+        // unchanged, and every one that does not is left for teardown below.
+        let mut previous: Vec<Option<OutputEntry>> = std::mem::take(&mut self.outputs)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut next: Vec<OutputEntry> = Vec::with_capacity(desired.len());
+
+        for (descriptor, area) in desired.iter().zip(areas.iter()) {
+            let key = &descriptor.key;
+            let found = previous
+                .iter()
+                .position(|slot| slot.as_ref().is_some_and(|entry| &entry.key == key));
+
+            match found.and_then(|index| previous[index].take()) {
+                Some(entry) if entry.output == descriptor.output => next.push(OutputEntry {
+                    output: descriptor.output.clone(),
+                    position: area.loc,
+                    area: *area,
+                    // A rescan that keeps the same connector keeps everything the
+                    // client can see; only the geometry is refreshed.
+                    ..entry
+                }),
+                Some(entry) => {
+                    // Same connector, new device instance: the advertisement is
+                    // rebuilt, so the surfaces bound to the old one come back on
+                    // the new one. The windows stay where they are.
+                    debug!(%key, "re-advertising a known output");
+                    if let Some(global) = entry.global {
+                        self.display_handle.remove_global::<Self>(global);
+                    }
+                    self.detach_layers_of(entry.id, &entry.output);
+                    self.space.unmap_output(&entry.output);
+                    next.push(OutputEntry {
+                        key: key.clone(),
+                        id: entry.id,
+                        output: descriptor.output.clone(),
+                        global: None,
+                        position: area.loc,
+                        area: *area,
+                        work_area: *area,
+                    });
+                }
+                None => next.push(OutputEntry {
+                    key: key.clone(),
+                    id: self.mint_output_id(),
+                    output: descriptor.output.clone(),
+                    global: None,
+                    position: area.loc,
+                    area: *area,
+                    work_area: *area,
+                }),
+            }
+        }
+
+        let survivor = next.first().map(|entry| entry.id);
+        for entry in previous.into_iter().flatten() {
+            if let Some(global) = entry.global {
+                self.display_handle.remove_global::<Self>(global);
+            }
+            self.workspace.reassign(Some(entry.id), survivor);
+            self.detach_layers_of(entry.id, &entry.output);
+            self.space.unmap_output(&entry.output);
+            info!(output = %entry.key, "output removed");
+        }
+
+        for entry in &mut next {
+            self.space.map_output(&entry.output, entry.position);
+            if entry.global.is_none() {
+                entry.global = Some(entry.output.create_global::<Self>(&self.display_handle));
+            }
+            info!(
+                output = %entry.key,
+                scale = entry.output.current_scale().fractional_scale(),
+                position = ?entry.position,
+                size = ?entry.area.size,
+                "output advertised"
+            );
+        }
+
+        self.outputs = next;
+        // Windows that outlived every output come back with the first one.
+        if let Some(survivor) = survivor {
+            self.workspace.reassign(None, Some(survivor));
+        }
+
+        self.arrange_layers();
+        self.arrange_windows();
+        self.pointer_location = self.clamp_pointer(self.pointer_location);
+        self.update_surface_scales();
+        self.repaint = true;
+        self.sync_focus();
+        self.inject_pointer_motion(self.pointer_location);
+
+        Ok(())
+    }
+
+    /// Replace the whole topology with at most one output (ADR 0019).
+    ///
+    /// The single-output entry point kept for callers that only ever deal with
+    /// one display; it is exactly [`InoxState::apply_outputs`] with an empty list
+    /// or a lone automatically placed output.
+    ///
+    /// # Errors
+    /// As [`InoxState::apply_outputs`].
+    pub fn replace_output(&mut self, output: Option<Output>) -> Result<(), RenderError> {
+        let desired: Vec<OutputDescriptor> = output
+            .into_iter()
+            .map(|output| OutputDescriptor::named(output, None))
+            .collect();
+
+        self.apply_outputs(&desired)
+    }
+
+    /// Mint the next runtime output identity.
+    fn mint_output_id(&mut self) -> OutputId {
+        let id = OutputId::new(self.next_output_id);
+        self.next_output_id = self.next_output_id.wrapping_add(1);
+
+        id
+    }
+
+    /// The output with `id`, if it is still advertised.
+    fn output_of(&self, id: OutputId) -> Option<&Output> {
+        output_of(&self.outputs, id)
+    }
+
+    /// The entry advertising `output`, if this compositor advertises it.
+    fn find_output(&self, output: &Output) -> Option<&OutputEntry> {
+        self.outputs.iter().find(|entry| &entry.output == output)
+    }
+
+    /// Close and forget every layer surface bound to `output`.
+    ///
+    /// Clients recreate their surfaces on an output that still exists; the
+    /// protocol has no way to migrate one, so `close` is the only correct answer
+    /// (ADR 0019). The surface is told to leave first — which is why `leaving` is
+    /// passed in rather than looked up: by the time this runs the output is no
+    /// longer in the table, and the client still needs to hear about the output it
+    /// is losing.
+    fn detach_layers_of(&mut self, output: OutputId, leaving: &Output) {
+        let (closing, keeping): (Vec<LayerEntry>, Vec<LayerEntry>) =
+            std::mem::take(&mut self.layers)
+                .into_iter()
+                .partition(|entry| entry.output == output);
+        self.layers = keeping;
+
+        for entry in closing {
+            entry.surface.layer_surface().send_close();
+            entry
+                .surface
+                .with_surfaces(|surface, _| leaving.leave(surface));
+            if self.layer_focus.as_ref() == Some(entry.surface.wl_surface()) {
+                self.layer_focus = None;
+            }
+        }
+    }
+
+    /// The output the pointer is over, if any.
+    fn pointer_output(&self) -> Option<OutputId> {
+        let point = self.pointer_location;
+
+        self.outputs
+            .iter()
+            .find(|entry| {
+                entry.area.size.w > 0
+                    && entry.area.size.h > 0
+                    && point.x >= f64::from(entry.area.loc.x)
+                    && point.x < f64::from(entry.area.loc.x.saturating_add(entry.area.size.w))
+                    && point.y >= f64::from(entry.area.loc.y)
+                    && point.y < f64::from(entry.area.loc.y.saturating_add(entry.area.size.h))
+            })
+            .map(|entry| entry.id)
+    }
+
+    /// The output a surface is shown on, following its parents if it has one.
+    ///
+    /// Sub-surfaces, popups and cursors hang off a toplevel or a layer surface,
+    /// and the protocol lets them be created for any surface in the tree, so the
+    /// answer has to be found by walking up rather than by looking the surface up
+    /// directly.
+    fn output_for_surface(&self, surface: &WlSurface) -> Option<OutputId> {
+        let mut current = surface.clone();
+
+        // The protocol forbids parent cycles; the bound is a belt-and-braces
+        // guard so a malformed tree cannot spin here.
+        for _ in 0..MAX_PARENT_DEPTH {
+            let window = self
+                .windows
+                .iter()
+                .find(|(_, window)| window_toplevel_surface(window) == Some(&current))
+                .map(|(id, _)| *id);
+            if let Some(id) = window
+                && let Some(output) = self.workspace.output_of(id)
+            {
+                return Some(output);
+            }
+            if let Some(entry) = self
+                .layers
+                .iter()
+                .find(|entry| entry.surface.wl_surface() == &current)
+            {
+                return Some(entry.output);
+            }
+            current = get_parent(&current)?;
+        }
+
+        None
+    }
+
+    /// Tell a surface the scale it should render at on its output (ADR 0020).
+    ///
+    /// Both halves are needed: `preferred_buffer_scale` tells a client that only
+    /// understands integer scales how large a buffer to produce, and
+    /// `wp_fractional_scale_v1` carries the exact factor. Neither is binding — a
+    /// client may ignore both — so the compositor must keep compositing whatever
+    /// buffer size it is handed, which it does.
+    fn update_surface_scale(&self, surface: &WlSurface) {
+        let scale = self
+            .output_for_surface(surface)
+            .and_then(|id| self.output_of(id))
+            .or_else(|| self.outputs.first().map(|entry| &entry.output))
+            .map(|output| output.current_scale())
+            .unwrap_or(OutputScale::Integer(1));
+
+        with_states(surface, |states| {
+            send_surface_state(surface, states, scale.integer_scale(), Transform::Normal);
+            with_fractional_scale(states, |state| {
+                state.set_preferred_scale(scale.fractional_scale());
+            });
+        });
+    }
+
+    /// Refresh the advertised scale of every surface this compositor shows.
+    ///
+    /// Called whenever an output's scale can have changed, which is exactly when
+    /// the topology changes; individual surfaces are refreshed on commit.
+    fn update_surface_scales(&self) {
+        for window in self.windows.values() {
+            if let Some(surface) = window_toplevel_surface(window) {
+                self.update_surface_scale(surface);
+            }
+        }
+        for entry in &self.layers {
+            self.update_surface_scale(entry.surface.wl_surface());
+        }
+    }
+
+    /// Render one frame into every headless output's own render target.
+    ///
+    /// The desktop space is refreshed so that closed windows are dropped, and
+    /// each output composites the part of the space its geometry covers, at that
+    /// output's scale. Every mapped window is told that a frame happened.
     ///
     /// # Errors
     ///
     /// Returns a [`RenderError`] when the GLES rendering fails.
     pub fn render_frame(&mut self) -> Result<(), RenderError> {
         let mut renderer = self.renderer.take().ok_or(RenderError::NotHeadless)?;
-        let result = self
-            .scene_elements(renderer.renderer_mut())
-            .map_err(RenderError::from)
-            .and_then(|elements| renderer.render_elements(&elements));
+        let result = self.render_outputs(&mut renderer);
         self.renderer = Some(renderer);
         result?;
         self.frame_presented();
         Ok(())
     }
 
+    /// Composite every advertised output, in advertisement order.
+    fn render_outputs(&mut self, renderer: &mut HeadlessRenderer) -> Result<(), RenderError> {
+        let outputs: Vec<(String, (i32, i32), f64, Output)> = self
+            .outputs
+            .iter()
+            .map(|entry| {
+                let size = entry
+                    .output
+                    .current_mode()
+                    .map(|mode| mode.size)
+                    .unwrap_or_default();
+
+                (
+                    entry.output.name(),
+                    (size.w, size.h),
+                    entry.output.current_scale().fractional_scale(),
+                    entry.output.clone(),
+                )
+            })
+            .collect();
+
+        for (name, size, scale, output) in outputs {
+            let elements = self
+                .scene_elements(renderer.renderer_mut(), &output)
+                .map_err(RenderError::from)?;
+            renderer.render_elements(&name, size, scale, &elements)?;
+        }
+
+        Ok(())
+    }
+
+    /// The render elements that make up `output`, front to back.
+    ///
+    /// Every position is expressed in that output's physical pixels, relative to
+    /// its own top-left corner, which is what `OutputDamageTracker` and the
+    /// headless target both expect. The scale is the output's, so a window on a
+    /// 150 % display is composited from logical geometry into a 1.5x larger
+    /// buffer instead of being stretched afterwards (ADR 0020).
     pub(crate) fn scene_elements(
         &mut self,
         renderer: &mut GlesRenderer,
+        output: &Output,
     ) -> Result<Vec<SceneElement>, GlesError> {
         self.space.refresh();
         self.popups.cleanup();
-        if !self.output_active {
+
+        let Some(entry) = self.outputs.iter().find(|entry| &entry.output == output) else {
             return Ok(Vec::new());
-        }
+        };
+        let geometry = entry.area;
+        let id = entry.id;
+        let scale = output.current_scale().fractional_scale();
         let mut elements = Vec::new();
-        if self.cursor_visible {
+
+        // The pointer is drawn once, on the output it is actually over; drawing
+        // it on every output would leave ghosts on the others.
+        if self.cursor_visible && self.pointer_output() == Some(id) {
             match &self.cursor_image {
                 CursorImageStatus::Hidden => {}
                 CursorImageStatus::Surface(surface) if surface.is_alive() => {
@@ -474,21 +908,24 @@ impl InoxState {
                     })
                     .unwrap_or_default();
                     let location =
-                        (self.pointer_location - hotspot.to_f64()).to_physical_precise_round(1.0);
+                        (self.pointer_location - hotspot.to_f64() - geometry.loc.to_f64())
+                            .to_physical_precise_round(scale);
                     elements.extend(render_elements_from_surface_tree(
                         renderer,
                         surface,
                         location,
-                        1.0,
+                        scale,
                         1.0,
                         Kind::Cursor,
                     ));
                 }
                 _ => {
+                    let location = (self.pointer_location - geometry.loc.to_f64())
+                        .to_physical_precise_round(scale);
                     elements.push(SceneElement::Cursor(
                         MemoryRenderBufferRenderElement::from_buffer(
                             renderer,
-                            self.pointer_location.to_physical(1.0),
+                            location,
                             &self.cursor_buffer,
                             None,
                             None,
@@ -499,42 +936,39 @@ impl InoxState {
                 }
             }
         }
+
         for layer in [Layer::Overlay, Layer::Top] {
-            self.layer_render_elements(layer, renderer, &mut elements);
+            self.layer_render_elements(layer, id, geometry, scale, renderer, &mut elements);
         }
         elements.extend(
             self.space
-                .render_elements_for_region(
-                    renderer,
-                    &Rectangle::from_size(self.output_size().into()),
-                    1.0f64,
-                    1.0,
-                )
+                .render_elements_for_region(renderer, &geometry, scale, 1.0)
                 .into_iter()
                 .map(SceneElement::Surface),
         );
         for layer in [Layer::Bottom, Layer::Background] {
-            self.layer_render_elements(layer, renderer, &mut elements);
+            self.layer_render_elements(layer, id, geometry, scale, renderer, &mut elements);
         }
+
         Ok(elements)
     }
 
     fn layer_render_elements(
         &self,
         layer: Layer,
+        output: OutputId,
+        region: Rectangle<i32, Logical>,
+        scale: f64,
         renderer: &mut GlesRenderer,
         elements: &mut Vec<SceneElement>,
     ) {
-        for entry in self
-            .layers
-            .iter()
-            .rev()
-            .filter(|entry| entry.mapped && entry.surface.layer() == layer)
-        {
+        for entry in self.layers.iter().rev().filter(|entry| {
+            entry.mapped && entry.output == output && entry.surface.layer() == layer
+        }) {
             elements.extend(entry.surface.render_elements::<SceneElement>(
                 renderer,
-                entry.geometry.loc.to_physical_precise_round(1.0),
-                1.0.into(),
+                (entry.geometry.loc - region.loc).to_physical_precise_round(scale),
+                scale.into(),
                 1.0,
             ));
         }
@@ -557,30 +991,51 @@ impl InoxState {
         self.exit_after_frames.is_some()
     }
 
-    /// Send a `wl_surface.frame` callback to every mapped window.
+    /// Send a `wl_surface.frame` callback to every mapped surface.
     ///
     /// Without this a client that waits for its frame callback before drawing the next
     /// frame never gets one, so it never repaints: a real client (an XWayland toplevel,
     /// a GTK application) that asks for a frame first would stay blank. Note that the
     /// callbacks only reach the client once the display is flushed, which the event loop
     /// does after every frame it renders.
+    ///
+    /// Each surface is told about the output it is on, which is the output whose
+    /// frame it is waiting for.
     fn send_frame_callbacks(&mut self) {
         let time = self.start_time.elapsed();
+        let outputs: Vec<(OutputId, Output)> = self
+            .outputs
+            .iter()
+            .map(|entry| (entry.id, entry.output.clone()))
+            .collect();
+        let windows: Vec<(WindowId, Window)> = self
+            .windows
+            .iter()
+            .map(|(id, window)| (*id, window.clone()))
+            .collect();
 
-        for window in self.windows.values() {
-            // Every managed window lives on the single output, and the closure reports
-            // exactly that, so the throttle never gates a callback; `ZERO` states that
-            // rather than leaving it to depend on the output comparison alone.
-            window.send_frame(&self.output, time, Some(Duration::ZERO), |_, _| {
-                Some(self.output.clone())
-            });
-        }
-        for entry in self.layers.iter().filter(|entry| entry.mapped) {
-            entry
-                .surface
-                .send_frame(&self.output, time, Some(Duration::ZERO), |_, _| {
-                    Some(self.output.clone())
-                });
+        for (id, output) in &outputs {
+            // The closures report the output the surface is actually on, so the
+            // throttle never gates a callback; `ZERO` states that rather than
+            // leaving it to depend on the output comparison alone.
+            for window_id in self.workspace.windows_on(*id) {
+                if let Some((_, window)) = windows.iter().find(|(id, _)| *id == window_id) {
+                    window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    });
+                }
+            }
+            for entry in self
+                .layers
+                .iter()
+                .filter(|entry| entry.mapped && entry.output == *id)
+            {
+                entry
+                    .surface
+                    .send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    });
+            }
         }
     }
 
@@ -605,10 +1060,11 @@ impl InoxState {
     ///
     /// Returns a [`RenderError`] when the readback fails.
     pub fn read_frame_center_pixel(&mut self) -> Result<[u8; 4], RenderError> {
+        let name = self.primary_output_name();
         self.renderer
             .as_mut()
             .ok_or(RenderError::NotHeadless)?
-            .read_center_pixel()
+            .read_center_pixel(&name)
     }
 
     /// Read back the whole render target as tightly packed RGBA8 bytes.
@@ -620,28 +1076,52 @@ impl InoxState {
     ///
     /// Returns a [`RenderError`] when the readback fails.
     pub fn read_frame_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
+        let name = self.primary_output_name();
         self.renderer
             .as_mut()
             .ok_or(RenderError::NotHeadless)?
-            .read_frame_rgba()
+            .read_frame_rgba(&name)
     }
 
-    /// Size of the headless output in pixels, as `(width, height)`.
+    /// Name of the primary output, or an empty string when none is advertised.
+    ///
+    /// The readback accessors key on it, and a read with no output advertised
+    /// reports [`RenderError::UnknownOutput`] rather than a stale frame.
+    fn primary_output_name(&self) -> String {
+        self.outputs
+            .first()
+            .map(|entry| entry.output.name())
+            .unwrap_or_default()
+    }
+
+    /// Size of the primary output in pixels, as `(width, height)`.
+    ///
+    /// `(0, 0)` while no output is advertised.
     pub fn output_size(&self) -> (i32, i32) {
-        if !self.output_active {
-            return (0, 0);
-        }
-        let size = self
-            .output
-            .current_mode()
-            .map(|mode| mode.size)
-            .unwrap_or_default();
-        (size.w, size.h)
+        self.outputs
+            .first()
+            .and_then(|entry| entry.output.current_mode())
+            .map(|mode| (mode.size.w, mode.size.h))
+            .unwrap_or((0, 0))
     }
 
-    /// The logical rectangle available to ordinary windows after layer reservations.
+    /// The logical rectangle the primary output leaves to ordinary windows.
+    ///
+    /// The primary output is the first advertised one, which is the only output
+    /// every earlier milestone ever had.
     pub fn work_area(&self) -> Rectangle<i32, Logical> {
-        self.work_area
+        self.outputs
+            .first()
+            .map(|entry| entry.work_area)
+            .unwrap_or_default()
+    }
+
+    /// The work area of every advertised output, in advertisement order.
+    pub fn work_areas(&self) -> Vec<(OutputId, Rectangle<i32, Logical>)> {
+        self.outputs
+            .iter()
+            .map(|entry| (entry.id, entry.work_area))
+            .collect()
     }
 
     /// Number of layer surfaces with a committed buffer.
@@ -649,72 +1129,40 @@ impl InoxState {
         self.layers.iter().filter(|entry| entry.mapped).count()
     }
 
-    /// The headless output advertised to clients.
-    pub fn output(&self) -> &Output {
-        &self.output
+    /// The primary output, or `None` while no display is available.
+    pub fn output(&self) -> Option<&Output> {
+        self.outputs.first().map(|entry| &entry.output)
     }
 
-    /// Whether an output is currently available and advertised.
+    /// Every advertised output, primary first.
+    pub fn outputs(&self) -> impl Iterator<Item = &Output> {
+        self.outputs.iter().map(|entry| &entry.output)
+    }
+
+    /// How many outputs are advertised.
+    pub fn output_count(&self) -> usize {
+        self.outputs.len()
+    }
+
+    /// Whether at least one output is currently available and advertised.
     pub fn output_active(&self) -> bool {
-        self.output_active
+        !self.outputs.is_empty()
     }
 
-    /// Replace the active output, preserving ordinary clients across device removal.
+    /// The bounding box of every output, in global logical coordinates.
     ///
-    /// Layers on a removed output receive `closed`; their clients recreate them for
-    /// the new output. This first hardware backend owns one active output at a time.
-    ///
-    /// # Errors
-    /// Returns a render error when a headless target cannot be resized.
-    pub fn replace_output(&mut self, output: Option<Output>) -> Result<(), RenderError> {
-        if let Some(output) = &output
-            && output
-                .current_mode()
-                .is_none_or(|mode| mode.size.w <= 0 || mode.size.h <= 0)
-        {
-            return Err(RenderError::InvalidSize {
-                width: 0,
-                height: 0,
-            });
-        }
-        if let Some(output) = &output
-            && let Some(renderer) = &mut self.renderer
-            && let Some(mode) = output.current_mode()
-        {
-            renderer.resize((mode.size.w, mode.size.h))?;
-        }
-        let same = output.as_ref() == Some(&self.output) && self.output_active;
-        if !same {
-            if let Some(global) = self.output_global.take() {
-                self.display_handle.remove_global::<Self>(global);
-            }
-            self.space.unmap_output(&self.output);
-            for entry in self.layers.drain(..) {
-                entry.surface.layer_surface().send_close();
-                entry
-                    .surface
-                    .with_surfaces(|surface, _| self.output.leave(surface));
-            }
-            self.layer_focus = None;
-        }
-        self.output_active = output.is_some();
-        if let Some(output) = output {
-            self.output = output;
-            if !same {
-                self.output_global = Some(self.output.create_global::<Self>(&self.display_handle));
-            }
-            self.space.map_output(&self.output, (0, 0));
-            self.work_area = Rectangle::from_size(self.output_size().into());
-            self.arrange_windows();
-            self.arrange_layers();
-            self.pointer_location = self.clamp_pointer(self.pointer_location);
-        } else {
-            self.work_area = Rectangle::default();
-        }
-        self.repaint = true;
-        self.sync_focus();
-        self.inject_pointer_motion(self.pointer_location);
-        Ok(())
+    /// Absolute input devices (tablets, touchscreens) map their unit range onto
+    /// this box, so one device covers the whole arrangement.
+    pub fn input_area(&self) -> Rectangle<i32, Logical> {
+        let areas: Vec<Rectangle<i32, Logical>> =
+            self.outputs.iter().map(|entry| entry.area).collect();
+
+        topology::bounds(&areas)
+    }
+
+    /// The output a managed window is tiled on, if it has one.
+    pub fn window_output(&self, id: WindowId) -> Option<OutputId> {
+        self.workspace.output_of(id)
     }
 
     /// Apply capabilities enumerated at the input-device boundary.
@@ -795,16 +1243,16 @@ impl InoxState {
         }
     }
 
+    /// Move a pointer position into the union of the output areas.
+    ///
+    /// Unplugging the display the pointer was on leaves it outside every output,
+    /// so the position is pulled back onto the closest one instead of being
+    /// dropped somewhere nothing can be clicked (ADR 0019).
     pub(crate) fn clamp_pointer(&self, location: Point<f64, Logical>) -> Point<f64, Logical> {
-        let (width, height) = self.output_size();
-        let clamp = |value: f64, size: i32| {
-            if value.is_finite() {
-                value.clamp(0.0, f64::from((size - 1).max(0)))
-            } else {
-                0.0
-            }
-        };
-        (clamp(location.x, width), clamp(location.y, height)).into()
+        let areas: Vec<Rectangle<i32, Logical>> =
+            self.outputs.iter().map(|entry| entry.area).collect();
+
+        topology::clamp(location, &areas)
     }
 
     pub(crate) fn inject_pointer_axis(&mut self, frame: AxisFrame) {
@@ -838,7 +1286,7 @@ impl InoxState {
     }
 
     /// The managed windows in tiling order, master first.
-    pub fn managed_windows(&self) -> &[WindowId] {
+    pub fn managed_windows(&self) -> Vec<WindowId> {
         self.workspace.windows()
     }
 
@@ -990,8 +1438,25 @@ impl InoxState {
     }
 
     /// Register a freshly created toplevel as a managed window.
+    ///
+    /// A new window lands on the output under the pointer, falling back to the
+    /// primary one: that is the display the user was looking at when the window
+    /// appeared.
     fn add_window(&mut self, surface: ToplevelSurface) {
-        let id = self.workspace.add();
+        let Some(output) = self
+            .pointer_output()
+            .or_else(|| self.outputs.first().map(|e| e.id))
+        else {
+            // No display at all: the window is still registered so it can be shown
+            // as soon as one comes back.
+            let id = self.workspace.add(OutputId::new(u64::MAX));
+            self.workspace.assign(id, None);
+            self.windows.insert(id, Window::new_wayland_window(surface));
+
+            return;
+        };
+
+        let id = self.workspace.add(output);
         self.windows.insert(id, Window::new_wayland_window(surface));
 
         info!(
@@ -1034,9 +1499,18 @@ impl InoxState {
     }
 
     /// Suggest each managed window its tiled geometry and map it into the space.
+    ///
+    /// Every output tiles its own windows inside its own work area, in the global
+    /// coordinate space, so a window on the second display is placed next to the
+    /// first display's area rather than on top of it (ADR 0019).
     fn arrange_windows(&mut self) {
         self.repaint = true;
-        let tiles = self.workspace.arrange(self.work_area, self.layout);
+        let work_areas: Vec<(OutputId, Rectangle<i32, Logical>)> = self
+            .outputs
+            .iter()
+            .map(|entry| (entry.id, entry.work_area))
+            .collect();
+        let tiles = self.workspace.arrange(&work_areas, self.layout);
         let mut mapped: Vec<Window> = Vec::with_capacity(tiles.len());
 
         for (id, tile) in &tiles {
@@ -1114,7 +1588,8 @@ impl InoxState {
         // is sent nothing at all — not even when the focus is set to `None`. Dropping
         // the offer is the client's own duty, and the protocol states it plainly
         // ("the data_offer is valid ... until the client loses keyboard focus").
-        let focused = focused.filter(|_| self.seat.get_keyboard().is_some() && self.output_active);
+        let focused =
+            focused.filter(|_| self.seat.get_keyboard().is_some() && !self.outputs.is_empty());
         self.repaint |= self.keyboard.current_focus() != focused;
         let client = focused.as_ref().and_then(|surface| surface.client());
 
@@ -1138,7 +1613,7 @@ impl InoxState {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        if !self.output_active {
+        if self.outputs.is_empty() {
             return None;
         }
         for layer in [Layer::Overlay, Layer::Top] {
@@ -1201,50 +1676,73 @@ impl InoxState {
         self.sync_focus();
     }
 
+    /// Place every committed layer surface and recompute each output's work area.
+    ///
+    /// Each output has its own area and its own reservation chain, so a panel on
+    /// one display never shrinks the work area of another (ADR 0019). The pure
+    /// placement and reservation rules in [`crate::layers`] are unchanged; only
+    /// the area they are applied to differs per output.
     fn arrange_layers(&mut self) {
         self.repaint = true;
-        let output_area = Rectangle::from_size(self.output_size().into());
-        let mut area = output_area;
-        // Reservations precede neutral surfaces regardless of creation order.
-        for exclusive in [true, false] {
-            for layer in LAYER_ORDER {
-                for entry in self
-                    .layers
-                    .iter_mut()
-                    .rev()
-                    .filter(|entry| entry.committed && entry.surface.layer() == layer)
-                {
-                    let cached = entry.surface.cached_state();
-                    let reserves = matches!(
-                        cached.exclusive_zone,
-                        smithay::wayland::shell::wlr_layer::ExclusiveZone::Exclusive(_)
-                    );
-                    if reserves != exclusive {
-                        continue;
-                    }
-                    let source = if cached.exclusive_zone
-                        == smithay::wayland::shell::wlr_layer::ExclusiveZone::DontCare
-                    {
-                        output_area
-                    } else {
-                        area
-                    };
-                    entry.geometry = crate::layers::geometry(source, cached);
-                    let surface = entry.surface.layer_surface();
-                    surface.with_pending_state(|state| state.size = Some(entry.geometry.size));
-                    if entry.initial_configure.is_none() {
-                        entry.initial_configure = Some(surface.send_configure());
-                    } else {
-                        surface.send_pending_configure();
-                    }
-                    if entry.mapped {
-                        crate::layers::reserve(&mut area, cached);
+
+        let areas: Vec<(OutputId, Rectangle<i32, Logical>)> = self
+            .outputs
+            .iter()
+            .map(|entry| (entry.id, entry.area))
+            .collect();
+        let mut work_areas: Vec<(OutputId, Rectangle<i32, Logical>)> =
+            Vec::with_capacity(areas.len());
+
+        for (id, output_area) in &areas {
+            let mut area = *output_area;
+            // Reservations precede neutral surfaces regardless of creation order.
+            for exclusive in [true, false] {
+                for layer in LAYER_ORDER {
+                    for entry in self.layers.iter_mut().rev().filter(|entry| {
+                        entry.output == *id && entry.committed && entry.surface.layer() == layer
+                    }) {
+                        let cached = entry.surface.cached_state();
+                        let reserves = matches!(
+                            cached.exclusive_zone,
+                            smithay::wayland::shell::wlr_layer::ExclusiveZone::Exclusive(_)
+                        );
+                        if reserves != exclusive {
+                            continue;
+                        }
+                        let source = if cached.exclusive_zone
+                            == smithay::wayland::shell::wlr_layer::ExclusiveZone::DontCare
+                        {
+                            *output_area
+                        } else {
+                            area
+                        };
+                        entry.geometry = crate::layers::geometry(source, cached);
+                        let surface = entry.surface.layer_surface();
+                        surface.with_pending_state(|state| state.size = Some(entry.geometry.size));
+                        if entry.initial_configure.is_none() {
+                            entry.initial_configure = Some(surface.send_configure());
+                        } else {
+                            surface.send_pending_configure();
+                        }
+                        if entry.mapped {
+                            crate::layers::reserve(&mut area, cached);
+                        }
                     }
                 }
             }
+            work_areas.push((*id, area));
         }
-        if self.work_area != area {
-            self.work_area = area;
+
+        let mut changed = false;
+        for entry in &mut self.outputs {
+            if let Some((_, area)) = work_areas.iter().find(|(id, _)| *id == entry.id)
+                && entry.work_area != *area
+            {
+                entry.work_area = *area;
+                changed = true;
+            }
+        }
+        if changed {
             self.arrange_windows();
         }
         self.sync_focus();
@@ -1275,14 +1773,20 @@ impl InoxState {
             );
             return;
         }
+        // Read through the field rather than through `self.output_of`: the entry
+        // above already borrows `self.layers`, and a method call would borrow all
+        // of `self` with it.
+        let target = output_of(&self.outputs, entry.output).cloned();
         if entry.mapped && !has_buffer {
             entry.mapped = false;
             entry.committed = false;
             entry.initial_configure = None;
             entry.acknowledged = false;
-            entry
-                .surface
-                .with_surfaces(|surface, _| self.output.leave(surface));
+            if let Some(target) = target {
+                entry
+                    .surface
+                    .with_surfaces(|surface, _| target.leave(surface));
+            }
             let layer = entry.surface.layer();
             with_states(surface, |states| {
                 let reset = LayerSurfaceCachedState {
@@ -1301,12 +1805,13 @@ impl InoxState {
         } else {
             entry.committed = true;
             entry.mapped = has_buffer;
-            if has_buffer {
+            if has_buffer && let Some(target) = target {
                 entry
                     .surface
-                    .with_surfaces(|surface, _| self.output.enter(surface));
+                    .with_surfaces(|surface, _| target.enter(surface));
             }
         }
+        self.update_surface_scale(surface);
         self.arrange_layers();
     }
 
@@ -1317,15 +1822,26 @@ impl InoxState {
             .position(|entry| entry.surface.wl_surface() == surface)
         {
             let entry = self.layers.remove(index);
-            entry
-                .surface
-                .with_surfaces(|surface, _| self.output.leave(surface));
+            let target = self.output_of(entry.output).cloned();
+            if let Some(target) = target {
+                entry
+                    .surface
+                    .with_surfaces(|surface, _| target.leave(surface));
+            }
             if self.layer_focus.as_ref() == Some(surface) {
                 self.layer_focus = None;
             }
             self.arrange_layers();
         }
     }
+}
+
+/// The advertisement of `id` inside `outputs`.
+fn output_of(outputs: &[OutputEntry], id: OutputId) -> Option<&Output> {
+    outputs
+        .iter()
+        .find(|entry| entry.id == id)
+        .map(|entry| &entry.output)
 }
 
 /// The toplevel surface backing `window`, if it is a Wayland window.
@@ -1352,33 +1868,67 @@ fn keyboard_config(input: &inox_config::InputConfig) -> XkbConfig<'_> {
     }
 }
 
-/// Create the headless output and advertise it to clients.
-fn create_headless_output(config: &CompositorConfig) -> Output {
-    let (width, height) = config.output_size();
+/// Create the headless outputs the configuration asks for (ADR 0019).
+///
+/// Without `--output` this is the single 1280x720 output every earlier milestone
+/// had, so the headless path is unchanged unless more displays are requested.
+fn create_headless_outputs(config: &CompositorConfig) -> Vec<OutputDescriptor> {
+    config
+        .outputs
+        .iter()
+        .map(|configured| {
+            let (width, height) = configured.size();
 
-    let output = Output::new(
-        config.output_name.clone(),
-        PhysicalProperties {
-            size: (millimetres(width), millimetres(height)).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Inox".to_owned(),
-            model: "Headless".to_owned(),
-        },
-    );
+            let output = Output::new(
+                configured.name.clone(),
+                PhysicalProperties {
+                    size: (millimetres(width), millimetres(height)).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "Inox".to_owned(),
+                    model: "Headless".to_owned(),
+                },
+            );
 
-    let mode = Mode {
-        size: (width, height).into(),
-        refresh: config.refresh_mhz(),
+            let mode = Mode {
+                size: (width, height).into(),
+                refresh: configured.refresh_mhz(),
+            };
+            output.set_preferred(mode);
+            output.change_current_state(
+                Some(mode),
+                Some(Transform::Normal),
+                Some(configured_scale(configured.scale)),
+                Some(Point::from((0, 0))),
+            );
+
+            OutputDescriptor {
+                key: configured.name.clone(),
+                output,
+                position: configured.position.map(Point::from),
+            }
+        })
+        .collect()
+}
+
+/// The Smithay scale a configured factor becomes (ADR 0020).
+///
+/// Clients that only understand integer scales are told the ceiling, so they
+/// render at least as many pixels as the display has and the compositor
+/// downscales; clients that bind `wp_fractional_scale_v1` get the exact value.
+/// A non-finite or non-positive factor is treated as `1.0` — the configuration
+/// layer rejects those, and this keeps a hand-built one inert rather than absurd.
+fn configured_scale(scale: f64) -> OutputScale {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     };
-    output.set_preferred(mode);
-    output.change_current_state(
-        Some(mode),
-        Some(Transform::Normal),
-        Some(OutputScale::Integer(1)),
-        Some(Point::from((0, 0))),
-    );
+    let advertised = scale.ceil().clamp(1.0, f64::from(i32::MAX)) as i32;
 
-    output
+    OutputScale::Custom {
+        advertised_integer: advertised,
+        fractional: scale,
+    }
 }
 
 /// Convert a pixel dimension to millimetres at [`PIXELS_PER_INCH`].
@@ -1438,6 +1988,7 @@ impl CompositorHandler for InoxState {
             warn!(%error, "failed to configure popup");
         }
         self.commit_layer(surface);
+        self.update_surface_scale(surface);
 
         let Some(id) = self.window_id_for_surface(surface) else {
             return;
@@ -1466,17 +2017,22 @@ impl WlrLayerShellHandler for InoxState {
         _layer: Layer,
         namespace: String,
     ) {
-        if !self.output_active {
+        // A surface that named no output takes the primary one; one that named an
+        // output this compositor does not advertise is closed, because there is no
+        // display it could be shown on (ADR 0019).
+        let target = match &output {
+            Some(resource) => Output::from_resource(resource)
+                .and_then(|named| self.find_output(&named).map(|entry| entry.id)),
+            None => self.outputs.first().map(|entry| entry.id),
+        };
+        let Some(target) = target else {
             surface.send_close();
             return;
-        }
-        if let Some(output) = output
-            && Output::from_resource(&output).as_ref() != Some(&self.output)
-        {
-            surface.send_close();
-            return;
-        }
+        };
+
+        let wl_surface = surface.wl_surface().clone();
         self.layers.push(LayerEntry {
+            output: target,
             surface: DesktopLayerSurface::new(surface, namespace),
             geometry: Rectangle::default(),
             committed: false,
@@ -1484,6 +2040,7 @@ impl WlrLayerShellHandler for InoxState {
             initial_configure: None,
             acknowledged: false,
         });
+        self.update_surface_scale(&wl_surface);
     }
 
     fn ack_configure(&mut self, surface: WlSurface, configure: LayerSurfaceConfigure) {
@@ -1771,6 +2328,19 @@ impl Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData> for InoxState {
         );
     }
 }
+/// Fractional scaling (ADR 0020).
+///
+/// Creating the object is the whole protocol interaction: the surface is told its
+/// scale through its own surface update, and a client that never
+/// creates the object is told the integer ceiling through
+/// `preferred_buffer_scale` on `wl_compositor` v6 instead.
+impl FractionalScaleHandler for InoxState {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        self.update_surface_scale(&surface);
+    }
+}
+
+smithay::delegate_fractional_scale!(InoxState);
 smithay::delegate_shm!(InoxState);
 smithay::delegate_viewporter!(InoxState);
 smithay::delegate_data_device!(InoxState);

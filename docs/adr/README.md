@@ -65,6 +65,8 @@ proposed ──► accepted ──► superseded
 | [0016](./0016-single-repository-cargo-workspace.md) | 改为单一仓库（Cargo workspace）并取代多仓库策略 | accepted | 2026-10-16 |
 | [0017](./0017-m3-xwayland-host-clipboard-and-dnd.md) | M3 的 XWayland 宿主协议、剪贴板与拖放 | proposed | 2026-10-16 |
 | [0018](./0018-l3-component-architecture.md) | L3 组件的独立性、共享 UI 边界与 layer-shell 宿主 | proposed | 2026-10-16 |
+| [0019](./0019-multi-output-topology-and-multi-gpu.md) | 多输出拓扑、按输出的帧生命周期与多 GPU 设备模型 | proposed | 2026-10-17 |
+| [0020](./0020-fractional-scaling.md) | 分数缩放采用 `wp_fractional_scale_v1` 与按输出的缓冲区像素 | proposed | 2026-10-17 |
 | [0021](./0021-l4-session-services.md) | L4 会话监督、空闲策略与登录边界的首版实现 | proposed | 2026-10-17 |
 
 ## 既有提案的复核与实施阻塞
@@ -81,6 +83,7 @@ proposed ──► accepted ──► superseded
 | ADR 0009 | 内存快照原子替换≠设备成功应用；符号链接边界、深色令牌回退和旧配置迁移未闭环 | 配置维护者 / M4、首次格式变更前 | C01–C04；ADR 0014 |
 | ADR 0010 | `Session::auto()` / `Session::Direct` 假设与 Smithay 0.7 的 `Session` trait / `LibSeatSession` 需纠正；固定后端顺序、API/feature、keycode 单位、unsafe 数量和系统许可说明须逐项核验 | 合成器维护者 + 人类审查者 / M2.5 实现前 | [Smithay 0.7 源码依据](./0012-output-input-and-frame-lifecycle.md#上游核验依据)；不以草案 API 伪代码当实现计划 |
 | ADR 0010 | 设备失败静默 headless、无可见光标、VT 延后、vblank 唯一帧源、默认输出堆叠、lid close 退出与桌面可用性冲突 | 合成器/会话维护者 / M2.5，双屏 M4 | ADR 0012、0015 提议的 ready/首帧/VT/输入/电源边界优先完成评审；O01–O04、S03 |
+| ADR 0012 | 复审条件「引入多 GPU / 多 seat、HDR/VRR、远程输出或新的渲染后端时，另写 ADR」已被触发：多 GPU 与多输出已实现 | 合成器维护者 + 人类审查者 / ADR 0019 评审时 | **已由 ADR 0019、0020（均 `proposed`）承接**：多输出拓扑、按输出帧生命周期、多 GPU 设备模型与分数缩放各有提案。跨 GPU 缓冲复制路径（`MultiRenderer`）明确留待 `linux-dmabuf` 落地前解决；HDR/VRR、多 seat、远程输出仍不在范围内 |
 | M4 工具链 | Iced layer-shell 在本工作区**无法编译**：`iced_layershell` 0.19.1 与 0.19.0 的 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举 `NativeKeyCode` 做穷尽匹配（`error[E0004]`，2026-10-16 实测）。AT-SPI 实际导出与 waydriver/宿主能力仍无证据 | Shell/测试维护者 / M4 实现前 | 本次改走可用的替代路径：**离屏渲染**（`iced_tiny_skia` + `iced_runtime::UserInterface`）在 CI 中覆盖真实控件树的布局、像素与事件，无需合成器与 GPU；layer-shell 表面、AT-SPI 语义导出与 waydriver 仍是阻塞项，见 ADR 0018 |
 | L3 的 layer-shell 宿主 | `inox-compositor` 尚未广告 `zwlr_layer_shell_v1`（绑定已在 `inox-protocols`，合成器未接入），CI 也没有支持该协议的宿主（`weston` 不支持），因此面板、启动器、通知与壁纸在 Inox 会话里无法成为真实表面 | 合成器维护者 + 架构组 / E2/E3 证据之前 | 合成器侧接入 Smithay 的 `wlr_layer`（层排序、独占区、按输出分配）需要更新协议矩阵或另写 ADR；宿主选型（`labwc` / `sway`）需要一个 opt-in 的 E2 job。在此之前 L3 只交付放置策略的建模与测试，不声称放置已生效 |
 | M5 认证与授权 | 真实认证边界、helper 权限、可信连接/能力传递、锁 UI 恢复策略尚需具体设计 | 锁屏维护者 + 安全审查者 / M5 实现前 | ADR 0015；S02–S04，新增依赖/XML 先评审 |
