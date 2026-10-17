@@ -188,6 +188,34 @@ mod tests {
     }
 
     #[test]
+    fn an_expired_preparation_cannot_update_live_preferences() {
+        let dir = tempfile::tempdir().expect("directory");
+        let paths = ConfigPaths::new(dir.path());
+        let old = InoxConfig::load(&paths, Appearance::System).expect("defaults");
+        let mut state = State::new(
+            old.shell.panel.clone(),
+            old.theme,
+            Rc::new(i18n::load(&old.locale).expect("catalog")),
+        );
+        std::fs::write(dir.path().join("shell.toml"), "[panel]\nheight = 48\n").expect("candidate");
+        let (endpoint, mut receiver) = endpoint(paths);
+        let reply = endpoint.submit("").expect("prepare");
+        let mut request = block_on(receiver.next()).expect("candidate");
+        request.deadline = Instant::now() - Duration::from_secs(1);
+        let _task = super::super::update_runtime(
+            &mut state,
+            super::super::RuntimeMessage::Reload(Box::new(request)),
+        );
+        assert_eq!(state.config(), &old.shell.panel);
+        assert!(
+            block_on(reply)
+                .expect("reply")
+                .expect_err("expired")
+                .contains("expired")
+        );
+    }
+
+    #[test]
     fn malformed_or_mismatched_candidates_release_the_gate_and_do_not_reach_the_ui() {
         let dir = tempfile::tempdir().expect("directory");
         let paths = ConfigPaths::new(dir.path());

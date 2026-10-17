@@ -203,9 +203,10 @@ fn apply(data: &mut CalloopData, config: &InoxConfig) -> Result<(), String> {
         }
     } else if !config.compositor.outputs.is_empty()
         || !config.compositor.input.input_method.is_empty()
+        || !config.root.environment.is_empty()
     {
         return Err(
-            "outputs/input.input_method: explicit headless runtime preserves command-line choices"
+            "outputs/input.input_method/environment: explicit headless runtime preserves startup choices"
                 .into(),
         );
     }
