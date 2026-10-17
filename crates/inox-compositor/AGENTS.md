@@ -4,7 +4,7 @@
 
 ## 职责
 
-基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
+基于 Smithay 的 Wayland 合成器。所属层级：**L2**。M1 广告 `wl_output`、`wl_compositor` 与私有 `inox_ipc` 全局（后者来自 `inox-protocols`）。
 
 ## crate 特有约束
 
@@ -16,12 +16,13 @@
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`；面向 CLI 的输出（如 `--help`）用显式 stdout 写入。
 - MSRV：工作区统一为 `[workspace.package] rust-version = "1.86"`（`smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86），本 crate 通过 `rust-version.workspace = true` 继承。工作区内不再存在两个 MSRV。
-- 工作区内依赖：`inox-common` 是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `inox-common.workspace = true` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。新增依赖前先确认方向合法：本 crate 属 L2，只能依赖 L1。
+- 工作区内依赖：`inox-common` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源（ADR 0002 规则 4）。
+  - **注意 `inox-compositor -> inox-protocols` 是 L2 → L2 的同层边**：ADR 0002 规则 1 禁止同层依赖，而协议集中到 `inox-protocols`（规则 4）又要求它。该边已登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`，规则 1 的裁决（层内顺序）尚未完成。
 - **后端开关（ADR 0010）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 失败时回落 headless 并 `warn!`；`drm` 失败直接 `RunError::BackendUnavailable`。CI 的集成测试必须显式或默认地走 headless 分支（runner 无 DRM master）。
 
 ## 主要依赖
 
-`smithay`（`default-features = false`，启用 `desktop` + `wayland_frontend` + `renderer_gl` + `backend_drm` + `backend_gbm` + `backend_libinput` + `backend_udev` + `backend_session` + `backend_session_libseat`，**不启用** `backend_x11` / `backend_winit` / `backend_vulkan` / `xwayland`，见 ADR 0010 §2）、`calloop`（`signals`）、`anyhow`、`thiserror`、`tracing`、`inox-common`（工作区内 path 依赖）。
+`smithay`（`default-features = false`，启用 `desktop` + `wayland_frontend` + `renderer_gl` + `backend_drm` + `backend_gbm` + `backend_libinput` + `backend_udev` + `backend_session` + `backend_session_libseat`，**不启用** `backend_x11` / `backend_winit` / `backend_vulkan` / `xwayland`，见 ADR 0010 §2）、`calloop`（`signals`）、`anyhow`、`thiserror`、`tracing`、`inox-common` 与 `inox-protocols`（均为工作区内 path 依赖）。
 
 **系统库依赖**：`libseat` / `libdrm` / `gbm` / `libinput` / `libudev`（编译时需 `-dev` 包，已在 CI 安装）；`libxkbcommon` + `xkb-data` 从 M1 就在。`libudev` 为 LGPL-2.1+（glibc 动态链接例外），属 Smithay 生态常规依赖。
 
@@ -73,6 +74,7 @@ src/
     drm.rs        M2.5 真实 DRM/KMS 脚手架（libseat 会话 + card 探测，present 路径待 M3a）
 tests/
   headless_render.rs     创建输出并渲染一帧（进程内）
+  ipc_global.rs          进程级：广告 inox_ipc 全局并应答 get_version
   signal_shutdown.rs     进程级：终止信号与帧预算都须以退出码 0 结束
   window_management.rs   真实客户端创建 ≥2 窗口，断言平铺与输入（进程内）
 ```

@@ -379,6 +379,7 @@ dependencies = [
  "anyhow",
  "calloop",
  "inox-common",
+ "inox-protocols",
  "proptest",
  "smithay",
  "thiserror",

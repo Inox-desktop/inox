@@ -21,7 +21,7 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、工具函数 | crate | 已实现（`logging`、`paths`） |
 | `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate | 已实现（模型、解析、错误定位；ADR 0009 仍为 `proposed`） |
 | `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc`） |
-| `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器 | 二进制 `inox-compositor` | 已实现（M1、M2；真实后端为脚手架） |
+| `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor` 与私有 `inox_ipc`） | 二进制 `inox-compositor` | 已实现（M1、M2；真实后端为脚手架） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、就绪探测、生命周期） |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 骨架 |
 | `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` | 骨架 |
@@ -55,6 +55,12 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 PRD §3.1 曾把发布物记作 `inox-comp`；根级 `AGENTS.md` §5 说明这只是简写，实际二进制与你运行的命令都是 `inox-compositor`。
 
 当前 `inox-compositor` 实现的是 **M1 + M2**：headless 输出创建、键盘与指针事件处理、以 `xdg-shell` toplevel 为窗口的 master/stack 平铺。`src/backend/drm.rs` 是 M2.5 真实后端的脚手架（ADR 0010 状态 `proposed`）：后端特性已在 `Cargo.toml` 中启用并被 CI 编译检查，但真实 DRM/KMS 与 libinput 路径尚未在运行中打通，也无 XWayland、剪贴板与拖放。详见[构建与运行](../usage/building.md)。
+
+### L2 内部有一条已登记的同层边
+
+`inox-compositor` 依赖 `inox-protocols`（核心 `wl_*` 绑定与私有 `inox-ipc`），而两者同属 L2。这既是 ADR 0002 规则 4（协议只能从 `inox-protocols` 出口）的要求，又与规则 1（禁止同层依赖）冲突——四层模型表达不了层内顺序。该边登记在 `[workspace.metadata.inox.rules] same_layer_exceptions` 中，删掉条目 CI 会立刻变红。
+
+同样的情况在 L1 已存在（`inox-config → inox-common`）。规则 1 该如何表达层内顺序仍是待裁决项；现在它阻塞的是已经落地的代码，不再是假设。
 
 ### 合成器与 Shell 之间没有 Rust 依赖
 

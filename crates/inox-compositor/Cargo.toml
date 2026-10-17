@@ -14,14 +14,17 @@ categories.workspace = true
 anyhow.workspace = true
 calloop.workspace = true
 inox-common.workspace = true
+# The single source of truth for the Wayland protocols the compositor consumes:
+# the curated core `wl_*` bindings and the private `inox-ipc` control protocol.
+inox-protocols.workspace = true
 smithay.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-# The window-management integration test drives a real Wayland client against an
-# in-process display, so it needs the client-side protocol bindings.
+# The inox-ipc and window-management integration tests drive a real Wayland
+# client; Smithay does not re-export `wayland-client`.
 wayland-client.workspace = true
 wayland-protocols = { workspace = true, features = ["client"] }
 

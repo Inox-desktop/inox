@@ -87,7 +87,10 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 - `inox-common` 不得依赖任何其他 Inox crate（叶子节点）。
 - `inox-compositor` 与 `inox-shell` 之间**不通过 Rust 依赖**耦合，而是通过 Wayland 协议 / IPC 通信，保证可独立运行与测试。
 - 以上规则不再只靠约定：层级成员登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`，由 `crates/inox-integration/tests/layering.rs`（验收项 B04）在 CI 中读取真实依赖图逐条断言，失败会指明具体的边与被违反的规则。**新增 crate 未登记层级会直接失败**，因此不存在绕过规则的路径。
-- 规则例外同样是登记在 `[workspace.metadata.inox.rules]` 中的数据，当前有两处：(1) L1 内部的 `inox-config → inox-common`（四层层模型无法表达层内顺序，该歧义由 ADR 索引登记）；(2) ADR 0002 规则 6 允许的 L3→合成器单点。删除例外条目即收紧规则，收紧需要相应 ADR。
+- 规则例外同样登记在 `[workspace.metadata.inox.rules]` 中，当前有两条：
+  1. `same_layer_exceptions`：`inox-config → inox-common`（L1 内部顺序）与 `inox-compositor → inox-protocols`（L2 内部顺序）。**四层模型无法表达层内顺序**：这两条边都是健康的实现方向，但 ADR 0002 规则 1 的字面表述禁止同层依赖，而规则 2（`inox-common` 为叶子）与规则 4（`inox-protocols` 是协议唯一出口）又要求它们存在。该歧义由 ADR 索引登记，`inox-compositor → inox-protocols` 已随合成器消费协议绑定而**落地**，因此规则 1 的裁决已是阻塞项而非可选项。
+  2. `l3_dependencies_on_compositor`：ADR 0002 规则 6 允许的 L3→合成器单点（当前只有 `inox-wallpaper`）。
+  删除例外条目即收紧规则，收紧需要相应 ADR。
 
 ### 2.2 运行时数据流与 IPC
 
