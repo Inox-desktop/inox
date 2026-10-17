@@ -3,6 +3,7 @@
 - 状态：accepted
 - 日期：2026-10-16
 - 决策者：架构组
+- 关系：**被 [ADR 0016](./0016-single-repository-cargo-workspace.md) 部分取代（2026-10-16）**，取代范围限于两项：(1) 「决策」第 5 条中借**仓库边界**强制依赖方向的手段，改由 `cargo metadata` 驱动的 `crates/inox-integration/tests/layering.rs`（验收项 B04）执行，不再依赖仓库划分；(2) 「后果 · 负面」中「依赖必须通过 Git tag 逐层升级，L1 的改动传播到 L4 需要多轮 PR」一项，工作区内改为 path 依赖后不再成立。**分层成员与规则 1–7 继续有效并保持本 ADR 的权威**。规则 1 的「同层横向」表述与组件表存在歧义（`inox-config → inox-common` 等层内顺序），该歧义由 ADR 0016 的实施记录登记为待人类裁决事项，本 ADR 的措辞暂不修改。
 
 ## 背景
 

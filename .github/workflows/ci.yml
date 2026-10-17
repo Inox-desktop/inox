@@ -1,0 +1,209 @@
+name: CI
+
+# One workspace, one pipeline (ADR 0016). The former 17 per-repository `ci.yml`
+# copies — three of which had already diverged — collapse into this file.
+#
+# The `plan` job derives the per-crate test matrix from the same layer table
+# that `crates/inox-integration/tests/layering.rs` enforces, so a new crate
+# cannot end up in the workspace without being built and tested: the layer table
+# is checked against the member list, and the matrix is built from the layer
+# table. Nothing is listed here by hand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
+  # Headless integration tests render through Mesa's llvmpipe (software)
+  # backend; the runner has no GPU.
+  LIBGL_ALWAYS_SOFTWARE: "1"
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # No system libraries are installed here on purpose: clippy type-checks
+      # without linking, so it does not need them. See the `build` job for the
+      # libraries the link steps need.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Runs against the complete dependency graph, which is what the 18
+      # per-repository `deny.toml` copies could not do: each saw only its own
+      # subgraph.
+      - run: cargo deny check
+
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps --all-features
+
+  build:
+    name: build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # libxkbcommon-dev is a build-time dependency: Smithay's `wayland_frontend`
+      # feature links the system `libxkbcommon` (`-lxkbcommon`), so the `cargo
+      # test` and `cargo build` link steps need its `.so`; the dev package also
+      # pulls the runtime `libxkbcommon0`. xkb-data provides the rules files the
+      # compositor compiles its deterministic `evdev`/`us` keymap from; without
+      # it the seat keyboard cannot be created.
+      #
+      # The M2.5 real backend (ADR 0010) links against libseat, libdrm, gbm,
+      # libinput and libudev through Smithay's `backend_*` features, so their
+      # `-dev` packages are needed to link. The runner has no DRM master and no
+      # input-device permissions, so that code path is compile-checked only and
+      # never exercised here (see O01 and ADR 0012).
+      - name: Install build/runtime system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev xkb-data \
+            libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
+      - run: cargo build --workspace --release --all-features
+
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Derived from `[workspace.metadata.inox.layers]`, the same table
+      # `layering.rs` checks. `--no-deps` keeps this to manifest data: no
+      # registry access and nothing to download.
+      #
+      # `graphics` marks the crates whose manifests declare `smithay`, which is
+      # what makes the link steps need the system libraries. Only those entries
+      # install them, so the stub crates stay cheap.
+      - id: matrix
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, subprocess, sys
+
+          raw = subprocess.check_output([
+              "cargo", "metadata", "--no-deps", "--format-version", "1", "--offline",
+          ])
+          meta = json.loads(raw)
+          layers = meta["metadata"]["inox"]["layers"]
+          packages = {p["name"]: p for p in meta["packages"]}
+
+          include = []
+          for layer in ("l1", "l2", "l3", "l4", "test"):
+              for crate in layers[layer]:
+                  deps = packages[crate]["dependencies"]
+                  include.append({
+                      "crate": crate,
+                      "layer": layer,
+                      "graphics": any(d["name"] == "smithay" for d in deps),
+                  })
+
+          # Fail loudly rather than silently testing nothing, and refuse to run a
+          # matrix that does not cover the workspace.
+          covered = {entry["crate"] for entry in include}
+          members = {p["name"] for p in meta["packages"]}
+          if covered != members:
+              print(
+                  f"layer table does not cover every member: only {sorted(covered)}, "
+                  f"missing {sorted(members - covered)}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print("matrix=" + json.dumps({"include": include}))
+          PY
+
+  test:
+    name: test (${{ matrix.crate }})
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every crate's result, not just the first failure.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build/runtime system libraries
+        if: matrix.graphics
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev xkb-data \
+            libegl1 libgl1-mesa-dri \
+            libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
+      # EGL/Mesa is a test-time (runtime) dependency only: Smithay's
+      # GlesRenderer dlopen()s libEGL.so.1 and nothing links it at build time.
+      # libegl1 is the GLVND loader and pulls Mesa's EGL vendor driver
+      # (libegl-mesa0 -> libgbm1, libglapi-mesa, mesa-libgallium);
+      # libgl1-mesa-dri provides the DRI drivers including the llvmpipe/swrast
+      # software rasteriser behind LIBGL_ALWAYS_SOFTWARE=1.
+      #
+      # One job per crate keeps a failure attributable and keeps the command the
+      # same one a developer runs locally: `cargo test -p <crate>`.
+      - run: cargo test -p ${{ matrix.crate }} --all-features
+
+  xwayland-e2e:
+    name: XWayland end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            weston xwayland x11-apps x11-utils \
+            clang libxcb1 libxcb-cursor0 libxcb-cursor-dev pkg-config libegl1
+      # A third-party headless compositor is only good enough for E2 (see
+      # docs/quality/acceptance.md §1); E3 needs the Inox compositor.
+      - name: Install xwayland-satellite
+        run: cargo install --locked --git https://github.com/Supreeeme/xwayland-satellite --tag v0.8.3 xwayland-satellite
+      - name: Headless end-to-end test
+        run: INOX_XWAYLAND_E2E=1 cargo test -p inox-xwayland --all-features --test headless_x11_mapping -- --nocapture
+
+  book:
+    name: mdbook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+      - run: mdbook build docs/book

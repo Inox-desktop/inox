@@ -1,0 +1,29 @@
+[package]
+name = "inox-config"
+description = "Configuration model and TOML parsing for the Inox desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Workspace-internal, so a path dependency rather than a git tag (ADR 0016).
+inox-common.workspace = true
+serde.workspace = true
+# Field paths in parse errors (`input.keyboard_repeat_rate_hz`) come from here;
+# `toml` alone only reports the position.
+serde_path_to_error.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Loading and reloading are only meaningful against real files.
+tempfile.workspace = true
+
+[lints]
+workspace = true

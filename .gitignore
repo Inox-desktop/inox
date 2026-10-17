@@ -1,2 +1,12 @@
-repos/
+/target
+
+# mdBook output for the documentation site (`docs/book/book/`). The site used to
+# carry its own .gitignore for this; ADR 0016 removed per-component ignore files,
+# so the root one has to cover it.
+/docs/book/book/
+
+# Local clones of the component repositories that ADR 0016 replaced with this
+# workspace. Kept ignored until those repositories are archived and the clones
+# are deleted.
+/repos/
 .commandcode/

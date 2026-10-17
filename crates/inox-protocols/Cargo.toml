@@ -1,0 +1,29 @@
+[package]
+name = "inox-protocols"
+description = "Wayland protocol bindings and Inox protocol extensions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# ADR 0002 rule 4: this crate is the single exit point for protocols. It has no
+# Inox dependency of its own — it sits on `wayland-rs` alone.
+[dependencies]
+wayland-backend.workspace = true
+wayland-client.workspace = true
+wayland-server.workspace = true
+wayland-scanner.workspace = true
+wayland-protocols = { workspace = true, features = [
+    "client",
+    "server",
+    "staging",
+    "unstable",
+] }
+wayland-protocols-wlr.workspace = true
+
+[lints]
+workspace = true

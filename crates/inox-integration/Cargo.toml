@@ -1,0 +1,23 @@
+[package]
+name = "inox-integration"
+description = "End-to-end integration tests for the Inox desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# `tests/layering.rs` implements acceptance B04 by reading `cargo metadata`.
+serde_json.workspace = true
+
+[lints]
+workspace = true
