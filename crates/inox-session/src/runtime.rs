@@ -25,6 +25,9 @@ const TICK: Duration = Duration::from_millis(50);
 const SOCKET: &str = "wayland-inox";
 
 /// A program and literal arguments; never interpreted by a shell.
+///
+/// The session's own environment is applied to every child; per-component values
+/// live on [`ServiceSpec::environment`].
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
     /// Executable path or name resolved through PATH.
@@ -54,6 +57,13 @@ pub struct ServiceSpec {
     pub required: bool,
     /// A successful exit completes a bootstrap task instead of restarting it.
     pub oneshot: bool,
+    /// Extra environment for this component alone, layered over the session's.
+    ///
+    /// This exists for capabilities that must not be handed to every child: the
+    /// session lock token authorizes taking the session lock, so putting it in the
+    /// session's environment would hand it to the shell and every component it
+    /// starts (ADR 0022 decision 3). Only the trusted lock client gets it.
+    pub environment: BTreeMap<String, String>,
 }
 
 /// The fixed two-stage session graph: compositor, then independent services.
@@ -167,6 +177,9 @@ impl Process {
         command
             .args(&self.spec.command.arguments)
             .envs(environment)
+            // Per-service values win over the session's: they are the ones carrying
+            // a capability that belongs to this component alone.
+            .envs(&self.spec.environment)
             .env("XDG_RUNTIME_DIR", runtime)
             .env("WAYLAND_DISPLAY", SOCKET)
             .env("XDG_SESSION_TYPE", "wayland")
@@ -413,6 +426,10 @@ pub fn run(spec: SessionSpec, options: RunOptions) -> Result<(), SessionError> {
         command: spec.compositor,
         required: true,
         oneshot: false,
+        // The lock token reaches the compositor as an argument, not through the
+        // environment: it is the compositor's copy of the capability that decides
+        // whether a claim is honoured, and that is a startup decision.
+        environment: BTreeMap::new(),
     });
     compositor.spawn(
         &runtime.0,

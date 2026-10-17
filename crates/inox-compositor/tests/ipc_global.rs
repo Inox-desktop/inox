@@ -21,7 +21,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use inox_protocols::ipc::inox_ipc::client::inox_ipc::{Event as IpcEvent, InoxIpc};
+use inox_protocols::ipc::inox_ipc::client::inox_ipc::{
+    Event as IpcEvent, InoxIpc, LockState as InoxIpcLockState,
+};
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
@@ -137,12 +139,15 @@ struct ClientOutcome {
     global_advertised: bool,
     /// The versions reported by `version` events, in arrival order.
     versions: Vec<u32>,
+    /// The session lock state the compositor reported when the global was bound.
+    lock_state: Option<InoxIpcLockState>,
 }
 
 /// The client-side state the wayland dispatch handlers mutate.
 #[derive(Debug, Default)]
 struct IpcClientState {
     versions: Vec<u32>,
+    lock_state: Option<InoxIpcLockState>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for IpcClientState {
@@ -167,8 +172,12 @@ impl Dispatch<InoxIpc, ()> for IpcClientState {
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
     ) {
-        if let IpcEvent::Version { version } = event {
-            state.versions.push(version);
+        match event {
+            IpcEvent::Version { version } => state.versions.push(version),
+            IpcEvent::SessionLockState { state: value } => {
+                state.lock_state = value.into_result().ok();
+            }
+            _ => {}
         }
     }
 }
@@ -185,7 +194,11 @@ fn talk_to_compositor(socket_path: &Path) -> anyhow::Result<ClientOutcome> {
         .contents()
         .with_list(|list| list.iter().any(|global| global.interface == "inox_ipc"));
 
-    let ipc: InoxIpc = globals.bind(&queue.handle(), 1..=1, ())?;
+    // Bind at whatever the interface declares: the point of the assertion below is
+    // that the compositor answers with the negotiated version, not with a number
+    // this test happens to know.
+    let declared = <InoxIpc as wayland_client::Proxy>::interface().version;
+    let ipc: InoxIpc = globals.bind(&queue.handle(), 1..=declared, ())?;
 
     // Binding the global makes the compositor send `version` right away.
     queue.roundtrip(&mut state)?;
@@ -196,6 +209,7 @@ fn talk_to_compositor(socket_path: &Path) -> anyhow::Result<ClientOutcome> {
     Ok(ClientOutcome {
         global_advertised,
         versions: state.versions,
+        lock_state: state.lock_state,
     })
 }
 
@@ -235,9 +249,16 @@ fn inox_ipc_global_is_advertised_and_answers_get_version() {
         outcome.global_advertised,
         "the compositor did not advertise the inox_ipc global"
     );
+    let declared = <InoxIpc as wayland_client::Proxy>::interface().version;
     assert_eq!(
         outcome.versions,
-        [1, 1],
-        "expected a version event on bind and one for get_version"
+        [declared, declared],
+        "expected a version event on bind and one for get_version, both reporting the \
+         version the interface declares"
+    );
+    assert_eq!(
+        outcome.lock_state,
+        Some(InoxIpcLockState::Unlocked),
+        "a freshly bound observer is told the lock state instead of having to guess it"
     );
 }

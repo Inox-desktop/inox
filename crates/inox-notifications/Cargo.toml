@@ -12,6 +12,15 @@ categories.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# The D-Bus service itself (M5, acceptance D06). ADR 0022 §5 records the choice,
+# the licence (MIT) and why only the blocking API is used.
+zbus.workspace = true
+# The session lock state the daemon needs to withhold notification bodies while
+# the session is locked: the compositor is the authority and publishes it over
+# the private `inox-ipc` protocol (ADR 0022 §4). This is an L3 -> L2 dependency,
+# which ADR 0002 rule 1 allows (it is downward) and ADR 0022 §7 records.
+inox-protocols.workspace = true
+wayland-client.workspace = true
 # ADR 0003 fixes Iced for every shell component; the workspace entry selects the
 # tiny-skia renderer, which is what the headless render tests draw through.
 iced.workspace = true

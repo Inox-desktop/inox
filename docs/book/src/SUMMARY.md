@@ -29,6 +29,7 @@
 # 使用
 
 - [构建与运行](./usage/building.md)
+- [输入法](./usage/input-methods.md)
 
 # 附录
 

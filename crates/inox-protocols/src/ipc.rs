@@ -51,11 +51,11 @@ mod tests {
     use super::inox_ipc::{client, server};
 
     #[test]
-    fn the_interface_is_advertised_as_inox_ipc_v1() {
+    fn the_interface_is_advertised_as_inox_ipc_v2() {
         assert_eq!(client::__interfaces::INOX_IPC_INTERFACE.name, "inox_ipc");
-        assert_eq!(client::__interfaces::INOX_IPC_INTERFACE.version, 1);
+        assert_eq!(client::__interfaces::INOX_IPC_INTERFACE.version, 2);
         assert_eq!(server::__interfaces::INOX_IPC_INTERFACE.name, "inox_ipc");
-        assert_eq!(server::__interfaces::INOX_IPC_INTERFACE.version, 1);
+        assert_eq!(server::__interfaces::INOX_IPC_INTERFACE.version, 2);
     }
 
     #[test]
@@ -66,7 +66,10 @@ mod tests {
             .map(|request| request.name)
             .collect();
 
-        assert_eq!(names, ["destroy", "get_version", "reload_config"]);
+        assert_eq!(
+            names,
+            ["destroy", "get_version", "reload_config", "claim_lock_role"]
+        );
     }
 
     #[test]
@@ -89,7 +92,7 @@ mod tests {
             .map(|event| event.name)
             .collect();
 
-        assert_eq!(names, ["version", "config_reloaded"]);
+        assert_eq!(names, ["version", "config_reloaded", "session_lock_state"]);
     }
 
     #[test]
@@ -100,5 +103,34 @@ mod tests {
         assert_eq!(u32::from(ReloadResult::Rejected), 1);
         assert_eq!(u32::from(ReloadResult::IoError), 2);
         assert_eq!(u32::from(ReloadResult::Unsupported), 3);
+    }
+
+    #[test]
+    fn the_lock_state_enum_values_are_frozen() {
+        use client::inox_ipc::LockState;
+
+        // Observers branch on these values across a process boundary; a silent
+        // renumbering would make the idle daemon read "locked" as "unlocked".
+        assert_eq!(u32::from(LockState::Unlocked), 0);
+        assert_eq!(u32::from(LockState::Locked), 1);
+    }
+
+    #[test]
+    fn the_lock_role_claim_carries_a_token() {
+        let request = client::__interfaces::INOX_IPC_INTERFACE
+            .requests
+            .iter()
+            .find(|request| request.name == "claim_lock_role")
+            .expect("the claim request exists");
+
+        let signature = format!("{:?}", request.signature);
+        assert!(
+            signature.starts_with("[Str(") && signature.ends_with(")]"),
+            "the token must travel as a single, non-nullable string: {signature}"
+        );
+        assert!(
+            !request.is_destructor,
+            "claiming a role must not destroy the connection's ipc object"
+        );
     }
 }

@@ -6,13 +6,14 @@
 //! I/O — the daemon decides, and hands what it decided to the transport that will
 //! carry it, which is [`Outgoing`].
 //!
-//! **The transport does not exist yet.** The D-Bus service is M5 (PRD §13), so
-//! the calls in [`Message::Request`] are the ones that bus will deliver and the
-//! [`Outgoing`] queue is what it will drain. `main.rs` says so at startup, and
-//! the tests below drive the same messages a bus would, which is what makes the
-//! behaviour acceptance D06 asks about — identifiers, close reasons, at-most-once
-//! actions, the bound, do not disturb, the locked redaction — testable without a
-//! session bus.
+//! **The transport is [`crate::bus`]**, and the seam between it and this module
+//! is two channels: [`Inbox`] is how a call (or the session lock state) gets in,
+//! and [`State::take_outgoing`] is how an answer or a signal gets out. The
+//! transport runs on its own threads and never touches [`State`], which is not
+//! `Send`; the tests below drive the same messages the bus delivers, which is
+//! what makes the behaviour acceptance D06 asks about — identifiers, close
+//! reasons, at-most-once actions, the bound, do not disturb, the locked
+//! redaction — testable without a session bus.
 //!
 //! Three rules are load-bearing and tested here rather than asserted in a
 //! comment:
@@ -29,7 +30,10 @@
 //!   [`Message::ConfigReloaded`] deliberately does not touch the running one.
 
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::{Element, Subscription};
@@ -103,6 +107,203 @@ pub enum Message {
     SessionLockChanged(SessionState),
     /// The configuration was reloaded.
     ConfigReloaded(NotificationsConfig),
+}
+
+/// How many messages the transports may hand the application at once.
+///
+/// The application drains this channel once per frame. The depth is what a burst
+/// of a hundred calls a second fits into while a frame is being drawn: a
+/// transport that finds it full is told so and refuses the call on the wire
+/// rather than waiting for an unbounded queue to drain.
+pub const INBOX_DEPTH: usize = 256;
+
+/// Why a transport could not hand the application a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Undelivered {
+    /// Nothing is reading: the application has not subscribed yet, or it
+    /// replaced its subscription and the new stream has not been installed.
+    #[error("no stream is reading the daemon's messages")]
+    Detached,
+    /// The application has not drained [`INBOX_DEPTH`] messages yet.
+    #[error("the daemon's message channel is full")]
+    Full,
+}
+
+/// The transports' end of the daemon's message channel.
+///
+/// Iced asks for a [`Subscription`]'s stream through a factory function that
+/// cannot be handed the running daemon (see [`Inbox::subscription`]), so the two
+/// ends meet here instead: [`Inbox::subscription`] is what the application
+/// subscribes with, and [`Inbox::deliver`] is what the bus thread and the
+/// lock-state watcher push into. Nothing else in the daemon needs to know how
+/// the two are wired, and a transport that cannot deliver is told so rather than
+/// assuming it was heard.
+#[derive(Debug, Clone)]
+pub struct Inbox(Arc<InboxInner>);
+
+/// The shared half of an [`Inbox`].
+#[derive(Debug, Default)]
+struct InboxInner {
+    /// Where the running subscription's stream is fed, once it exists.
+    sink: Mutex<Option<iced::futures::channel::mpsc::Sender<Message>>>,
+    /// Signalled when a stream is installed, so that a transport with a call in
+    /// hand can wait for the application instead of refusing it.
+    attached: Condvar,
+    /// Messages no stream could take, so that "undeliverable" is a number a
+    /// test can assert rather than a claim.
+    lost: AtomicU64,
+}
+
+/// One daemon has one transport channel, and iced identifies a subscription by
+/// the hash of what it was built from: hashing the contents would make the
+/// identity change when the first message is delivered, and iced would tear the
+/// stream down and build a new one.
+impl Hash for InboxInner {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u8(0);
+    }
+}
+
+impl Inbox {
+    /// An inbox nobody is reading yet.
+    pub fn new() -> Self {
+        Self(Arc::new(InboxInner::default()))
+    }
+
+    /// The application's end: a subscription that carries what the transports
+    /// deliver as ordinary [`Message`]s.
+    ///
+    /// The stream this builds installs itself as the inbox's sink, so a
+    /// transport is never left pushing into a channel nobody reads. A second
+    /// stream replaces the first, which is what makes the wiring survive iced
+    /// building the subscription again.
+    pub fn subscription(&self) -> Subscription<Message> {
+        Subscription::run_with(Arc::clone(&self.0), subscribed)
+    }
+
+    /// Hands a message to the application.
+    ///
+    /// # Errors
+    ///
+    /// [`Undelivered::Detached`] when nothing is reading and
+    /// [`Undelivered::Full`] when the application has not drained the channel;
+    /// both are counted in [`Inbox::lost`]. A transport that cannot deliver must
+    /// say so to whoever is waiting — the bus answers such a call with a D-Bus
+    /// error rather than leaving the client with no reply at all.
+    pub fn deliver(&self, message: Message) -> Result<(), Undelivered> {
+        self.deliver_within(message, Duration::ZERO)
+    }
+
+    /// Hands a message to the application, waiting up to `grace` for a stream
+    /// to appear.
+    ///
+    /// The daemon owns its bus name before iced has built the subscription that
+    /// reads it, so a call that arrives during startup would otherwise be
+    /// refused for a reason the client can do nothing about — an application
+    /// started at the same time as the session loses its first notification.
+    /// Waiting for a reader is bounded and ends either way: a daemon with no
+    /// application at all is still told `Detached`, and says so on the wire.
+    ///
+    /// # Errors
+    ///
+    /// As [`Inbox::deliver`].
+    pub fn deliver_within(&self, message: Message, grace: Duration) -> Result<(), Undelivered> {
+        let deadline = Instant::now() + grace;
+        let mut sink = self
+            .0
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let outcome = loop {
+            match sink.as_mut() {
+                Some(stream) => match stream.try_send(message) {
+                    Ok(()) => break Ok(()),
+                    Err(error) if error.is_full() => break Err(Undelivered::Full),
+                    // The message went with the failed send; the caller is told
+                    // rather than it being silently dropped on the floor.
+                    Err(_) => break Err(Undelivered::Detached),
+                },
+                None => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+
+                    if remaining.is_zero() {
+                        break Err(Undelivered::Detached);
+                    }
+
+                    let (waited, _) = self
+                        .0
+                        .attached
+                        .wait_timeout(sink, remaining)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+                    sink = waited;
+                }
+            }
+        };
+
+        if outcome.is_err() {
+            self.0.lost.fetch_add(1, Ordering::Relaxed);
+        }
+
+        outcome
+    }
+
+    /// How many messages no stream could take.
+    pub fn lost(&self) -> u64 {
+        self.0.lost.load(Ordering::Relaxed)
+    }
+
+    /// The stream this inbox feeds, installing it as the one reader.
+    ///
+    /// [`Inbox::subscription`] is this stream wrapped so that iced runs it;
+    /// taking it directly is for a host that drives its own loop — the
+    /// transport's tests do, and a future non-iced host would. There is one
+    /// reader at a time: taking the stream again replaces the previous one,
+    /// which then ends.
+    pub fn stream(&self) -> iced::futures::channel::mpsc::Receiver<Message> {
+        subscribed(&self.0)
+    }
+}
+
+impl InboxInner {
+    /// Replaces the stream the application reads with `sink`.
+    ///
+    /// The sender that was there is dropped, which closes the channel the
+    /// previous stream was reading: an inbox never has two live readers, and a
+    /// replaced stream ends instead of being left waiting on messages that will
+    /// never arrive.
+    fn install(&self, sink: iced::futures::channel::mpsc::Sender<Message>) {
+        let mut slot = self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        *slot = Some(sink);
+        drop(slot);
+        // A transport may be holding a call for an application that has just
+        // arrived; it is woken rather than left to its deadline.
+        self.attached.notify_all();
+    }
+}
+
+impl Default for Inbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The stream an [`Inbox`] subscription runs.
+///
+/// It installs itself and then does nothing but hold the channel open: the
+/// messages travel straight from the transports' `deliver` call into the
+/// application, so there is no second queue between them and no thread to
+/// stop.
+fn subscribed(inbox: &Arc<InboxInner>) -> iced::futures::channel::mpsc::Receiver<Message> {
+    let (sender, receiver) = iced::futures::channel::mpsc::channel(INBOX_DEPTH);
+    inbox.install(sender);
+
+    receiver
 }
 
 /// Everything the daemon knows.
@@ -1153,6 +1354,145 @@ mod tests {
 
         assert_eq!(state.take_outgoing().len(), MAX_OUTGOING);
         assert_eq!(state.dropped_outgoing(), 10);
+    }
+
+    // --- the transport channel ----------------------------------------------
+
+    #[test]
+    fn a_message_a_transport_delivers_reaches_the_update_loop() {
+        let inbox = Inbox::new();
+        let mut stream = inbox.stream();
+
+        inbox
+            .deliver(Message::DoNotDisturbSet(true))
+            .expect("the inbox is being read");
+
+        let delivered = stream.try_recv().expect("the stream is alive");
+        assert!(
+            matches!(delivered, Message::DoNotDisturbSet(true)),
+            "the message arrived unchanged: {delivered:?}"
+        );
+        assert_eq!(inbox.lost(), 0);
+    }
+
+    #[test]
+    fn the_subscription_is_what_makes_the_inbox_readable() {
+        let inbox = Inbox::new();
+
+        assert_eq!(
+            inbox.deliver(Message::DoNotDisturbToggled),
+            Err(Undelivered::Detached),
+            "nobody is reading yet"
+        );
+        assert_eq!(inbox.lost(), 1);
+
+        let _stream = inbox.stream();
+        assert!(inbox.deliver(Message::DoNotDisturbToggled).is_ok());
+
+        // Smoke: the subscription itself is buildable without a running
+        // runtime, which is all `main.rs` needs from it at boot.
+        let _subscription = inbox.subscription();
+    }
+
+    #[test]
+    fn a_replaced_stream_ends_rather_than_keeping_a_dead_channel_open() {
+        let inbox = Inbox::new();
+        let mut first = inbox.stream();
+        let mut second = inbox.stream();
+
+        inbox
+            .deliver(Message::DoNotDisturbToggled)
+            .expect("the second stream is reading");
+
+        let ended = first
+            .try_recv()
+            .expect_err("the replaced stream has nothing to read");
+        assert!(
+            ended.is_closed(),
+            "the replaced stream is closed, so iced is not left running one: {ended:?}"
+        );
+        assert!(matches!(
+            second.try_recv(),
+            Ok(Message::DoNotDisturbToggled)
+        ));
+    }
+
+    #[test]
+    fn a_message_waits_for_a_reader_that_is_still_starting() {
+        let inbox = Inbox::new();
+        let (reader_started, waiting) = std::sync::mpsc::channel();
+
+        let reader = {
+            let inbox = inbox.clone();
+
+            std::thread::spawn(move || {
+                waiting.recv().expect("the delivery is under way");
+                std::thread::sleep(Duration::from_millis(30));
+                inbox.stream()
+            })
+        };
+
+        reader_started.send(()).expect("the reader thread is there");
+
+        let outcome = inbox.deliver_within(Message::DoNotDisturbSet(true), Duration::from_secs(2));
+        let mut stream = reader.join().expect("the reader thread does not panic");
+
+        assert_eq!(
+            outcome,
+            Ok(()),
+            "the message waited for the reader instead of being refused"
+        );
+        assert!(matches!(
+            stream.try_recv(),
+            Ok(Message::DoNotDisturbSet(true))
+        ));
+        assert_eq!(inbox.lost(), 0);
+    }
+
+    #[test]
+    fn a_message_nobody_ever_reads_is_refused_after_the_wait() {
+        let inbox = Inbox::new();
+        let started = Instant::now();
+
+        let outcome = inbox.deliver_within(Message::DoNotDisturbToggled, Duration::from_millis(50));
+
+        assert_eq!(outcome, Err(Undelivered::Detached));
+        assert!(
+            started.elapsed() >= Duration::from_millis(50),
+            "the wait is the grace, not less"
+        );
+        assert_eq!(inbox.lost(), 1);
+    }
+
+    #[test]
+    fn a_full_channel_is_reported_rather_than_grown() {
+        let inbox = Inbox::new();
+        let (sender, _receiver) = iced::futures::channel::mpsc::channel(1);
+        inbox.0.install(sender);
+
+        let mut delivered = 0;
+        let mut refused = 0;
+
+        for _ in 0..16 {
+            match inbox.deliver(Message::DoNotDisturbSet(true)) {
+                Ok(()) => delivered += 1,
+                Err(error) => {
+                    assert_eq!(error, Undelivered::Full, "the channel was open, not gone");
+                    refused += 1;
+                }
+            }
+        }
+
+        assert!(delivered >= 1, "the first messages did go through");
+        assert!(
+            refused > 0,
+            "a channel of depth one must refuse rather than grow without bound"
+        );
+        assert_eq!(
+            inbox.lost(),
+            refused,
+            "every refusal is counted, so a transport can tell that it happened"
+        );
     }
 
     // --- the projection and the frame ---------------------------------------

@@ -7,6 +7,34 @@
 
 use inox_protocols::standard::{core, ext, wlr, wp, xdg};
 
+/// Both endpoints expose the base wire version used by the compositor.
+#[test]
+fn input_method_interfaces_are_reexported() {
+    use {wayland_client::Proxy, wayland_server::Resource};
+    let interfaces = [
+        wp::text_input::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3::interface(),
+        wp::text_input::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3::interface(),
+        wp::input_method::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2::interface(),
+        wp::input_method::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2::interface(),
+        wp::virtual_keyboard::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1::interface(),
+        wp::virtual_keyboard::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1::interface(),
+    ];
+    assert_eq!(
+        interfaces.map(|interface| interface.name),
+        [
+            "zwp_text_input_manager_v3",
+            "zwp_text_input_manager_v3",
+            "zwp_input_method_manager_v2",
+            "zwp_input_method_manager_v2",
+            "zwp_virtual_keyboard_manager_v1",
+            "zwp_virtual_keyboard_manager_v1",
+        ]
+    );
+    for interface in interfaces {
+        assert!(interface.version >= 1);
+    }
+}
+
 /// The core `wl_*` interfaces are re-exported on both sides.
 #[test]
 fn core_interfaces_are_reexported() {
@@ -91,6 +119,89 @@ fn ext_idle_notify_is_reexported() {
         ext::idle_notify::server::__interfaces::EXT_IDLE_NOTIFIER_V1_INTERFACE.name,
         "ext_idle_notifier_v1"
     );
+}
+
+/// `ext-session-lock-v1` is exposed under `ext::session_lock`, on both sides.
+///
+/// The manager and both child interfaces are pinned at version 1: the compositor
+/// advertises `ext_session_lock_manager_v1` v1 and a client may only ask for the
+/// lock through it (ADR 0015, ADR 0022). This is the compile-time half of the
+/// evidence; the behaviour lives in `inox-compositor` and `inox-lock`.
+#[test]
+fn ext_session_lock_is_reexported_at_version_one() {
+    use ext::session_lock::{client, server};
+
+    let interfaces: [(&str, u32); 6] = [
+        (
+            client::__interfaces::EXT_SESSION_LOCK_MANAGER_V1_INTERFACE.name,
+            client::__interfaces::EXT_SESSION_LOCK_MANAGER_V1_INTERFACE.version,
+        ),
+        (
+            client::__interfaces::EXT_SESSION_LOCK_V1_INTERFACE.name,
+            client::__interfaces::EXT_SESSION_LOCK_V1_INTERFACE.version,
+        ),
+        (
+            client::__interfaces::EXT_SESSION_LOCK_SURFACE_V1_INTERFACE.name,
+            client::__interfaces::EXT_SESSION_LOCK_SURFACE_V1_INTERFACE.version,
+        ),
+        (
+            server::__interfaces::EXT_SESSION_LOCK_MANAGER_V1_INTERFACE.name,
+            server::__interfaces::EXT_SESSION_LOCK_MANAGER_V1_INTERFACE.version,
+        ),
+        (
+            server::__interfaces::EXT_SESSION_LOCK_V1_INTERFACE.name,
+            server::__interfaces::EXT_SESSION_LOCK_V1_INTERFACE.version,
+        ),
+        (
+            server::__interfaces::EXT_SESSION_LOCK_SURFACE_V1_INTERFACE.name,
+            server::__interfaces::EXT_SESSION_LOCK_SURFACE_V1_INTERFACE.version,
+        ),
+    ];
+
+    assert_eq!(
+        interfaces.map(|(name, _)| name),
+        [
+            "ext_session_lock_manager_v1",
+            "ext_session_lock_v1",
+            "ext_session_lock_surface_v1",
+            "ext_session_lock_manager_v1",
+            "ext_session_lock_v1",
+            "ext_session_lock_surface_v1",
+        ]
+    );
+    for (name, version) in interfaces {
+        assert_eq!(version, 1, "{name}");
+    }
+}
+
+/// The lock manager's request set is the one ADR 0015's lifecycle assumes.
+#[test]
+fn the_session_lock_manager_requests_are_stable() {
+    use ext::session_lock::client;
+
+    let names: Vec<&str> = client::__interfaces::EXT_SESSION_LOCK_MANAGER_V1_INTERFACE
+        .requests
+        .iter()
+        .map(|request| request.name)
+        .collect();
+    assert_eq!(names, ["destroy", "lock"]);
+
+    // `unlock_and_destroy` is the only way out of a held lock; `destroy` stays a
+    // protocol error once `locked` has been sent, which is why the lock object
+    // must have both and they must not be confused.
+    let names: Vec<&str> = client::__interfaces::EXT_SESSION_LOCK_V1_INTERFACE
+        .requests
+        .iter()
+        .map(|request| request.name)
+        .collect();
+    assert_eq!(names, ["destroy", "get_lock_surface", "unlock_and_destroy"]);
+
+    let events: Vec<&str> = client::__interfaces::EXT_SESSION_LOCK_V1_INTERFACE
+        .events
+        .iter()
+        .map(|event| event.name)
+        .collect();
+    assert_eq!(events, ["locked", "finished"]);
 }
 
 /// `wlr-layer-shell-unstable-v1` is exposed under `wlr::layer_shell`.

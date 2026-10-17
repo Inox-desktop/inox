@@ -55,4 +55,18 @@ lock-boundary-timeout = the authentication service did not answer in time
 
 # What the binary reports before exiting non-zero (ADR 0015, ADR 0018).
 lock-start-blocked = The session lock cannot start in this build: { $reason }
-lock-start-blocked-reason = the compositor does not offer ext-session-lock-v1, and ADR 0015 requires a human security review of the authentication boundary before this screen may authenticate anyone
+lock-start-blocked-reason = ADR 0015 requires a human security review of the authentication boundary before this screen may authenticate anyone, and this build has none; pass --take-lock to exercise the session-lock protocol alone (that mode covers every output and cannot release the lock again)
+
+# The protocol leg (ADR 0022 decision 6). This mode takes the real session lock
+# and has no way to release it, because there is no reviewed authentication
+# boundary to release it with.
+lock-taking = Taking the session lock as the trusted client
+lock-taken = The session is locked; every output is covered
+lock-refused = The compositor refused the session lock
+lock-released = The compositor released the session lock
+lock-stopped-locked = Stopped while the session is locked: the session stays locked until you log out
+lock-stopped-unconfirmed = Stopped before the compositor confirmed the lock
+lock-take-failed = The session lock could not be taken: { $reason }
+lock-token-missing = no session lock token was delivered, so the compositor would refuse the claim; start this component from inox-session, which delivers it
+lock-no-display = the session's Wayland display is not reachable
+lock-missing-global = the compositor did not advertise { $interface }

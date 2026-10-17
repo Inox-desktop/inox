@@ -10,6 +10,7 @@
 
 use std::{ffi::OsString, io, sync::Arc, time::Duration};
 
+mod input_method;
 mod physical;
 
 use calloop::{
@@ -102,6 +103,7 @@ pub enum RunError {
 
 /// State shared with every calloop event source.
 struct CalloopData {
+    input_method: Option<input_method::InputMethodProcess>,
     state: InoxState,
     display_handle: DisplayHandle,
     /// The physical backend, when one is running.
@@ -161,6 +163,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
     };
 
     let mut data = CalloopData {
+        input_method: None,
         state,
         display_handle,
         physical: None,
@@ -203,6 +206,8 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         info!(socket = ?socket_name, "Wayland socket bound; waiting for first physical presentation");
     }
 
+    input_method::register(&loop_handle, &mut data, &config.input_method, &socket_name)?;
+
     let scheduling_handle = loop_handle.clone();
     let result = event_loop.run(None, &mut data, move |data| {
         let repaint = data.state.take_repaint();
@@ -213,6 +218,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         }
     });
     physical::shutdown(&loop_handle, &mut data);
+    drop(data.input_method.take());
     result?;
     if let Some(error) = data.fatal.take() {
         return Err(error);

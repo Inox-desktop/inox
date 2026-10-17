@@ -15,6 +15,8 @@
 //! | [`queue`] | identifiers, lifetimes, the bound, and the terminal-state counters |
 //! | [`policy`] | do not disturb, and the locked-session redaction |
 //! | [`contract`] | calls, replies, signals and call deduplication (ADR 0013) |
+//! | [`bus`] | the `org.freedesktop.Notifications` service on the session bus |
+//! | [`lock_state`] | the compositor's session lock state, over `inox-ipc` |
 //! | [`placement`] | the layer-shell placement the stack asks for, as data |
 //! | [`view_model`] | the projection from state to what the view draws |
 //! | [`app`] | `State`, `Message`, `update` (Elm), `view`, `subscription` |
@@ -24,22 +26,28 @@
 //!
 //! # What is verified, and what is not
 //!
-//! The crate is delivered at evidence level **E0/E1** (ADR 0018): it compiles,
-//! lints, documents itself, and its pure logic — the protocol data, the
-//! sanitiser, action identity, the queue with its bound and its lifetimes, the
-//! policy, call deduplication, the projection — is covered by unit and property
-//! tests, with `en-US`/`zh-CN` catalog parity asserted by
+//! The crate is delivered at evidence level **E1 with an E2 leg** (ADR 0022's
+//! acceptance row for D06): its pure logic — the protocol data, the sanitiser,
+//! action identity, the queue with its bound and its lifetimes, the policy, call
+//! deduplication, the projection — is covered by unit and property tests, with
+//! `en-US`/`zh-CN` catalog parity asserted by
 //! [`inox_common::i18n::compare_catalogs`]. `tests/render.rs` draws the real
 //! widget tree through the same tiny-skia renderer the binary uses and asserts on
 //! pixels, with no compositor involved.
 //!
-//! Not delivered, and not claimed:
+//! What is **real** as of M5: the D-Bus service. [`bus::Service`] serves
+//! `org.freedesktop.Notifications` on the session bus — the four methods of the
+//! specification, the two signals, and the standard reflection interfaces a
+//! client's proxy asks about first — and `tests/bus.rs` drives it over a real
+//! D-Bus connection with the real state machine behind it: identifiers,
+//! replacements, closes and their reasons, expiry, at-most-once actions, do not
+//! disturb, the bounded queue under a hundred calls a second for ten seconds,
+//! the locked redaction, and the three errors this daemon answers with when it
+//! refuses a call. [`lock_state`] follows the compositor's `session_lock_state`
+//! over `inox-ipc` (ADR 0022 §4) and is what tells the daemon to withhold.
 //!
-//! - **The D-Bus service.** PRD §13 puts it in M5, and acceptance D06 with it.
-//!   What this milestone delivers is the protocol contract, the queue, the policy
-//!   and the UI model: [`contract::Request`] is what the M5 bus will deliver and
-//!   [`contract::Outgoing`] is what it will drain, and `main.rs` says so. No bus
-//!   is opened.
+//! Not delivered, and still not claimed:
+//!
 //! - **The layer surface.** The Inox compositor does not advertise
 //!   `zwlr_layer_shell_v1`, and `iced_layershell` does not compile against iced
 //!   0.14's winit generation (ADR 0018), so the stack runs as an ordinary window
@@ -57,15 +65,30 @@
 //! - **Configuration hot reload.** [`app::Message::ConfigReloaded`] applies a new
 //!   configuration and is tested, but nothing watches `notifications.toml` for
 //!   changes yet.
-//! - **E2/E3 GUI evidence**, which needs a layer-shell host in CI and a session
-//!   bus.
+//! - **The bus name on a real bus.** The service claims
+//!   [`protocol::BUS_NAME`] and refuses to start when another daemon owns it, and
+//!   the refusal is a unit test of the mapping from `zbus::Error::NameTaken`;
+//!   the live case needs a session bus, which the crate's CI shard does not have.
+//!   The same shard is why the transport's tests connect peer-to-peer: the wire
+//!   protocol, the replies and the signals are the real ones, but a peer-to-peer
+//!   connection cannot carry a well-known name.
+//! - **A compositor that can be asked for the lock state in CI.** [`lock_state`]
+//!   is wired, and what it does with the events is tested, but no test in this
+//!   crate binds a real `inox_ipc` global: the fake compositor that would make
+//!   that possible does not exist in this workspace, and the compositor's own
+//!   tests are where the other end is exercised.
+//! - **E3 evidence.** Nothing here runs in a session: the popup stack is still an
+//!   ordinary window (above), and `tests/bus.rs` is a transport test, not a
+//!   desktop.
 
 #![forbid(unsafe_code)]
 
 pub mod actions;
 pub mod app;
+pub mod bus;
 pub mod contract;
 pub mod i18n;
+pub mod lock_state;
 pub mod markup;
 pub mod placement;
 pub mod policy;
@@ -76,6 +99,7 @@ pub mod view;
 pub mod view_model;
 
 pub use crate::actions::{Action, ActionError, ActionId, Actions, Invoked};
+pub use crate::app::{Inbox, Undelivered};
 pub use crate::contract::{
     CallId, Calls, NotifyRequest, Outgoing, Reply, ReplyBody, Request, RequestBody, Signal,
 };

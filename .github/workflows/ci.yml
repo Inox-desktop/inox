@@ -272,11 +272,34 @@ jobs:
           egl: "true"
           fonts: "true"
       - name: Build the real session components
-        run: cargo build -p inox-compositor -p inox-session -p inox-shell -p inox-panel -p inox-wallpaper -p inox-notifications -p inox-idle
-      - name: Verify startup and bounded logout on Inox
+        run: cargo build -p inox-compositor -p inox-session -p inox-shell -p inox-panel -p inox-wallpaper -p inox-notifications -p inox-idle -p inox-lock
+      # `--test headless` is the ADR 0021 shutdown budget; `--test session_lock` is
+      # the E3 half of acceptance S02 — the same session, with the session's own
+      # token delivered to a real trusted lock client, taking the real session lock
+      # on the real compositor and still logging out inside that budget.
+      - name: Verify startup, the session lock and bounded logout on Inox
         env:
           INOX_SESSION_E2E_BIN_DIR: ${{ github.workspace }}/target/debug
-        run: dbus-run-session -- cargo test -p inox-session --test headless -- --nocapture
+        run: dbus-run-session -- cargo test -p inox-session --test headless --test session_lock -- --nocapture
+
+  input-method-e2e:
+    name: Fcitx5 Chinese input on Inox
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/system-deps
+        with:
+          egl: "true"
+          fonts: "true"
+      - name: Install the external test input method
+        run: sudo apt-get install -y --no-install-recommends fcitx5 fcitx5-pinyin dbus-daemon
+      - name: Verify real pinyin preedit and Chinese commit
+        env:
+          INOX_FCITX5_E2E: "1"
+        run: dbus-run-session -- cargo test -p inox-compositor --all-features --test input_method -- --nocapture
 
   book:
     name: mdbook

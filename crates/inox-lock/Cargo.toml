@@ -12,6 +12,21 @@ categories.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# The protocol leg: the compositor's `ext-session-lock-v1` server, spoken as a
+# client. ADR 0022 decision 6 records why the bindings come from `inox-protocols`
+# (the single source of truth for protocols, ADR 0006) and why this is a legal
+# L3 -> L2 edge (ADR 0002 rule 1 allows downward dependencies; ADR 0013 forbids
+# only same-layer and compositor edges, and neither is added here).
+inox-protocols.workspace = true
+# The request loop and its signal handling: the same `calloop` the rest of the
+# session uses (root AGENTS.md §4).
+calloop.workspace = true
+# Reading the compositor's events and creating the lock surfaces.
+wayland-client.workspace = true
+# The lock frame is a shared-memory buffer; `memfd_create` is the safe way to get
+# an anonymous one, and clearing CLOEXEC is not needed because the pool is created
+# before the fd is handed over.
+rustix = { workspace = true, features = ["fs"] }
 # ADR 0003 fixes Iced for every shell component; the workspace entry selects the
 # tiny-skia renderer, which is what the headless render tests draw through.
 iced.workspace = true
@@ -26,6 +41,11 @@ tracing-subscriber.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# `tests/protocol.rs` plays the compositor side of `ext-session-lock-v1` on a real
+# socket pair and drives the built binary as a subprocess, the pattern
+# `inox-idle/tests/protocol.rs` established.
+wayland-server.workspace = true
+tempfile.workspace = true
 # The headless render harness: `iced` re-exports neither `UserInterface` nor the
 # tiny-skia renderer, so the three crates are named directly (ADR 0018).
 iced_core.workspace = true

@@ -18,13 +18,16 @@ calloop.workspace = true
 inox-common.workspace = true
 inox-config.workspace = true
 inox-protocols.workspace = true
-rustix.workspace = true
+# `rand` is what mints the session's lock token; see `policy::session_lock_token`.
+rustix = { workspace = true, features = ["rand"] }
 thiserror.workspace = true
 wayland-client.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 wayland-server.workspace = true
+# `tests/session_lock.rs` signals the running session the way a logout does.
+rustix = { workspace = true, features = ["process"] }
 
 [lints]
 workspace = true

@@ -24,6 +24,14 @@
 //!   drag-and-drop channel.
 //! - `zwp_primary_selection_device_manager_v1` (1) — [`PrimarySelectionState`], the
 //!   X11-style primary selection (middle-click paste).
+//! - `ext_session_lock_manager_v1` (1) — [`SessionLockManagerState`], the secure
+//!   session lock (ADR 0015, ADR 0022). Only a client that has claimed the trusted
+//!   lock role over `inox_ipc` may take the lock; while a lock is held every output
+//!   is composited from the locked scene alone and ordinary clients receive no
+//!   input.
+//! - `zwp_text_input_manager_v3` (1) — application text transactions (ADR 0023).
+//! - `zwp_input_method_manager_v2` (1) and `zwp_virtual_keyboard_manager_v1` (1) —
+//!   visible only to the compositor-launched input method connection (ADR 0023).
 //! - `inox_ipc` — the private control protocol from `inox-protocols`, at the version
 //!   its own interface declares.
 //!
@@ -54,6 +62,31 @@
 //! selection focus is handed over — see the note there for why that is what makes the
 //! XWayland clipboard bridge work.
 //!
+//! # The session lock
+//!
+//! The lock is a security boundary, not a window: while one is held, normal
+//! clients contribute nothing to what is on screen and receive no input. Four
+//! things enforce that, and each of them is the single place it could go wrong:
+//!
+//! - [`InoxState::scene_elements`] renders the locked scene (the lock surfaces and
+//!   the opaque locked background) instead of the layer/window scene.
+//! - [`InoxState::sync_focus`] hands the keyboard to a lock surface and clears the
+//!   selection focus, so no ordinary client is granted the clipboard.
+//! - [`InoxState::surface_under`] only hit-tests lock surfaces, so pointer events
+//!   reach no ordinary client.
+//! - [`InoxState::inject_key`] stops intercepting the compositor's own chords, so a
+//!   locked session cannot be window-switched or closed from the keyboard.
+//!
+//! `locked` is not sent to the client until every advertised output has presented
+//! a frame drawn from the locked scene — see [`crate::session_lock::LockCoverage`],
+//! which is also what makes an output plugged in mid-lock covered before the
+//! client is told the screen is its own.
+//!
+//! A lock client that dies keeps the session locked, and this compositor does not
+//! let another client take the lock over. That is the fail-closed direction the
+//! protocol allows and ADR 0015 requires; the recovery gap it leaves is recorded
+//! in ADR 0022 rather than papered over.
+//!
 //! Input handling is split in two: Smithay's seat owns the keymap, modifier
 //! tracking and focus delivery, while [`crate::input::action_for_key`] turns a
 //! key press into a compositor [`Action`]. [`InoxState::inject_key`] and the
@@ -65,9 +98,11 @@
 //! and the `inox-ipc` control protocol, so upstream versions are pinned in one
 //! place (see the workspace `AGENTS.md`).
 
+mod ime;
+
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     os::unix::io::OwnedFd,
     sync::OnceLock,
     time::{Duration, Instant},
@@ -75,10 +110,17 @@ use std::{
 
 use calloop::LoopSignal;
 use inox_protocols::{
-    ipc::inox_ipc::server::inox_ipc::{InoxIpc, ReloadResult, Request as InoxIpcRequest},
+    ipc::inox_ipc::server::inox_ipc::{
+        InoxIpc, LockState as IpcLockState, ReloadResult, Request as InoxIpcRequest,
+    },
     standard::{
         core::server::{
             wl_buffer::WlBuffer, wl_output::WlOutput, wl_seat::WlSeat, wl_surface::WlSurface,
+        },
+        ext::session_lock::server::{
+            ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+            ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
+            ext_session_lock_v1::{self as lock_v1, ExtSessionLockV1},
         },
         wlr::layer_shell::server::{
             zwlr_layer_shell_v1::ZwlrLayerShellV1,
@@ -139,6 +181,10 @@ use smithay::{
                 PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
             },
         },
+        session_lock::{
+            ExtLockSurfaceUserData, LockSurface, SessionLockHandler, SessionLockManagerGlobalData,
+            SessionLockManagerState, SessionLockState, SessionLocker,
+        },
         shell::{
             wlr_layer::{
                 KeyboardInteractivity, Layer, LayerSurface, LayerSurfaceCachedState,
@@ -151,13 +197,14 @@ use smithay::{
         viewporter::ViewporterState,
     },
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     config::CompositorConfig,
     input::{Action, SwallowedPresses, action_for_key},
     layout::LayoutConfig,
     render::{HeadlessRenderer, RenderError, SceneElement},
+    session_lock::{Claim, LockCoverage, claim},
     topology::{self, OutputId, Placement},
     workspace::{WindowId, Workspace},
 };
@@ -189,6 +236,61 @@ pub enum StateError {
     /// is available (for example when the `xkb-data` package is missing).
     #[error("failed to create the seat keyboard")]
     Keyboard(#[from] smithay::input::keyboard::Error),
+}
+
+/// Everything the compositor holds for the session lock (ADR 0015, ADR 0022).
+///
+/// `client` is set the moment a lock request is honoured — which is *before* the
+/// protocol's `locked` event goes out — because from that instant ordinary
+/// content must neither be drawn nor interacted with. Confirming the lock is a
+/// later, separate step: it waits for [`LockCoverage`] to report that every
+/// advertised output has presented a frame drawn from the locked scene.
+///
+/// The state is deliberately not tied to the lock object's lifetime: a client
+/// that dies leaves the session locked, which is what the protocol requires and
+/// what keeps a crashing lock UI from unlocking the desktop.
+#[derive(Default)]
+struct SessionLock {
+    /// The accepted lock object, kept as a liveness handle.
+    object: Option<ExtSessionLockV1>,
+    /// The connection that asked for the lock.
+    client: Option<ClientId>,
+    /// Whether `locked` has been sent for `object`.
+    confirmed: bool,
+    /// The outputs that still owe a locked frame.
+    coverage: LockCoverage,
+    /// The confirmation to use once the coverage is complete.
+    pending: Option<SessionLocker>,
+    /// Lock surfaces: the connection that created each one, and its output.
+    surfaces: Vec<(ClientId, OutputId, LockSurface)>,
+    /// The lock surface that holds the keyboard focus.
+    focus: Option<WlSurface>,
+    /// Whether the loss of the lock's connection has been reported already.
+    owner_lost: bool,
+}
+
+impl SessionLock {
+    /// Whether a lock has been accepted and not released.
+    fn accepted(&self) -> bool {
+        self.client.is_some()
+    }
+
+    /// Whether `lock` is the object that owns the current lock.
+    fn holds(&self, lock: &ExtSessionLockV1) -> bool {
+        self.object.as_ref() == Some(lock)
+    }
+
+    /// Release the lock, whatever the reason.
+    fn release(&mut self) {
+        self.object = None;
+        self.client = None;
+        self.confirmed = false;
+        self.coverage.cancel();
+        self.pending = None;
+        self.surfaces.clear();
+        self.focus = None;
+        self.owner_lost = false;
+    }
 }
 
 /// The compositor state, shared with every Smithay protocol handler.
@@ -238,6 +340,24 @@ pub struct InoxState {
     /// keeps the global alive.
     #[allow(dead_code)]
     fractional_scale_state: FractionalScaleManagerState,
+
+    /// Owns the `ext_session_lock_manager_v1` global (ADR 0015, ADR 0022).
+    session_lock_state: SessionLockManagerState,
+    /// The token a client must present to be allowed to lock, or `None`.
+    ///
+    /// `None` means this run cannot be locked at all: a compositor with no token
+    /// refuses every claim (ADR 0022 decision 3).
+    lock_token: Option<String>,
+    /// The connections that presented this session's token.
+    lock_authorized: HashSet<ClientId>,
+    /// The accepted session lock, if any.
+    lock: SessionLock,
+    /// The bound `inox_ipc` objects that observe the lock state.
+    ipc_clients: Vec<InoxIpc>,
+    /// Claims refused, exposed so the acceptance tests can assert on the refusals.
+    lock_claim_refusals: u64,
+    /// Lock requests refused, for the same reason.
+    lock_refusals: u64,
     input_config: inox_config::InputConfig,
     cursor_image: CursorImageStatus,
     cursor_visible: bool,
@@ -245,6 +365,7 @@ pub struct InoxState {
     repaint: bool,
     background: [f32; 4],
 
+    ime: ime::ImeState,
     seat_state: SeatState<Self>,
     seat: Seat<Self>,
     keyboard: KeyboardHandle<Self>,
@@ -446,6 +567,14 @@ impl InoxState {
         let compositor_state = CompositorState::new_v6::<Self>(display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display_handle);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(display_handle);
+        // The secure session lock (ADR 0015, ADR 0022). The global is advertised
+        // to every client on purpose: whether a client may *take* the lock is a
+        // decision about a request, not about the global's existence, and the
+        // protocol has a first-class way to refuse one (`finished`). Hiding the
+        // global would also not work as the gate — a client that claims the role
+        // reads the registry on the same connection, so the claim necessarily
+        // follows the advertisement.
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(display_handle, |_| true);
         let ipc_version = inox_ipc_version();
         let ipc_global = display_handle.create_global::<Self, InoxIpc, ()>(ipc_version, ());
         debug!(
@@ -471,6 +600,8 @@ impl InoxState {
 
         let space = Space::default();
 
+        ime::init(display_handle);
+
         let mut state = Self {
             compositor_state,
             output_manager_state,
@@ -481,6 +612,13 @@ impl InoxState {
             outputs: Vec::new(),
             next_output_id: 0,
             fractional_scale_state,
+            session_lock_state,
+            lock_token: config.lock_token.clone(),
+            lock_authorized: HashSet::new(),
+            lock: SessionLock::default(),
+            ipc_clients: Vec::new(),
+            lock_claim_refusals: 0,
+            lock_refusals: 0,
             input_config: input,
             cursor_image: CursorImageStatus::default_named(),
             cursor_visible: false,
@@ -491,6 +629,7 @@ impl InoxState {
             } else {
                 crate::render::CLEAR_COLOR
             },
+            ime: ime::ImeState::default(),
             seat_state,
             seat,
             keyboard,
@@ -665,6 +804,12 @@ impl InoxState {
         self.pointer_location = self.clamp_pointer(self.pointer_location);
         self.update_surface_scales();
         self.repaint = true;
+        // An output that arrived while the session is locked must be covered
+        // before the lock client is told the screen is its own; one that left
+        // must stop blocking that confirmation. Both happen here because this is
+        // the only place the topology changes (ADR 0019).
+        self.sync_lock_coverage();
+        self.note_lock_owner_loss();
         self.sync_focus();
         self.inject_pointer_motion(self.pointer_location);
 
@@ -778,7 +923,7 @@ impl InoxState {
             {
                 return Some(entry.output);
             }
-            current = get_parent(&current)?;
+            current = get_parent(&current).or_else(|| self.ime_popup_parent(&current).cloned())?;
         }
 
         None
@@ -812,6 +957,7 @@ impl InoxState {
     /// Called whenever an output's scale can have changed, which is exactly when
     /// the topology changes; individual surfaces are refreshed on commit.
     fn update_surface_scales(&self) {
+        self.ime_update_scales();
         for window in self.windows.values() {
             if let Some(surface) = window_toplevel_surface(window) {
                 self.update_surface_scale(surface);
@@ -885,6 +1031,7 @@ impl InoxState {
     ) -> Result<Vec<SceneElement>, GlesError> {
         self.space.refresh();
         self.popups.cleanup();
+        self.ime_update_popups();
 
         let Some(entry) = self.outputs.iter().find(|entry| &entry.output == output) else {
             return Ok(Vec::new());
@@ -937,6 +1084,19 @@ impl InoxState {
             }
         }
 
+        // The locked scene is the lock surfaces and nothing else. Composing this
+        // output is also what marks it covered for `LockCoverage`, which is what
+        // the `locked` event waits for: from here on, no frame this output shows
+        // can contain an ordinary client's pixels.
+        if self.lock.accepted() {
+            self.note_lock_owner_loss();
+            self.lock_render_elements(renderer, id, geometry, scale, &mut elements);
+            self.lock.coverage.presented(id);
+
+            return Ok(elements);
+        }
+
+        self.ime_render_elements(renderer, geometry, scale, &mut elements);
         for layer in [Layer::Overlay, Layer::Top] {
             self.layer_render_elements(layer, id, geometry, scale, renderer, &mut elements);
         }
@@ -974,6 +1134,151 @@ impl InoxState {
         }
     }
 
+    /// Whether the session is locked.
+    ///
+    /// True from the moment a lock is accepted, which is *before* the protocol's
+    /// `locked` event goes out: the outputs are blanked first, so the two moments
+    /// in which ordinary content could still be interacted with are covered by
+    /// the same flag.
+    pub fn session_locked(&self) -> bool {
+        self.lock.accepted()
+    }
+
+    /// How many lock-role claims this compositor refused.
+    pub fn lock_claim_refusals(&self) -> u64 {
+        self.lock_claim_refusals
+    }
+
+    /// How many lock requests this compositor refused.
+    pub fn lock_refusals(&self) -> u64 {
+        self.lock_refusals
+    }
+
+    /// Render the locked scene for one output.
+    ///
+    /// Only the lock surfaces: no layer surface, no window, no popup. Whatever is
+    /// left is the opaque background the renderer clears to, which is the
+    /// protocol's "blank all outputs with an opaque color such that their normal
+    /// content is fully hidden" — including on an output the lock client has not
+    /// drawn on yet.
+    fn lock_render_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        output: OutputId,
+        region: Rectangle<i32, Logical>,
+        scale: f64,
+        elements: &mut Vec<SceneElement>,
+    ) {
+        let origin = Point::from((-region.loc.x, -region.loc.y)).to_physical_precise_round(scale);
+        for (client, id, surface) in &self.lock.surfaces {
+            // Only the connection that owns the lock may put pixels on a locked
+            // screen: Smithay creates a lock surface object for any client that
+            // asks, so the ownership check has to happen here.
+            if Some(client) != self.lock.client.as_ref() || *id != output || !surface.alive() {
+                continue;
+            }
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                surface.wl_surface(),
+                origin,
+                scale,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
+    }
+
+    /// Release the session lock and restore the ordinary scene.
+    fn release_lock(&mut self, reason: &str) {
+        if !self.lock.accepted() {
+            return;
+        }
+        self.lock.release();
+        info!(reason, "session lock released");
+        self.repaint = true;
+        self.sync_focus();
+        self.inject_pointer_motion(self.pointer_location);
+        self.broadcast_lock_state();
+    }
+
+    /// Keep the lock's coverage in step with the advertised outputs.
+    fn sync_lock_coverage(&mut self) {
+        if !self.lock.accepted() || self.lock.confirmed {
+            return;
+        }
+        let ids: Vec<OutputId> = self.outputs.iter().map(|entry| entry.id).collect();
+        self.lock.coverage.sync(ids.iter().copied());
+        self.lock
+            .surfaces
+            .retain(|(_, id, surface)| ids.contains(id) && surface.alive());
+    }
+
+    /// Confirm the lock once every output has composed a locked frame.
+    ///
+    /// The protocol forbids sending `locked` earlier, because a client told it
+    /// owns the screen may suspend the machine straight away.
+    fn settle_lock(&mut self) {
+        if !self.lock.accepted() || self.lock.confirmed {
+            return;
+        }
+        if !self.lock.coverage.take_completed() {
+            return;
+        }
+        self.lock.confirmed = true;
+        info!(
+            outputs = self.outputs.len(),
+            "every output is covered; confirming the session lock"
+        );
+        if let Some(locker) = self.lock.pending.take() {
+            locker.lock();
+        }
+    }
+
+    /// The lock state as `inox_ipc` reports it.
+    fn lock_state_for_ipc(&self) -> IpcLockState {
+        if self.lock.accepted() {
+            IpcLockState::Locked
+        } else {
+            IpcLockState::Unlocked
+        }
+    }
+
+    /// Tell every bound `inox_ipc` client whether the session is locked.
+    ///
+    /// The compositor owns the lock, so it is the authority observers such as the
+    /// idle daemon and the notification daemon read; the event grants them
+    /// nothing, which is why it can be a broadcast (ADR 0022 decision 4).
+    fn broadcast_lock_state(&mut self) {
+        let state = self.lock_state_for_ipc();
+        self.ipc_clients.retain(InoxIpc::is_alive);
+        for client in &self.ipc_clients {
+            client.session_lock_state(state);
+        }
+    }
+
+    /// Report once that the connection owning the lock is gone.
+    ///
+    /// The session stays locked (protocol and ADR 0015), so this is the only
+    /// signal that something needs a human: nothing can unlock it again.
+    fn note_lock_owner_loss(&mut self) {
+        if !self.lock.accepted() || self.lock.owner_lost {
+            return;
+        }
+        let alive = self
+            .lock
+            .object
+            .as_ref()
+            .is_some_and(ExtSessionLockV1::is_alive);
+        if alive {
+            return;
+        }
+        self.lock.owner_lost = true;
+        error!(
+            "the lock client is gone while the session is locked: the session stays locked and \
+             this compositor does not hand the lock to another client (ADR 0022)"
+        );
+    }
+
     pub(crate) fn take_repaint(&mut self) -> bool {
         std::mem::take(&mut self.repaint)
     }
@@ -982,6 +1287,7 @@ impl InoxState {
     }
     pub(crate) fn frame_presented(&mut self) {
         self.frames_rendered = self.frames_rendered.saturating_add(1);
+        self.settle_lock();
         self.send_frame_callbacks();
     }
     pub(crate) fn frame_callbacks(&mut self) {
@@ -1015,6 +1321,7 @@ impl InoxState {
             .collect();
 
         for (id, output) in &outputs {
+            self.ime_send_frames(output, time);
             // The closures report the output the surface is actually on, so the
             // throttle never gates a callback; `ZERO` states that rather than
             // leaving it to depend on the output comparison alone.
@@ -1336,6 +1643,7 @@ impl InoxState {
     /// only a press can trigger an [`Action`].
     pub fn inject_key(&mut self, keycode: Keycode, state: KeyState) -> Option<Action> {
         self.seat.get_keyboard()?;
+        self.ime_sync_grab();
         let keyboard = self.keyboard.clone();
         let serial = SERIAL_COUNTER.next_serial();
 
@@ -1349,6 +1657,13 @@ impl InoxState {
                     .now()
                     .as_millis(),
                 |data, modifiers, keysym| {
+                    // A locked session has no compositor chords: every key belongs
+                    // to the lock surface. Without this, the desktop's own
+                    // bindings would still switch windows or close them behind a
+                    // locked screen.
+                    if data.lock.accepted() {
+                        return FilterResult::Forward;
+                    }
                     let action = match state {
                         KeyState::Pressed => action_for_key(keysym.modified_sym(), modifiers),
                         KeyState::Released => None,
@@ -1568,13 +1883,21 @@ impl InoxState {
                 })
             })
             .cloned();
-        let focused = exclusive.or(on_demand).or_else(|| {
-            self.workspace
-                .focused()
-                .and_then(|id| self.windows.get(&id))
-                .and_then(|window| window.wl_surface())
-                .map(Cow::into_owned)
-        });
+        // While the session is locked the keyboard belongs to a lock surface and
+        // to nothing else. The candidates above are discarded, not merged: a layer
+        // surface asking for exclusive focus, or the workspace's own idea of the
+        // focused window, must not survive a lock.
+        let focused = if self.lock.accepted() {
+            self.lock.focus.clone().filter(|surface| surface.is_alive())
+        } else {
+            exclusive.or(on_demand).or_else(|| {
+                self.workspace
+                    .focused()
+                    .and_then(|id| self.windows.get(&id))
+                    .and_then(|window| window.wl_surface())
+                    .map(Cow::into_owned)
+            })
+        };
 
         // The selection protocols follow the keyboard focus: a client is only offered the
         // clipboard (and only allowed to set one) while it is focused. This is what makes
@@ -1591,13 +1914,22 @@ impl InoxState {
         let focused =
             focused.filter(|_| self.seat.get_keyboard().is_some() && !self.outputs.is_empty());
         self.repaint |= self.keyboard.current_focus() != focused;
-        let client = focused.as_ref().and_then(|surface| surface.client());
+        // A locked session offers the selection to nobody. The lock surface takes
+        // the keyboard, but it is not a client of the desktop: granting it the
+        // clipboard would be a way out of the lock for anything sharing its
+        // connection, and no ordinary client is focused to receive one either.
+        let client = if self.lock.accepted() {
+            None
+        } else {
+            focused.as_ref().and_then(|surface| surface.client())
+        };
 
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, focused, serial);
+            keyboard.set_focus(self, focused.clone(), serial);
         }
 
+        self.ime_sync_focus(focused);
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
 
@@ -1616,6 +1948,15 @@ impl InoxState {
         if self.outputs.is_empty() {
             return None;
         }
+        // A locked session hit-tests lock surfaces only, so pointer motion and
+        // button presses reach no ordinary client — not a window, not a layer
+        // surface, not a popup.
+        if self.lock.accepted() {
+            return self.lock_surface_under(location);
+        }
+        if let Some(surface) = self.ime_surface_under(location) {
+            return Some(surface);
+        }
         for layer in [Layer::Overlay, Layer::Top] {
             if let Some(surface) = self.layer_under(layer, location) {
                 return Some(surface);
@@ -1632,6 +1973,32 @@ impl InoxState {
         [Layer::Bottom, Layer::Background]
             .iter()
             .find_map(|layer| self.layer_under(*layer, location))
+    }
+
+    /// The lock surface covering `location`, if the lock client has one there.
+    ///
+    /// A lock surface is configured to its whole output, so the containment test
+    /// is the output's area. Sub-surfaces of a lock surface are deliberately not
+    /// descended into: they would be additional surfaces on a locked screen, and
+    /// the protocol's lock surfaces are meant to be one per output.
+    fn lock_surface_under(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        for (client, id, surface) in &self.lock.surfaces {
+            if Some(client) != self.lock.client.as_ref() || !surface.alive() {
+                continue;
+            }
+            let covers = self
+                .outputs
+                .iter()
+                .any(|entry| entry.id == *id && entry.area.to_f64().contains(location));
+            if covers {
+                return Some((surface.wl_surface().clone(), Point::from((0.0, 0.0))));
+            }
+        }
+
+        None
     }
 
     fn layer_under(
@@ -1656,6 +2023,23 @@ impl InoxState {
         let Some((surface, _)) = self.surface_under(self.pointer_location) else {
             return;
         };
+        if self.lock.accepted() {
+            // Clicking a lock surface moves the keyboard focus between lock
+            // surfaces. It must not touch the workspace or the layer focus, which
+            // is why the two branches below are unreachable while locked.
+            let is_lock_surface = self.lock.surfaces.iter().any(|(client, _, lock)| {
+                Some(client) == self.lock.client.as_ref() && lock.wl_surface() == &surface
+            });
+            if is_lock_surface {
+                self.lock.focus = Some(surface);
+                self.sync_focus();
+            }
+
+            return;
+        }
+        if self.ime_surface_under(self.pointer_location).is_some() {
+            return;
+        }
         if let Some(entry) = self.layers.iter().find(|entry| {
             entry.mapped
                 && entry
@@ -1951,6 +2335,19 @@ fn budget_reached(budget: Option<u64>, rendered: u64) -> bool {
 #[derive(Default)]
 pub struct ClientState {
     compositor_state: CompositorClientState,
+    input_method: bool,
+}
+
+impl ClientState {
+    /// Connection data for an explicitly launched, trusted input method.
+    ///
+    /// Never use this for clients accepted on the public Wayland socket.
+    pub fn input_method() -> Self {
+        Self {
+            input_method: true,
+            ..Self::default()
+        }
+    }
 }
 
 impl ClientData for ClientState {
@@ -1990,17 +2387,17 @@ impl CompositorHandler for InoxState {
         self.commit_layer(surface);
         self.update_surface_scale(surface);
 
-        let Some(id) = self.window_id_for_surface(surface) else {
-            return;
-        };
-
-        if let Some(window) = self.windows.get(&id) {
+        if let Some(id) = self.window_id_for_surface(surface)
+            && let Some(window) = self.windows.get(&id)
+        {
             // Refresh the bounding box the space uses for hit-testing and tiling.
             window.on_commit();
         }
+        self.ime_update_popups();
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.ime_surface_destroyed(surface);
         self.remove_layer(surface);
     }
 }
@@ -2231,8 +2628,8 @@ fn inox_ipc_version() -> u32 {
 /// the shell tell "not implemented yet" apart from a transport failure.
 impl Dispatch<InoxIpc, ()> for InoxState {
     fn request(
-        _state: &mut Self,
-        _client: &Client,
+        state: &mut Self,
+        client: &Client,
         resource: &InoxIpc,
         request: InoxIpcRequest,
         _data: &(),
@@ -2245,6 +2642,27 @@ impl Dispatch<InoxIpc, ()> for InoxState {
             InoxIpcRequest::Destroy => {}
             InoxIpcRequest::GetVersion => resource.version(inox_ipc_version()),
             InoxIpcRequest::ReloadConfig => resource.config_reloaded(ReloadResult::Unsupported),
+            // The first privileged request the compositor accepts (acceptance S04,
+            // ADR 0015's privilege table). The token is a capability the session
+            // delivered; what the client says about itself is not consulted, and a
+            // compositor with no token refuses everyone.
+            InoxIpcRequest::ClaimLockRole { token } => {
+                match claim(state.lock_token.as_deref(), &token) {
+                    Claim::Authorized => {
+                        state.lock_authorized.insert(client.id());
+                        info!("a client claimed the trusted session lock role");
+                        resource.version(inox_ipc_version());
+                    }
+                    refused => {
+                        state.lock_claim_refusals = state.lock_claim_refusals.saturating_add(1);
+                        state.lock_authorized.remove(&client.id());
+                        warn!(
+                            reason = refused.reason(),
+                            "refused a trusted session lock role claim"
+                        );
+                    }
+                }
+            }
             // `Request` is `#[non_exhaustive]`: a later protocol revision may add
             // requests, which this milestone ignores rather than second-guessing.
             _ => {}
@@ -2254,7 +2672,7 @@ impl Dispatch<InoxIpc, ()> for InoxState {
 
 impl GlobalDispatch<InoxIpc, ()> for InoxState {
     fn bind(
-        _state: &mut Self,
+        state: &mut Self,
         _handle: &DisplayHandle,
         _client: &Client,
         resource: New<InoxIpc>,
@@ -2266,8 +2684,186 @@ impl GlobalDispatch<InoxIpc, ()> for InoxState {
         // The protocol asks the compositor to report its version as soon as the
         // global is bound, so a client does not have to send `get_version` first.
         ipc.version(inox_ipc_version());
+        // The lock state is a broadcast every observer needs from the start: an
+        // idle daemon that binds while the session is already locked must not have
+        // to guess, and neither must the notification daemon.
+        ipc.session_lock_state(state.lock_state_for_ipc());
+        // Held so `session_lock_state` can reach every observer on a change. A
+        // destroyed object is dropped by the next broadcast.
+        state.ipc_clients.push(ipc);
     }
 }
+
+/// The `ext-session-lock-v1` server side (ADR 0015, ADR 0022).
+///
+/// Smithay implements the protocol — the lock object, the surfaces, the
+/// configure/ack handshake and the protocol errors. What is here is the policy
+/// and the locked scene, and three decisions worth stating:
+///
+/// - **Only a claimed connection may lock.** An unauthorized connection gets
+///   `finished`, which is what dropping the [`SessionLocker`] sends: the protocol
+///   has a first-class refusal, so a policy refusal does not have to become a
+///   protocol error or a disconnected client.
+/// - **One lock at a time, and no takeover.** A session that is already locked
+///   refuses a second lock, including one from a restarted lock UI. The protocol
+///   allows a compositor to hand a held lock over, and ADR 0022 records why this
+///   one does not: Smithay's per-output lock bookkeeping has no public reset, so a
+///   second client's surfaces for those outputs would be rejected as duplicates.
+///   The result is the fail-closed direction the protocol also allows — a lock UI
+///   that dies leaves a locked session that only a logout ends.
+/// - **The lock is confirmed only after every output is covered.** See
+///   [`LockCoverage`]: `locked` is what a client uses to justify suspending the
+///   machine, so it must not arrive while any output could still be showing
+///   unlocked content.
+impl SessionLockHandler for InoxState {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        let owner = confirmation
+            .ext_session_lock()
+            .client()
+            .map(|client| client.id());
+
+        if self.lock.accepted() {
+            self.lock_refusals = self.lock_refusals.saturating_add(1);
+            warn!(
+                "refused a session lock request: the session is already locked (ADR 0022 does \
+                 not hand a held lock to another client)"
+            );
+
+            return;
+        }
+        let authorized = owner
+            .as_ref()
+            .is_some_and(|owner| self.lock_authorized.contains(owner));
+        let Some(owner) = owner.filter(|_| authorized) else {
+            self.lock_refusals = self.lock_refusals.saturating_add(1);
+            warn!(
+                "refused a session lock request from a connection that has not claimed the \
+                 trusted lock role"
+            );
+
+            return;
+        };
+
+        self.lock.object = Some(confirmation.ext_session_lock().clone());
+        self.lock.client = Some(owner);
+        self.lock.confirmed = false;
+        self.lock.owner_lost = false;
+        self.lock.focus = None;
+        let outputs: Vec<OutputId> = self.outputs.iter().map(|entry| entry.id).collect();
+        self.lock.coverage.begin(outputs);
+        self.lock.pending = Some(confirmation);
+        // Chords pressed before the lock belong to the desktop, not to the lock
+        // surface: a release whose press was swallowed by the compositor must not
+        // be handed to the client that is now focused.
+        self.swallowed_presses = SwallowedPresses::default();
+        self.repaint = true;
+        info!(
+            outputs = self.outputs.len(),
+            "session lock accepted; covering every output"
+        );
+        self.sync_focus();
+        self.broadcast_lock_state();
+    }
+
+    fn unlock(&mut self) {
+        // Only the pre-checked dispatch arm below reaches this, so the connection
+        // asking really is the one that holds the lock and really has been sent
+        // `locked`.
+        self.release_lock("the lock client unlocked the session");
+    }
+
+    fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
+        let Some(client) = surface.wl_surface().client().map(|client| client.id()) else {
+            debug!("a lock surface arrived without a client");
+
+            return;
+        };
+        if Some(&client) != self.lock.client.as_ref() {
+            // Smithay creates a lock surface object for any client that asks, and
+            // sending the client an error here would be about the lock object it
+            // does not own; ignoring the surface is enough to keep its pixels off
+            // the locked screen.
+            debug!("ignored a lock surface from a connection that does not hold the lock");
+
+            return;
+        }
+        let Some(entry) = Output::from_resource(&output)
+            .and_then(|output| self.outputs.iter().find(|entry| entry.output == output))
+        else {
+            debug!("ignored a lock surface for an output this compositor does not advertise");
+
+            return;
+        };
+        let size = entry.area.size;
+        let id = entry.id;
+
+        // The size is set here, before Smithay sends the initial configure for
+        // this surface (`LockSurface::send_configure` runs after this callback
+        // returns), so the client is configured to exactly its output's logical
+        // size — which the protocol makes an exact requirement it must match.
+        surface.with_pending_state(|state| {
+            state.size = Some(Size::from((
+                u32::try_from(size.w).unwrap_or(0),
+                u32::try_from(size.h).unwrap_or(0),
+            )));
+        });
+        if self.lock.focus.is_none() {
+            self.lock.focus = Some(surface.wl_surface().clone());
+        }
+        self.lock.surfaces.push((client, id, surface));
+        self.repaint = true;
+        self.sync_focus();
+    }
+
+    // `ack_configure` is deliberately not implemented: Smithay's configure type is
+    // not nameable outside smithay, and there is nothing to apply when the client
+    // acknowledges — the commit that follows the ack marks the surface damaged
+    // through `CompositorHandler::commit`, which is what draws the next frame.
+}
+
+/// The lock object's requests, pre-checked before Smithay sees them.
+///
+/// Smithay's `unlock_and_destroy` arm posts `invalid_unlock` when the lock was
+/// never confirmed and then unlocks anyway — it clears its output bookkeeping and
+/// calls [`SessionLockHandler::unlock`] without returning. A connection that was
+/// refused the lock, or that never received `locked`, could therefore end a lock
+/// it does not own. This arm refuses that request instead of forwarding it, so
+/// "only the lock's owner, and only after `locked`, may unlock" is a property of
+/// this compositor rather than of the protocol implementation underneath it.
+impl Dispatch<ExtSessionLockV1, SessionLockState> for InoxState {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        lock: &ExtSessionLockV1,
+        request: lock_v1::Request,
+        data: &SessionLockState,
+        handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        if matches!(&request, lock_v1::Request::UnlockAndDestroy)
+            && !(state.lock.confirmed && state.lock.holds(lock))
+        {
+            lock.post_error(
+                lock_v1::Error::InvalidUnlock,
+                "the session is not locked by this connection",
+            );
+            warn!("refused unlock_and_destroy from a connection that does not hold the lock");
+
+            return;
+        }
+        <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::request(
+            state, client, lock, request, data, handle, data_init,
+        );
+    }
+}
+
+smithay::reexports::wayland_server::delegate_global_dispatch!(InoxState: [ExtSessionLockManagerV1: SessionLockManagerGlobalData] => SessionLockManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(InoxState: [ExtSessionLockManagerV1: ()] => SessionLockManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(InoxState: [ExtSessionLockSurfaceV1: ExtLockSurfaceUserData] => SessionLockManagerState);
 
 /// Fallback used when a client carries no [`ClientState`].
 ///

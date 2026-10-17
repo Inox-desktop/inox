@@ -53,6 +53,7 @@ fn service(name: &str, program: &str, args: &[&str], required: bool, oneshot: bo
         command: command(program, args),
         required,
         oneshot,
+        environment: BTreeMap::new(),
     }
 }
 fn spec(root: &Path, services: Vec<ServiceSpec>) -> SessionSpec {
@@ -281,4 +282,157 @@ fn unresponsive_service_is_killed_within_the_logout_budget() {
     assert!(start.elapsed() >= Duration::from_secs(4));
     assert!(start.elapsed() < Duration::from_secs(10));
     no_runtime_left(root.path());
+}
+
+/// A Wayland peer that also records the arguments it was started with.
+///
+/// The lock token is delivered to the compositor on its command line (ADR 0022
+/// decision 3), so the compositor's own record of its argv is where the test reads
+/// the session's token from — the session process never prints it, and must not.
+const PEER_RECORDS_ARGV: &str = r#"
+import os, socket, struct, signal, time, sys
+with open(os.path.join(os.environ['XDG_RUNTIME_DIR'], 'compositor-args'), 'w') as record:
+    record.write(' '.join(sys.argv[1:]))
+for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(sig, lambda *_: exit(0))
+path = os.path.join(os.environ['XDG_RUNTIME_DIR'], 'wayland-inox')
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(1)
+c, _ = s.accept()
+data = b''
+while len(data) < 12:
+    part = c.recv(12 - len(data))
+    if not part: exit(1)
+    data += part
+obj, sizeop, callback = struct.unpack('=III', data)
+c.sendall(struct.pack('=III', callback, 12 << 16, 1))
+while True: time.sleep(1)
+"#;
+
+#[test]
+fn the_session_lock_token_reaches_only_the_compositor_and_the_lock_client() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = private_runtime();
+    let binaries = tempfile::tempdir().expect("fake session binaries");
+    let compositor = binaries.path().join("inox-compositor");
+    std::fs::write(
+        &compositor,
+        format!("#!/usr/bin/env python3\n{PEER_RECORDS_ARGV}"),
+    )
+    .expect("the compositor boundary");
+    std::fs::set_permissions(&compositor, std::fs::Permissions::from_mode(0o700))
+        .expect("an executable compositor");
+
+    // Every other component the session starts has to exist, or a required one
+    // exhausting its restart budget ends the session before the lock client is
+    // reached. They are inert here: this test is about one environment variable.
+    for name in ["inox-wallpaper", "inox-notifications", "inox-idle"] {
+        let path = binaries.path().join(name);
+        std::fs::write(&path, "#!/bin/sh\nexec sleep 60\n").expect("a component boundary");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("an executable component");
+    }
+    let shell = binaries.path().join("inox-shell");
+    std::fs::write(&shell, "#!/bin/sh\nexit 0\n").expect("the shell boundary");
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700))
+        .expect("an executable shell");
+
+    let lock_token_file = root.path().join("lock-token");
+    let panel_token_file = root.path().join("panel-token");
+    for (name, script) in [
+        (
+            "inox-lock",
+            format!(
+                "#!/bin/sh\nprintf '%s' \"${{INOX_LOCK_TOKEN:-absent}}\" > '{0}'\nexec sleep 60\n",
+                lock_token_file.display()
+            ),
+        ),
+        (
+            "inox-panel",
+            format!(
+                "#!/bin/sh\nprintf '%s' \"${{INOX_LOCK_TOKEN:-absent}}\" > '{0}'\nexec sleep 60\n",
+                panel_token_file.display()
+            ),
+        ),
+    ] {
+        let path = binaries.path().join(name);
+        std::fs::write(&path, script).expect("the component boundary");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("an executable component");
+    }
+
+    let log_path = root.path().join("session.log");
+    let log = std::fs::File::create(&log_path).expect("the session log");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_inox-session"))
+        .arg("--headless")
+        .arg("--bin-dir")
+        .arg(binaries.path())
+        .arg("--exit-after-seconds")
+        .arg("8")
+        .env("XDG_RUNTIME_DIR", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("RUST_LOG", "warn")
+        .env("INOX_SESSION_TAKE_LOCK", "1")
+        // The session's own output goes to a file rather than to the test's: on a
+        // failure the log is what explains it, and on success nobody wants it.
+        .stdout(log.try_clone().expect("a log handle"))
+        .stderr(log)
+        .spawn()
+        .expect("the session starts");
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    // The compositor runs inside the session's *private* runtime directory, which
+    // is named after the session's process id: that is where its record of its own
+    // argv lands.
+    let compositor_argv = root
+        .path()
+        .join(format!("inox-session-{}", child.id()))
+        .join("compositor-args");
+    let mut argv = String::new();
+    let mut lock_token = String::new();
+    while lock_token.is_empty() || argv.is_empty() {
+        if Instant::now() >= deadline {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the session did not start the lock client and the compositor: {log}");
+        }
+        argv = std::fs::read_to_string(&compositor_argv).unwrap_or_default();
+        lock_token = std::fs::read_to_string(&lock_token_file).unwrap_or_default();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let arguments: Vec<&str> = argv.split_whitespace().collect();
+    let position = arguments
+        .iter()
+        .position(|argument| *argument == "--lock-token")
+        .expect("the compositor is started with a lock token");
+    let delivered = arguments[position + 1];
+    assert_eq!(
+        delivered.len(),
+        32,
+        "the token is a 128-bit value in hex: {delivered}"
+    );
+    assert!(
+        delivered
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()),
+        "{delivered}"
+    );
+    assert_eq!(
+        lock_token, delivered,
+        "the lock client must be given the same token the compositor was started with"
+    );
+
+    // The capability goes to the lock client and nowhere else: a panel that could
+    // claim the trusted lock role would be able to take the session lock.
+    let panel_token = std::fs::read_to_string(&panel_token_file).unwrap_or_default();
+    assert_eq!(
+        panel_token, "absent",
+        "no component other than the lock client may be handed the lock token"
+    );
+
+    let _ = child.wait();
 }

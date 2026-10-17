@@ -139,6 +139,9 @@ OPTIONS:
                                name, width, height, refresh, scale, x, y.
                                Example: --output name=DP-2,width=1920,height=1080,scale=1.5,x=1920,y=0
     --socket <NAME>            Wayland socket name [default: auto-selected]
+    --input-method <EXEC>      Launch a trusted input method (for example fcitx5)
+    --input-method-arg <ARG>   Append one argument to the input method command
+    --lock-token <TOKEN>       One-shot token that authorizes the session lock (ADR 0022)
     --exit-after-frames <N>    Exit with status 0 after rendering N frames
     --test-input <PATH>        Serve test commands on a unix socket (test-input builds only)
     -h, --help                 Print this help and exit
@@ -159,6 +162,16 @@ pub struct CompositorConfig {
     pub outputs: Vec<HeadlessOutput>,
     /// Wayland socket name, or `None` to let the compositor pick the next free one.
     pub socket_name: Option<String>,
+    /// One-shot token a client must present over `inox-ipc` to be allowed to lock
+    /// the session, or `None` when locking is unavailable in this run.
+    ///
+    /// `inox-session` generates it per session and hands the same value to the
+    /// trusted lock client; ADR 0022 records why the authority is a capability
+    /// rather than a client-supplied name, and why a compositor started without
+    /// one refuses every lock request instead of accepting an unidentified one.
+    pub lock_token: Option<String>,
+    /// Explicit input method argv; launched on a private privileged connection.
+    pub input_method: Vec<String>,
     /// Number of frames to render before exiting, or `None` to run until signalled.
     pub exit_after_frames: Option<u64>,
     /// Path of the test-input control socket, set only by `--test-input`.
@@ -175,6 +188,8 @@ impl Default for CompositorConfig {
             backend: BackendKind::default(),
             outputs: vec![HeadlessOutput::default()],
             socket_name: None,
+            lock_token: None,
+            input_method: Vec::new(),
             exit_after_frames: None,
             test_input_path: None,
         }
@@ -353,6 +368,31 @@ where
                     return Err(invalid_value(&option, &value, "must not be empty"));
                 }
                 config.socket_name = Some(value);
+            }
+            "--input-method" => {
+                let value = take_value(&option, inline, &mut args)?;
+                if value.is_empty() || !config.input_method.is_empty() {
+                    return Err(invalid_value(
+                        &option,
+                        &value,
+                        "requires one nonempty executable, specified once",
+                    ));
+                }
+                config.input_method.push(value);
+            }
+            "--input-method-arg" => {
+                let value = take_value(&option, inline, &mut args)?;
+                if config.input_method.is_empty() {
+                    return Err(invalid_value(&option, &value, "must follow --input-method"));
+                }
+                config.input_method.push(value);
+            }
+            "--lock-token" => {
+                let value = take_value(&option, inline, &mut args)?;
+                if value.is_empty() {
+                    return Err(invalid_value(&option, &value, "must not be empty"));
+                }
+                config.lock_token = Some(value);
             }
             "--exit-after-frames" => {
                 let value = take_value(&option, inline, &mut args)?;
@@ -610,6 +650,34 @@ mod tests {
     #[test]
     fn no_arguments_uses_defaults() {
         assert_eq!(run_config(&[]), CompositorConfig::default());
+    }
+
+    #[test]
+    fn input_method_argv_is_explicit_and_preserves_literal_arguments() {
+        assert!(run_config(&[]).input_method.is_empty());
+        let config = run_config(&[
+            "--input-method",
+            "/usr/bin/fcitx5",
+            "--input-method-arg=--verbose=debug",
+            "--input-method-arg",
+            "a b;$(touch /tmp/not-executed)",
+        ]);
+        assert_eq!(
+            config.input_method,
+            [
+                "/usr/bin/fcitx5",
+                "--verbose=debug",
+                "a b;$(touch /tmp/not-executed)"
+            ]
+        );
+        for invalid in [
+            vec!["--input-method"],
+            vec!["--input-method="],
+            vec!["--input-method-arg=x"],
+            vec!["--input-method=a", "--input-method=b"],
+        ] {
+            assert!(parse_args(args(&invalid)).is_err());
+        }
     }
 
     #[test]

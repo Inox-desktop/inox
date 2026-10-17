@@ -59,6 +59,7 @@ const EXPECTED_GLOBALS: &[&str] = &[
     "inox_ipc",
     // M4, ADR 0020: the exact scale a surface should render at.
     "wp_fractional_scale_manager_v1",
+    "zwp_text_input_manager_v3",
 ];
 
 /// A private `XDG_RUNTIME_DIR` for one compositor process.
