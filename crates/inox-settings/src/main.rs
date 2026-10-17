@@ -162,12 +162,13 @@ impl Runtime {
                 let paths = self.paths.clone();
                 let documents = state.documents().clone();
                 let expected = state.draft().settings().clone();
-                let fields = self
-                    .changes
-                    .borrow()
+                let changes = self.changes.borrow();
+                let fields = changes
                     .get(&generation)
+                    .or_else(|| changes.values().next())
                     .cloned()
                     .unwrap_or_default();
+                drop(changes);
                 Task::perform(
                     async move {
                         live::apply(

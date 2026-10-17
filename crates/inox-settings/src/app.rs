@@ -378,6 +378,12 @@ impl State {
             return;
         }
 
+        if !self.draft.is_modified()
+            && let Some(generation) = self.application.retry_apply()
+        {
+            self.notify(generation);
+            return;
+        }
         let edits = match self.draft.edits() {
             Ok(edits) => edits,
             Err(error) => {
@@ -1016,6 +1022,34 @@ mod tests {
         }
 
         generation
+    }
+
+    #[test]
+    fn retrying_saved_preferences_requests_application_without_rewriting_files() {
+        let (_directory, mut state) = changed();
+        let commands = applied(&mut state);
+        let old = write(&mut state, &commands);
+        state.take_outgoing();
+        send(
+            &mut state,
+            Message::ComponentUnreachable {
+                generation: old,
+                component: Component::Shell,
+                reason: "not running".into(),
+            },
+        );
+        let model = state.model();
+        assert!(model.action(Action::Apply).expect("apply").enabled);
+        assert!(
+            model
+                .focus_order
+                .contains(&FocusTarget::Action(Action::Apply))
+        );
+        send(&mut state, Message::Apply);
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(commands.as_slice(), [OutgoingCommand::Apply { component: Component::Shell, generation }] if *generation > old)
+        );
     }
 
     #[test]

@@ -1049,7 +1049,7 @@ impl InoxState {
             let elements = self
                 .scene_elements(renderer.renderer_mut(), &output)
                 .map_err(RenderError::from)?;
-            renderer.render_elements(&name, size, scale, &elements)?;
+            renderer.render_elements(&name, size, scale, self.background, &elements)?;
         }
 
         Ok(())

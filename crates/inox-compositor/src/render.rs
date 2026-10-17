@@ -176,6 +176,7 @@ impl HeadlessRenderer {
         output: &str,
         size: (i32, i32),
         scale: f64,
+        background: [f32; 4],
         elements: &[E],
     ) -> Result<(), RenderError>
     where
@@ -197,7 +198,7 @@ impl HeadlessRenderer {
 
         {
             let mut frame = renderer.render(&mut bound, size, Transform::Normal)?;
-            frame.clear(CLEAR_COLOR.into(), &damage)?;
+            frame.clear(background.into(), &damage)?;
 
             // Smithay handles front-to-back ordering and element-local damage.
             // This target always redraws fully, so no retained damage is needed.

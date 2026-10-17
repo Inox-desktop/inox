@@ -379,7 +379,16 @@ impl SettingsInput<'_> {
         order.extend(
             self.action_order()
                 .into_iter()
-                .filter(|action| action_reason(*action, busy, modified, invalid).is_none())
+                .filter(|action| {
+                    action_reason(
+                        *action,
+                        busy,
+                        modified
+                            || (*action == Action::Apply && self.application.can_retry_apply()),
+                        invalid,
+                    )
+                    .is_none()
+                })
                 .map(FocusTarget::Action),
         );
 
@@ -459,7 +468,12 @@ impl SettingsInput<'_> {
         invalid: bool,
         focused: Option<FocusTarget>,
     ) -> ActionView {
-        let reason = action_reason(action, busy, modified, invalid);
+        let reason = action_reason(
+            action,
+            busy,
+            modified || (action == Action::Apply && self.application.can_retry_apply()),
+            invalid,
+        );
 
         ActionView {
             action,

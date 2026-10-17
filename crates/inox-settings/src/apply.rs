@@ -362,6 +362,37 @@ impl Application {
         &self.targets
     }
 
+    /// Whether saved preferences can be retried without writing any files.
+    pub fn can_retry_apply(&self) -> bool {
+        !self.state.is_busy()
+            && !self.files.is_empty()
+            && self.written.is_superset(&self.files)
+            && self.results.values().any(|result| {
+                matches!(
+                    result,
+                    ComponentState::Rejected { .. } | ComponentState::Unreachable { .. }
+                )
+            })
+    }
+
+    /// Begins a new confirmation round for already saved preferences.
+    pub fn retry_apply(&mut self) -> Option<Generation> {
+        if !self.can_retry_apply() {
+            return None;
+        }
+        self.generation = self.generation.next();
+        self.results = self
+            .targets
+            .iter()
+            .map(|component| (*component, ComponentState::Pending))
+            .collect();
+        self.state = ApplyState::Pending {
+            generation: self.generation,
+            outstanding: self.targets.iter().copied().collect(),
+        };
+        Some(self.generation)
+    }
+
     /// Forgets the current request without forgetting how many there have been.
     ///
     /// Used when the configuration is read again after a failure: the request
@@ -478,6 +509,8 @@ impl Application {
             }
 
             self.results.insert(component, state);
+            self.finish(generation);
+            return true;
         }
 
         let fields = match &reason {
@@ -602,7 +635,21 @@ impl Application {
                 .map(|(component, _)| *component)
                 .collect();
 
-            if unreachable.is_empty() {
+            if let Some((component, ComponentState::Rejected { reason, fields })) = self
+                .results
+                .iter()
+                .find(|(_, result)| matches!(result, ComponentState::Rejected { .. }))
+            {
+                ApplyState::Rejected {
+                    generation,
+                    reason: Rejection::Component {
+                        component: *component,
+                        reason: reason.clone(),
+                        fields: fields.clone(),
+                    },
+                    fields: fields.clone(),
+                }
+            } else if unreachable.is_empty() {
                 ApplyState::Applied { generation }
             } else {
                 ApplyState::SavedOnly {
@@ -953,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_from_one_consumer_ends_the_request() {
+    fn a_refusal_waits_for_other_consumers_and_preserves_all_results() {
         let mut application = Application::new();
         let files = BTreeSet::from([SettingFile::Root]);
         let targets = Component::for_files(&files);
@@ -968,8 +1015,31 @@ mod tests {
             "the daemon is not running".to_owned(),
             Vec::new(),
         ));
-        assert!(!application.component_applied(Component::Compositor, generation));
+        assert!(application.state().is_busy());
+        assert!(application.component_applied(Component::Compositor, generation));
+        assert!(application.component_unreachable(
+            Component::Shell,
+            generation,
+            "not running".into()
+        ));
         assert!(matches!(application.state(), ApplyState::Rejected { .. }));
+        assert_eq!(
+            application.results().get(&Component::Compositor),
+            Some(&ComponentState::Applied)
+        );
+        let retry = application
+            .retry_apply()
+            .expect("saved preferences are retryable");
+        assert!(retry > generation);
+        assert!(!application.component_applied(Component::Shell, generation));
+        for component in Component::ALL {
+            assert!(application.component_applied(component, retry));
+        }
+        assert_eq!(
+            application.state(),
+            &ApplyState::Applied { generation: retry }
+        );
+        assert!(!application.can_retry_apply());
     }
 
     #[test]
