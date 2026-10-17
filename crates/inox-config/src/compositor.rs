@@ -31,6 +31,24 @@ const DEFAULT_REFRESH_HZ: i32 = 60;
 /// Default scale factor of an output.
 const DEFAULT_SCALE: f64 = 1.0;
 
+/// Smallest accepted scale factor of an output.
+///
+/// The logical size of an output is its mode size divided by the scale, so the
+/// lower bound keeps that division far away from the coordinate range the
+/// compositor can represent (ADR 0020).
+const SCALE_MIN: f64 = 0.25;
+
+/// Largest accepted scale factor of an output.
+const SCALE_MAX: f64 = 8.0;
+
+/// Largest accepted magnitude of an output position coordinate, in logical pixels.
+///
+/// The compositor adds and scales logical coordinates in `i32` arithmetic, so an
+/// unbounded coordinate could overflow the space geometry. Four million logical
+/// pixels is far beyond any real arrangement of displays while leaving two
+/// orders of magnitude of headroom for those sums.
+const MAX_COORDINATE: i32 = 4_194_304;
+
 /// Largest accepted output dimension, in pixels; the same limit inox-compositor
 /// applies to its `--output-size` option (`MAX_DIMENSION` in `src/config.rs`).
 const MAX_DIMENSION: i32 = 16_384;
@@ -75,18 +93,23 @@ pub struct CompositorConfig {
     pub layout: LayoutConfig,
 }
 
-/// One output to create.
+/// One output to create or configure.
 ///
-/// The four numeric fields are checked while the file is parsed, with the same
-/// limits inox-compositor applies to the equivalent command line options: a zero
-/// or oversized dimension or refresh rate would build an output that cannot be
-/// driven, and a scale of zero or a non-finite scale would divide the logical
-/// geometry by zero.
+/// Every numeric field is checked while the file is parsed, with the same limits
+/// inox-compositor applies to the equivalent command line options: a zero or
+/// oversized dimension or refresh rate would build an output that cannot be
+/// driven, a scale outside 0.25..=8.0 would make the logical geometry
+/// unrepresentable, and a position outside ±4194304 could
+/// overflow the space arithmetic. Per ADR 0009 decision 4 an out-of-range value
+/// is a parse error naming the field, never a silent correction.
+///
+/// An entry with no `position` is placed by the compositor automatically, to the
+/// right of everything already placed (ADR 0019).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OutputConfig {
-    /// Connector to match, for example `HDMI-A-1`, or `None` to match outputs
-    /// by position, in the order they are listed.
+    /// Connector to match, for example `HDMI-A-1`. `None` matches the outputs
+    /// that no earlier entry claimed, in the order they are listed.
     pub name: Option<String>,
     /// Width in physical pixels, between 1 and 16384.
     #[serde(deserialize_with = "validate_dimension")]
@@ -97,9 +120,16 @@ pub struct OutputConfig {
     /// Refresh rate in Hz, between 1 and 1000.
     #[serde(deserialize_with = "validate_refresh_hz")]
     pub refresh_hz: i32,
-    /// Scale factor between physical and logical pixels; positive and finite.
+    /// Scale factor between physical and logical pixels, between 0.25 and 8.
+    /// Fractional values are accepted; the compositor
+    /// advertises their ceiling to clients that only understand integer scales
+    /// (ADR 0020).
     #[serde(deserialize_with = "validate_scale")]
     pub scale: f64,
+    /// Where the output's top-left corner sits in the global logical coordinate
+    /// space, or `None` to let the compositor place it. Negative coordinates are
+    /// valid: an output to the left of or above the origin has them.
+    pub position: Option<Position>,
 }
 
 impl Default for OutputConfig {
@@ -110,8 +140,26 @@ impl Default for OutputConfig {
             height: DEFAULT_HEIGHT,
             refresh_hz: DEFAULT_REFRESH_HZ,
             scale: DEFAULT_SCALE,
+            position: None,
         }
     }
+}
+
+/// The top-left corner of an output in the global logical coordinate space.
+///
+/// Coordinates are signed: an arrangement with a display to the left of the
+/// origin, or above it, is ordinary. Both fields are checked while the file is
+/// parsed, and each is limited to ±4194304 logical pixels: far beyond any real
+/// arrangement, while leaving the compositor room to add them up safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Position {
+    /// Horizontal offset in logical pixels, between -4194304 and 4194304.
+    #[serde(deserialize_with = "validate_coordinate")]
+    pub x: i32,
+    /// Vertical offset in logical pixels, between -4194304 and 4194304.
+    #[serde(deserialize_with = "validate_coordinate")]
+    pub y: i32,
 }
 
 /// Input device settings.
@@ -248,20 +296,36 @@ where
     Ok(refresh_hz)
 }
 
-/// Reject a scale that is not a positive, finite number.
+/// Reject a scale that is not a finite number inside [`SCALE_MIN`]..=[`SCALE_MAX`].
 fn validate_scale<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
 {
     let scale = f64::deserialize(deserializer)?;
 
-    if !scale.is_finite() || scale <= 0.0 {
+    if !scale.is_finite() || !(SCALE_MIN..=SCALE_MAX).contains(&scale) {
         return Err(serde::de::Error::custom(format!(
-            "scale must be a positive, finite number, found {scale:?}"
+            "scale must be a positive, finite number between {SCALE_MIN} and {SCALE_MAX}, found {scale:?}"
         )));
     }
 
     Ok(scale)
+}
+
+/// Reject an output position coordinate outside ±[`MAX_COORDINATE`].
+fn validate_coordinate<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let coordinate = i32::deserialize(deserializer)?;
+
+    if coordinate.abs() > MAX_COORDINATE {
+        return Err(serde::de::Error::custom(format!(
+            "a position coordinate must be between -{MAX_COORDINATE} and {MAX_COORDINATE}, found {coordinate}"
+        )));
+    }
+
+    Ok(coordinate)
 }
 
 /// Reject a master ratio outside [`MASTER_RATIO_MIN`]..=[`MASTER_RATIO_MAX`].
@@ -370,6 +434,115 @@ mod tests {
         assert_eq!(output.height, 720);
         assert_eq!(output.refresh_hz, 60);
         assert!((output.scale - 1.0).abs() < f64::EPSILON);
+        // No position means "place me automatically", not "place me at the origin".
+        assert_eq!(output.position, None);
+    }
+
+    #[test]
+    fn the_position_defaults_are_the_origin() {
+        assert_eq!(Position::default(), Position { x: 0, y: 0 });
+    }
+
+    #[test]
+    fn positions_are_parsed_with_their_sign() {
+        let config = parse_compositor(
+            "[[outputs]]\n\
+             name = \"DP-1\"\n\
+             position = { x = 1920, y = 0 }\n\
+             \n\
+             [[outputs]]\n\
+             name = \"DP-2\"\n\
+             position = { x = -1920, y = -1080 }\n",
+        )
+        .expect("document");
+
+        assert_eq!(config.outputs[0].position, Some(Position { x: 1920, y: 0 }));
+        assert_eq!(
+            config.outputs[1].position,
+            Some(Position { x: -1920, y: -1080 })
+        );
+    }
+
+    #[test]
+    fn a_partial_position_keeps_the_coordinate_it_leaves_out() {
+        let config = parse_compositor("[[outputs]]\nposition = { x = 640 }\n").expect("document");
+
+        assert_eq!(config.outputs[0].position, Some(Position { x: 640, y: 0 }));
+    }
+
+    #[test]
+    fn fractional_scales_are_accepted_including_the_range_edges() {
+        for scale in [0.25, 1.0, 1.25, 1.5, 2.0, 8.0] {
+            let document = format!("[[outputs]]\nscale = {scale}\n");
+            let config = parse_compositor(&document)
+                .unwrap_or_else(|error| panic!("expected `{document:?}` to parse: {error}"));
+
+            assert!((config.outputs[0].scale - scale).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn out_of_range_scales_and_coordinates_are_rejected_while_parsing() {
+        for (document, field, needle, reason) in [
+            (
+                "[[outputs]]\nscale = 0.1\n",
+                "outputs[0].scale",
+                "0.1",
+                "between 0.25 and 8",
+            ),
+            (
+                "[[outputs]]\nscale = 9.0\n",
+                "outputs[0].scale",
+                "9.0",
+                "between 0.25 and 8",
+            ),
+            (
+                "[[outputs]]\nposition = { x = 4194305 }\n",
+                "outputs[0].position.x",
+                "4194305",
+                "position coordinate",
+            ),
+            (
+                "[[outputs]]\nposition = { y = -4194305 }\n",
+                "outputs[0].position.y",
+                "4194305",
+                "position coordinate",
+            ),
+        ] {
+            let outcome = parse_compositor(document);
+            assert!(
+                outcome.is_err(),
+                "expected `{document:?}` to be rejected, got {outcome:?}"
+            );
+
+            let error = outcome.expect_err("checked above");
+            let expected_line = line_of(document, needle);
+            let rendered = error.to_string();
+
+            assert!(
+                rendered.contains(&format!("compositor.toml:{expected_line}:")),
+                "rendered `{rendered}`"
+            );
+            assert!(
+                rendered.contains(&format!("(field `{field}`)")),
+                "rendered `{rendered}`"
+            );
+            assert!(rendered.contains(reason), "rendered `{rendered}`");
+        }
+    }
+
+    #[test]
+    fn a_position_coordinate_at_the_edge_of_its_range_is_accepted() {
+        let config = parse_compositor("[[outputs]]\nposition = { x = 4194304, y = -4194304 }\n")
+            .expect("a coordinate at the edge of its range");
+
+        assert_eq!(
+            config.outputs[0].position,
+            Some(Position {
+                x: 4_194_304,
+                y: -4_194_304
+            })
+        );
     }
 
     #[test]
@@ -403,6 +576,7 @@ mod tests {
              height = 1440\n\
              refresh_hz = 144\n\
              scale = 1.5\n\
+             position = { x = 0, y = 0 }\n\
              \n\
              [[outputs]]\n\
              width = 1920\n\
@@ -428,8 +602,10 @@ mod tests {
         assert_eq!(config.outputs[0].width, 2560);
         assert_eq!(config.outputs[0].refresh_hz, 144);
         assert!((config.outputs[0].scale - 1.5).abs() < f64::EPSILON);
+        assert_eq!(config.outputs[0].position, Some(Position { x: 0, y: 0 }));
         // An entry only has to name what it changes.
         assert_eq!(config.outputs[1].name, None);
+        assert_eq!(config.outputs[1].position, None);
         assert_eq!(config.outputs[1].width, 1920);
         assert_eq!(config.outputs[1].height, 1080);
         assert_eq!(config.outputs[1].refresh_hz, 60);

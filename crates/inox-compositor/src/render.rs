@@ -1,5 +1,5 @@
-//! Headless rendering: a surfaceless EGL display, a GLES renderer and an
-//! offscreen render target.
+//! Headless rendering: a surfaceless EGL display, a GLES renderer and one
+//! offscreen render target per output.
 //!
 //! Smithay 0.7 has no headless backend (see ADR 0005), so Inox builds this path
 //! from Smithay's EGL and GLES abstractions: a surfaceless `EGLDisplay`
@@ -23,6 +23,8 @@
 //! constructed through `unsafe` constructors whose contracts are tied to
 //! process-wide EGL/GL state. Both calls are wrapped into a safe API and carry
 //! `// SAFETY:` justifications.
+
+use std::collections::HashMap;
 
 use smithay::{
     backend::{
@@ -91,25 +93,47 @@ pub enum RenderError {
         /// Number of bytes the readback produced.
         actual: usize,
     },
+    /// No target is allocated for the named output.
+    ///
+    /// Only reachable when a caller reads back an output the headless backend has
+    /// never rendered, which the compositor does not do: every read goes through
+    /// the output it just drew.
+    #[error("no headless render target for output `{name}`")]
+    UnknownOutput {
+        /// The output name that has no target.
+        name: String,
+    },
 }
 
-/// An offscreen GLES render target sized to a headless output.
-pub struct HeadlessRenderer {
-    renderer: GlesRenderer,
-    target: GlesRenderbuffer,
+/// One output's offscreen render target.
+struct Target {
+    buffer: GlesRenderbuffer,
     size: Size<i32, Physical>,
 }
 
+/// An offscreen GLES render target per headless output.
+///
+/// Targets are created on first use and resized when an output's mode changes, so
+/// an output that disappears releases its buffer and one that comes back gets a
+/// fresh one. All of them share the single EGL display and GLES renderer: a
+/// process may only hold one EGL display (see the `SAFETY` note in
+/// [`HeadlessRenderer::new`]), and composites every output with it.
+pub struct HeadlessRenderer {
+    renderer: GlesRenderer,
+    targets: HashMap<String, Target>,
+}
+
 impl HeadlessRenderer {
-    /// Create the EGL/GLES renderer and a render target of `size` pixels.
+    /// Create the EGL/GLES renderer.
+    ///
+    /// No render target is allocated here: each output's target appears with the
+    /// first frame it renders.
     ///
     /// # Errors
     ///
-    /// Returns a [`RenderError`] when no usable GL driver is available, or when the
-    /// render target cannot be allocated.
+    /// Returns a [`RenderError`] when no usable GL driver is available.
     #[allow(unsafe_code)]
-    pub fn new(size: (i32, i32)) -> Result<Self, RenderError> {
-        validate_size(size)?;
+    pub fn new() -> Result<Self, RenderError> {
         // SAFETY: `EGLDisplay::new` takes ownership of the platform display and calls
         // `eglTerminate` when it is dropped. The compositor obtains its EGL display
         // through this single path, so there is no other owner to invalidate.
@@ -119,17 +143,11 @@ impl HeadlessRenderer {
         // SAFETY: `GlesRenderer::new` requires the context not to be current on any
         // other thread. The compositor is single-threaded, and this context was just
         // created here, so no other thread can be using it.
-        let mut renderer = unsafe { GlesRenderer::new(context) }?;
-
-        // `Abgr8888` is the only format the GLES renderer can allocate as a
-        // renderbuffer without extra capabilities.
-        let target =
-            renderer.create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoord>::from(size))?;
+        let renderer = unsafe { GlesRenderer::new(context) }?;
 
         Ok(Self {
             renderer,
-            target,
-            size: size.into(),
+            targets: HashMap::new(),
         })
     }
 
@@ -142,45 +160,49 @@ impl HeadlessRenderer {
         &mut self.renderer
     }
 
-    /// Replace the offscreen buffer while keeping the same EGL display.
+    /// Render `elements` for `output` over the background colour.
     ///
-    /// # Errors
-    /// Returns a render error if the new target cannot be allocated.
-    pub fn resize(&mut self, size: (i32, i32)) -> Result<(), RenderError> {
-        validate_size(size)?;
-        if self.size.w == size.0 && self.size.h == size.1 {
-            return Ok(());
-        }
-        let target = self
-            .renderer
-            .create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoord>::from(size))?;
-        self.target = target;
-        self.size = size.into();
-        Ok(())
-    }
-
-    /// Render `elements` over the background colour into the render target.
+    /// The target is allocated on first use and reallocated when the output's
+    /// mode changes. `scale` is that output's scale factor: a render element
+    /// carries its position in physical pixels but derives its extent from the
+    /// logical size times this scale, so drawing an output at the wrong scale
+    /// would place correctly and size incorrectly (ADR 0020).
     ///
     /// # Errors
     ///
     /// Returns [`RenderError::Gles`] when any GLES call fails.
-    pub fn render_elements<E>(&mut self, elements: &[E]) -> Result<(), RenderError>
+    pub fn render_elements<E>(
+        &mut self,
+        output: &str,
+        size: (i32, i32),
+        scale: f64,
+        elements: &[E],
+    ) -> Result<(), RenderError>
     where
         E: RenderElement<GlesRenderer>,
     {
-        let size = self.size;
+        // Destructured so the renderer and the target table are borrowed
+        // separately: binding a framebuffer needs both at once.
+        let Self { renderer, targets } = self;
+        ensure_target(renderer, targets, output, size)?;
+        let target = targets
+            .get_mut(output)
+            .ok_or_else(|| RenderError::UnknownOutput {
+                name: output.to_owned(),
+            })?;
+        let size = target.size;
         let damage = [Rectangle::from_size(size)];
 
-        let mut bound = self.renderer.bind(&mut self.target)?;
+        let mut bound = renderer.bind(&mut target.buffer)?;
 
         {
-            let mut frame = self.renderer.render(&mut bound, size, Transform::Normal)?;
+            let mut frame = renderer.render(&mut bound, size, Transform::Normal)?;
             frame.clear(CLEAR_COLOR.into(), &damage)?;
 
             // Smithay handles front-to-back ordering and element-local damage.
             // This target always redraws fully, so no retained damage is needed.
             drop(draw_render_elements::<GlesRenderer, _, _>(
-                &mut frame, 1.0f64, elements, &damage,
+                &mut frame, scale, elements, &damage,
             )?);
 
             // The readback performed by callers blocks until the frame is complete, so
@@ -191,7 +213,7 @@ impl HeadlessRenderer {
         Ok(())
     }
 
-    /// Read back the pixel at the centre of the render target, as RGBA bytes.
+    /// Read back the pixel at the centre of `output`'s target, as RGBA bytes.
     ///
     /// Integration tests use this as evidence that a frame really reached the render
     /// target. The colour is returned with the raw 8-bit precision of the target, so
@@ -199,18 +221,23 @@ impl HeadlessRenderer {
     ///
     /// # Errors
     ///
-    /// Returns [`RenderError::Gles`] when the readback fails, and
+    /// Returns [`RenderError::Gles`] when the readback fails,
+    /// [`RenderError::UnknownOutput`] when nothing was rendered for `output`, and
     /// [`RenderError::ShortReadback`] when the mapping is smaller than expected.
-    pub fn read_center_pixel(&mut self) -> Result<[u8; 4], RenderError> {
-        let size = self.size;
+    pub fn read_center_pixel(&mut self, output: &str) -> Result<[u8; 4], RenderError> {
+        let Self { renderer, targets } = self;
+        let target = targets
+            .get_mut(output)
+            .ok_or_else(|| RenderError::UnknownOutput {
+                name: output.to_owned(),
+            })?;
+        let size = target.size;
 
         let region = Rectangle::from_size(Size::<i32, BufferCoord>::from((size.w, size.h)));
 
-        let bound = self.renderer.bind(&mut self.target)?;
-        let mapping = self
-            .renderer
-            .copy_framebuffer(&bound, region, Fourcc::Abgr8888)?;
-        let data = self.renderer.map_texture(&mapping)?;
+        let bound = renderer.bind(&mut target.buffer)?;
+        let mapping = renderer.copy_framebuffer(&bound, region, Fourcc::Abgr8888)?;
+        let data = renderer.map_texture(&mapping)?;
 
         // `Abgr8888` readbacks are tightly packed, so the stride is the width in bytes.
         let stride = size.w as usize * BYTES_PER_PIXEL;
@@ -224,7 +251,7 @@ impl HeadlessRenderer {
             })
     }
 
-    /// Read back the whole render target as tightly packed RGBA8 bytes.
+    /// Read back all of `output`'s target as tightly packed RGBA8 bytes.
     ///
     /// Row-major, top row first, four bytes per pixel with no padding — the layout
     /// the PPM writer of the test-input channel (`crate::test_input`) consumes.
@@ -233,17 +260,22 @@ impl HeadlessRenderer {
     ///
     /// # Errors
     ///
-    /// Returns [`RenderError::Gles`] when the readback fails, and
+    /// Returns [`RenderError::Gles`] when the readback fails,
+    /// [`RenderError::UnknownOutput`] when nothing was rendered for `output`, and
     /// [`RenderError::ShortReadback`] when the mapping is smaller than the frame.
-    pub fn read_frame_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
-        let size = self.size;
+    pub fn read_frame_rgba(&mut self, output: &str) -> Result<Vec<u8>, RenderError> {
+        let Self { renderer, targets } = self;
+        let target = targets
+            .get_mut(output)
+            .ok_or_else(|| RenderError::UnknownOutput {
+                name: output.to_owned(),
+            })?;
+        let size = target.size;
         let region = Rectangle::from_size(Size::<i32, BufferCoord>::from((size.w, size.h)));
 
-        let bound = self.renderer.bind(&mut self.target)?;
-        let mapping = self
-            .renderer
-            .copy_framebuffer(&bound, region, Fourcc::Abgr8888)?;
-        let data = self.renderer.map_texture(&mapping)?;
+        let bound = renderer.bind(&mut target.buffer)?;
+        let mapping = renderer.copy_framebuffer(&bound, region, Fourcc::Abgr8888)?;
+        let data = renderer.map_texture(&mapping)?;
 
         // `Abgr8888` readbacks are tightly packed, so the frame is exactly this long.
         let expected = size.w as usize * size.h as usize * BYTES_PER_PIXEL;
@@ -256,6 +288,37 @@ impl HeadlessRenderer {
 
         Ok(data[..expected].to_vec())
     }
+}
+
+/// Allocate `output`'s target, or reallocate it after a mode change.
+fn ensure_target(
+    renderer: &mut GlesRenderer,
+    targets: &mut HashMap<String, Target>,
+    output: &str,
+    size: (i32, i32),
+) -> Result<(), RenderError> {
+    validate_size(size)?;
+    let wanted: Size<i32, Physical> = size.into();
+
+    let stale = match targets.get(output) {
+        Some(target) => target.size != wanted,
+        None => true,
+    };
+    if stale {
+        // `Abgr8888` is the only format the GLES renderer can allocate as a
+        // renderbuffer without extra capabilities.
+        let buffer =
+            renderer.create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoord>::from(size))?;
+        targets.insert(
+            output.to_owned(),
+            Target {
+                buffer,
+                size: wanted,
+            },
+        );
+    }
+
+    Ok(())
 }
 
 fn validate_size((width, height): (i32, i32)) -> Result<(), RenderError> {
@@ -272,12 +335,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invalid_target_dimensions_are_rejected_before_egl_is_created() {
-        for size in [(-1, 1), (1, 0), (i32::MAX, 1)] {
-            assert!(matches!(
-                HeadlessRenderer::new(size),
-                Err(RenderError::InvalidSize { .. })
-            ));
+    fn invalid_target_dimensions_are_rejected() {
+        for size in [(-1, 1), (1, 0), (i32::MAX, 1), (0, 0)] {
+            assert!(
+                matches!(validate_size(size), Err(RenderError::InvalidSize { .. })),
+                "expected {size:?} to be rejected"
+            );
         }
+        assert!(validate_size((1, 1)).is_ok());
+        assert!(validate_size((16_384, 16_384)).is_ok());
     }
 }

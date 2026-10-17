@@ -8,12 +8,7 @@
 //! The optional `test-input` source exists only in feature-enabled builds and
 //! remains inert without an explicit socket path.
 
-use std::{
-    ffi::OsString,
-    io,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{ffi::OsString, io, sync::Arc, time::Duration};
 
 mod physical;
 
@@ -109,11 +104,13 @@ pub enum RunError {
 struct CalloopData {
     state: InoxState,
     display_handle: DisplayHandle,
+    /// The physical backend, when one is running.
+    ///
+    /// Its per-output frame schedules and timers live inside it, so one display
+    /// cannot hold up another (ADR 0019).
     physical: Option<physical::PhysicalState>,
+    /// The headless frame schedule; unused while a physical backend runs.
     frames: FrameSchedule,
-    paint_timer: Option<calloop::RegistrationToken>,
-    watchdog: Option<calloop::RegistrationToken>,
-    next_frame_at: Instant,
     fatal: Option<RunError>,
     /// The live `--test-input` connection, if one is open.
     ///
@@ -155,7 +152,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
             &display_handle,
             &config,
             loop_signal,
-            prepared.output.clone(),
+            prepared.outputs.clone(),
             prepared.input.clone(),
             prepared.theme.clone(),
             prepared.layout,
@@ -168,9 +165,6 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         display_handle,
         physical: None,
         frames: FrameSchedule::default(),
-        paint_timer: None,
-        watchdog: None,
-        next_frame_at: Instant::now(),
         fatal: None,
         #[cfg(feature = "test-input")]
         test_input: None,
@@ -211,11 +205,11 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
 
     let scheduling_handle = loop_handle.clone();
     let result = event_loop.run(None, &mut data, move |data| {
-        if data.state.take_repaint() || data.state.frame_budget() {
-            data.frames.damage();
-        }
+        let repaint = data.state.take_repaint();
         if data.physical.is_some() {
-            physical::arm_frame(&scheduling_handle, data);
+            physical::schedule(&scheduling_handle, data, repaint);
+        } else if repaint || data.state.frame_budget() {
+            data.frames.damage();
         }
     });
     physical::shutdown(&loop_handle, &mut data);
@@ -234,7 +228,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
 
 /// Frame interval for the timer driving rendering, derived from the output refresh rate.
 fn frame_interval(config: &CompositorConfig) -> Duration {
-    let refresh_hz = config.refresh_hz.max(1) as u64;
+    let refresh_hz = config.refresh_hz().max(1) as u64;
 
     Duration::from_nanos(1_000_000_000 / refresh_hz)
 }

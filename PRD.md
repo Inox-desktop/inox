@@ -129,7 +129,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `presentation-time` | 必须 | 帧同步反馈 |
 | `idle-inhibit` / `ext-idle-notify-v1` | 必须 | 空闲管理 |
 | `pointer-constraints` / `relative-pointer` | 计划 | 游戏与 3D 应用 |
-| `fractional-scale-v1` | 计划 | 分数缩放；宣称支持前需完成混合 DPI 与像素/命中测试 |
+| `fractional-scale-v1` | M4 必须 | 分数缩放，见 [ADR 0020](docs/adr/0020-fractional-scaling.md)（状态 `proposed`）。已实现：`wl_compositor` v6 的 `preferred_buffer_scale` 与 `wp_fractional_scale_manager_v1` v1，渲染/光标/layer 按输出 scale 折算物理像素，几何、命中与**离屏像素**断言在 CI（E1+E3）。真实混合 DPI 客户端在 125%/150% 下的模糊度与缓冲尺寸仍是 E4，**未取的 E4 不因 CI 全绿而追认** |
 | `wlr-output-management` | 计划 | 显示器管理 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 |
 | `ext-session-lock-v1` | M5 必须 | 安全锁屏，不能以 layer-shell 遮罩替代；见 ADR 0015 |
@@ -506,10 +506,21 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 
 M2.5 的物理后端实现已接入 libseat、DRM/GBM、udev 与 libinput，使用与 headless 共用的
 帧状态机处理首帧、空闲、提交失败及暂停/恢复；提供软件光标和启动期配置消费。
-当前限单 GPU、一个活动输出、scale 1，不交付 M4 多屏布局。O01/O04 的 E4 真机步骤尚未执行，
-**不能将 CI 或实现完成读作 M2.5 验收通过**。记录见 [硬件验收](docs/quality/l2-hardware-validation.md)。
+多输出拓扑、按输出的帧生命周期与多 GPU 设备模型见 [ADR 0019](docs/adr/0019-multi-output-topology-and-multi-gpu.md)（状态 `proposed`）：
+`InoxState` 持有一张输出表，所有输出映射进同一个全局逻辑坐标空间（位置可为负），
+每个输出有自己的工作区与帧状态；物理后端枚举 seat 上的每块 GPU，每块用自己的渲染器驱动自己的 connector。
+分数缩放见 [ADR 0020](docs/adr/0020-fractional-scaling.md)（状态 `proposed`）。
+O02/O03 的虚拟拓扑、几何与像素证据由 `crates/inox-compositor/tests/multi_output.rs` 与
+`tests/fractional_scale.rs` 在 CI 取得（E1+E3）；**O01–O04 的 E4 真机步骤仍未执行，旋转、PRIME 跨 GPU
+复制路径与显示试用也未交付**，不能将 CI 或实现完成读作 M2.5/M4 验收通过。
+记录见 [硬件验收](docs/quality/l2-hardware-validation.md)。
 
 > M3 的 X11↔Wayland 拖放腿**上游阻塞**：`xwayland-satellite` v0.8.3 未实现 XDND，因此上表 M3 行的 X03 只交付 **Wayland↔Wayland 拖放**与 **X11 内部拖放**，跨边界那条腿的 E3 用例延期——M3 不得被读作 X03 完整通过。X02 中「锁屏时读剪贴板」的断言因 `ext-session-lock-v1` 与 `inox-lock` 尚不存在而移至 M5 的 S02（延期，不是通过）。两条决策与依据见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)。
+>
+> **M4 的合成器侧已交付多输出与分数缩放的一部分，且同样不得被读作通过。** 输出拓扑（ADR 0019）
+> 与分数缩放（ADR 0020）已实现，并以两个进程内真实客户端测试取得虚拟拓扑与像素证据（O02 的双屏迁移与
+> 20 轮拔插、O03 的 1.5x 物理落点）：这些是 **E1+E3**，不是真机证据。旋转、PRIME 跨 GPU 缓冲复制路径、
+> 显示试用（15 s 未确认回退）与 O02/O03 的 E4 步骤仍未交付。
 >
 > **M4 只交付了 L3 的一部分，且同样不得被读作通过。** 七个 L3 组件已按 [ADR 0013](docs/adr/0013-shell-service-and-interaction-contracts.md)
 > 的服务契约有了实现：`inox-shell` 的跨入口导航与服务契约（快照/代次/命令结果/loading-empty-error-retry）、

@@ -9,7 +9,7 @@ use std::{
 };
 
 use calloop::EventLoop;
-use inox_compositor::{ClientState, CompositorConfig, InoxState};
+use inox_compositor::{ClientState, CompositorConfig, HeadlessOutput, InoxState};
 use inox_protocols::standard::{
     core::client::{
         wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
@@ -400,8 +400,11 @@ fn layers_render_reserve_focus_and_release_resources() {
     let mut display = Display::<InoxState>::new().unwrap();
     let mut handle = display.handle();
     let config = CompositorConfig {
-        width: WIDTH,
-        height: HEIGHT,
+        outputs: vec![HeadlessOutput {
+            width: WIDTH,
+            height: HEIGHT,
+            ..HeadlessOutput::default()
+        }],
         ..Default::default()
     };
     let mut state = InoxState::new(&handle, &config, event_loop.get_signal()).unwrap();
@@ -668,7 +671,7 @@ fn layers_render_reserve_focus_and_release_resources() {
     pixel(&mut state, 204, 172, RED);
 
     // Removing the last output leaves the application alive and closes old layers.
-    let output = state.output().clone();
+    let output = state.output().expect("the output is advertised").clone();
     state.replace_output(None).unwrap();
     until(&mut display, &mut state, &mut [&mut peer], |_, peers| {
         peers[0].state.output_removals == 1 && peers[0].state.closed >= 2
