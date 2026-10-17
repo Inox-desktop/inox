@@ -11,9 +11,25 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# The wallpaper is an L3 component: it reads configuration from L1 and never
+# depends on the compositor or on another L3 crate (ADR 0002 rules 1, 6).
+inox-common.workspace = true
+inox-config.workspace = true
 anyhow.workspace = true
+iced.workspace = true
+image.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# The headless render harness: it builds the real widget tree and draws it
+# through the same tiny-skia renderer the binary uses, with no compositor.
+iced_core.workspace = true
+iced_runtime.workspace = true
+iced_tiny_skia.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
