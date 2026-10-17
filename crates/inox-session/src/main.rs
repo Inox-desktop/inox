@@ -84,7 +84,7 @@ fn main() -> Result<()> {
         runtime_dir: PathBuf::from(
             std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is required")?,
         ),
-        startup_timeout: Duration::from_secs(5),
+        startup_timeout: Duration::from_secs(10),
     };
     info!("{}", localizer.message("starting"));
     warn!("{}", localizer.message("limited"));
