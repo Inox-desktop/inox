@@ -31,12 +31,29 @@ top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应�
 独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 Iced 客户端宿主，
 L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完整 M4 已验收。
 
-### 真实后端与支持边界
+### 多输出、多 GPU 与缩放（ADR 0019 / ADR 0020）
 
-`--backend auto`（默认）枚举当前 libseat seat 的 GPU，优先主 GPU，选择能驱动输出的设备；
-`--backend drm` 同样要求真实设备。二者在获取设备、配置输出或初次呈现失败时返回错误，
-**不会回落到 headless 并报告 ready**。首版只驱动单 GPU 的一个活动 connector，scale 1；
-多输出并排布局、PRIME、旋转与分数缩放仍未交付，不得据此声明 O02/O03 通过。
+`--backend auto`（默认）枚举当前 libseat seat 上的**全部** DRM 设备，主 GPU 优先，
+每块能驱动至少一个 connector 的设备都会打开**自己的** libseat 租约、`DrmDevice`、
+`GbmDevice` 与 EGL/GLES 渲染器，并驱动挂在自己名下的 connector。这一版没有跨 GPU 的
+缓冲**复制**路径；它对本合成器实际发出的缓冲是完整的（只广告 `wl_shm`，共享内存任何
+GPU 都能导入），但**广告 `linux-dmabuf` 之前必须先补上复制路径**。
+
+每个输出在同一个全局逻辑坐标空间里有自己的位置（可为负）、缩放因子、工作区与帧生命周期：
+一个输出的拔插、暂停或失败不会牵动其它输出，无输出时停止重绘并等待设备事件。
+`InoxState::apply_outputs` 是拓扑变更的唯一入口，按 connector 名与 `Output` 实例复用未变的
+输出（保留其 `wl_output` 全局、layer 表面与窗口），消失输出的窗口迁移到主存活输出。
+
+缩放支持非整数取值（`0.25..=8.0`，解析期校验）。只理解整数缩放的客户端从 `wl_compositor` v6
+的 `preferred_buffer_scale` 拿到上限（向上取整），理解 `wp_fractional_scale_v1` 的客户端拿到
+精确值；渲染、光标与 layer 放置按该因子折算成物理像素，命中测试与工作区留在逻辑坐标。
+
+`tests/multi_output.rs` 覆盖双输出平铺、迁移与 20 轮拔插往返（O02 的虚拟拓扑证据），
+`tests/fractional_scale.rs` 用读回的物理像素断言 1.5x 下的真实落点（O03 的几何/像素证据）。
+两者都是 E1+E3；真机热插拔与真实客户端的模糊度仍属 E4，未执行。
+
+`--backend drm` 同样要求真实设备。`auto` 与 `drm` 在获取设备、配置输出或初次呈现失败时返回错误，
+**不会回落到 headless 并报告 ready**。旋转、PRIME 复制路径与 HDR/VRR 仍未交付。
 
 - 使用 Smithay 的 `DrmDevice`、`GbmAllocator`、`GbmBufferedSurface`、EGL/GLES 与
   `OutputDamageTracker`，交集选择可扫描输出和可渲染的格式；不手写 DRM/libinput FFI。
@@ -68,6 +85,12 @@ L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完�
 # 无显示设备的环境（CI 用的软件渲染）
 XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
   cargo run -- --headless --exit-after-frames 120
+
+# 两块不同分辨率/缩放的虚拟屏并排（O02/O03 的虚拟拓扑）
+XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
+  cargo run -- --headless \
+    --output name=DP-1,width=1920,height=1080,x=0,y=0 \
+    --output name=DP-2,width=2560,height=1440,scale=1.5,x=1920,y=0
 
 # 查看选项
 cargo run -- --help

@@ -45,7 +45,7 @@ pub mod shell;
 pub mod store;
 pub mod theme;
 
-pub use crate::compositor::{CompositorConfig, InputConfig, LayoutConfig, OutputConfig};
+pub use crate::compositor::{CompositorConfig, InputConfig, LayoutConfig, OutputConfig, Position};
 pub use crate::error::ConfigError;
 pub use crate::notifications::{
     DisplayConfig, NotificationPosition, NotificationsConfig, PolicyConfig, QueueConfig,

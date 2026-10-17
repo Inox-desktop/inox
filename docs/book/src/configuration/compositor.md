@@ -33,12 +33,13 @@ language = "zh-CN"                 # 省略则跟随环境
 ## `compositor.toml`
 
 ```toml
-[[output]]                          # 可重复；整个列表省略时等价于一个默认输出
-name = "headless-1"                 # 省略则按输出顺序匹配
-width = 1280
-height = 720
+[[outputs]]                         # 可重复；整个列表省略时等价于一个默认输出
+name = "DP-1"                       # 省略则匹配前面条目没有认领的输出
+width = 1920
+height = 1080
 refresh_hz = 60
-scale = 1.0
+scale = 1.5                         # 0.25..=8.0，允许非整数
+position = { x = 1920, y = 0 }      # 省略则由合成器自动放置；允许负坐标
 
 [input]
 keyboard_layout = "us"
@@ -54,17 +55,27 @@ master_count = 1
 gap = 8
 ```
 
-### 输出（`[[output]]`）
+### 输出（`[[outputs]]`）
 
-`[[output]]` 是可重复的表数组，按出现顺序与输出匹配；整个列表省略时等价于一个默认输出。
+`[[outputs]]` 是可重复的表数组。带 `name` 的条目匹配同名 connector；不带 `name` 的条目按出现顺序
+认领前面条目没有认领的输出；没有任何条目认领的输出使用其原生首选模式与 1.0 缩放。
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
-| `name` | 字符串 | 无（省略） | 输出连接器名，如 `HDMI-A-1`；省略则按输出顺序匹配 |
-| `width` | 整数 | `1280` | 输出宽度（像素） |
-| `height` | 整数 | `720` | 输出高度（像素） |
-| `refresh_hz` | 整数 | `60` | 刷新率（Hz） |
-| `scale` | 浮点 | `1.0` | 输出缩放 |
+| `name` | 字符串 | 无（省略） | 输出连接器名，如 `HDMI-A-1`；省略则按顺序认领未被认领的输出 |
+| `width` | 整数 | `1280` | 输出宽度（物理像素），1..=16384 |
+| `height` | 整数 | `720` | 输出高度（物理像素），1..=16384 |
+| `refresh_hz` | 整数 | `60` | 刷新率（Hz），1..=1000 |
+| `scale` | 浮点 | `1.0` | 缩放因子，`0.25..=8.0`，允许非整数（[ADR 0020](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0020-fractional-scaling.md)） |
+| `position` | 表 | 省略（自动放置） | `{ x = …, y = … }`，全局逻辑坐标，允许负数；每个分量在 ±4194304 内 |
+
+越界的 `width` / `height` / `refresh_hz` / `scale` / `position` 都在**解析期报错**并指出字段路径。
+输出位置是全局逻辑坐标：第二个显示器放在第一个右边就写 `x = <第一个显示器的逻辑宽度>`，
+放在左边就写负数。省略 `position` 时由合成器自动放置到已放置输出的包围盒右侧。
+
+缩放是每个输出独立的：逻辑尺寸 = 物理尺寸 ÷ 缩放。只理解整数缩放的客户端从
+`wl_compositor` v6 的 `preferred_buffer_scale` 拿到缩放的**上取整**，理解
+`wp_fractional_scale_v1` 的客户端拿到精确值；命中测试与窗口几何始终用逻辑坐标。
 
 ### 输入（`[input]`）
 
@@ -95,13 +106,17 @@ gap = 8
 
 | 配置项 | 现在的对应物 |
 |--------|--------------|
-| 输出尺寸 | `--output-size <WxH>`（默认 `1280x720`，最大 `16384`） |
-| 刷新率 | `--refresh-rate <HZ>`（默认 `60`，最大 `1000`） |
-| 输出名 | 固定为 `headless-1`（无对应参数） |
-| `scale` | 固定为整数缩放 1（无对应参数） |
+| 输出尺寸 | `--output-size <WxH>`（默认 `1280x720`，最大 `16384`），作用于第一个输出 |
+| 刷新率 | `--refresh-rate <HZ>`（默认 `60`，最大 `1000`），作用于第一个输出 |
+| 输出名 | `--output name=…`（默认 `headless-1`） |
+| `scale` | `--output scale=…`（默认 `1.0`，范围 `0.25..=8.0`） |
+| 输出位置 | `--output x=…,y=…`（省略则自动放置） |
+| 多输出 | `--output <SPEC>` 可重复；第一次使用**替换**默认输出，之后依次追加 |
 | Wayland 套接字 | `--socket <NAME>`（默认自动选择下一个空闲名字） |
 | `[layout]` 的全部键 | 固定为默认值 `60 / 1 / 8`，无对应参数 |
 | `[input]` 的全部键 | **尚未接入**：键盘布局固定为 `rules=evdev, model=pc105, layout=us`，不读取 `XKB_DEFAULT_*` 环境变量；重复速率、轻触点击与自然滚动都还没有实现，因为真实输入设备链路（libinput/udev）尚未引入 |
-| 输出数量 | 只有一个 headless 输出，无多输出支持 |
+| 输出数量 | 任意多个（`--output` 可重复）；headless 与物理路径都支持多输出 |
 
-也就是说：**今天把上表里的 TOML 写进 `~/.config/inox/` 不会有任何效果**，合成器既不读它、也不会因为字段拼错而报错。
+物理后端（`--backend auto` / `drm`）**会**读取 `compositor.toml` 的 `[[outputs]]`，消费其中的
+`name`、`width`、`height`、`refresh_hz`、`scale` 与 `position`。headless 路径仍只接受命令行参数，
+因此上表里的 `[input]`、`[layout]` 与 headless 的 `[[outputs]]` 今天写进 `~/.config/inox/` 仍然无效。

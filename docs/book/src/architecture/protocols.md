@@ -21,7 +21,7 @@
 | `presentation-time` | 必须 | 帧同步反馈 | 尚未实现 |
 | `idle-inhibit` / `ext-idle-notify-v1` | 必须 | 空闲管理 | 尚未实现 |
 | `pointer-constraints` / `relative-pointer` | 计划 | 游戏与 3D 应用 | 尚未实现 |
-| `xfractional-scale-v1` | 计划 | 分数缩放 | 尚未实现 |
+| `fractional-scale-v1` | M4 必须 | 分数缩放 | 已支持（M4；`wl_compositor` v6 的 `preferred_buffer_scale` + `wp_fractional_scale_manager_v1` v1，见 [ADR 0020](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0020-fractional-scaling.md)，状态 `proposed`）。E1+E3 已取，E4 未取 |
 | `wlr-output-management` | 计划 | 显示器管理 | 尚未实现 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 | 尚未实现 |
 | `ext-session-lock-v1` | 计划 | 锁屏 | 尚未实现 |
@@ -29,7 +29,7 @@
 | `xwayland-shell` | 计划 | XWayland 集成 | 尚未实现 |
 | `wlr-virtual-keyboard` / `input-method-v2` | 仅规划 | 输入法（1.0 之后） | 尚未实现 |
 
-「当前状态」依据本仓库 `crates/inox-compositor/` 的实现：它在 headless 路径上向客户端广告的全局为 `wl_compositor` / `wl_subcompositor`（Smithay `CompositorState`）、`wl_shm`、`wl_seat`、`wl_output` 与 `xdg_wm_base`；M3 新增 `wp_viewporter`（Smithay `wayland::viewporter`）、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`（后两者来自 Smithay `wayland::selection`），随本分支合入，决策见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)（状态仍为 `proposed`）。L2 后续补齐 `zwlr_layer_shell_v1` v4：四层合成与输入命中、锚点/边距/独占区、configure/ack、空缓冲卸载与重映射、销毁和断连清理；键盘焦点覆盖 None、Exclusive、OnDemand，选择权限仍跟随实际焦点。其余标为未实现的行尚无对应实现。
+「当前状态」依据本仓库 `crates/inox-compositor/` 的实现：它在 headless 路径上向客户端广告的全局为 `wl_compositor`（v6）/ `wl_subcompositor`（Smithay `CompositorState`）、`wl_shm`、`wl_seat`、`wl_output`（每个输出一个）与 `xdg_wm_base`；M4 起新增 `wp_fractional_scale_manager_v1`（v1），M3 新增 `wp_viewporter`（Smithay `wayland::viewporter`）、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`（后两者来自 Smithay `wayland::selection`），随本分支合入，决策见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)（状态仍为 `proposed`）。L2 后续补齐 `zwlr_layer_shell_v1` v4：四层合成与输入命中、锚点/边距/独占区、configure/ack、空缓冲卸载与重映射、销毁和断连清理；键盘焦点覆盖 None、Exclusive、OnDemand，选择权限仍跟随实际焦点。其余标为未实现的行尚无对应实现。
 
 剪贴板与拖放的读取权**跟随键盘焦点**：只有焦点客户端能读取或设置选区，不需要任何特权接口。因此需要全局、无焦点读取路径的剪贴板管理器（`wlr-data-control`）**不在 M3 范围内**——开放它必须先给出按客户端凭据的授权过滤，推迟到 M5；跨 X11/Wayland 边界的拖放则被上游阻塞（`xwayland-satellite` v0.8.3 未实现 XDND），M3 交付的是 Wayland↔Wayland 拖放与 X11 内部拖放。两条都在 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) 中记录。
 

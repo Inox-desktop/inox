@@ -26,9 +26,15 @@
   不得静默回退（`resolve` 只对**未经解析**的手工构造值兜底）。POSIX 的 `C` / `POSIX` 在配置文件里
   同样报错并提示「省略 `[locale]` 以跟随环境」：它们是「没有语言」的标记，不是语言名。
 - 越界值必须在**解析期报错**，不得静默 clamp（ADR 0009 决策 4）：平铺参数由 `LayoutConfig`
-  校验，输出参数（尺寸 1..=16384、刷新率 1..=1000、`scale` 为正有限数）由 `OutputConfig`
-  校验，范围与 `inox-compositor` 的 `MAX_DIMENSION` / `MAX_REFRESH_HZ` 一致；
+  校验，输出参数（尺寸 1..=16384、刷新率 1..=1000、`scale` 为 0.25..=8.0 的有限数、
+  `position` 的每个坐标分量在 ±4194304 内）由 `OutputConfig` 校验，范围与 `inox-compositor`
+  的 `MAX_DIMENSION` / `MAX_REFRESH_HZ` / `MAX_COORDINATE` 一致；
   `LayoutConfig::sanitised()` 只作消费方对非配置来源的防御兜底。
+  `scale` 的下界来自 ADR 0020（逻辑尺寸是物理尺寸除以缩放，过小的比例会让坐标不可表示），
+  上界远高于任何真实显示器；把 `scale` 从「任意正有限数」收窄到该区间是一次**破坏性配置变更**，
+  依据是「越界必须在解析期报错」，需在 PR 描述与文档中声明。
+  `[[outputs]]` 的 `position` 是可选的内联表 `{ x = …, y = … }`：缺席表示由合成器自动放置，
+  显式坐标（含负数）必须被保留（ADR 0019）。
 - `[input]` 的键盘 repeat delay/rate 必须在解析期校验为 0..=i32::MAX（Wayland seat 的有符号字段）；rate 为 0 关闭 repeat。tap/scroll 是否被设备支持由真实后端检查。
 - `ConfigError::InvalidComponentPath` 的校验必须在 `InoxConfig::load` 内对 `[components]`
   的**三个**路径都执行，且在任何组件文件被读取之前完成：路径逃逸要在 Inox 启动期失败，

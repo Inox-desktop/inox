@@ -8,4 +8,4 @@ pub mod drm;
 pub(crate) mod frame;
 pub(crate) mod input;
 
-pub use drm::{BackendError, DrmBackend};
+pub use drm::{BackendError, GpuBackend};
