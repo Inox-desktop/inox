@@ -86,12 +86,20 @@ smithay = { version = "0.7.0", default-features = false, features = [
 # GPU and is what the headless CI host can actually present. `wgpu` is
 # deliberately not enabled — it would add a second renderer that no Inox
 # configuration selects.
+# `image-without-codecs` and not `image`: the latter turns on `image/default`,
+# which drags in an AV1/EXR/AVIF codec zoo (rav1e, exr, ravif). The obvious
+# problem is build time; the blocking one is that rav1e's build pulls
+# libfuzzer-sys, whose `(MIT OR Apache-2.0) AND NCSA` licence is not on the
+# allow-list in `deny.toml`, so `cargo deny check` fails on the whole graph.
+# Between this crate's features and the `image` entry below, the unified
+# feature set is exactly PNG and JPEG — what the wallpaper and the test
+# snapshots need.
 iced = { version = "0.14", default-features = false, features = [
     "tiny-skia",
     "wayland",
     "thread-pool",
     "crisp",
-    "image",
+    "image-without-codecs",
 ] }
 # `wlr-layer-shell` is how the panel, launcher, notification popups and the
 # wallpaper become real desktop surfaces; `iced` itself only knows xdg-shell.
