@@ -20,6 +20,7 @@ fn actual_headless_session_reaches_compositor_ready_and_logs_out() {
         .env("XDG_RUNTIME_DIR", root.path())
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("RUST_LOG", "info")
+        .env("NO_COLOR", "1")
         .env("LIBGL_ALWAYS_SOFTWARE", "1")
         .env_remove("WAYLAND_SOCKET")
         .env_remove("DISPLAY")
