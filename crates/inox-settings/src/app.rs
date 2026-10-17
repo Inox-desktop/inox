@@ -845,10 +845,13 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
     }
 
     if page_changed || state.page != previous_page {
-        return iced::widget::operation::snap_to(
-            "settings-content",
-            iced::widget::operation::RelativeOffset::START,
-        );
+        return iced::Task::batch([
+            iced::widget::operation::snap_to(
+                "settings-content",
+                iced::widget::operation::RelativeOffset::START,
+            ),
+            crate::focus::reveal(Some(FocusTarget::Page(state.page))),
+        ]);
     }
     if move_focus {
         return crate::focus::reveal(state.focused);

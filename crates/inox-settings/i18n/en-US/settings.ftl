@@ -165,14 +165,14 @@ settings-terminal-argument = Executable or one argument
 settings-wallpaper-path = Image path
 settings-list-add = Add entry
 settings-list-remove = Remove entry
-settings-outputs-help = Saved preferences are read at the next session start. No live display change is requested. An empty list uses the backend defaults. Leave both positions empty for automatic placement.
+settings-outputs-help = Saved preferences are read at the next session start. No live display change is requested. An empty list uses the backend defaults. Leave both positions empty for automatic placement; a single empty coordinate uses zero.
 settings-terminal-help = Enter the executable first, then one argument per entry. Arguments are passed directly, without a shell. An empty list uses the launcher default.
 settings-wallpapers-help = Enter a connector name and an image path for each override. Use * for other displays. Empty lists use the main wallpaper.
-settings-error-collection = Check entry { $row }: dimensions 1–16384, refresh 1–1000, scale 0.25–8, positions within ±4194304 and both filled or both empty. Wallpaper overrides need unique names and nonempty paths.
+settings-error-collection = Check entry { $row }: dimensions 1–16384, refresh 1–1000, scale 0.25–8, positions within ±4194304.
 
 settings-page-input-method = Input Method
 settings-field-input-method-command = Engine command and arguments
 settings-input-method-help = Enter fcitx5 or a compatible executable first, then one argument per entry. Leave the list empty to disable automatic startup. Changes take effect at the next physical session; command-line options override them. Install the engine separately and use its configuration tool for languages, dictionaries and switching shortcuts. Do not add a daemonize option.
 
 settings-error-input-method-command = Check entry { $row }: the first entry must name an executable and arguments cannot contain a NUL character.
-settings-error-wallpaper-entry = Check entry { $row }: use a unique display name and a nonempty image path.
+settings-error-wallpaper-entry = Check entry { $row }: display names must be unique.

@@ -128,7 +128,6 @@ fn invalid_display_values_and_duplicate_wallpapers_never_queue_writes() {
         (4, "nan"),
         (4, "0.1"),
         (5, "-2147483648"),
-        (6, ""),
     ] {
         let mut row = output("DP-1");
         row[column] = text.into();
@@ -377,4 +376,43 @@ fn structured_list_entries_and_remove_actions_are_keyboard_reachable() {
         window.state().draft().settings().input_method,
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn schema_valid_blank_wallpaper_preferences_do_not_block_unrelated_edits() {
+    let mut window = Window::with_files(&[("shell.toml", "[wallpaper.per_output]\n'' = ''\n")]);
+    assert!(validate::is_valid(window.state().draft().settings()));
+    set(&mut window, Field::PanelHeight, Value::Number(48));
+    assert_eq!(window.apply_and_drain(), 1);
+    assert_eq!(window.reload_config().shell.panel.height, 48);
+}
+
+#[test]
+fn a_single_explicit_output_coordinate_uses_the_other_schema_default() {
+    let mut window = Window::new();
+    let mut row = output("DP-1");
+    row[6] = String::new();
+    set(&mut window, Field::Outputs, Value::Collection(vec![row]));
+    assert_eq!(window.apply_and_drain(), 1);
+    let position = window.reload_config().compositor.outputs[0]
+        .position
+        .expect("position");
+    assert_eq!((position.x, position.y), (-1707, 0));
+}
+
+#[test]
+fn numeric_keyboard_cycles_do_not_overflow_on_extreme_input() {
+    for field in Field::ALL {
+        let Some(range) = field.control().range else {
+            continue;
+        };
+        for value in [i64::MIN, i64::MAX] {
+            for delta in [i64::MIN, -1, 1, i64::MAX] {
+                assert!(
+                    range.contains(range.advance(value, delta)),
+                    "{field}: {value} {delta}"
+                );
+            }
+        }
+    }
 }

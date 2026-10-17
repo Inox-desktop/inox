@@ -24,10 +24,16 @@ pub(crate) fn target_id(target: FocusTarget) -> String {
 pub(crate) fn reveal(target: Option<FocusTarget>) -> Task<Message> {
     iced::advanced::widget::operate(Reveal {
         target: target.map(|target| Id::from(target_id(target))),
+        scroll_id: if matches!(target, Some(FocusTarget::Page(_))) {
+            "settings-navigation"
+        } else {
+            "settings-content"
+        },
         scroll: matches!(
             target,
             Some(
-                FocusTarget::Field(_)
+                FocusTarget::Page(_)
+                    | FocusTarget::Field(_)
                     | FocusTarget::Cell(_, _, _)
                     | FocusTarget::RemoveRow(_, _)
                     | FocusTarget::Reset(_)
@@ -41,6 +47,7 @@ pub(crate) fn reveal(target: Option<FocusTarget>) -> Task<Message> {
 struct Reveal {
     target: Option<Id>,
     scroll: bool,
+    scroll_id: &'static str,
     bounds: Option<Rectangle>,
     viewport: Option<(Rectangle, Vector)>,
 }
@@ -78,7 +85,7 @@ impl Operation<Message> for Reveal {
         translation: Vector,
         _state: &mut dyn operation::Scrollable,
     ) {
-        if id == Some(&Id::new("settings-content")) {
+        if id == Some(&Id::new(self.scroll_id)) {
             self.viewport = Some((bounds, translation));
         }
     }
@@ -100,7 +107,7 @@ impl Operation<Message> for Reveal {
             return operation::Outcome::None;
         };
         operation::Outcome::Chain(Box::new(operation::scrollable::scroll_to(
-            Id::new("settings-content"),
+            Id::new(self.scroll_id),
             operation::scrollable::AbsoluteOffset {
                 x: None,
                 y: Some((translation.y + delta).max(0.0)),

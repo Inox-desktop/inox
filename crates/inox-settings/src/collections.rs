@@ -43,7 +43,7 @@ pub fn default_row(field: Field) -> Vec<String> {
 }
 
 /// Converts rows to TOML values without interpreting input as source or shell commands.
-/// Returns `None` for incomplete rows, non-finite scales or duplicate output overrides.
+/// Returns `None` for malformed rows, non-finite scales or duplicate output overrides.
 pub fn toml(field: Field, rows: &[Vec<String>]) -> Option<Toml> {
     match field {
         Field::Outputs => rows
@@ -65,11 +65,9 @@ pub fn toml(field: Field, rows: &[Vec<String>]) -> Option<Toml> {
                 let [name, path] = row.as_slice() else {
                     return None;
                 };
-                if name.is_empty()
-                    || path.is_empty()
-                    || entries
-                        .insert(name.clone(), Toml::String(path.clone()))
-                        .is_some()
+                if entries
+                    .insert(name.clone(), Toml::String(path.clone()))
+                    .is_some()
                 {
                     return None;
                 }
@@ -104,8 +102,14 @@ fn output(row: &[String]) -> Option<Toml> {
         entries.insert(
             "position".to_owned(),
             Toml::Table(BTreeMap::from([
-                ("x".to_owned(), Toml::Integer(x.parse().ok()?)),
-                ("y".to_owned(), Toml::Integer(y.parse().ok()?)),
+                (
+                    "x".to_owned(),
+                    Toml::Integer(if x.is_empty() { 0 } else { x.parse().ok()? }),
+                ),
+                (
+                    "y".to_owned(),
+                    Toml::Integer(if y.is_empty() { 0 } else { y.parse().ok()? }),
+                ),
             ])),
         );
     }

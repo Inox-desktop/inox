@@ -483,3 +483,23 @@ fn keyboard_focus_reveals_a_display_cell_below_the_viewport() {
     );
     snapshot("display-keyboard-scroll", &after);
 }
+
+#[test]
+fn enlarged_english_navigation_remains_reachable_by_keyboard() {
+    let mut tokens = dark();
+    tokens.typography.scale = 2.0;
+    let mut window = Window::with_locale(&[], inox_common::i18n::Locale::default_locale(), tokens);
+    let initial = window.render();
+    for _ in 0..PageId::ALL.len() {
+        window.update(Message::FocusNext);
+    }
+    assert_eq!(
+        window.state().focused(),
+        Some(inox_settings::view_model::FocusTarget::Page(
+            PageId::InputMethod
+        ))
+    );
+    let enlarged = window.render();
+    assert_ne!(initial, enlarged);
+    snapshot("enlarged-navigation", &enlarged);
+}

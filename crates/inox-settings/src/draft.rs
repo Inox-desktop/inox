@@ -979,11 +979,12 @@ impl Range {
     /// A value outside the range — which only a hand-edited draft can hold —
     /// snaps to the nearest stop rather than staying outside.
     pub fn advance(&self, value: i64, steps: i64) -> i64 {
-        let current = (value - self.min)
+        let current = value
+            .saturating_sub(self.min)
             .div_euclid(self.step)
             .clamp(0, self.stops() - 1);
 
-        self.min + (current + steps).rem_euclid(self.stops()) * self.step
+        self.min + (current + steps.rem_euclid(self.stops())).rem_euclid(self.stops()) * self.step
     }
 }
 

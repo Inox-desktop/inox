@@ -144,14 +144,14 @@ settings-terminal-argument = 可执行程序或一个参数
 settings-wallpaper-path = 图片路径
 settings-list-add = 添加条目
 settings-list-remove = 移除条目
-settings-outputs-help = 保存的偏好将在下次会话启动时读取，此处不会实时切换显示模式。空列表使用后端默认值；两个位置均留空时自动排列。
+settings-outputs-help = 保存的偏好将在下次会话启动时读取，此处不会实时切换显示模式。空列表使用后端默认值；两个位置均留空时自动排列，仅一项留空时该坐标为 0。
 settings-terminal-help = 第一项填写可执行程序，之后每项填写一个参数。参数直接传递，不经 Shell 解释。空列表使用启动器默认值。
 settings-wallpapers-help = 每项填写显示接口名称和图片路径，* 表示其他显示器。空列表使用主壁纸。
-settings-error-collection = 请检查第 { $row } 项：尺寸 1–16384，刷新率 1–1000，缩放 0.25–8，位置在 ±4194304 内且同时填写或同时留空。壁纸覆盖项名称须唯一，路径不能为空。
+settings-error-collection = 请检查第 { $row } 项：尺寸 1–16384，刷新率 1–1000，缩放 0.25–8，位置在 ±4194304 内。
 
 settings-page-input-method = 输入法
 settings-field-input-method-command = 引擎程序与参数
 settings-input-method-help = 第一项填写 fcitx5 或兼容的可执行程序，之后每项填写一个参数。空列表禁用自动启动。改动在下次物理会话生效，命令行选项优先。请单独安装引擎，并使用引擎配置工具管理语言、词库和切换快捷键；不要添加后台运行选项。
 
 settings-error-input-method-command = 请检查第 { $row } 项：首项必须为可执行程序，参数不能含有空字符。
-settings-error-wallpaper-entry = 请检查第 { $row } 项：显示器名称不能重复，图片路径不能为空。
+settings-error-wallpaper-entry = 请检查第 { $row } 项：显示器名称不能重复。

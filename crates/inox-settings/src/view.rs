@@ -89,14 +89,17 @@ pub fn settings<'a>(model: SettingsViewModel, tokens: &'a Tokens) -> Element<'a,
     let geometry = SettingsGeometry::new(tokens);
 
     let navigation = container(
-        Column::with_children(
-            model
-                .pages
-                .iter()
-                .map(|page| page_entry(page, tokens, &geometry))
-                .collect::<Vec<Element<'a, Message>>>(),
+        scrollable(
+            Column::with_children(
+                model
+                    .pages
+                    .iter()
+                    .map(|page| page_entry(page, tokens, &geometry))
+                    .collect::<Vec<Element<'a, Message>>>(),
+            )
+            .spacing(geometry.spacing),
         )
-        .spacing(geometry.spacing),
+        .id("settings-navigation"),
     )
     .width(Length::Fixed(geometry.nav_width))
     .height(Length::Fill)
@@ -177,15 +180,20 @@ fn page_entry<'a>(
     };
     let page_id = page.page;
 
-    button(
-        text(page.label.clone())
-            .size(geometry.font_size)
-            .wrapping(Wrapping::None),
+    container(
+        button(
+            text(page.label.clone())
+                .size(geometry.font_size)
+                .wrapping(Wrapping::Word),
+        )
+        .width(Length::Fill)
+        .padding(Padding::from(geometry.control_padding))
+        .on_press(Message::PageSelected(page_id))
+        .style(move |_theme, status| theme::control(tokens, emphasis, status)),
     )
-    .width(Length::Fill)
-    .padding(Padding::from(geometry.control_padding))
-    .on_press(Message::PageSelected(page_id))
-    .style(move |_theme, status| theme::control(tokens, emphasis, status))
+    .id(crate::focus::target_id(
+        crate::view_model::FocusTarget::Page(page_id),
+    ))
     .into()
 }
 
