@@ -165,7 +165,22 @@ jobs:
           fonts: ${{ matrix.ui }}
       # One job per crate keeps a failure attributable and keeps the command the
       # same one a developer runs locally: `cargo test -p <crate>`.
+      #
+      # The L3 render tests assert on pixels and, when this variable is set,
+      # also write every frame they asserted on as a PNG. Collecting the
+      # directory as an artifact is what turns acceptance Q02's "截图覆盖浅/深/
+      # 错误态" from a claim into something a reviewer can open. The path is
+      # absolute because a test binary runs with its own crate directory as the
+      # working directory, so a relative path would scatter files per crate.
       - run: cargo test -p ${{ matrix.crate }} --all-features
+        env:
+          INOX_SCREENSHOT_DIR: ${{ github.workspace }}/target/inox-screenshots
+      - uses: actions/upload-artifact@v4
+        if: matrix.ui
+        with:
+          name: l3-screenshots-${{ matrix.crate }}
+          path: target/inox-screenshots
+          if-no-files-found: warn
 
   xwayland-e2e:
     name: XWayland end-to-end
