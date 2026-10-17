@@ -555,6 +555,16 @@ fn next_choice(control: &Control, current: &str) -> Option<Value> {
 /// Everything the settings window reacts to.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The current save's live application settled, including this window's appearance.
+    LiveConfigured {
+        /// The application request this appearance belongs to.
+        generation: Generation,
+        /// The consumer that confirmed application.
+        component: Component,
+        /// The exact configuration the consumer confirmed.
+        config: Box<InoxConfig>,
+    },
+
     /// Add an entry to a structured list.
     RowAdded(Field),
     /// Remove one structured entry.
@@ -777,6 +787,24 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             file,
             outcome,
         } => state.settle_save(generation, file, outcome),
+        Message::LiveConfigured {
+            generation,
+            component,
+            config,
+        } => {
+            if state.application.generation() == generation
+                && state.application.outstanding().contains(&component)
+            {
+                match crate::i18n::load(&config.locale) {
+                    Ok(localizer) => {
+                        state.localizer = Rc::new(localizer);
+                        state.tokens = config.theme.clone();
+                    }
+                    Err(error) => debug!(%error, "cannot refresh settings catalogs"),
+                }
+                state.application.component_applied(component, generation);
+            }
+        }
         Message::ComponentApplied {
             component,
             generation,
@@ -988,6 +1016,56 @@ mod tests {
         }
 
         generation
+    }
+
+    #[test]
+    fn live_appearance_changes_only_for_the_current_outstanding_request() {
+        let (directory, mut state) = changed();
+        let commands = applied(&mut state);
+        let generation = write(&mut state, &commands);
+        state.take_outgoing();
+        let mut config = InoxConfig::load(&ConfigPaths::new(directory.path()), Appearance::System)
+            .expect("config");
+        config.theme = Tokens::builtin_light();
+        config.locale = inox_common::i18n::Locale::parse("zh-CN").expect("locale");
+        let old_tokens = state.tokens().clone();
+        send(
+            &mut state,
+            Message::LiveConfigured {
+                generation: generation.next(),
+                component: Component::Shell,
+                config: Box::new(config.clone()),
+            },
+        );
+        assert_eq!(state.tokens(), &old_tokens);
+        send(
+            &mut state,
+            Message::LiveConfigured {
+                generation,
+                component: Component::Shell,
+                config: Box::new(config.clone()),
+            },
+        );
+        assert_eq!(state.tokens(), &config.theme);
+        assert_eq!(state.localizer.locale(), &config.locale);
+        assert_eq!(
+            state.application().state(),
+            &ApplyState::Applied { generation }
+        );
+        config.theme = old_tokens;
+        send(
+            &mut state,
+            Message::LiveConfigured {
+                generation,
+                component: Component::Shell,
+                config: Box::new(config),
+            },
+        );
+        assert_eq!(
+            state.tokens(),
+            &Tokens::builtin_light(),
+            "a duplicate settled reply cannot replace appearance"
+        );
     }
 
     #[test]

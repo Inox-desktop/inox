@@ -32,6 +32,14 @@ use inox_panel::{i18n, theme};
 /// use (Q02). It says nothing about the panel's behaviour.
 const REFERENCE_WIDTH: f32 = 1280.0;
 
+mod reload;
+
+#[derive(Debug, Clone)]
+enum RuntimeMessage {
+    App(app::Message),
+    Reload(Box<reload::Request>),
+}
+
 fn main() -> Result<()> {
     initialise_logging()?;
 
@@ -50,6 +58,7 @@ fn main() -> Result<()> {
     let paths = ConfigPaths::discover().context("locating the Inox configuration directory")?;
     let config =
         InoxConfig::load(&paths, Appearance::System).context("loading the Inox configuration")?;
+    let reload_host = reload::Host::start(paths.clone())?;
 
     let localizer =
         Rc::new(i18n::load(&config.locale).context("loading the panel's message catalogs")?);
@@ -80,14 +89,14 @@ fn main() -> Result<()> {
     let boot = move || {
         (
             State::new(panel.clone(), tokens.clone(), Rc::clone(&localizer)),
-            iced::Task::none(),
+            reload_host.task(),
         )
     };
 
-    iced::application(boot, app::update, app::view)
+    iced::application(boot, update_runtime, view_runtime)
         .title(app::title)
         .theme(|state: &State| theme::from_tokens(state.tokens()))
-        .subscription(app::subscription)
+        .subscription(|state: &State| app::subscription(state).map(RuntimeMessage::App))
         .window_size((REFERENCE_WIDTH, f32::from(height)))
         .run()
         .context("running the panel")
@@ -167,6 +176,51 @@ impl DisplayEnv {
 
         candidate.exists().then_some(candidate)
     }
+}
+
+fn update_runtime(state: &mut State, message: RuntimeMessage) -> iced::Task<RuntimeMessage> {
+    match message {
+        RuntimeMessage::App(message) => app::update(state, message).map(RuntimeMessage::App),
+        RuntimeMessage::Reload(request) => {
+            let result = (|| {
+                if !request.is_current() {
+                    return Err("configuration reload expired".to_owned());
+                }
+                let old = state.config();
+                let next = &request.config.shell.panel;
+                if old.position != next.position
+                    || old.exclusive != next.exclusive
+                    || old.autohide != next.autohide
+                    || old.margin != next.margin
+                {
+                    return Err("panel.position/exclusive/autohide/margin: live placement requires a layer-shell host".into());
+                }
+                let localizer =
+                    Rc::new(i18n::load(&request.config.locale).map_err(|e| e.to_string())?);
+                state.apply_configuration(
+                    request.config.shell.panel.clone(),
+                    request.config.theme.clone(),
+                    localizer,
+                );
+                Ok(())
+            })();
+            let applied = result.is_ok();
+            request.finish(result);
+            if applied {
+                let size = iced::Size::new(REFERENCE_WIDTH, f32::from(state.config().height));
+                iced::window::oldest().then(move |id| match id {
+                    Some(id) => iced::window::resize(id, size),
+                    None => iced::Task::none(),
+                })
+            } else {
+                iced::Task::none()
+            }
+        }
+    }
+}
+
+fn view_runtime(state: &State) -> iced::Element<'_, RuntimeMessage> {
+    app::view(state).map(RuntimeMessage::App)
 }
 
 #[cfg(test)]

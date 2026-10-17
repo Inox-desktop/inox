@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+calloop.workspace = true
 anyhow.workspace = true
 # The D-Bus service itself (M5, acceptance D06). ADR 0022 §5 records the choice,
 # the licence (MIT) and why only the blocking API is used.

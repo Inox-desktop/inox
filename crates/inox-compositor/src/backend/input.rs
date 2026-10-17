@@ -44,6 +44,7 @@ impl LibinputInterface for SessionInterface {
 
 #[derive(Default)]
 struct DeviceKeys {
+    handle: Option<smithay::reexports::input::Device>,
     keyboard: bool,
     pointer: bool,
     keys: HashSet<u32>,
@@ -136,6 +137,34 @@ pub(crate) struct InputDevices {
 }
 
 impl InputDevices {
+    pub(crate) fn reconfigure(&mut self, config: InputConfig) -> Result<(), String> {
+        if self.config.tap_to_click == config.tap_to_click
+            && self.config.natural_scroll == config.natural_scroll
+        {
+            self.config = config;
+            return Ok(());
+        }
+        let mut devices: Vec<_> = self
+            .devices
+            .0
+            .values()
+            .filter_map(|d| d.handle.clone())
+            .collect();
+        for device in &mut devices {
+            if let Err(error) = configure_device(device, &config) {
+                let mut failures = vec![error];
+                for device in &mut devices {
+                    if let Err(error) = configure_device(device, &self.config) {
+                        failures.push(format!("rollback: {error}"));
+                    }
+                }
+                return Err(failures.join("; "));
+            }
+        }
+        self.config = config;
+        Ok(())
+    }
+
     pub(crate) fn new(
         session: LibSeatSession,
         config: InputConfig,
@@ -207,6 +236,7 @@ impl InputDevices {
                 self.devices.0.insert(
                     id,
                     DeviceKeys {
+                        handle: Some(device.clone()),
                         keyboard: Device::has_capability(
                             &device,
                             input::DeviceCapability::Keyboard,
@@ -290,6 +320,23 @@ fn apply_release(state: &mut InoxState, release: Release) {
             state.inject_pointer_button(button, input::ButtonState::Released)
         }
     }
+}
+
+fn configure_device(
+    device: &mut smithay::reexports::input::Device,
+    config: &InputConfig,
+) -> Result<(), String> {
+    if device.config_tap_finger_count() > 0 {
+        device
+            .config_tap_set_enabled(config.tap_to_click)
+            .map_err(|e| format!("input.tap_to_click on {}: {e:?}", device.id()))?;
+    }
+    if device.config_scroll_has_natural_scroll() {
+        device
+            .config_scroll_set_natural_scroll_enabled(config.natural_scroll)
+            .map_err(|e| format!("input.natural_scroll on {}: {e:?}", device.id()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

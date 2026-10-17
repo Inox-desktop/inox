@@ -11,6 +11,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+calloop.workspace = true
+zbus.workspace = true
 anyhow.workspace = true
 # Civil time in the session's timezone for the panel clock (ADR 0018).
 chrono.workspace = true

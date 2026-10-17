@@ -176,3 +176,9 @@ settings-input-method-help = Enter fcitx5 or a compatible executable first, then
 
 settings-error-input-method-command = Check entry { $row }: the first entry must name an executable and arguments cannot contain a NUL character.
 settings-error-wallpaper-entry = Check entry { $row }: display names must be unique.
+
+settings-ctl-help = Usage: inoxctl reload (reload running components) or inoxctl --help
+settings-ctl-applied = { $component }: applied
+settings-ctl-absent = { $component }: not running
+settings-ctl-failed = { $component }: reload was not confirmed
+settings-ctl-incomplete = Configuration reload did not complete successfully.

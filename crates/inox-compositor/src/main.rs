@@ -22,6 +22,7 @@ fn main() -> Result<()> {
         let signals = calloop::signals::Signals::new(&[
             calloop::signals::Signal::SIGINT,
             calloop::signals::Signal::SIGTERM,
+            calloop::signals::Signal::SIGHUP,
         ])?;
         drop(signals);
         let program = child_args

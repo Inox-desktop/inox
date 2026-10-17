@@ -13,7 +13,7 @@
 //!
 //! [`resolve`]: crate::root::ThemeSelection::resolve
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::error::{ConfigError, parse, read_text};
@@ -27,7 +27,7 @@ pub const BUILTIN_LIGHT: &str = "inox-light";
 pub const BUILTIN_DARK: &str = "inox-dark";
 
 /// An sRGB colour with an alpha channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "String")]
 pub struct Rgba {
     /// Red channel.
@@ -109,7 +109,7 @@ fn hex_pair(digits: &str, index: usize) -> Option<u8> {
 }
 
 /// Colour tokens of a theme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Colors {
     /// Colour behind the content of a window.
@@ -143,7 +143,7 @@ impl Default for Colors {
 }
 
 /// Typography tokens of a theme.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Typography {
     /// Font family for prose.
@@ -165,7 +165,7 @@ impl Default for Typography {
 }
 
 /// Spacing tokens, in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Spacing {
     /// Extra small step, for the gap inside a control.
@@ -193,7 +193,7 @@ impl Default for Spacing {
 }
 
 /// Corner-radius tokens, in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Radii {
     /// Small radius, for controls.
@@ -215,7 +215,7 @@ impl Default for Radii {
 }
 
 /// Motion-duration tokens, in milliseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Motion {
     /// Duration of a small state change, such as a hover.
@@ -242,7 +242,7 @@ impl Default for Motion {
 /// and appearance included. [`ThemeSelection::resolve`] is the presence-aware
 /// loader used by the configuration: it keeps the selection's name and
 /// appearance when the theme file does not declare its own.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Theme {
     /// Name of the theme.
@@ -317,7 +317,7 @@ impl Theme {
 /// `[theme] appearance` in `config.toml`, `system` is not a value a theme file
 /// can hold. Rejecting it here keeps [`Theme::appearance`] meaningful for the
 /// components that read it to decide between light and dark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum ThemeAppearance {
     /// Light colours.
@@ -341,7 +341,7 @@ impl From<ThemeAppearance> for Appearance {
 /// file which does not declare a name or an appearance inherits the ones from
 /// the selection instead of the dark defaults, and the appearance is restricted
 /// to the two a theme can actually describe (see [`ThemeAppearance`]).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 struct ThemeFile {
     name: Option<String>,
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn a_colour_token_is_deserialized_through_its_hexadecimal_form() {
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, Serialize)]
         struct Token {
             accent: Rgba,
         }

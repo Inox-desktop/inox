@@ -328,6 +328,22 @@ pub struct State {
 }
 
 impl State {
+    /// Applies preferences without replacing live notifications or lock tracking.
+    /// An explicitly changed do-not-disturb preference overrides the session toggle.
+    pub fn apply_configuration(
+        &mut self,
+        config: NotificationsConfig,
+        tokens: Tokens,
+        localizer: Rc<Localizer>,
+    ) {
+        if self.config.policy.do_not_disturb != config.policy.do_not_disturb {
+            self.policy.set_do_not_disturb(config.policy.do_not_disturb);
+        }
+        self.reload(config);
+        self.tokens = tokens;
+        self.localizer = localizer;
+    }
+
     /// A daemon holding nothing.
     ///
     /// The queue's bound and lifetimes, and the policy, come from `config`; do
@@ -739,6 +755,25 @@ mod tests {
     }
 
     // --- the four methods ---------------------------------------------------
+
+    #[test]
+    fn live_configuration_preserves_notifications_and_applies_explicit_dnd_changes() {
+        let mut state = daemon();
+        send(&mut state, notify(1, "keep me"));
+        let before = state.queue.counters();
+        let mut config = state.config.clone();
+        config.policy.do_not_disturb = true;
+        let tokens = Tokens::builtin_light();
+        state.apply_configuration(config, tokens.clone(), Rc::clone(&state.localizer));
+        assert!(state.policy().do_not_disturb());
+        assert_eq!(state.queue.counters(), before);
+        assert_eq!(state.tokens(), &tokens);
+        let mut config = state.config.clone();
+        config.policy.do_not_disturb = false;
+        state.apply_configuration(config, tokens, Rc::clone(&state.localizer));
+        assert!(!state.policy().do_not_disturb());
+        assert_eq!(state.queue.counters(), before);
+    }
 
     #[test]
     fn a_notify_call_is_answered_with_the_identifier_it_was_given() {

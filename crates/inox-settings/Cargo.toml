@@ -1,5 +1,6 @@
 [package]
 name = "inox-settings"
+default-run = "inox-settings"
 description = "The Inox system settings application"
 version.workspace = true
 edition.workspace = true
@@ -11,6 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+zbus.workspace = true
 anyhow.workspace = true
 # ADR 0003 fixes Iced for every shell component; the workspace entry selects
 # the tiny-skia renderer, which is what the headless render tests draw through.

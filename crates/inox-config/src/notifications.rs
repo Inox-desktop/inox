@@ -19,7 +19,7 @@
 //! decision 4): a popup width of zero, a queue that can hold nothing or a
 //! timeout beyond ten minutes are all rejected by [`crate::store::InoxConfig::load`].
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Default number of notifications shown at the same time.
 const DEFAULT_MAX_VISIBLE: u8 = 3;
@@ -86,7 +86,7 @@ const MAX_PENDING_MAX: u16 = 1024;
 /// The default of a section is the default of each of its fields, so this type
 /// derives it: an empty `notifications.toml` is the same configuration as no
 /// `notifications.toml` at all.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct NotificationsConfig {
     /// How a popup is drawn.
@@ -100,7 +100,7 @@ pub struct NotificationsConfig {
 }
 
 /// How a notification popup is drawn.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DisplayConfig {
     /// Corner of the output the popups appear in.
@@ -134,7 +134,7 @@ impl Default for DisplayConfig {
 }
 
 /// The corner of an output popups appear in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationPosition {
     /// Upper right corner.
@@ -153,7 +153,7 @@ pub enum NotificationPosition {
 /// A lifetime of `0` means the notification never expires on its own; it is the
 /// default for critical urgency, which is also the urgency the specification
 /// says must not time out silently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TimeoutConfig {
     /// Lifetime of a low-urgency notification, in milliseconds, between 0 and
@@ -181,7 +181,7 @@ impl Default for TimeoutConfig {
 }
 
 /// What happens to notifications waiting behind the visible ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct QueueConfig {
     /// Notifications the queue may hold, between 1 and 1024.
@@ -201,7 +201,7 @@ impl Default for QueueConfig {
 }
 
 /// What the daemon does when the queue is full.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum QueuePolicy {
     /// Discard the oldest waiting notification.
@@ -213,7 +213,7 @@ pub enum QueuePolicy {
 }
 
 /// Startup policy of the daemon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PolicyConfig {
     /// Whether the daemon starts with do-not-disturb on.

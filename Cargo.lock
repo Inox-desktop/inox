@@ -1526,6 +1526,7 @@ dependencies = [
  "tracing",
  "wayland-client",
  "wayland-protocols",
+ "zbus",
 ]
 
 [[package]]
@@ -1596,6 +1597,7 @@ name = "inox-launcher"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "calloop 0.14.5",
  "iced",
  "iced_core",
  "iced_runtime",
@@ -1608,6 +1610,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
@@ -1640,6 +1643,7 @@ name = "inox-notifications"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "calloop 0.14.5",
  "iced",
  "iced_core",
  "iced_runtime",
@@ -1662,6 +1666,7 @@ name = "inox-panel"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "calloop 0.14.5",
  "chrono",
  "iced",
  "iced_core",
@@ -1675,6 +1680,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
@@ -1727,6 +1733,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
@@ -1747,6 +1754,7 @@ name = "inox-wallpaper"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "calloop 0.14.5",
  "iced",
  "iced_core",
  "iced_runtime",
@@ -1759,6 +1767,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]

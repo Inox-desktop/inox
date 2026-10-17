@@ -17,7 +17,7 @@
 - **文案只来自 Fluent**：只能出现消息 id，不得在代码里写用户可见字符串（产品名与组件名除外）。新增 id 必须同时进 `en-US` 与 `zh-CN`，占位符保持一致（`tests/catalog.rs` 断言）。
 - **摆放策略是数据，不是已生效的行为**：`src/placement.rs` 计算锚点/exclusive zone/键盘交互等，但当前没有 layer-shell 宿主可应用它（ADR 0018）。启动时只允许**一条** `warn!` 说明表面是普通窗口，不得声称摆放已生效，也不得引入 `iced_layershell`。
 - **启动必须自检**：没有可用的 Wayland/X11 显示时，`main` 必须以可读错误与非零退出码结束，不得把控制权交给第三方 crate 后收获内部 panic（ADR 0018）。`zwlr_layer_shell_v1` 的存在性查询尚未实现：面板不与合成器建连，该自检随 layer-shell 宿主一并落地。
-- **传输层不在本 crate 内**：窗口服务与 SNI 协议都不实现。`update` 不做 I/O，只把意图放进 `State` 的 `OutgoingCommand` 队列；`Message` 是传输层要喂进来的接口。新增 `Message` 必须同时给出测试。
+- **窗口服务与 SNI 传输不在本 crate 内**：两者的协议仍不实现。配置重载由二进制 `reload.rs` 通过会话 D-Bus 与 calloop 信号源接入（ADR 0026），不接管窗口或托盘状态。`update` 不做 I/O，只把意图放进 `State` 的 `OutgoingCommand` 队列；`Message` 是传输层要喂进来的接口。新增 `Message` 必须同时给出测试。
 - **任务区是弹性区域**：任务按钮放在 `Length::Fill` + `clip` 的容器里，时钟与托盘项是 `Shrink` 子项（iced 先排非弹性子项），因此长标题只会被截断，不会把时钟挤出面板。显示数量受 `panel.max_task_buttons` 限制，不得用滚动或溢出指示替代（尚未实现）。
 - **普通展示不夺焦点**：`keyboard_interactivity = None`；时钟与托盘项是纯展示容器，不套 `button`。显式导航焦点只能落在可点击（enabled）的条目上，且至多一个（D01）。
 - 新增依赖前先确认依赖方向合法（根级 §2）：本 crate 只依赖 L1（`inox-common`、`inox-config`），不得引入同层或合成器依赖。

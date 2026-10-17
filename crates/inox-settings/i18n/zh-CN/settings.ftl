@@ -155,3 +155,9 @@ settings-input-method-help = 第一项填写 fcitx5 或兼容的可执行程序�
 
 settings-error-input-method-command = 请检查第 { $row } 项：首项必须为可执行程序，参数不能含有空字符。
 settings-error-wallpaper-entry = 请检查第 { $row } 项：显示器名称不能重复。
+
+settings-ctl-help = 用法：inoxctl reload（重载运行中的组件）或 inoxctl --help
+settings-ctl-applied = { $component }：已生效
+settings-ctl-absent = { $component }：未运行
+settings-ctl-failed = { $component }：未确认重载成功
+settings-ctl-incomplete = 配置未能全部重载成功。

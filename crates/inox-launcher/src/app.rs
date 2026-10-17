@@ -73,6 +73,8 @@ pub struct Prepared {
 /// The launcher's state.
 #[derive(Debug)]
 pub struct State {
+    /// The binary entry point used to restore child signal masks before exec.
+    pub launch_helper: Option<std::path::PathBuf>,
     /// The theme tokens.
     pub tokens: Tokens,
     /// The catalogs.
@@ -110,6 +112,24 @@ pub struct State {
 }
 
 impl State {
+    /// Reconfigures the existing launcher while preserving its query and index.
+    pub fn apply_configuration(&mut self, prepared: Prepared, index: Option<AppIndex>) {
+        self.scan_generation += 1;
+        if let Some(mut index) = index {
+            index.set_generation(self.scan_generation);
+            self.service = index.state();
+            self.index = Some(index);
+        }
+        self.config = prepared.config;
+        self.tokens = prepared.tokens;
+        self.localizer = prepared.localizer;
+        self.placement = prepared.placement;
+        self.selection_generation += 1;
+        self.selected = 0;
+        self.research();
+        self.refresh_model();
+    }
+
     /// The initial state, with the index already read.
     ///
     /// The first scan happens here rather than in a task: it runs before the
@@ -126,6 +146,7 @@ impl State {
     /// The state before the index is read, which `main` never sees.
     fn blank(prepared: &Prepared) -> Self {
         Self {
+            launch_helper: None,
             tokens: prepared.tokens.clone(),
             localizer: Rc::clone(&prepared.localizer),
             config: prepared.config.clone(),
@@ -490,7 +511,7 @@ fn activate(state: &mut State) -> Task<Message> {
         outcome: LaunchOutcome::Requested,
     });
 
-    probe(request)
+    probe(request, state.launch_helper.clone())
 }
 
 /// The id, name and command line of the selected entry.
@@ -556,7 +577,7 @@ fn retry_launch(state: &mut State) -> Task<Message> {
         outcome: LaunchOutcome::Requested,
     });
 
-    probe(request)
+    probe(request, state.launch_helper.clone())
 }
 
 /// Reads the index off the update loop.
@@ -574,14 +595,18 @@ fn scan_task(options: IndexOptions, generation: u64) -> Task<Message> {
 /// stream, which is the shape ADR 0004's "long tasks go to calloop's threads"
 /// has for an Iced component (ADR 0018 keeps Iced's own executor for the same
 /// reason).
-fn probe(request: LaunchRequest) -> Task<Message> {
+fn probe(request: LaunchRequest, helper: Option<std::path::PathBuf>) -> Task<Message> {
     let selection = request.selection;
     let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
 
     let started = std::thread::Builder::new()
         .name("inox-launcher-probe".to_owned())
         .spawn(move || {
-            let observation = activation::spawn_and_probe(&request.argv, READINESS_GRACE);
+            let observation = activation::spawn_and_probe_with_helper(
+                &request.argv,
+                READINESS_GRACE,
+                helper.as_deref(),
+            );
             if sender.unbounded_send(observation).is_err() {
                 debug!("the launcher closed before the launch could be verified");
             }
@@ -658,6 +683,21 @@ mod tests {
     fn press(state: &mut State, key: Named) {
         let message = key_binding(&Key::Named(key)).expect("the key is bound");
         send(state, message);
+    }
+
+    #[test]
+    fn live_configuration_preserves_query_and_index_and_reprojects_results() {
+        let mut state = state();
+        send(&mut state, Message::QueryChanged("example".into()));
+        let mut config = prepared();
+        config.config.max_results = 1;
+        config.tokens = Tokens::builtin_light();
+        state.apply_configuration(config.clone(), None);
+        assert_eq!(state.query, "example");
+        assert!(state.index.is_some());
+        assert_eq!(state.config, config.config);
+        assert_eq!(state.tokens, config.tokens);
+        assert_eq!(state.model.rows.len(), 1);
     }
 
     #[test]

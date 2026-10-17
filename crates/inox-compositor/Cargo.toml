@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+zbus.workspace = true
 anyhow.workspace = true
 calloop.workspace = true
 inox-common.workspace = true
