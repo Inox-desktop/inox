@@ -23,13 +23,13 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc`） |
 | `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区与私有 `inox_ipc`） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；真实后端为脚手架） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、真实 X11 连接往返的就绪判定、生命周期） |
-| `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 骨架 |
-| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` | 骨架 |
-| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 骨架 |
-| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 骨架 |
-| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 骨架 |
-| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 骨架 |
-| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 骨架 |
+| `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 部分实现（跨入口导航、服务契约、内部入口注册表；不绘制界面） |
+| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型与 Iced 界面；layer-shell 表面待宿主） |
+| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 部分实现（XDG 条目解析、Exec 展开、带代次的搜索、Iced 界面；layer-shell 表面待宿主） |
+| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏与界面模型；D-Bus 服务属 M5） |
+| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 部分实现（草稿/校验/原子保存/回读状态机与 Iced 界面；普通窗口，无需 layer-shell） |
+| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿与认证边界未实现，见 ADR 0015） |
+| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现（来源解析、缩放几何、原子应用与预览窗口；layer-shell 背景层待宿主） |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，拉起合成器与 Shell | 二进制 `inox-session` | 骨架 |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 骨架 |
 | `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 骨架 |
@@ -68,7 +68,29 @@ L2 与 L3 之间的边界不是「暂时没有依赖」，而是 ADR 0002 规则
 
 ### L3 访问合成器只有一个登记的单点
 
-ADR 0002 规则 6 允许 `inox-wallpaper` 直接依赖 `inox-compositor`，其余 L3 组件不得如此。这一单点登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] l3_dependencies_on_compositor` 中；[ADR 0013](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0013-shell-service-and-interaction-contracts.md) 提议取消该例外，接受后删掉登记条目即收紧规则。
+ADR 0002 规则 6 允许 `inox-wallpaper` 直接依赖 `inox-compositor`，其余 L3 组件不得如此。这一单点登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] l3_dependencies_on_compositor` 中。**该例外目前是空的**：L3 的实现按 [ADR 0013](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0013-shell-service-and-interaction-contracts.md) 的边界完成，壁纸通过 layer-shell 协议而不是合成器内部类型获得渲染面，因此没有任何 L3 crate 依赖合成器。删除登记条目属于**收紧**规则，同样需要 ADR 批准（PRD §2.1），所以条目保留，等待 ADR 0013 的裁决。
+
+### L3 组件之间没有 Rust 依赖，共享能力下沉到 L1
+
+七个 L3 组件是**七个独立进程**：面板、启动器、通知与壁纸是 layer-shell 客户端，设置是普通窗口应用，
+`inox-shell` 不持有界面。它们之间以及与 `inox-compositor` 之间只通过 Wayland 协议、`inox-ipc` 与 D-Bus
+协作，**没有新增任何同层边**。共享能力放在 L1 的既有职责里：用户可见文案的加载在 `inox-common::i18n`，
+配置模型在 `inox-config`，主题令牌在 `inox-config::theme`。代价是每个组件各有约一百行相同的
+「令牌 → Iced 主题」映射与宿主引导代码——这是 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)
+明确接受的权衡，而不是疏忽；共享 UI crate 需要先获得 ADR 批准。
+
+### layer-shell 宿主尚未具备
+
+PRD §2.3 把 `wlr-layer-shell-unstable-v1` 列为**必须**，面板、启动器、通知与壁纸都依赖它。当前有两个缺口：
+
+1. `inox-compositor` **还没有广告** `zwlr_layer_shell_v1`（协议绑定已在 `inox-protocols` 中，但合成器未接入），
+   因此这些组件在 Inox 会话里还无法成为真实表面；
+2. CI 没有支持该协议的宿主（`weston` 不支持），且 `iced_layershell` 0.19.1 与 0.19.0 **无法编译**
+   （其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。
+
+因此本次交付把这些组件的**放置策略**（锚点、独占区、边距、尺寸、键盘交互、按输出分配）建模为纯数据并测试，
+界面以普通窗口运行，启动时记录一行说明原因的 `warn!`。真实控件树的布局与像素由**离屏渲染测试**覆盖
+（见[测试策略](../development/testing.md)），不需要合成器；表面、焦点与放置则必须等上述缺口补齐。
 
 ## 相关页面
 

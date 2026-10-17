@@ -9,10 +9,20 @@
 
 [advisories]
 yanked = "warn"
-# `cgmath` is unmaintained (RUSTSEC-2026-0196) but is an unavoidable transitive
-# dependency of Smithay v0.7.0, the version fixed by ADR 0003; it is not a
-# vulnerability and has no safe upgrade. Revisit when Smithay drops it.
-ignore = ["RUSTSEC-2026-0196"]
+# Both entries are `unmaintained` advisories — neither is a vulnerability, and
+# neither has a safe upgrade. Each is reachable only through a core dependency
+# that an accepted ADR fixes, so "upgrade away from it" is not an option this
+# repository has on its own; the alternative would be to drop the toolkit.
+#
+# `cgmath` (RUSTSEC-2026-0196) is an unavoidable transitive dependency of
+# Smithay v0.7.0 (ADR 0003). Revisit when Smithay drops it.
+#
+# `ttf-parser` (RUSTSEC-2026-0192) is cosmic-text's font parser, reached
+# through `iced_graphics` -> `cosmic-text` -> `fontdb`. Iced 0.14 (ADR 0003)
+# lays out all text through cosmic-text, so every L3 component depends on it.
+# The advisory's suggested replacement (`skrifa`) is a change upstream has to
+# make first; track it, and drop this entry once iced moves off ttf-parser.
+ignore = ["RUSTSEC-2026-0196", "RUSTSEC-2026-0192"]
 
 [licenses]
 # Root AGENTS.md §3.6: permissive licences only; no GPL/AGPL/SSPL in the core

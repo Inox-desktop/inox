@@ -1,7 +1,10 @@
 //! Loading every configuration file at once, and keeping the last good one.
 //!
 //! [`InoxConfig`] is the unit a component starts with: the top-level
-//! `config.toml`, the theme it selects and the compositor file it points at.
+//! `config.toml`, the theme it selects, the locale it resolves and the three
+//! component files it points at (`compositor.toml`, `shell.toml` and
+//! `notifications.toml`).
+//!
 //! [`ConfigStore`] wraps it for a running session, which is what SIGHUP and
 //! `inoxctl reload` act on: a reload either replaces the whole configuration or
 //! changes nothing at all (PRD §9.1, root AGENTS.md §7.1).
@@ -9,13 +12,16 @@
 use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use inox_common::i18n::Locale;
 use serde::de::DeserializeOwned;
 use tracing::{debug, info, warn};
 
 use crate::compositor::CompositorConfig;
 use crate::error::{ConfigError, parse, read_text};
+use crate::notifications::NotificationsConfig;
 use crate::paths::ConfigPaths;
 use crate::root::{Appearance, RootConfig};
+use crate::shell::ShellConfig;
 use crate::theme::Theme;
 
 /// Everything a component needs from the configuration to start up.
@@ -27,11 +33,19 @@ pub struct InoxConfig {
     pub theme: Theme,
     /// The compositor configuration the top-level file points at.
     pub compositor: CompositorConfig,
+    /// The shell configuration the top-level file points at.
+    pub shell: ShellConfig,
+    /// The notification daemon configuration the top-level file points at.
+    pub notifications: NotificationsConfig,
+    /// The locale the top-level file resolved, negotiated against the catalogs
+    /// Inox ships.
+    pub locale: Locale,
 }
 
 impl InoxConfig {
-    /// Load `config.toml`, resolve the theme it selects and load the compositor
-    /// file it points at.
+    /// Load `config.toml` and everything it points at: the theme, the locale
+    /// and the three component files (`compositor.toml`, `shell.toml`,
+    /// `notifications.toml`).
     ///
     /// A file that does not exist falls back to its defaults and is reported at
     /// debug level; a file that exists but cannot be read or parsed is an error,
@@ -42,28 +56,34 @@ impl InoxConfig {
     /// Returns [`ConfigError::Paths`] when no configuration directory exists,
     /// [`ConfigError::InvalidComponentPath`] for any of the three `[components]`
     /// paths that escapes it, [`ConfigError::Read`] or [`ConfigError::Parse`]
-    /// for a file that cannot be used (a [`LayoutConfig`](crate::compositor::LayoutConfig)
-    /// value outside its range included), and [`ConfigError::InvalidThemeName`],
+    /// for a file that cannot be used — a [`LayoutConfig`](crate::compositor::LayoutConfig),
+    /// [`PanelConfig`](crate::shell::PanelConfig) or
+    /// [`TimeoutConfig`](crate::notifications::TimeoutConfig) value outside its
+    /// range included — and [`ConfigError::InvalidThemeName`],
     /// [`ConfigError::ThemeNotFound`] for the selected theme.
     pub fn load(paths: &ConfigPaths, system: Appearance) -> Result<Self, ConfigError> {
         let root: RootConfig = load_or_default(&paths.root_file())?;
         let theme = root.theme.resolve(paths, system)?;
 
+        // Every component path is resolved before any component file is read: a
+        // path that escapes the configuration directory has to fail when Inox
+        // starts, not the first time that component starts.
         let compositor_file = paths.file(&root.components.compositor)?;
-        // The shell and notification files are not parsed yet — their schemas
-        // arrive with the milestones that consume them — but their paths are
-        // validated all the same: a path that escapes the configuration
-        // directory has to fail when Inox starts, not the first time that
-        // component starts.
-        paths.file(&root.components.shell)?;
-        paths.file(&root.components.notifications)?;
+        let shell_file = paths.file(&root.components.shell)?;
+        let notifications_file = paths.file(&root.components.notifications)?;
 
         let compositor: CompositorConfig = load_or_default(&compositor_file)?;
+        let shell: ShellConfig = load_or_default(&shell_file)?;
+        let notifications: NotificationsConfig = load_or_default(&notifications_file)?;
+        let locale = root.locale.resolve();
 
         Ok(Self {
             root,
             theme,
             compositor,
+            shell,
+            notifications,
+            locale,
         })
     }
 }
@@ -172,6 +192,7 @@ impl ConfigStore {
 mod tests {
     use super::*;
     use crate::error::test_support::{column_of, line_of};
+    use crate::shell::PanelPosition;
     use crate::theme::{BUILTIN_DARK, Rgba};
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -221,6 +242,9 @@ mod tests {
         assert_eq!(config.compositor.layout.master_ratio, 60);
         assert_eq!(config.compositor.layout.master_count, 1);
         assert_eq!(config.compositor.layout.gap, 8);
+        assert_eq!(config.shell, ShellConfig::default());
+        assert_eq!(config.notifications, NotificationsConfig::default());
+        assert_eq!(config.locale, Locale::negotiate(&Locale::from_env()));
     }
 
     #[test]
@@ -628,5 +652,175 @@ mod tests {
         store.reload().expect("reload");
 
         assert_eq!(store.current().compositor.layout.master_ratio, 80);
+    }
+
+    #[test]
+    fn a_custom_shell_file_is_read() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        write(
+            &dir,
+            "config.toml",
+            "[components]\nshell = \"components/shell.toml\"\n",
+        );
+        write(
+            &dir,
+            "components/shell.toml",
+            "[panel]\nposition = \"top\"\nheight = 40\n",
+        );
+
+        let config = InoxConfig::load(&paths(&dir), Appearance::System).expect("config");
+
+        assert_eq!(config.shell.panel.position, PanelPosition::Top);
+        assert_eq!(config.shell.panel.height, 40);
+        assert_eq!(config.notifications, NotificationsConfig::default());
+    }
+
+    #[test]
+    fn a_custom_notification_file_is_read() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        write(
+            &dir,
+            "config.toml",
+            "[components]\nnotifications = \"components/notifications.toml\"\n",
+        );
+        write(
+            &dir,
+            "components/notifications.toml",
+            "[queue]\nmax_pending = 8\n",
+        );
+
+        let config = InoxConfig::load(&paths(&dir), Appearance::System).expect("config");
+
+        assert_eq!(config.notifications.queue.max_pending, 8);
+        assert_eq!(config.shell, ShellConfig::default());
+    }
+
+    #[test]
+    fn a_malformed_shell_file_reports_its_own_path() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let document = "[panel]\nheight = 4\n";
+        write(&dir, "shell.toml", document);
+
+        let error = InoxConfig::load(&paths(&dir), Appearance::System).expect_err("malformed");
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&format!("shell.toml:{}:", line_of(document, "4"))),
+            "rendered `{rendered}`"
+        );
+        assert!(
+            rendered.contains("(field `panel.height`)"),
+            "rendered `{rendered}`"
+        );
+
+        match error {
+            ConfigError::Parse { path, field, .. } => {
+                assert!(path.ends_with("shell.toml"), "got {path:?}");
+                assert_eq!(field.as_deref(), Some("panel.height"));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_malformed_notification_file_reports_its_own_path() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let document = "[display]\nwidth = 100\n";
+        write(&dir, "notifications.toml", document);
+
+        let error = InoxConfig::load(&paths(&dir), Appearance::System).expect_err("malformed");
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&format!("notifications.toml:{}:", line_of(document, "100"))),
+            "rendered `{rendered}`"
+        );
+        assert!(
+            rendered.contains("(field `display.width`)"),
+            "rendered `{rendered}`"
+        );
+
+        match error {
+            ConfigError::Parse { path, field, .. } => {
+                assert!(path.ends_with("notifications.toml"), "got {path:?}");
+                assert_eq!(field.as_deref(), Some("display.width"));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_key_in_a_shell_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        write(&dir, "shell.toml", "[panel]\nnonsense = 1\n");
+
+        let error = InoxConfig::load(&paths(&dir), Appearance::System).expect_err("unknown key");
+
+        match error {
+            ConfigError::Parse { path, field, .. } => {
+                assert!(path.ends_with("shell.toml"), "got {path:?}");
+                assert_eq!(field.as_deref(), Some("panel.nonsense"));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_locale_is_resolved_from_the_root_file() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        write(&dir, "config.toml", "[locale]\nlanguage = \"zh-CN\"\n");
+
+        let config = InoxConfig::load(&paths(&dir), Appearance::System).expect("config");
+
+        assert_eq!(config.root.locale.language.as_deref(), Some("zh-CN"));
+        assert_eq!(
+            config.locale,
+            Locale::parse("zh-CN").expect("a supported tag")
+        );
+    }
+
+    #[test]
+    fn the_locale_follows_the_environment_when_none_is_configured() {
+        let dir = tempfile::tempdir().expect("temp directory");
+
+        let config = InoxConfig::load(&paths(&dir), Appearance::System).expect("defaults");
+
+        // `resolve` reads the process environment, which a test cannot rewrite;
+        // the same two steps are run against it here.
+        assert_eq!(config.locale, Locale::negotiate(&Locale::from_env()));
+    }
+
+    #[test]
+    fn a_malformed_locale_tag_in_the_root_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let document = "[locale]\nlanguage = \"not a tag !\"\n";
+        write(&dir, "config.toml", document);
+
+        let error = InoxConfig::load(&paths(&dir), Appearance::System).expect_err("malformed tag");
+
+        match error {
+            ConfigError::Parse {
+                path, field, line, ..
+            } => {
+                assert!(path.ends_with("config.toml"), "got {path:?}");
+                assert_eq!(field.as_deref(), Some("locale.language"));
+                assert_eq!(line, Some(line_of(document, "language")));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_reload_picks_up_an_edit_to_the_shell_file() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        write(&dir, "shell.toml", "[panel]\nheight = 40\n");
+
+        let store = ConfigStore::new(paths(&dir), Appearance::System).expect("load");
+        assert_eq!(store.current().shell.panel.height, 40);
+
+        write(&dir, "shell.toml", "[panel]\nheight = 48\n");
+        store.reload().expect("reload");
+
+        assert_eq!(store.current().shell.panel.height, 48);
     }
 }

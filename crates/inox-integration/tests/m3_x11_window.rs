@@ -95,33 +95,33 @@ fn wait_for_tile(
 ) {
     let deadline = Instant::now() + CASE_TIMEOUT;
     loop {
-        if let Some((width, height)) = x11.configured_size(window) {
-            if i32::from(width) == tile.w {
-                let reserved = tile.h - i32::from(height);
-                match *decoration {
-                    Some(known) => assert_eq!(
-                        reserved, known,
-                        "{what}: window {window} was configured to {width}x{height} inside a \
+        if let Some((width, height)) = x11.configured_size(window)
+            && i32::from(width) == tile.w
+        {
+            let reserved = tile.h - i32::from(height);
+            match *decoration {
+                Some(known) => assert_eq!(
+                    reserved, known,
+                    "{what}: window {window} was configured to {width}x{height} inside a \
                          {tile:?} tile, but the satellite's title bar measured {known} pixels on \
                          the previous reconfigure"
-                    ),
-                    None => {
-                        assert!(
-                            (0..=MAX_DECORATION).contains(&reserved),
-                            "{what}: window {window} was configured to {width}x{height}, {reserved} \
+                ),
+                None => {
+                    assert!(
+                        (0..=MAX_DECORATION).contains(&reserved),
+                        "{what}: window {window} was configured to {width}x{height}, {reserved} \
                              pixels short of the {tile:?} tile; that is not a title bar, so the \
                              window was not tiled. Events: {:#?}",
-                            x11.events
-                        );
-                        println!(
-                            "{what}: xwayland-satellite reserves {reserved} pixels above the X11 \
+                        x11.events
+                    );
+                    println!(
+                        "{what}: xwayland-satellite reserves {reserved} pixels above the X11 \
                              client area"
-                        );
-                        *decoration = Some(reserved);
-                    }
+                    );
+                    *decoration = Some(reserved);
                 }
-                return;
             }
+            return;
         }
         assert!(
             Instant::now() < deadline,

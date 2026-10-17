@@ -3,6 +3,7 @@
 //! Part of the Inox desktop environment. See the repository `AGENTS.md` for
 //! contribution and architecture constraints.
 
+pub mod i18n;
 pub mod logging;
 pub mod paths;
 

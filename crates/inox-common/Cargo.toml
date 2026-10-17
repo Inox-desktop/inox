@@ -15,6 +15,13 @@ categories.workspace = true
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+
+# Project Fluent (PRD §11.2). `fluent-syntax` is used directly as well as
+# through `fluent-bundle`: the catalog-parity check that keeps `en-US` and
+# `zh-CN` in step needs the parsed AST, not just the loaded bundle.
+fluent-bundle.workspace = true
+fluent-syntax.workspace = true
+unic-langid.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

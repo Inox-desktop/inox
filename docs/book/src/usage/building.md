@@ -1,6 +1,6 @@
 # 构建与运行
 
-> **这不是一份「安装桌面环境」的指南。** Inox 目前只有 headless 合成器可以运行，还没有会话管理器、Shell 或锁屏；X11 应用已经可以在 Inox 会话内运行（XWayland 由外部 `xwayland-satellite` 提供），但同样只在离屏缓冲中渲染。本页说明今天可以构建并运行什么，以及哪些能力尚不存在。
+> **这不是一份「安装桌面环境」的指南。** Inox 目前只有 headless 合成器可以运行，还没有会话管理器或显示管理器；七个 L3 组件（Shell 框架、面板、启动器、通知、设置、锁屏、壁纸）已经实现并且可以构建和启动，但它们还不是 layer-shell 客户端、也还没有人监督它们启动，因此**屏幕上看不到一个可用的桌面**。X11 应用可以在 Inox 会话内运行（XWayland 由外部 `xwayland-satellite` 提供），但同样只在离屏缓冲中渲染。本页说明今天可以构建并运行什么，以及哪些能力尚不存在。
 
 ## 今天能跑到什么程度
 
@@ -9,8 +9,9 @@
 | 构建 `inox-compositor` 并启动 headless 合成器 | **可以**：创建 `wl_output`、接受客户端、平铺窗口、渲染帧 |
 | 在物理显示器上看到画面 | **不行**：没有 DRM/KMS 后端，输出是逻辑输出，渲染到离屏缓冲 |
 | 用真实键盘/鼠标操作 | **不行**：没有 libinput/udev 后端；输入事件只能由测试注入（M3 起经测试专用套接字，需 `test-input` feature 构建） |
-| 运行 Shell（面板、启动器） | **不行**：`inox-shell` 等 L3 crate 仍是骨架（计划 M4） |
-| 登录会话、锁屏、通知 | **不行**：`inox-session`、`inox-lock`、`inox-notifications` 仍是骨架（计划 M5） |
+| 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件都已实现，`cargo run -p inox-panel` 会打开一个普通窗口；由于合成器尚未广告 `zwlr_layer_shell_v1` 且 `iced_layershell` 当前无法编译（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)），它们**不是** layer-shell 客户端，放置策略只被建模与测试、未被应用；`inox-lock` 会以可读错误非零退出（协议腿与认证边界未实现） |
+| 登录会话 | **不行**：`inox-session`、`inox-idle`、`inox-greet` 仍是骨架（计划 M5） |
+| 锁定会话、收发通知 | **不行**：`inox-lock` 的状态机与凭据处理、`inox-notifications` 的队列与脱敏策略都已实现并有测试，但前者缺 `ext-session-lock-v1` 客户端与认证边界（ADR 0015 要求人类安全审查），后者缺 D-Bus 服务（属 M5） |
 | 运行 X11 应用 | **可以，但看不到画面**：合成器已广告 satellite 所需的宿主协议（含 `wp_viewporter`），`inox-xwayland` 可在会话中启动并监督它；运行时需自备 `xwayland-satellite`（≥ v0.8.3）与 `Xwayland` |
 | 剪贴板与拖放 | **可以（仅限 headless 内）**：剪贴板读取权跟随键盘焦点；Wayland↔Wayland 拖放与 X11 内部拖放可用；跨 X11/Wayland 边界的拖放**不可用**（上游 satellite 未实现 XDND） |
 | 构建本站点 | **可以**：`mdbook build` |
@@ -21,7 +22,7 @@
 
 | 依赖 | 用途 |
 |------|------|
-| Rust stable 工具链 | 根目录 `rust-toolchain.toml` 固定 stable、edition 2024；工作区统一 MSRV 为 1.86 |
+| Rust stable 工具链 | 根目录 `rust-toolchain.toml` 固定 stable、edition 2024；工作区统一 MSRV 为 1.88 |
 | `libxkbcommon-dev` | 构建期：Smithay 的 `wayland_frontend` 在链接期需要 `-lxkbcommon` |
 | `xkb-data` | 运行期：合成器用它提供的 rules 文件编译确定性 keymap（`evdev` / `pc105` / `us`） |
 | EGL 与 Mesa DRI 驱动（如 `libegl1`、`libgl1-mesa-dri`） | 运行期：Smithay 的 `GlesRenderer` 通过 `dlopen` 加载 `libEGL.so.1`；无 GPU 时用 llvmpipe 软件渲染 |
@@ -77,6 +78,30 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
 `test-input` 不是默认 feature：默认构建中不包含该代码，`--all-features` 构建会把它编译进来但默认不启用。该套接字**不是 Wayland 全局**，除「能写入该套接字」外不授予任何权限，只为测试存在（[ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。
 
 终止信号 `SIGINT` / `SIGTERM` 会被转换为事件循环退出，**退出码 0**；日志走 `tracing`，默认级别 `info`，可用 `RUST_LOG` 调整。
+
+## 运行 L3 组件
+
+七个 L3 组件都是独立的二进制，配置从 `~/.config/inox/` 读取（缺失即用默认值，见[配置目录布局](../configuration/layout.md)）：
+
+```bash
+cargo run -p inox-shell          # 解析入口注册表并报告，然后退出
+cargo run -p inox-panel          # 面板：普通窗口
+cargo run -p inox-launcher       # 启动器：普通窗口
+cargo run -p inox-settings       # 设置：普通窗口（唯一会写配置的组件）
+cargo run -p inox-wallpaper      # 壁纸预览：普通窗口
+cargo run -p inox-notifications  # 通知的弹窗层：普通窗口
+cargo run -p inox-lock           # 锁屏：打印原因并以非零状态退出（尚未实现协议腿）
+```
+
+现在启动它们会看到**普通窗口**而不是桌面层：合成器还没有广告 `wlr-layer-shell-unstable-v1`，而第三方 `iced_layershell` 0.19.1 与 0.19.0 在当前依赖图下无法编译（`error[E0004]`，见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。组件在启动时会用 `warn!` 说明这件事，`placement.rs` 里的锚点、独占区与边距是**已经测试但尚未应用**的数据。
+
+要看它们真正画出来的样子，不必有合成器：渲染测试在无 GPU 的环境里把真实控件树画到位图并断言像素，设 `INOX_SCREENSHOT_DIR` 时还会把每个场景写成 PNG（CI 把它作为 artifact 收集）：
+
+```bash
+INOX_SCREENSHOT_DIR=/tmp/inox-shots cargo test -p inox-panel --test render
+```
+
+语言由 `config.toml` 的 `[locale]` 或环境变量（`LC_ALL` / `LC_MESSAGES` / `LANG`）决定，`en-US` 与 `zh-CN` 都有完整目录。
 
 ## 用真实客户端验证
 

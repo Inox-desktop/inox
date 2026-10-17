@@ -637,10 +637,10 @@ impl InoxState {
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
 
-        if let Some(id) = self.workspace.focused() {
-            if let Some(window) = self.windows.get(&id).cloned() {
-                self.space.raise_element(&window, true);
-            }
+        if let Some(id) = self.workspace.focused()
+            && let Some(window) = self.windows.get(&id).cloned()
+        {
+            self.space.raise_element(&window, true);
         }
     }
 

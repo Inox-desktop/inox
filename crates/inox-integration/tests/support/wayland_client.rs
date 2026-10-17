@@ -1075,10 +1075,10 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            if let Some(index) = state.offer_of(offer) {
-                state.offers[index].mimes.push(mime_type);
-            }
+        if let wl_data_offer::Event::Offer { mime_type } = event
+            && let Some(index) = state.offer_of(offer)
+        {
+            state.offers[index].mimes.push(mime_type);
         }
     }
 }

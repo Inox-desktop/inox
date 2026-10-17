@@ -44,7 +44,9 @@
 
 如果两端各自生成一份绑定，就会出现两份可能漂移的 `xml`/绑定代码，而且漂移不会在任一侧的 CI 中暴露 —— 在单一工作区内两份绑定会同时被编译，差异更容易被发现，但仍没有机制强制它们一致。把协议集中到 `inox-protocols` 后，协议成为**一个 L2 crate 的单一产物**，两端依赖的是同一份代码；破坏性变更因此有唯一入口与唯一的版本号，并由 ADR 0002 规则 4（协议只能从 `inox-protocols` 出口）固定下来。
 
-`inox-protocols` 当前仍是骨架，尚未定义任何协议绑定或 Inox 私有协议。
+`inox-protocols` 已实现，分两半：`standard` 把 Inox 目标的标准协议**再导出**（只再导出，不包裹、不重写上游绑定）—— 核心 `wl_*`、`xdg-shell`/`xdg-decoration`/`xdg-output`、`viewporter`、`linux-dmabuf`、`presentation-time`、`idle-inhibit`、`ext-idle-notify-v1` 与 `wlr-layer-shell`；`ipc` 用 `wayland-scanner` 在编译期从 `protocol/inox-ipc.xml` 生成私有协议的客户端与服务端绑定。
+
+`tests/standard_bindings.rs` 断言每个再导出的接口名与版本，并断言客户端/服务端两半都可到达；`tests/ipc_roundtrip.rs` 在真实连接上跑一次 `inox_ipc` 的版本查询与配置重载往返。注意「有绑定」不等于「有实现」：`wlr-layer-shell` 的绑定在这里，但**合成器尚未广告该全局**（见[组件清单](./components.md)与 ADR 0018）。
 
 ## Inox 私有协议（`inox-ipc`）
 

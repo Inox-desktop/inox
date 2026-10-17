@@ -242,10 +242,10 @@ impl XwaylandService {
     ///
     /// Returns [`ServiceError::Process`] when the child cannot be terminated.
     pub fn shutdown(&mut self) -> Result<ExitStatus, ServiceError> {
-        if let Phase::Stopped = self.phase {
-            if let Some(status) = self.last_status {
-                return Ok(status);
-            }
+        if let Phase::Stopped = self.phase
+            && let Some(status) = self.last_status
+        {
+            return Ok(status);
         }
 
         self.phase = Phase::Stopping;

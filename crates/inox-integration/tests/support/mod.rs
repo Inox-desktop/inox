@@ -923,10 +923,10 @@ impl Frame {
         let mut count = 0;
         for y in area.y.max(0)..(area.y + area.h).min(self.height as i32) {
             for x in area.x.max(0)..(area.x + area.w).min(self.width as i32) {
-                if let Some(pixel) = self.pixel(x, y) {
-                    if near(pixel, colour, tolerance) {
-                        count += 1;
-                    }
+                if let Some(pixel) = self.pixel(x, y)
+                    && near(pixel, colour, tolerance)
+                {
+                    count += 1;
                 }
             }
         }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c5a8eb305fcb8710b6f2dedfaf34e9aff8d62e80276bc49224604091eb01f17b # shrinks to ops = [Notify { call: 3, app: 0, urgency: 0, millis: 0, action: false }, Notify { call: 3, app: 0, urgency: 0, millis: 0, action: false }]

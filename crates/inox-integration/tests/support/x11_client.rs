@@ -512,11 +512,11 @@ impl X11Client {
         self.notify = None;
         let deadline = Instant::now() + timeout;
         let answer_property = loop {
-            if let Some((answered, property)) = self.notify {
-                if answered == target {
-                    self.notify = None;
-                    break property;
-                }
+            if let Some((answered, property)) = self.notify
+                && answered == target
+            {
+                self.notify = None;
+                break property;
             }
             assert!(
                 Instant::now() < deadline,
@@ -904,10 +904,11 @@ impl X11Client {
             .unwrap_or_else(|error| panic!("{}: INCR chunk failed: {error}", self.name))
             .check()
             .ok();
-        if exhausted && chunk.is_empty() {
-            if let Some(selection) = self.selection.as_mut() {
-                selection.deliveries.remove(index);
-            }
+        if exhausted
+            && chunk.is_empty()
+            && let Some(selection) = self.selection.as_mut()
+        {
+            selection.deliveries.remove(index);
         }
         self.flush();
     }

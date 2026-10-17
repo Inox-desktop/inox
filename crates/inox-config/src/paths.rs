@@ -20,13 +20,13 @@ pub const ROOT_FILE: &str = "config.toml";
 /// configuration directory.
 pub const COMPOSITOR_FILE: &str = "compositor.toml";
 
-/// Default name of the shell configuration file, relative to the configuration
-/// directory. The file's schema arrives with the shell milestone.
+/// Default name of the shell configuration file, relative to the
+/// configuration directory; modelled by [`crate::shell::ShellConfig`].
 pub const SHELL_FILE: &str = "shell.toml";
 
 /// Default name of the notification daemon configuration file, relative to the
-/// configuration directory. The file's schema arrives with the notification
-/// milestone.
+/// configuration directory; modelled by
+/// [`crate::notifications::NotificationsConfig`].
 pub const NOTIFICATIONS_FILE: &str = "notifications.toml";
 
 /// Directory holding the user themes, below the configuration directory.

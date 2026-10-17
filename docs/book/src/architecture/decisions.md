@@ -58,7 +58,9 @@ proposed ──► accepted ──► superseded
 | [0008](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0008-m2-input-windows-tiling.md) | M2 的输入事件、多窗口与平铺布局（在 headless 路径上扩展） | proposed |
 | [0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md) | 配置模型、设计令牌与热重载（L1 配置格式） | proposed |
 | [0016](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0016-single-repository-cargo-workspace.md) | 改为单一仓库（Cargo workspace）并取代多仓库策略 | accepted |
+| [0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) | M3 的 XWayland 宿主协议、剪贴板与拖放 | proposed |
+| [0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md) | L3 组件的独立性、共享 UI 边界与 layer-shell 宿主 | proposed |
 
 索引的权威版本是 `docs/adr/README.md`；本表若与之不一致，以它为准。
 
-配置模型与设计令牌的决策见 ADR 0009（状态 `proposed`）：它定义了 `config.toml`、`compositor.toml` 与 `themes/<name>/theme.toml` 的字段。由于尚未 `accepted`、也尚未在任何已发布组件中实现，本站在[配置](../configuration/layout.md)一节把它明确标注为提案状态。
+配置模型与设计令牌的决策见 ADR 0009（状态 `proposed`），应用与持久化的边界见 ADR 0014（同样 `proposed`）：它们定义了 `config.toml`、`compositor.toml`、`shell.toml`、`notifications.toml` 与 `themes/<name>/theme.toml` 的字段。这些字段模型**已实现并有测试**（`inox-config`），L3 组件已经通过它们读取配置；但决策本身尚未 `accepted`，合成器也尚未读取 `compositor.toml`，因此本站在[配置](../configuration/layout.md)一节逐页标注当前的实现状态，而不是把它们当作已发布行为。

@@ -411,7 +411,9 @@ fn a_wayland_selection_reaches_the_x11_client() {
         .request_clipboard_while("TARGETS", CASE_TIMEOUT, || wayland.poll(POLL_INTERVAL))
         .expect("the satellite must answer TARGETS");
     let targets: Vec<u32> = raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect();
     assert!(

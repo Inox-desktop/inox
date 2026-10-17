@@ -12,6 +12,15 @@ inputs:
       build time, so type-checking and release builds can skip it.
     required: false
     default: "false"
+  fonts:
+    description: >-
+      Also install a font package. The L3 shell components render their real
+      widget tree through cosmic-text in tests, and cosmic-text lays text out
+      from the fonts it finds on the system: on a runner with no font installed
+      a label renders as nothing and the pixel assertions in those tests would
+      be testing an empty frame. Only the crates that declare `iced` need it.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -37,6 +46,9 @@ runs:
         sudo apt-get install -y --no-install-recommends \
           libxkbcommon-dev xkb-data \
           libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
+        if [ "${{ inputs.fonts }}" = "true" ]; then
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+        fi
         if [ "${{ inputs.egl }}" = "true" ]; then
           # libegl1 is the GLVND loader and pulls Mesa's EGL vendor driver
           # (libegl-mesa0 -> libgbm1, libglapi-mesa, mesa-libgallium);

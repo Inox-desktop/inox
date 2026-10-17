@@ -1,6 +1,6 @@
 # 主题与设计令牌
 
-> **提案，尚未发布。** 本页的令牌集合与取值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）。当前没有任何组件读取主题文件：`inox-config` 仍是骨架，Iced 组件要到 M4 才出现。
+> **状态：模型与消费方都已落地，决策仍是提案。** 本页的令牌集合与取值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）。`inox-config` 已实现令牌类型、内置浅/深主题、主题文件解析与缺失主题的报错；L3 的六个界面组件**只消费令牌**（ADR 0018 记录了每个组件各自持有的一小段令牌 → Iced 主题映射，以及为什么它没有被抽成共享 crate）。
 
 主题由一个 `theme.toml` 定义，内容是**设计令牌**（design tokens）：颜色、排版、间距、圆角与动效时长。PRD §9.2 与根级 `AGENTS.md` §4 要求组件只消费令牌，**禁止在组件中硬编码颜色与尺寸**。
 

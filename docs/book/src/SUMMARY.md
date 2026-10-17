@@ -15,6 +15,8 @@
 
 - [配置目录布局](./configuration/layout.md)
 - [合成器配置](./configuration/compositor.md)
+- [面板、启动器与壁纸配置](./configuration/shell.md)
+- [通知配置](./configuration/notifications.md)
 - [主题与设计令牌](./configuration/theme.md)
 
 # 开发

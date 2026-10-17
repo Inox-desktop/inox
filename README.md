@@ -102,24 +102,24 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 全部组件都是本仓库 [`crates/`](./crates) 下同一个 Cargo workspace 的成员，依赖关系是工作区内的 **path 依赖**，版本由 `[workspace.package]` 统一给出。**层级成员的唯一事实来源是根 [`Cargo.toml`](./Cargo.toml) 的 `[workspace.metadata.inox.layers]`**，下表必须与它一致（由验收项 B04 断言）。
 
-| crate | 层级 | 路径 | 职责 | 发布物 |
-|-------|------|------|------|--------|
-| `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、工具函数 | crate |
-| `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate |
-| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate |
-| `inox-compositor` | L2 | `crates/inox-compositor` | Wayland 合成器，基于 Smithay | 二进制 `inox-compositor` |
-| `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 |
-| `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架，插件系统 | 二进制 `inox-shell` |
-| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` |
-| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` |
-| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` |
-| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` |
-| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` |
-| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` |
-| `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` |
-| `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` |
-| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` |
-| `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 |
+| crate | 层级 | 路径 | 职责 | 发布物 | 当前状态 |
+|-------|------|------|------|--------|----------|
+| `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、国际化、工具函数 | crate | 已实现 |
+| `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate | 已实现（含 `shell.toml`、`notifications.toml` 与会话语言） |
+| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现 |
+| `inox-compositor` | L2 | `crates/inox-compositor` | Wayland 合成器，基于 Smithay | 二进制 `inox-compositor` | 已实现（M1–M3，未读配置、无 layer-shell） |
+| `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现 |
+| `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架，插件系统 | 二进制 `inox-shell` | 部分实现 |
+| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现 |
+| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 部分实现 |
+| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现 |
+| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 部分实现 |
+| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（协议腿未实现） |
+| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现 |
+| `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` | 骨架 |
+| `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 骨架 |
+| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 骨架 |
+| `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 | 部分实现 |
 
 工作区之外还有两处非 crate 位置：`docs/book/`（用户与开发者文档站点，mdBook，无 `Cargo.toml`）与组织仓库 `.github`（组织级工作流与 ISSUE/PR 模板）。
 
@@ -153,6 +153,8 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 `inox-common` 随 M1 新增 `logging` 模块。上述组件此前以多仓库形式开发，并在组件仓库中打过 `v0.1.0` / `v0.2.0` / `v0.1.0` 的 tag；[ADR 0016](./docs/adr/0016-single-repository-cargo-workspace.md) 把这些仓库的源码合并进本工作区（工作区统一版本 `0.1.1`），组件仓库待归档；`inox-common` 的 `v0.2.0` 已重切为 `v0.1.1` 并退役。
 
 **M3**（[ADR 0017](./docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)，状态 `proposed`）在 Inox 自己的合成器上完成 X11/数据互通：合成器广告 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`，剪贴板的读取权**跟随键盘焦点**（`set_data_device_focus`），Wayland↔Wayland 拖放与 X11 内部拖放可用，每次渲染后发送 frame callback，`inox-xwayland` 的就绪判定改为真实的 X11 连接建立往返；E3 用例移入 `inox-integration`，以子进程方式驱动工作区构建的二进制，不新增依赖边。**跨 X11/Wayland 边界的拖放被上游阻塞**（`xwayland-satellite` v0.8.3 未实现 XDND），X02 的锁屏剪贴板断言与 `wlr-data-control` 推迟到 M5，`-listenfd` 按需激活仍不在范围内 —— 因此 M3 不是 X03 的完整通过。
+
+**M4 部分交付**（[ADR 0018](./docs/adr/0018-l3-component-architecture.md)，状态 `proposed`）：L3 的七个组件首次有了实现，`inox-config` 的 `shell.toml`、`notifications.toml` 与 `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1 加离屏渲染**：纯逻辑与不变量的单元/属性测试，加上用 iced 自己的运行时与 tiny-skia 渲染器在固定尺寸下绘制的**真实控件树**的像素与事件断言 —— 后者不需要合成器，也不需要 GPU。**E2/E3 未取得**，原因是三个硬前提缺失：`inox-compositor` 尚未广告 `zwlr_layer_shell_v1`，CI 没有支持 layer-shell 的宿主，`iced_layershell` 0.19.1 与 0.19.0 都无法编译（其 `iced_exdevtools` 对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。因此 W05、O02–O03、D01–D05 与 Q01–Q03 的宿主侧证据均未取得，M4 的 DoD 不成立：这些组件目前以普通窗口运行，layer-shell 放置策略只被建模和测试，未被应用。锁屏的协议腿另受 ADR 0015 要求的人类安全审查约束，通知的 D-Bus 服务按 PRD §13 属 M5。
 
 ---
 
