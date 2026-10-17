@@ -45,6 +45,7 @@ const KEY_LEFT_ALT: u32 = 56 + 8;
 const KEY_LEFT_META: u32 = 125 + 8;
 const KEY_TAB: u32 = 15 + 8;
 const KEY_Q: u32 = 16 + 8;
+const KEY_LEFT_SHIFT: u32 = 42 + 8;
 
 /// The client's application state. It only needs the registry dispatch, because
 /// the test never reads events after the initial roundtrip.
@@ -188,8 +189,45 @@ fn manages_client_windows_and_input() {
     );
     assert_eq!(state.focused_window(), Some(stack));
 
+    // Smithay hands the filter a release exactly as it does a press, so a binding
+    // that does not check the key state runs twice per chord: the focus would step
+    // to the next window and straight back to where it started.
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_TAB), KeyState::Released),
+        None
+    );
+    assert_eq!(
+        state.focused_window(),
+        Some(stack),
+        "releasing the bound key must not run the binding a second time"
+    );
+    state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Released);
+
+    // Alt+Shift+Tab walks the focus back. `Shift` moves `Tab` to its second level,
+    // which the seat reports as `ISO_Left_Tab` rather than `Tab` — so a binding that
+    // matched only `Tab` would leave this direction unreachable.
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_LEFT_SHIFT), KeyState::Pressed),
+        None
+    );
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Pressed),
+        None
+    );
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_TAB), KeyState::Pressed),
+        Some(inox_compositor::Action::FocusPrev)
+    );
+    assert_eq!(state.focused_window(), Some(master));
+
     state.inject_key(Keycode::new(KEY_TAB), KeyState::Released);
     state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Released);
+    state.inject_key(Keycode::new(KEY_LEFT_SHIFT), KeyState::Released);
+    assert_eq!(
+        state.focused_window(),
+        Some(master),
+        "releasing the chord must not move the focus again"
+    );
 
     // Super+Q asks the compositor to shut down cleanly.
     assert_eq!(
@@ -202,7 +240,11 @@ fn manages_client_windows_and_input() {
     );
     assert!(state.exit_requested());
 
-    state.inject_key(Keycode::new(KEY_Q), KeyState::Released);
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_Q), KeyState::Released),
+        None,
+        "the quit binding must only fire on the press"
+    );
     state.inject_key(Keycode::new(KEY_LEFT_META), KeyState::Released);
 
     // Release the client so it drops its protocol objects, then let it finish.

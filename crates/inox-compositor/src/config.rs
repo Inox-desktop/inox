@@ -4,6 +4,8 @@
 //! arguments into plain data, which keeps parsing unit-testable and lets the
 //! rest of the crate translate that data into Smithay state.
 
+use std::path::PathBuf;
+
 /// Default width of the headless output, in pixels.
 pub const DEFAULT_WIDTH: i32 = 1280;
 
@@ -71,6 +73,7 @@ OPTIONS:
     --refresh-rate <HZ>        Refresh rate of the headless output [default: 60]
     --socket <NAME>            Wayland socket name [default: auto-selected]
     --exit-after-frames <N>    Exit with status 0 after rendering N frames
+    --test-input <PATH>        Serve test commands on a unix socket (test-input builds only)
     -h, --help                 Print this help and exit
     -V, --version              Print the version and exit
 ";
@@ -92,6 +95,12 @@ pub struct CompositorConfig {
     pub socket_name: Option<String>,
     /// Number of frames to render before exiting, or `None` to run until signalled.
     pub exit_after_frames: Option<u64>,
+    /// Path of the test-input control socket, set only by `--test-input`.
+    ///
+    /// Populated exclusively in builds with the `test-input` feature, where
+    /// `crate::test_input` listens on it; the parser rejects the option in every other
+    /// build, so this stays `None` there.
+    pub test_input_path: Option<PathBuf>,
 }
 
 impl Default for CompositorConfig {
@@ -104,6 +113,7 @@ impl Default for CompositorConfig {
             refresh_hz: DEFAULT_REFRESH_HZ,
             socket_name: None,
             exit_after_frames: None,
+            test_input_path: None,
         }
     }
 }
@@ -147,6 +157,15 @@ pub enum ConfigError {
     MissingValue {
         /// The option that is missing its value.
         option: String,
+    },
+
+    /// `--test-input` was given to a binary built without the `test-input` feature.
+    #[error(
+        "--test-input {path} is unavailable: this binary was built without the `test-input` feature"
+    )]
+    TestInputUnsupported {
+        /// The socket path the rejected option carried.
+        path: String,
     },
 
     /// An option value could not be accepted.
@@ -213,6 +232,24 @@ where
             "--exit-after-frames" => {
                 let value = take_value(&option, inline, &mut args)?;
                 config.exit_after_frames = Some(parse_frame_budget(&value)?);
+            }
+            // The test-input channel only exists in builds that opted into the
+            // feature (see `crate::test_input`); a default build rejects the option
+            // instead of accepting and silently ignoring it. Both arms consume the
+            // value first so a missing one is still reported as such.
+            #[cfg(feature = "test-input")]
+            "--test-input" => {
+                let value = take_value(&option, inline, &mut args)?;
+                if value.is_empty() {
+                    return Err(invalid_value(&option, &value, "must not be empty"));
+                }
+                config.test_input_path = Some(PathBuf::from(value));
+            }
+            #[cfg(not(feature = "test-input"))]
+            "--test-input" => {
+                let value = take_value(&option, inline, &mut args)?;
+
+                return Err(ConfigError::TestInputUnsupported { path: value });
             }
             other if other.starts_with('-') => {
                 return Err(ConfigError::UnknownOption(other.to_owned()));
@@ -491,6 +528,7 @@ mod tests {
             "--refresh-rate",
             "--socket",
             "--exit-after-frames",
+            "--test-input",
         ] {
             assert_eq!(
                 parse_args(args(&[option])),
@@ -567,6 +605,46 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "test-input")]
+    #[test]
+    fn test_input_is_accepted_by_test_input_builds() {
+        let config = run_config(&["--test-input", "/run/inox/test-input.sock"]);
+
+        assert_eq!(
+            config.test_input_path.as_deref(),
+            Some(std::path::Path::new("/run/inox/test-input.sock"))
+        );
+        // Nothing else changes, so a test-input run stays the default headless run.
+        assert_eq!(config.backend, BackendKind::Auto);
+
+        // The inline spelling parses to the same value.
+        assert_eq!(
+            run_config(&["--test-input=/tmp/inox.sock"]).test_input_path,
+            Some(std::path::PathBuf::from("/tmp/inox.sock"))
+        );
+
+        assert!(matches!(
+            parse_args(args(&["--test-input", ""])),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[cfg(not(feature = "test-input"))]
+    #[test]
+    fn test_input_is_rejected_without_the_feature() {
+        for invocation in [
+            args(&["--test-input", "/tmp/inox.sock"]),
+            args(&["--test-input=/tmp/inox.sock"]),
+        ] {
+            assert_eq!(
+                parse_args(invocation),
+                Err(ConfigError::TestInputUnsupported {
+                    path: "/tmp/inox.sock".to_owned()
+                })
+            );
+        }
+    }
+
     #[test]
     fn help_text_mentions_every_option() {
         for option in [
@@ -576,6 +654,7 @@ mod tests {
             "--refresh-rate",
             "--socket",
             "--exit-after-frames",
+            "--test-input",
             "--help",
             "--version",
         ] {

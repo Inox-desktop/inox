@@ -5,8 +5,4 @@
 # so the root one has to cover it.
 /docs/book/book/
 
-# Local clones of the component repositories that ADR 0016 replaced with this
-# workspace. Kept ignored until those repositories are archived and the clones
-# are deleted.
-/repos/
 .commandcode/

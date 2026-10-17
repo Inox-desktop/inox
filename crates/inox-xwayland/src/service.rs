@@ -12,21 +12,25 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use crate::{
     config::ServiceConfig,
+    handshake,
     process::{ChildSupervisor, ProcessError, SatelliteProcess},
     x11::Display,
 };
 
 /// Readiness probe abstraction (unit-test seam).
 pub trait ReadinessProbe {
-    /// Whether Xwayland on `display` accepts X11 connections right now.
+    /// Whether `display` completes an X11 connection setup right now.
     fn is_ready(&self, display: Display) -> bool;
 }
 
-/// Probes readiness by connecting to the X11 UNIX socket.
+/// Probes readiness with a real X11 connection-setup round trip.
+///
+/// Acceptance item X01 requires the round trip: a socket that exists but never
+/// answers a setup request must not make the service ready.
 #[derive(Debug, Clone)]
 struct SocketProbe {
     dir: PathBuf,
@@ -40,8 +44,27 @@ impl SocketProbe {
 }
 
 impl ReadinessProbe for SocketProbe {
-    fn is_ready(&self, display: Display) -> bool {
-        display.is_ready_in(&self.dir)
+    // The parameter is spelled `x_display` because `tracing` expands `%display`
+    // in a scope where the identifier `display` resolves to
+    // `tracing::field::display`; the log fields keep their natural name.
+    fn is_ready(&self, x_display: Display) -> bool {
+        match x_display.setup_in(&self.dir, handshake::SETUP_TIMEOUT) {
+            Ok(setup) => {
+                info!(
+                    display = %x_display,
+                    vendor = setup.vendor(),
+                    protocol = ?setup.protocol_version(),
+                    "X11 connection setup completed"
+                );
+
+                true
+            }
+            Err(error) => {
+                debug!(display = %x_display, %error, "X11 connection setup did not complete");
+
+                false
+            }
+        }
     }
 }
 
@@ -50,7 +73,7 @@ impl ReadinessProbe for SocketProbe {
 pub enum Phase {
     /// The satellite is running and Xwayland is not known to be ready.
     Starting,
-    /// Xwayland accepts connections on the given display.
+    /// Xwayland completes an X11 connection setup on the given display.
     Ready(Display),
     /// A shutdown is in progress.
     Stopping,
@@ -63,7 +86,7 @@ pub enum Phase {
 pub enum Progress {
     /// The satellite is alive but Xwayland is not ready yet.
     Pending,
-    /// Xwayland accepts connections on the given display.
+    /// Xwayland completes an X11 connection setup on the given display.
     Ready(Display),
     /// The satellite exited on its own with the given status.
     Exited(ExitStatus),
@@ -181,9 +204,10 @@ impl XwaylandService {
 
         let display = self.config.display;
 
-        // Once ready, do not probe the socket again: a real Xwayland logs a
-        // connect/disconnect for every probe, and readiness cannot be
-        // un-learned here (the satellite exits when Xwayland goes away).
+        // Once ready, do not probe again: a real Xwayland logs a
+        // connect/disconnect for every probe, the probe itself is a full setup
+        // round trip, and readiness cannot be un-learned here (the satellite
+        // exits when Xwayland goes away).
         if let Phase::Ready(ready) = self.phase {
             return Ok(Progress::Ready(ready));
         }

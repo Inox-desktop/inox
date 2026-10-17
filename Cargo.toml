@@ -41,6 +41,7 @@ categories = ["desktop"]
 # The explicit `version` keeps `deny.toml`'s `[bans] wildcards = "deny"`
 # satisfied: a path dependency without one carries an implicit `*`.
 inox-common = { path = "crates/inox-common", version = "0.1" }
+inox-protocols = { path = "crates/inox-protocols", version = "0.1" }
 
 # --- third-party: one version for the whole graph -------------------------
 anyhow = "1"
@@ -79,6 +80,12 @@ smithay = { version = "0.7.0", default-features = false, features = [
 proptest = "1"
 tempfile = "3"
 serde_json = "1"
+# The M3 end-to-end tests in `inox-integration` drive a real X11 client
+# (`tests/support/x11_client.rs`). x11rb is the pure-Rust X11 client library
+# (MIT/Apache-2.0), so the tests need no external X11 command line tools for
+# their assertions. Its default feature set drives the `RustConnection`, which
+# links no libxcb.
+x11rb = "0.13"
 
 [workspace.lints.rust]
 # Root AGENTS.md §3.2. `inox-compositor` and `inox-xwayland` are the two
@@ -127,8 +134,14 @@ l3_dependencies_on_compositor = ["inox-wallpaper"]
 # amending rule 1 for intra-layer ordering, or by restating the leaf rule —
 # needs an ADR. Removing the entry turns CI red.
 #
-# The same list is where the shell family's ambiguity goes: PRD §3.1 lists
-# `inox-panel` and friends as depending on `inox-shell` (L3 -> L3), which rule 1
-# also forbids. Nothing does yet, so nothing is listed; adding those edges needs
-# an ADR and an entry here.
-same_layer_exceptions = [["inox-config", "inox-common"]]
+# `inox-compositor -> inox-protocols` (L2 -> L2) is the second entry, and it is
+# no longer hypothetical: the compositor consumes the protocol bindings
+# (`wl_*` plus the private `inox-ipc`) as of its merged "consume inox-protocols"
+# work. Rule 1 forbids it as written, so it is recorded here rather than left to
+# the reader. Settling rule 1 for intra-layer ordering is now blocking, not
+# optional.
+#
+# The shell family is the third place this will bite: PRD §3.1 lists
+# `inox-panel` and friends as depending on `inox-shell` (L3 -> L3). Nothing does
+# yet, so nothing is listed; adding those edges needs an ADR and an entry here.
+same_layer_exceptions = [["inox-config", "inox-common"], ["inox-compositor", "inox-protocols"]]

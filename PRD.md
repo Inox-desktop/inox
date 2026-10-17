@@ -87,7 +87,10 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 - `inox-common` 不得依赖任何其他 Inox crate（叶子节点）。
 - `inox-compositor` 与 `inox-shell` 之间**不通过 Rust 依赖**耦合，而是通过 Wayland 协议 / IPC 通信，保证可独立运行与测试。
 - 以上规则不再只靠约定：层级成员登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`，由 `crates/inox-integration/tests/layering.rs`（验收项 B04）在 CI 中读取真实依赖图逐条断言，失败会指明具体的边与被违反的规则。**新增 crate 未登记层级会直接失败**，因此不存在绕过规则的路径。
-- 规则例外同样是登记在 `[workspace.metadata.inox.rules]` 中的数据，当前有两处：(1) L1 内部的 `inox-config → inox-common`（四层层模型无法表达层内顺序，该歧义由 ADR 索引登记）；(2) ADR 0002 规则 6 允许的 L3→合成器单点。删除例外条目即收紧规则，收紧需要相应 ADR。
+- 规则例外同样登记在 `[workspace.metadata.inox.rules]` 中，当前有两条：
+  1. `same_layer_exceptions`：`inox-config → inox-common`（L1 内部顺序）与 `inox-compositor → inox-protocols`（L2 内部顺序）。**四层模型无法表达层内顺序**：这两条边都是健康的实现方向，但 ADR 0002 规则 1 的字面表述禁止同层依赖，而规则 2（`inox-common` 为叶子）与规则 4（`inox-protocols` 是协议唯一出口）又要求它们存在。该歧义由 ADR 索引登记，`inox-compositor → inox-protocols` 已随合成器消费协议绑定而**落地**，因此规则 1 的裁决已是阻塞项而非可选项。
+  2. `l3_dependencies_on_compositor`：ADR 0002 规则 6 允许的 L3→合成器单点（当前只有 `inox-wallpaper`）。
+  删除例外条目即收紧规则，收紧需要相应 ADR。
 
 ### 2.2 运行时数据流与 IPC
 
@@ -117,11 +120,11 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `wl_shm` | 必须 | 共享内存缓冲（软件渲染回退） |
 | `wl_seat` / `wl_pointer` / `wl_keyboard` | 必须 | 输入设备 |
 | `wl_output` | 必须 | 输出设备 |
-| `wl_data_device` | 必须 | 剪贴板与拖放 |
+| `wl_data_device`（`wl_data_device_manager` v3） | M3 必须 | 剪贴板与拖放；读取权跟随键盘焦点（`set_data_device_focus`），见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xdg-shell` | 必须 | 标准窗口 |
-| `xdg-decoration` | 必须 | 服务端/客户端装饰协商 |
+| `xdg-decoration` | 必须 | 服务端/客户端装饰协商；M3 不广告，X11 窗口标题栏由 satellite 自绘（[ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
 | `wlr-layer-shell-unstable-v1` | 必须 | 面板/壁纸等普通桌面层；安全锁屏另用 session-lock |
-| `viewporter` | 必须 | 缩放与裁剪 |
+| `viewporter`（`wp_viewporter`） | M3 必须 | 缩放与裁剪；`xwayland-satellite` 的宿主硬前提（缺失即启动失败），见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `linux-dmabuf` | 必须 | GPU 缓冲零拷贝 |
 | `presentation-time` | 必须 | 帧同步反馈 |
 | `idle-inhibit` / `ext-idle-notify-v1` | 必须 | 空闲管理 |
@@ -130,11 +133,12 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `wlr-output-management` | 计划 | 显示器管理 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 |
 | `ext-session-lock-v1` | M5 必须 | 安全锁屏，不能以 layer-shell 遮罩替代；见 ADR 0015 |
-| `gtk-primary-selection` | 计划 | X11 主选区兼容 |
+| `zwp_primary_selection_device_manager_v1`（本表此前记作 `gtk-primary-selection`） | M3 必须 | 主选区（X11 中键粘贴兼容）；与 `wl_data_device_manager` 一并广告，见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xwayland-shell` | 计划 | XWayland 集成 |
 | `wlr-virtual-keyboard` / `input-method-v2` | 仅规划 | 输入法（1.0 之后） |
 
 > 新增协议必须先在 `inox-protocols` 定义或引用，并说明安全与生命周期约束；破坏性变更需 ADR。
+> `wlr-data-control`（全局、无焦点限制的剪贴板读取路径，供剪贴板管理器使用）不在 M3 范围内：开放它需要按客户端凭据做授权过滤，因此与剪贴板管理器一并推迟到 M5（[ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。
 
 本表是目标范围，**不是已实现声明**。每个受支持版本须另列：XML/接口版本、绑定来源、服务端广告版本、行为覆盖、权限规则、客户端互操作与验收报告。只有绑定或广告全局不能标记为“支持”；未验证能力保持 planned/experimental。输出管理、捕获、输入注入、私有控制与锁屏须由服务端授权，见 [ADR 0015](docs/adr/0015-session-lock-and-failure-boundaries.md)。layer-shell 用于面板/壁纸等普通桌面层，不提供安全锁屏保证。
 
@@ -499,6 +503,8 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 | M4 | Shell 用户任务、双屏与持久化 | L3 组件、`inox-compositor`、`inox-config` | W05、O02–O03、D01–D05、C01–C03、Q01–Q03：任务状态/焦点、设置回执/回退、混合 DPI/热插拔、真实语义与双语 |
 | M5 | 安全会话与指定设备上日常可用 | `inox-session`, `inox-idle`, `inox-lock`, `inox-notifications` 等 | D06、S01–S05、H02；P05 开始：监督限流、认证/锁屏故障不解锁、挂起/恢复、权限负向测试 |
 | M6 | 指定支持矩阵的发布候选 | `inox-integration` 与全部 crate | C04、P01–P05、H01–H03、L01–L03：迁移/回退、性能与长稳原始数据、两种渠道安装生命周期、无 P0/P1、人类批准 |
+
+> M3 的 X11↔Wayland 拖放腿**上游阻塞**：`xwayland-satellite` v0.8.3 未实现 XDND，因此上表 M3 行的 X03 只交付 **Wayland↔Wayland 拖放**与 **X11 内部拖放**，跨边界那条腿的 E3 用例延期——M3 不得被读作 X03 完整通过。X02 中「锁屏时读剪贴板」的断言因 `ext-session-lock-v1` 与 `inox-lock` 尚不存在而移至 M5 的 S02（延期，不是通过）。两条决策与依据见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)。
 
 ---
 

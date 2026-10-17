@@ -19,5 +19,23 @@ tracing-subscriber.workspace = true
 # `tests/layering.rs` implements acceptance B04 by reading `cargo metadata`.
 serde_json.workspace = true
 
+# --- M3 end-to-end tests (acceptance X01-X03) ------------------------------
+# These drive the workspace binaries as child processes, so this crate still
+# depends on no Inox crate (ADR 0017 decision 8, enforced by `tests/layering.rs`).
+# `tempfile` gives every session its private 0700 `XDG_RUNTIME_DIR`.
+tempfile.workspace = true
+# Child supervision and the bounded waits: `rustix` signals process groups, and
+# `event` gives `poll(2)` so every Wayland client wait has a deadline.
+rustix = { workspace = true, features = ["event"] }
+# Real Wayland clients (one connection per client, several per test process).
+wayland-client.workspace = true
+# `wp_viewporter` (stable) is what `xwayland-satellite` requires from the host;
+# `wp_primary_selection` (unstable) is the protocol the bridge uses for the X11
+# primary selection. Both are asserted on the wire, not assumed.
+wayland-protocols = { workspace = true, features = ["client", "unstable"] }
+# Real X11 clients over the `RustConnection`, so no `xclip`/`xdotool` process is
+# needed for an assertion (and XDND/INCR are driven explicitly).
+x11rb.workspace = true
+
 [lints]
 workspace = true

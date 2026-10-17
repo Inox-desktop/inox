@@ -6,6 +6,8 @@
 
 基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
 
+广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor`/`wl_subcompositor`、`wl_shm`、`wl_seat`、`wl_output`+`zxdg_output_manager_v1`、`xdg_wm_base`、私有 `inox_ipc`，以及 M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`）。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+
 ## crate 特有约束
 
 - **`unsafe` 例外（根级 §3.2）**：本 crate 的 `Cargo.toml` 使用 `[lints.rust] unsafe_code = "deny"`（而非 `forbid`）。注意它**不能**写 `lints.workspace = true`：cargo 拒绝在继承工作区 lint 的同时覆盖其中一项，因此本 crate 逐字重述了 `[workspace.lints]` 再改写 `unsafe_code`；**改根 `Cargo.toml` 的 lint 集时必须同步这个副本**（没有机械检查）。`#[allow(unsafe_code)]` **当前**只出现在下面两处（与 M2 一致）：
@@ -16,16 +18,18 @@
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`；面向 CLI 的输出（如 `--help`）用显式 stdout 写入。
 - MSRV：工作区统一为 `[workspace.package] rust-version = "1.86"`（`smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86），本 crate 通过 `rust-version.workspace = true` 继承。工作区内不再存在两个 MSRV。
-- 工作区内依赖：`inox-common` 是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `inox-common.workspace = true` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。新增依赖前先确认方向合法：本 crate 属 L2，只能依赖 L1。
+- 工作区内依赖：`inox-common` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源（ADR 0002 规则 4）。
+  - **注意 `inox-compositor -> inox-protocols` 是 L2 → L2 的同层边**：ADR 0002 规则 1 禁止同层依赖，而协议集中到 `inox-protocols`（规则 4）又要求它。该边已登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`，规则 1 的裁决（层内顺序）尚未完成。
+- **`test-input` feature（默认关闭）**：`--test-input <PATH>` 只在启用该 feature 的构建里存在，用于让端到端测试驱动**正在运行的合成器进程**（`key`/`motion`/`button`/`dump-frame`，见 `src/test_input.rs`）。约束：默认构建必须直接以 `ConfigError` 拒绝该选项；该通道**不得**成为 Wayland 全局、不得自动启用、不得暴露除「向调用者指定 socket 写命令」以外的能力。修改它时必须同步 `README.md`、本文件与模块文档。
 - **后端开关（ADR 0010）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 失败时回落 headless 并 `warn!`；`drm` 失败直接 `RunError::BackendUnavailable`。CI 的集成测试必须显式或默认地走 headless 分支（runner 无 DRM master）。
 
 ## 主要依赖
 
-`smithay`（`default-features = false`，启用 `desktop` + `wayland_frontend` + `renderer_gl` + `backend_drm` + `backend_gbm` + `backend_libinput` + `backend_udev` + `backend_session` + `backend_session_libseat`，**不启用** `backend_x11` / `backend_winit` / `backend_vulkan` / `xwayland`，见 ADR 0010 §2）、`calloop`（`signals`）、`anyhow`、`thiserror`、`tracing`、`inox-common`（工作区内 path 依赖）。
+`smithay`（`default-features = false`，启用 `desktop` + `wayland_frontend` + `renderer_gl` + `backend_drm` + `backend_gbm` + `backend_libinput` + `backend_udev` + `backend_session` + `backend_session_libseat`，**不启用** `backend_x11` / `backend_winit` / `backend_vulkan` / `xwayland`，见 ADR 0010 §2）、`calloop`（`signals`）、`anyhow`、`thiserror`、`tracing`、`inox-common` 与 `inox-protocols`（均为工作区内 path 依赖）。
 
 **系统库依赖**：`libseat` / `libdrm` / `gbm` / `libinput` / `libudev`（编译时需 `-dev` 包，已在 CI 安装）；`libxkbcommon` + `xkb-data` 从 M1 就在。`libudev` 为 LGPL-2.1+（glibc 动态链接例外），属 Smithay 生态常规依赖。
 
-**测试依赖**（不进入发布产物）：`proptest`（平铺布局与窗口簿记的算法验证）、`wayland-client` / `wayland-protocols`（集成测试驱动真实客户端）。
+**测试依赖**（不进入发布产物）：`proptest`（平铺布局与窗口簿记的算法验证）、`wayland-client` / `wayland-protocols`（集成测试驱动真实客户端）、`tempfile`（拖放测试给客户端一个真实 `wl_shm` 缓冲：Smithay 只有在表面提交过缓冲后才有可供命中测试的几何）。
 
 ## 命令
 
@@ -36,6 +40,7 @@
 | 目的 | 命令 |
 |------|------|
 | 本 crate 测试 | `cargo test -p inox-compositor --all-features` |
+| 本 crate 测试（默认 feature） | `cargo test -p inox-compositor` |
 | 本 crate 构建 | `cargo build -p inox-compositor --release --all-features` |
 | 本 crate 文档 | `cargo doc -p inox-compositor --no-deps --all-features` |
 | 全工作区测试 | `cargo test --workspace --all-features` |
@@ -54,6 +59,11 @@
 - 键盘解析依赖 XKB rules 文件（`xkb-data`），CI 必须安装该系统包。
 - 一个测试进程只能持有一个 EGL display，**每个测试二进制中只保留一个创建 EGL 的测试**。
 - 进程级测试必须自备私有 `XDG_RUNTIME_DIR`（Wayland 套接字绑定需要绝对路径的运行时目录），并给子进程设定超时，避免 CI 挂死。
+- **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
+- **剪贴板**（`tests/clipboard.rs`）：进程内、真实客户端——持焦点的客户端设置选择，随后获得焦点的客户端拿到 offer 并经 fd 读回字节（逐字节相等）；未获焦点的客户端**不得**被投递选择（这是 M3 的访问控制属性）。
+- **拖放**（`tests/drag_and_drop.rs`）：进程内、真实客户端——注入指针按下取得隐式抓取序号，客户端 A 发起拖放（两种 mime），指针移到 B 上后 B 收到 enter 与 mime，drop 后传输字节与源一致；另覆盖「指针移出所有表面后取消」（目标恰好收到一次 leave、不再收到 drop）与「拖放途中目标窗口被销毁」（合成器不崩、会话仍可用）。
+- 单线程驱动 + 截止时间：合成器与全部客户端在同一线程交替「收发」与「服务 display」，客户端套接字设为非阻塞，因此**不需要 sleep 排序、也不会有死锁线程**；每个等待都有超时。
+- `test-input` 的解析器与 PPM 编码器是纯函数，必须有单元测试（合法/非法/未知动词/越界数字/尾随空白/CRLF）。
 
 ## 目录结构
 
@@ -67,14 +77,19 @@ src/
   workspace.rs    窗口簿记与布局顺序（纯逻辑 + proptest）
   runtime.rs      calloop 事件循环：后端探测、套接字、信号、帧定时器（headless）
   render.rs       EGL surfaceless + GLES 离屏渲染（unsafe 例外之一）
-  state.rs        Smithay 合成器状态、seat/xdg-shell/shm handler、窗口管理与输入注入
+  state.rs        Smithay 合成器状态、seat/xdg-shell/shm/viewporter/selection handler、窗口管理与输入注入
+  test_input.rs   仅测试的控制通道（`--test-input`，`test-input` feature 默认关闭）
   backend/
     mod.rs        后端入口与说明
     drm.rs        M2.5 真实 DRM/KMS 脚手架（libseat 会话 + card 探测，present 路径待 M3a）
 tests/
   headless_render.rs     创建输出并渲染一帧（进程内）
+  ipc_global.rs          进程级：广告 inox_ipc 全局并应答 get_version
   signal_shutdown.rs     进程级：终止信号与帧预算都须以退出码 0 结束
   window_management.rs   真实客户端创建 ≥2 窗口，断言平铺与输入（进程内）
+  protocol_surface.rs    进程级：M3 全局的接口与版本可绑定；未启用 feature 时拒绝 --test-input
+  clipboard.rs           进程内真实客户端：只有焦点客户端能读到剪贴板
+  drag_and_drop.rs       进程内真实客户端：拖放传输、取消、目标中途销毁
 ```
 
 工作区级文件（`Cargo.toml`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`LICENSE`、CI 工作流）在仓库根目录，**各 crate 不再各自保留一份**。

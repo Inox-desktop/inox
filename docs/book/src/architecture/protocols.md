@@ -12,11 +12,11 @@
 | `wl_shm` | 必须 | 共享内存缓冲（软件渲染回退） | 已支持 |
 | `wl_seat` / `wl_pointer` / `wl_keyboard` | 必须 | 输入设备 | 已支持（`wl_seat`，事件经进程内注入验证） |
 | `wl_output` | 必须 | 输出设备 | 已支持（headless 逻辑输出） |
-| `wl_data_device` | 必须 | 剪贴板与拖放 | 尚未实现 |
+| `wl_data_device`（`wl_data_device_manager` v3） | 必须 | 剪贴板与拖放；读取权跟随键盘焦点 | 已支持（M3；Smithay `wayland::selection`） |
 | `xdg-shell` | 必须 | 标准窗口 | 已支持（toplevel 作为窗口） |
-| `xdg-decoration` | 必须 | 服务端/客户端装饰协商 | 尚未实现 |
+| `xdg-decoration` | 必须 | 服务端/客户端装饰协商；M3 不广告，X11 窗口标题栏由 satellite 自绘 | 尚未实现 |
 | `wlr-layer-shell-unstable-v1` | 必须 | 面板/壁纸/锁屏层 | 尚未实现 |
-| `viewporter` | 必须 | 缩放与裁剪 | 尚未实现 |
+| `viewporter`（`wp_viewporter`） | 必须 | 缩放与裁剪；`xwayland-satellite` 的宿主硬前提（缺失即启动失败） | 已支持（M3；Smithay `wayland::viewporter`） |
 | `linux-dmabuf` | 必须 | GPU 缓冲零拷贝 | 尚未实现 |
 | `presentation-time` | 必须 | 帧同步反馈 | 尚未实现 |
 | `idle-inhibit` / `ext-idle-notify-v1` | 必须 | 空闲管理 | 尚未实现 |
@@ -25,11 +25,13 @@
 | `wlr-output-management` | 计划 | 显示器管理 | 尚未实现 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 | 尚未实现 |
 | `ext-session-lock-v1` | 计划 | 锁屏 | 尚未实现 |
-| `gtk-primary-selection` | 计划 | X11 主选区兼容 | 尚未实现 |
+| `zwp_primary_selection_device_manager_v1` | 必须 | 主选区（X11 中键粘贴兼容） | 已支持（M3；与 `wl_data_device_manager` 一并广告） |
 | `xwayland-shell` | 计划 | XWayland 集成 | 尚未实现 |
 | `wlr-virtual-keyboard` / `input-method-v2` | 仅规划 | 输入法（1.0 之后） | 尚未实现 |
 
-「当前状态」依据 `inox-compositor` 的 `main` 分支：它在 headless 路径上向客户端广告的全局为 `wl_compositor` 与 `wl_subcompositor`（由 Smithay `CompositorState` 创建）、`wl_shm`、`wl_seat`、`wl_output` 与 `xdg_wm_base`。其余行在代码中没有任何对应实现。
+「当前状态」依据本仓库 `crates/inox-compositor/` 的实现：它在 headless 路径上向客户端广告的全局为 `wl_compositor` / `wl_subcompositor`（Smithay `CompositorState`）、`wl_shm`、`wl_seat`、`wl_output` 与 `xdg_wm_base`；M3 新增 `wp_viewporter`（Smithay `wayland::viewporter`）、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`（后两者来自 Smithay `wayland::selection`），随本分支合入，决策见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)（状态仍为 `proposed`）。其余行在代码中没有任何对应实现。
+
+剪贴板与拖放的读取权**跟随键盘焦点**：只有焦点客户端能读取或设置选区，不需要任何特权接口。因此需要全局、无焦点读取路径的剪贴板管理器（`wlr-data-control`）**不在 M3 范围内**——开放它必须先给出按客户端凭据的授权过滤，推迟到 M5；跨 X11/Wayland 边界的拖放则被上游阻塞（`xwayland-satellite` v0.8.3 未实现 XDND），M3 交付的是 Wayland↔Wayland 拖放与 X11 内部拖放。两条都在 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) 中记录。
 
 ## 为什么新协议必须先落在 `inox-protocols`
 

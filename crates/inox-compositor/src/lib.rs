@@ -24,6 +24,8 @@
 //! - [`layout`] — the pure master/stack tiling geometry.
 //! - [`workspace`] — the pure window bookkeeping and layout order.
 //! - [`render`] — the EGL/GLES render target and one of the crate's `unsafe` sites.
+//! - `test_input` — the test-only control channel behind `--test-input`, present only in
+//!   builds with the `test-input` feature (off by default).
 //! - [`runtime`] — the calloop event loop: backend probe, Wayland socket, frame timer, signals.
 //! - [`state`] — Smithay compositor state and its protocol handlers.
 
@@ -34,6 +36,8 @@ pub mod layout;
 pub mod render;
 pub mod runtime;
 pub mod state;
+#[cfg(feature = "test-input")]
+pub mod test_input;
 pub mod workspace;
 
 pub use backend::{BackendError, DrmBackend};

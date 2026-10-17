@@ -141,14 +141,18 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | **M1** | Headless 渲染/生命周期 | 输出与像素断言、失败清理、信号退出；不代表真机 |
 | **M2** | 窗口/输入语义 | 真实客户端生命周期、popup/焦点、布局边界、坏客户端隔离 |
 | **M2.5** | 真实设备闭环 | 后端 CI 覆盖 + 人类真机、可见指针、VT/设备恢复、硬件建档 |
-| **M3** | X11/剪贴板/拖放 | Inox 会话真实互通、MIME/取消/异常退出 |
+| **M3** | X11/剪贴板/拖放 | Inox 会话真实互通、MIME/取消/异常退出；跨 X11/Wayland 边界的拖放上游阻塞（[ADR 0017](./docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
 | **M4** | Shell 任务/双屏/配置 | 任务/焦点恢复、热插拔/混合 DPI、配置应用/回退、双语/实际语义 |
 | **M5** | 安全会话与日常可用 | 锁屏/认证/挂起故障、权限拒绝、进程监督与稳定性开始验收 |
 | **M6** | 发布候选 | 性能/长稳原始数据、支持矩阵、升级/回退、两种分发渠道与人类批准 |
 
 以下“已完成”仅保留历史标准下的进展；新标准的差距与阻塞见 [ADR 复核清单](./docs/adr/README.md#既有提案的复核与实施阻塞)，本次未追认通过。
 
-当前状态：**M0、M1、M2 已完成**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main` 且 CI 全绿，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）；协议绑定集中于 `inox-protocols`（标准 `wl_*` 再导出 + 私有 `inox-ipc`，见 [ADR 0006](./docs/adr/0006-protocol-strategy.md)，状态 `accepted`），合成器以其为唯一协议来源。M2 在同一 headless 路径上扩展 `inox-compositor`：经 `wl_seat` 处理键盘/指针事件、以 `xdg-shell` toplevel 管理 ≥2 个窗口、按 master/stack 平铺布局（`proptest` 验证），决策见 [ADR 0008](./docs/adr/0008-m2-input-windows-tiling.md)；真实输入设备（libinput/udev）与 DRM/KMS 真实输出仍待后续里程碑。同期 `inox-xwayland` 实现 PRD M3 的 XWayland 侧：以**监督外部 `xwayland-satellite` 进程**（运行时系统依赖）的方式集成无根 XWayland，不链接其 crate，决策见 [ADR 0007](./docs/adr/0007-xwayland-satellite-integration.md)；其端到端验证在 headless 第三方合成器（weston）上进行，剪贴板/拖放与 `-listenfd` 按需激活仍待后续里程碑。`inox-common` 随 M1 新增 `logging` 模块。上述组件此前以多仓库形式开发，并在组件仓库中打过 `v0.1.0` / `v0.2.0` / `v0.1.0` 的 tag；[ADR 0016](./docs/adr/0016-single-repository-cargo-workspace.md) 把这些仓库的源码合并进本工作区（工作区统一版本 `0.1.1`），组件仓库待归档；`inox-common` 的 `v0.2.0` 已重切为 `v0.1.1` 并退役。
+当前状态：**M0、M1、M2 已完成，M3 已实现（X03 仅部分交付）**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main` 且 CI 全绿，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）；协议绑定集中于 `inox-protocols`（标准 `wl_*` 再导出 + 私有 `inox-ipc`，见 [ADR 0006](./docs/adr/0006-protocol-strategy.md)，状态 `accepted`），合成器以其为唯一协议来源。M2 在同一 headless 路径上扩展 `inox-compositor`：经 `wl_seat` 处理键盘/指针事件、以 `xdg-shell` toplevel 管理 ≥2 个窗口、按 master/stack 平铺布局（`proptest` 验证），决策见 [ADR 0008](./docs/adr/0008-m2-input-windows-tiling.md)；真实输入设备（libinput/udev）与 DRM/KMS 真实输出仍待后续里程碑。同期 `inox-xwayland` 实现 PRD M3 的 XWayland 侧：以**监督外部 `xwayland-satellite` 进程**（运行时系统依赖）的方式集成无根 XWayland，不链接其 crate，决策见 [ADR 0007](./docs/adr/0007-xwayland-satellite-integration.md)；其 M1 范围的端到端验证在 headless 第三方合成器（weston）上进行，保留为宿主无关的 E2 检查。
+
+`inox-common` 随 M1 新增 `logging` 模块。上述组件此前以多仓库形式开发，并在组件仓库中打过 `v0.1.0` / `v0.2.0` / `v0.1.0` 的 tag；[ADR 0016](./docs/adr/0016-single-repository-cargo-workspace.md) 把这些仓库的源码合并进本工作区（工作区统一版本 `0.1.1`），组件仓库待归档；`inox-common` 的 `v0.2.0` 已重切为 `v0.1.1` 并退役。
+
+**M3**（[ADR 0017](./docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)，状态 `proposed`）在 Inox 自己的合成器上完成 X11/数据互通：合成器广告 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`，剪贴板的读取权**跟随键盘焦点**（`set_data_device_focus`），Wayland↔Wayland 拖放与 X11 内部拖放可用，每次渲染后发送 frame callback，`inox-xwayland` 的就绪判定改为真实的 X11 连接建立往返；E3 用例移入 `inox-integration`，以子进程方式驱动工作区构建的二进制，不新增依赖边。**跨 X11/Wayland 边界的拖放被上游阻塞**（`xwayland-satellite` v0.8.3 未实现 XDND），X02 的锁屏剪贴板断言与 `wlr-data-control` 推迟到 M5，`-listenfd` 按需激活仍不在范围内 —— 因此 M3 不是 X03 的完整通过。
 
 ---
 

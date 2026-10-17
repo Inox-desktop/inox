@@ -5,7 +5,14 @@
 //! layer that turns a key press into a compositor [`Action`], which keeps key
 //! bindings independent of the event loop and unit testable.
 
-use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
+use std::collections::HashSet;
+
+use smithay::{
+    // Smithay keeps `KeyState` next to the backend events it comes from; the
+    // keyboard module imports it from there too.
+    backend::input::KeyState,
+    input::keyboard::{Keycode, Keysym, ModifiersState, keysyms},
+};
 
 /// A compositor action triggered by a key binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +32,7 @@ pub enum Action {
 /// different key symbols. Returns `None` when the key is not bound, in which
 /// case the event is forwarded to the focused client unchanged.
 pub fn action_for_key(sym: Keysym, modifiers: &ModifiersState) -> Option<Action> {
-    if modifiers.alt && sym == Keysym::new(keysyms::KEY_Tab) {
+    if modifiers.alt && is_tab(sym) {
         return Some(if modifiers.shift {
             Action::FocusPrev
         } else {
@@ -40,12 +47,71 @@ pub fn action_for_key(sym: Keysym, modifiers: &ModifiersState) -> Option<Action>
     None
 }
 
+/// Whether `sym` is `Tab` at either of its levels.
+///
+/// `Shift` selects a key's second level, and the `evdev` keymaps give `Tab`'s second
+/// level a symbol of its own: `ISO_Left_Tab`. Matching `KEY_Tab` alone would leave
+/// `Alt+Shift+Tab` — and with it [`Action::FocusPrev`] — unreachable.
+fn is_tab(sym: Keysym) -> bool {
+    sym == Keysym::new(keysyms::KEY_Tab) || sym == Keysym::new(keysyms::KEY_ISO_Left_Tab)
+}
+
+/// Remembers which key presses this compositor kept from the client, so that every
+/// release is answered the way its press was.
+///
+/// The seat hands the key filter a release exactly as it does a press, and it resolves
+/// the binding from the modifiers of *that moment*. Deciding each half on its own gets
+/// it wrong both ways: letting the release run the binding too fires it twice, and
+/// letting the modifier state decide the release can swallow one half of a chord.
+/// Press `Tab` with nothing held and it goes to the client; hold `Alt` and release
+/// `Tab` and the release now matches `Alt+Tab`, so the client would be left holding a
+/// key down — which is also what makes Smithay report that phantom key to whichever
+/// client takes the focus next.
+#[derive(Debug, Default)]
+pub struct SwallowedPresses {
+    keys: HashSet<Keycode>,
+}
+
+impl SwallowedPresses {
+    /// Record one key event and decide whether the focused client may not see it.
+    ///
+    /// `bound` is whether the compositor's own binding matched the event. It only
+    /// matters for a press: the press is what decides, and this type carries that
+    /// decision to the release.
+    pub fn swallow(&mut self, keycode: Keycode, state: KeyState, bound: bool) -> bool {
+        match state {
+            KeyState::Pressed => {
+                if bound {
+                    self.keys.insert(keycode);
+                } else {
+                    // The previous press of this key may still be recorded if its
+                    // release never came; this press goes to the client, so its
+                    // release must too.
+                    self.keys.remove(&keycode);
+                }
+                bound
+            }
+            KeyState::Released => self.keys.remove(&keycode),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tab() -> Keysym {
         Keysym::new(keysyms::KEY_Tab)
+    }
+
+    /// The symbol the seat reports for `Shift`+`Tab`, which is `Tab`'s second level.
+    fn shifted_tab() -> Keysym {
+        Keysym::new(keysyms::KEY_ISO_Left_Tab)
+    }
+
+    /// `Tab`'s key code, as the seat reports it.
+    fn tab_code() -> Keycode {
+        Keycode::new(23)
     }
 
     fn q() -> Keysym {
@@ -70,7 +136,24 @@ mod tests {
             ..ModifiersState::default()
         };
 
+        // `Shift` moves `Tab` to its second level, so this is the symbol the seat
+        // really delivers for `Alt+Shift+Tab`; the plain `Tab` symbol is accepted
+        // too, for keymaps whose second level is not `ISO_Left_Tab`.
+        assert_eq!(
+            action_for_key(shifted_tab(), &modifiers),
+            Some(Action::FocusPrev)
+        );
         assert_eq!(action_for_key(tab(), &modifiers), Some(Action::FocusPrev));
+    }
+
+    #[test]
+    fn shifted_tab_without_alt_is_not_bound() {
+        let modifiers = ModifiersState {
+            shift: true,
+            ..ModifiersState::default()
+        };
+
+        assert_eq!(action_for_key(shifted_tab(), &modifiers), None);
     }
 
     #[test]
@@ -81,6 +164,45 @@ mod tests {
         };
 
         assert_eq!(action_for_key(q(), &modifiers), Some(Action::Quit));
+    }
+
+    #[test]
+    fn a_bound_chord_is_swallowed_on_both_halves() {
+        let mut swallowed = SwallowedPresses::default();
+
+        assert!(swallowed.swallow(tab_code(), KeyState::Pressed, true));
+        assert!(swallowed.swallow(tab_code(), KeyState::Released, false));
+    }
+
+    #[test]
+    fn a_forwarded_press_keeps_its_release_even_if_a_modifier_arrives() {
+        let mut swallowed = SwallowedPresses::default();
+
+        // Tab pressed on its own goes to the client, so the release must reach it
+        // even though `Alt` is down by then and the event now matches `Alt+Tab`.
+        assert!(!swallowed.swallow(tab_code(), KeyState::Pressed, false));
+        assert!(!swallowed.swallow(tab_code(), KeyState::Released, true));
+    }
+
+    #[test]
+    fn a_swallowed_press_keeps_its_release_even_if_the_modifier_leaves() {
+        let mut swallowed = SwallowedPresses::default();
+
+        // `Alt+Tab`: the press is the compositor's, and the release stays the
+        // compositor's too even after `Alt` has been let go.
+        assert!(swallowed.swallow(tab_code(), KeyState::Pressed, true));
+        assert!(swallowed.swallow(tab_code(), KeyState::Released, false));
+    }
+
+    #[test]
+    fn a_repeated_press_overrides_a_stale_earlier_one() {
+        let mut swallowed = SwallowedPresses::default();
+
+        // A press whose release never arrived must not make the next press's
+        // release swallowable.
+        assert!(swallowed.swallow(tab_code(), KeyState::Pressed, true));
+        assert!(!swallowed.swallow(tab_code(), KeyState::Pressed, false));
+        assert!(!swallowed.swallow(tab_code(), KeyState::Released, false));
     }
 
     #[test]

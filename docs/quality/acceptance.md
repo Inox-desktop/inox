@@ -52,6 +52,8 @@
 
 M2 的进程内输入注入证明分发逻辑，不能证明 libinput 设备链路。测试注入接口必须限制在测试环境，不能成为默认公开的全局注入能力。新增 xdg-shell 行为与工作区控制涉及的协议应先按 ADR 0006 登记。
 
+M3 的输入注入套接字（非默认 feature `test-input` + `--test-input <PATH>`，[ADR 0017](../adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）属于同一类测试路径：默认构建不包含、默认运行关闭、未启用 feature 时该选项被明确拒绝，且不是 Wayland 全局。CI 的 `--all-features` 构建会把该代码编译进来，因此它只能被表述为「运行期默认关闭、构建期默认不包含」，不能据此声称在 all-features 构建中不存在。
+
 ## 4. 输出与真实设备
 
 | ID | 首次门槛 / 责任 crate | 前置与操作 | 通过条件 | 证据 |
@@ -68,6 +70,10 @@ M2 的进程内输入注入证明分发逻辑，不能证明 libinput 设备链�
 | X01 | M3 / `inox-xwayland`、`inox-compositor` | 在 Inox 会话启动真实 X11 客户端，切焦点、resize、关闭；再让 satellite 早退/超时 | X11 窗口可见且可输入；就绪需实际 X11 往返，socket 存在不足以通过；监督退出不遗留进程；Wayland 客户端仍可操作 | E3；X11/Wayland 客户端断言 |
 | X02 | M3 / 同上 | Wayland↔X11 及 Wayland↔Wayland 双向复制 UTF-8 文本、图像；source 退出、接收方拒绝、锁屏时读剪贴板 | 受支持 MIME 内容逐字节一致；不支持类型明确拒绝；异步传输可取消、无 FD 泄漏/事件循环阻塞；未授权或锁定客户端不可读取 | E2+E3；测试数据哈希、焦点/权限事件 |
 | X03 | M3 / 同上 | 拖放文本及 `text/uri-list` 文件 URI；测试 accept/drop、reject/cancel、目标销毁 | 每次拖放至多一次完成；取消无副作用；焦点/grab 清理；源与目标退出不拖垮会话 | E3；双端事件序列 |
+
+X02 的「锁屏时读剪贴板」断言**在 M3 不可验证**：`ext-session-lock-v1` 与 `inox-lock` 尚不存在，该断言移至 M5 的 S02（[ADR 0017](../adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。M3 交付的是它的结构性前提 —— 焦点门控的选区**授予**（未获焦点的客户端不会被授予选区；撤销已发出的 offer 不在 M3 内，边界见该 ADR 第 2 条）；这是延期，不是通过。
+
+X03 的**跨 X11/Wayland 边界拖放腿被上游阻塞**：`xwayland-satellite` v0.8.3 未实现 XDND，该腿的 E3 用例延期（[ADR 0017](../adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。M3 的通过结论**不得声称该腿已通过**；已交付的是 Wayland↔Wayland 拖放与 X11 内部（X 客户端之间）拖放。
 
 发布兼容清单至少包含 GTK Wayland、Qt Wayland、浏览器 Wayland、X11 各一个真实应用及版本；逐项验证启动、输入、popup、剪贴板、全屏、关闭。不能以测试客户端或 Weston 上通过代替 Inox 上通过。输入法暂未进入最低范围时须明确披露；不得宣称中文输入法可用。
 
