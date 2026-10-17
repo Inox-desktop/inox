@@ -18,6 +18,11 @@
 
 `tracing`, `tracing-subscriber`（`env-filter`）, `thiserror`
 
+`i18n` 模块另外依赖 `fluent-bundle`、`fluent-syntax` 与 `unic-langid`（Apache-2.0 OR MIT / MIT OR
+Apache-2.0）：`fluent-syntax` 直接使用是为了让目录一致性检查（id 与占位符）走解析后的 AST，
+而不是靠正则扫描源文件。三者都是纯数据依赖，不引入 UI 工具包、事件循环或设备 API —— 这是本模块
+能留在 L1 的前提（见 ADR 0018 与 ADR 0014 对 `inox-config` 的同类约束）。
+
 ## 命令
 
 > 仅作参考，不作为本地验收依据；真正判定在 CI。
