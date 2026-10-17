@@ -41,6 +41,8 @@ struct Client {
     pointer_focus: Option<wl_surface::WlSurface>,
     frames: usize,
     auto_ack: bool,
+    output_removals: usize,
+    seat_capabilities: u32,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -52,13 +54,25 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.insert(interface, (name, version));
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => {
+                state.globals.insert(interface, (name, version));
+            }
+            wl_registry::Event::GlobalRemove { name } => {
+                if state
+                    .globals
+                    .get("wl_output")
+                    .is_some_and(|(id, _)| *id == name)
+                {
+                    state.output_removals += 1;
+                }
+                state.globals.retain(|_, (id, _)| *id != name);
+            }
+            _ => {}
         }
     }
 }
@@ -160,7 +174,23 @@ wayland_client::delegate_noop!(Client: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-wayland_client::delegate_noop!(Client: ignore wl_seat::WlSeat);
+impl Dispatch<wl_seat::WlSeat, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: wayland_client::WEnum::Value(capabilities),
+        } = event
+        {
+            state.seat_capabilities = capabilities.bits();
+        }
+    }
+}
 wayland_client::delegate_noop!(Client: ignore wl_output::WlOutput);
 wayland_client::delegate_noop!(Client: ignore shell::ZwlrLayerShellV1);
 wayland_client::delegate_noop!(Client: ignore xdg_wm_base::XdgWmBase);
@@ -597,6 +627,82 @@ fn layers_render_reserve_focus_and_release_resources() {
     });
     pixel(&mut state, 20, 80, RED);
 
+    // Real device capability loss uses the same seat path and clears held keys.
+    let shift = smithay::input::keyboard::Keycode::new(50);
+    state.inject_key(shift, smithay::backend::input::KeyState::Pressed);
+    assert!(state.seat().get_keyboard().unwrap().modifier_state().shift);
+    state.set_input_capabilities(false, false).unwrap();
+    until(&mut display, &mut state, &mut [&mut peer], |_, peers| {
+        peers[0].state.seat_capabilities == 0
+    });
+    assert!(state.keyboard_focus().is_none());
+    state.set_input_capabilities(true, true).unwrap();
+    until(&mut display, &mut state, &mut [&mut peer], |_, peers| {
+        peers[0].state.seat_capabilities
+            & (wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer).bits()
+            == (wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer).bits()
+    });
+    assert!(!state.seat().get_keyboard().unwrap().modifier_state().shift);
+    assert!(
+        state
+            .seat()
+            .get_keyboard()
+            .unwrap()
+            .pressed_keys()
+            .is_empty()
+    );
+    state.inject_pointer_motion((200.0, 160.0).into());
+    let cursor_colour = inox_config::Theme::builtin_dark().colors.text;
+    pixel(
+        &mut state,
+        204,
+        172,
+        [
+            cursor_colour.r,
+            cursor_colour.g,
+            cursor_colour.b,
+            cursor_colour.a,
+        ],
+    );
+    state.set_input_capabilities(true, false).unwrap();
+    pixel(&mut state, 204, 172, RED);
+
+    // Removing the last output leaves the application alive and closes old layers.
+    let output = state.output().clone();
+    state.replace_output(None).unwrap();
+    until(&mut display, &mut state, &mut [&mut peer], |_, peers| {
+        peers[0].state.output_removals == 1 && peers[0].state.closed >= 2
+    });
+    assert!(!state.output_active());
+    assert_eq!(state.window_count(), 1);
+    assert_eq!(state.layer_count(), 0);
+    assert!(state.keyboard_focus().is_none());
+    state.replace_output(Some(output)).unwrap();
+    until(
+        &mut display,
+        &mut state,
+        &mut [&mut peer],
+        |state, peers| {
+            state.keyboard_focus() == app_focus && peers[0].state.globals.contains_key("wl_output")
+        },
+    );
+    assert_eq!(
+        state.window_location(state.managed_windows()[0]),
+        Some((8, 8).into())
+    );
+    let restored_panel = peer.layer(4, shell::Layer::Top, None);
+    restored_panel.role.set_size(0, 10);
+    restored_panel
+        .role
+        .set_anchor(layer::Anchor::Top | layer::Anchor::Left | layer::Anchor::Right);
+    restored_panel.role.set_exclusive_zone(10);
+    restored_panel.surface.commit();
+    configured(&mut display, &mut state, &mut peer, 4);
+    restored_panel.attach(&peer, GREEN);
+    until(&mut display, &mut state, &mut [&mut peer], |state, _| {
+        state.layer_count() == 1 && state.work_area().loc.y == 10
+    });
+    restored_panel.destroy();
     notice.destroy();
     background.destroy();
     toplevel.destroy();

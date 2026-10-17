@@ -29,7 +29,7 @@
   校验，输出参数（尺寸 1..=16384、刷新率 1..=1000、`scale` 为正有限数）由 `OutputConfig`
   校验，范围与 `inox-compositor` 的 `MAX_DIMENSION` / `MAX_REFRESH_HZ` 一致；
   `LayoutConfig::sanitised()` 只作消费方对非配置来源的防御兜底。
-- `[input]` 目前只校验类型，不校验范围：真实输入后端尚未落地，没有范围依据；范围校验随输入后端引入。
+- `[input]` 的键盘 repeat delay/rate 必须在解析期校验为 0..=i32::MAX（Wayland seat 的有符号字段）；rate 为 0 关闭 repeat。tap/scroll 是否被设备支持由真实后端检查。
 - `ConfigError::InvalidComponentPath` 的校验必须在 `InoxConfig::load` 内对 `[components]`
   的**三个**路径都执行，且在任何组件文件被读取之前完成：路径逃逸要在 Inox 启动期失败，
   而不是等某个组件启动才失败；空值、绝对路径与逃逸路径一律拒绝（ADR 0009 决策 11）。

@@ -31,6 +31,9 @@ use smithay::{
         renderer::{
             Bind, ExportMem, Frame, Offscreen, Renderer,
             element::RenderElement,
+            element::{
+                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
+            },
             gles::{GlesError, GlesRenderbuffer, GlesRenderer},
             utils::draw_render_elements,
         },
@@ -52,9 +55,18 @@ pub const CLEAR_COLOR: [f32; 4] = [
 /// Bytes per pixel of the render target, which uses [`Fourcc::Abgr8888`].
 const BYTES_PER_PIXEL: usize = 4;
 
+smithay::backend::renderer::element::render_elements! {
+    pub(crate) SceneElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
+
 /// Errors produced by the headless renderer.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
+    /// A readback or headless render was requested on a physical output.
+    #[error("this operation requires a headless render target")]
+    NotHeadless,
     /// The EGL display or context could not be created.
     #[error("failed to create the EGL display or context")]
     Egl(#[from] EglError),
@@ -119,6 +131,19 @@ impl HeadlessRenderer {
     /// [`HeadlessRenderer::render_elements`].
     pub fn renderer_mut(&mut self) -> &mut GlesRenderer {
         &mut self.renderer
+    }
+
+    /// Replace the offscreen buffer while keeping the same EGL display.
+    ///
+    /// # Errors
+    /// Returns a render error if the new target cannot be allocated.
+    pub fn resize(&mut self, size: (i32, i32)) -> Result<(), RenderError> {
+        let target = self
+            .renderer
+            .create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoord>::from(size))?;
+        self.target = target;
+        self.size = size.into();
+        Ok(())
     }
 
     /// Render `elements` over the background colour into the render target.

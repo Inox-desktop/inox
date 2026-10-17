@@ -17,7 +17,8 @@ M3（PRD §13，[ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/a
 - **每帧渲染后发送 `wl_surface.frame` 回调**：此前从不发送，真实客户端（XWayland 顶层、GTK 应用）会因此永远等不到重绘时机。回调由事件循环在每帧渲染后 flush 出去，焦点变更排入的选择事件同样如此。
 - 拖放不需要额外合成器逻辑：客户端调用 `start_drag` 后 Smithay 的 `DnDGrab` 接管指针并转发 enter/motion/drop/action。
 
-尚未实现（后续里程碑）：XWayland 服务端本身（在 [`inox-xwayland`](../../crates/inox-xwayland)）、真实输入设备链路（libinput/udev/seat）、DRM/KMS 真实输出。
+真实后端已按获批的 [ADR 0012](../../docs/adr/0012-output-input-and-frame-lifecycle.md)
+接入 libseat、DRM/GBM、udev 与 libinput。代码完成不代表 O01/O04 真机验收通过，支持边界见下节。
 
 L2 的 layer-shell 宿主现已接入 Smithay `WlrLayerShellState`，广告
 `zwlr_layer_shell_v1` v4。四层按 background → bottom → 普通窗口 → top → overlay
@@ -28,7 +29,38 @@ top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应�
 
 `tests/layer_shell.rs` 用真实客户端与 shm 缓冲断言像素、指针、焦点、frame callback、
 独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 Iced 客户端宿主，
-L3 的 layer-shell 客户端接线仍待完成，亦不宣称 DRM 或完整 M4 已验收。
+L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完整 M4 已验收。
+
+### 真实后端与支持边界
+
+`--backend auto`（默认）枚举当前 libseat seat 的 GPU，优先主 GPU，选择能驱动输出的设备；
+`--backend drm` 同样要求真实设备。二者在获取设备、配置输出或初次呈现失败时返回错误，
+**不会回落到 headless 并报告 ready**。首版只驱动单 GPU 的一个活动 connector，scale 1；
+多输出并排布局、PRIME、旋转与分数缩放仍未交付，不得据此声明 O02/O03 通过。
+
+- 使用 Smithay 的 `DrmDevice`、`GbmAllocator`、`GbmBufferedSurface`、EGL/GLES 与
+  `OutputDamageTracker`，交集选择可扫描输出和可渲染的格式；不手写 DRM/libinput FFI。
+- 首帧、客户端提交和指针变化请求重绘；提交期间最多一个 pending frame。
+  page-flip 完成后释放 swapchain 槽位并发送 frame callback。没有 damage 的帧不提交，
+  callback 请求仍得到反馈；显式 `--exit-after-frames` 是有限帧测试模式，允许强制重绘。
+  启动 ready 必须等到第一帧的 page-flip 完成，完成事件按代次和提交时间过滤。
+- 暂时提交失败最多尝试三次；page-flip 完成有 2 秒超时。启动失败非零退出，
+  已启动会话退化时保留客户端，停止提交并等待设备恢复事件，不无限轮询重试。
+- libseat pause 停止设备提交和输入，释放 DRM master；resume 重建设备状态与
+  swapchain 状态、清除陈旧按键并调度恢复帧。`Ctrl+Alt+F1`–`F12` 通过 libseat 切换 VT。
+- udev 断连时撤下逻辑输出，关闭其 layer 表面并保留普通应用；恢复后重新安排窗口，
+  layer 客户端按协议为新输出重新创建表面。全无输出时没有重绘定时器。
+- libinput 通过 libseat 打开设备，按键与按钮按物理设备引用计数；设备移除和暂停
+  释放遗留状态，seat 能力随设备变化。Smithay 的键码已是 XKB 单位，不再追加 `+8`。
+- 始终提供软件光标路径：支持客户端 cursor surface 与热点，缺省箭头从主题的
+  `spacing.lg/xl`、`colors.background/text` 生成；不依赖硬件 cursor plane。
+- 真实会话启动时读取 `InoxConfig` 的输入、平铺、主题及输出 mode；不支持的 mode/scale
+  明确拒绝。键盘重复 rate 为 0 关闭 repeat；delay/rate 必须可表示为 Wayland 有符号字段。
+  headless 保持确定性的测试配置。运行中的配置事务与重载回执仍待后续工作。
+
+本地只执行 fmt/check/clippy。CI 负责纯状态机、属性测试、真实 Wayland 客户端、软件光标像素
+及进程生命周期回归。DRM 翻页、VT、真实输入与热插拔须按
+[硬件验收步骤](../../docs/quality/l2-hardware-validation.md)取得 E4，当前结果标为未执行。
 
 ### 运行
 

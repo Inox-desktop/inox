@@ -28,9 +28,8 @@ pub const DEFAULT_OUTPUT_NAME: &str = "headless-1";
 ///
 /// The variants map onto the layers described in ADR 0010:
 ///
-/// - [`BackendKind::Auto`] probes a libseat DRM session first and falls back to
-///   the headless path when either the session or the GBM/vblank present path
-///   is unavailable.
+/// - [`BackendKind::Auto`] selects an enumerated libseat DRM device and fails if no
+///   physical output can be driven. Headless must be explicitly requested (ADR 0012).
 /// - [`BackendKind::Headless`] keeps the M1/M2 surfaceless EGL path (ADR 0005)
 ///   as a fixed choice; it is what CI exercises.
 /// - [`BackendKind::Drm`] requires the real backend and never falls back, so a
@@ -38,7 +37,7 @@ pub const DEFAULT_OUTPUT_NAME: &str = "headless-1";
 ///   turning into a headless run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendKind {
-    /// Try DRM, fall back to headless on any failure.
+    /// Select a physical device; never fall back to headless.
     #[default]
     Auto,
     /// Always run the surfaceless EGL headless path.
