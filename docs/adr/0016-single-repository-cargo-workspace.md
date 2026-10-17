@@ -147,7 +147,7 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 | 清单改写 | 16 个 manifest 全部改为工作区继承：`version`/`edition`/`rust-version`/`license`/`repository`/`readme`/`keywords`/`categories` 取 `*.workspace = true`；内部依赖改为 path 依赖（`inox-common.workspace = true`）；第三方依赖版本收敛到 `[workspace.dependencies]`，成员只追加自己的 feature |
 | 分层机械检查 | `crates/inox-integration/tests/layering.rs`：17 个测试 = 15 个规则单元测试（对合成图）+ 2 个真实工作区断言；数据源为 `cargo metadata --no-deps` 与 `[workspace.metadata.inox.layers]` |
 | CI | `.github/workflows/ci.yml` 的 9 个 job：`fmt`、`clippy`、`deny`、`doc`、`build`、`plan`、`test`（按 crate 分片）、`xwayland-e2e`、`book` |
-| 删除 | `compat.toml`；`repos/` 目录流程（`repos/` 的 `.gitignore` 条目保留到本地克隆删除为止） |
+| 删除 | `compat.toml`；`repos/` 目录流程。本地克隆与 `.gitignore` 的 `/repos/` 条目已于 2026-10-17 一并删除（4.2 GB，其中 4.2 GB 是克隆内的 `target/` 构建产物，`.git/` 合计仅 4.8 MB）。删除前逐项核过：无任何克隆存在未推送提交、无 stash、唯一脏克隆的改动内容逐文件确认已在 `HEAD` 中（`AGENTS.md` / `Cargo.toml` / 根 CI 为有意重写且 M2.5 事实已迁入；`src/state.rs` 为本仓库领先）。删除依据与结果见 `scripts/verify-import-parity.py` 的输出 |
 | 系统库单一来源 | `.github/actions/system-deps/action.yml`：apt 包列表从「4 个工作流 job 各抄一份」改为一个复合 action。理由是包列表是事实清单，抄本分叉会让某个 job 静默缺库——这与本 ADR 收敛样板是同一个理由。首次 CI 运行证明 `clippy` / `doc` **也**需要这些库（见「首次 CI 运行的结果」） |
 | 连带修正 | 根 `.gitignore` 增加 `/docs/book/book/`：文档站点原先自带 `.gitignore`（`book/`），而本 ADR 取消了逐组件忽略文件，根忽略文件必须接管。`docs/book/src/SUMMARY.md` 增加 `markdownlint-disable MD025`：该文件用多个 `#` 表示 mdBook 分卷标题，此前它位于被排除的 `repos/` 下、不在 lint 范围内，迁入 `docs/` 后进入范围 |
 
@@ -169,7 +169,7 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 
 **缺陷 1：克隆陈旧。** 5 个克隆落后远端 `main`（`inox-compositor` 落后 6 个提交，`inox-common` 3 个，`inox-config` / `inox-xwayland` / `inox-docs` 各 1 个）。后四个的内容差异为零（落后的是合并提交），但 `inox-compositor` 落后的是**已合并的 PR #4「以锁定 tag 消费 inox-protocols 并广告 inox-ipc」**，实质内容为 `src/state.rs` 的 `inox_ipc` 全局与方法、新测试 `tests/ipc_global.rs`、以及清单/文档改动。该 PR 于 `2026-10-16T19:25:59Z`（本地 12:25）合并，而导入发生在本地 13:39——**提交已在远端一个多小时，导入却用了没 fetch 过的克隆**。
 
-**缺陷 2：克隆工作区脏。** `repos/inox-compositor` 的工作区有 231 行未提交改动，外加 untracked 的整目录 `src/backend/`——即 M2.5 真实后端脚手架（`BackendKind`、`--backend` 解析、`smithay` 的 `backend_*` features）。这部分**从未提交到任何分支，也从未推送**，只存在于那份本地磁盘上。`tar` 导入工作树把它带了进来：既是侥幸保住（否则本轮才发现丢失），也说明导入来源**本来不可审计**。
+**缺陷 2：克隆工作区脏。** `repos/inox-compositor` 的工作区有 231 行未提交改动，外加 untracked 的整目录 `src/backend/`——即 M2.5 真实后端脚手架（`BackendKind`、`--backend` 解析、`smithay` 的 `backend_*` features）。这部分**从未提交到任何分支，也从未推送**：导入之前，它的唯一副本是那份本地磁盘。（此处描述的是**导入前**的状态。内容随后随 PR #13 进入本仓库并推送，后来的「撤销」条目记录了我一度把它误读为「至今仍只在那台机器上」。）`tar` 导入工作树把它带了进来：既是侥幸保住（否则本轮才发现丢失），也说明导入来源**本来不可审计**。
 
 **根因。** 「以当前工作树导入」这句实施指令同时缺少两个约束：(a) 工作树是否等于远端 ref，(b) 工作树是否干净。前者丢掉已合并的提交，后者把未提交的本地状态变成唯一副本。
 
