@@ -498,11 +498,16 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 | M0 | 可追溯的工程基线 | 工作区骨架、`.github` | B01：骨架、约束、许可证与首次真实 CI；不宣称运行能力 |
 | M1 | Headless 输出/渲染/生命周期 | `inox-compositor` | B01–B03、R01–R03：真实输出枚举、像素断言、启动失败、信号退出与 20 轮清理 |
 | M2 | 真实客户端窗口与输入语义 | `inox-compositor` | W01–W04：3 窗口/子表面/popup、configure、布局边界、焦点/按键状态、坏客户端隔离 |
-| M2.5 | 真实输出、输入与设备生命周期（ADR 0010 草案，受 ADR 0012 提议约束） | `inox-compositor` | O01/O04、H01 建档：CI 后端覆盖 + 人类 E4，含可见指针、VT/设备恢复；建立性能基线，不以 headless 代真机 |
+| M2.5 | 真实输出、输入与设备生命周期（ADR 0012 已获批；修正 ADR 0010 的冲突条目） | `inox-compositor` | O01/O04、H01 建档：CI 后端覆盖 + 人类 E4，含可见指针、VT/设备恢复；建立性能基线，不以 headless 代真机 |
 | M3 | Inox 会话中的 X11/数据互通 | `inox-xwayland`, `inox-compositor` | X01–X03：真实 X11 往返/输入、双向 MIME、拖放接受/取消与异常退出；第三方宿主通过不算本阶段完成 |
 | M4 | Shell 用户任务、双屏与持久化 | L3 组件、`inox-compositor`、`inox-config` | W05、O02–O03、D01–D05、C01–C03、Q01–Q03：任务状态/焦点、设置回执/回退、混合 DPI/热插拔、真实语义与双语 |
 | M5 | 安全会话与指定设备上日常可用 | `inox-session`, `inox-idle`, `inox-lock`, `inox-notifications` 等 | D06、S01–S05、H02；P05 开始：监督限流、认证/锁屏故障不解锁、挂起/恢复、权限负向测试 |
 | M6 | 指定支持矩阵的发布候选 | `inox-integration` 与全部 crate | C04、P01–P05、H01–H03、L01–L03：迁移/回退、性能与长稳原始数据、两种渠道安装生命周期、无 P0/P1、人类批准 |
+
+M2.5 的物理后端实现已接入 libseat、DRM/GBM、udev 与 libinput，使用与 headless 共用的
+帧状态机处理首帧、空闲、提交失败及暂停/恢复；提供软件光标和启动期配置消费。
+当前限单 GPU、一个活动输出、scale 1，不交付 M4 多屏布局。O01/O04 的 E4 真机步骤尚未执行，
+**不能将 CI 或实现完成读作 M2.5 验收通过**。记录见 [硬件验收](docs/quality/l2-hardware-validation.md)。
 
 > M3 的 X11↔Wayland 拖放腿**上游阻塞**：`xwayland-satellite` v0.8.3 未实现 XDND，因此上表 M3 行的 X03 只交付 **Wayland↔Wayland 拖放**与 **X11 内部拖放**，跨边界那条腿的 E3 用例延期——M3 不得被读作 X03 完整通过。X02 中「锁屏时读剪贴板」的断言因 `ext-session-lock-v1` 与 `inox-lock` 尚不存在而移至 M5 的 S02（延期，不是通过）。两条决策与依据见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)。
 >

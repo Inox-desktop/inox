@@ -142,3 +142,24 @@ fn frame_budget_exits_with_status_zero() {
         "expected a clean exit after rendering the frame budget, got {status}"
     );
 }
+
+#[test]
+fn unavailable_physical_backends_never_report_headless_readiness() {
+    for kind in ["auto", "drm"] {
+        let dir = RuntimeDir::new(&format!("strict-{kind}"));
+        let mut child = Command::new(COMPOSITOR)
+            .args(["--backend", kind, "--socket", "must-not-exist"])
+            .env("XDG_RUNTIME_DIR", &dir.0)
+            .env("XDG_CONFIG_HOME", dir.0.join("config"))
+            .env("LIBSEAT_BACKEND", "inox-invalid-backend")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let status = wait_with_timeout(&mut child);
+        let output = child.wait_with_output().unwrap();
+        assert!(!status.success());
+        assert!(!dir.socket("must-not-exist").exists());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("inox-compositor ready"));
+    }
+}

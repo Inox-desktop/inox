@@ -10,18 +10,18 @@
 
 ## crate 特有约束
 
-- **`unsafe` 例外（根级 §3.2）**：本 crate 的 `Cargo.toml` 使用 `[lints.rust] unsafe_code = "deny"`（而非 `forbid`）。注意它**不能**写 `lints.workspace = true`：cargo 拒绝在继承工作区 lint 的同时覆盖其中一项，因此本 crate 逐字重述了 `[workspace.lints]` 再改写 `unsafe_code`；**改根 `Cargo.toml` 的 lint 集时必须同步这个副本**（没有机械检查）。`#[allow(unsafe_code)]` **当前**只出现在下面两处（与 M2 一致）：
+- **`unsafe` 例外（根级 §3.2）**：本 crate 的 `Cargo.toml` 使用 `[lints.rust] unsafe_code = "deny"`（而非 `forbid`）。注意它**不能**写 `lints.workspace = true`：cargo 拒绝在继承工作区 lint 的同时覆盖其中一项，因此本 crate 逐字重述了 `[workspace.lints]` 再改写 `unsafe_code`；**改根 `Cargo.toml` 的 lint 集时必须同步这个副本**（没有机械检查）。`#[allow(unsafe_code)]` 的既有两处为：
   - `src/render.rs`：`EGLDisplay::new` / `GlesRenderer::new` 的 EGL/GL 胶水（ADR 0005）；
   - `src/runtime.rs`：从 calloop `Generic` 事件源取得 `Display` 以派发客户端请求（`NoIoDrop::get_mut`）（ADR 0005）。
 
-  ADR 0010 §7 **预先授权** `src/backend/drm.rs`、`src/backend/gbm.rs`、`src/backend/input.rs` 在 M3a / M3b 实现落地时引入局部 `unsafe`（封装 libseat `OwnedFd`、`DrmDevice` fd 归属、`GbmDevice::new`、`Libinput::init` 等）；目前 `src/backend/drm.rs` 只是脚手架，本身不包含 `unsafe` 块。每一处新落的 `unsafe` 必须是命名函数、包裹在安全 API 内、附 `// SAFETY:` 理由；**上述白名单以外新增 `allow` 必须先在 `docs/adr/` 提交 ADR**。
+  `src/backend/drm.rs::create_renderer` 新增物理 GPU 的 `EGLDisplay::new` / `GlesRenderer::new` 最小胶水，仍只在命名函数局部 `allow` 并有 SAFETY 注释。`DrmDevice::new`、`GbmDevice::new`、libinput udev 构造与 fd 转换均使用安全 API。ADR 0012 已在 2026-10-17 当前开发会话获人类批准，取代 ADR 0010 的预授权数量/API 假设；不得把文件白名单读作任意 unsafe 的授权。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`；面向 CLI 的输出（如 `--help`）用显式 stdout 写入。
 - MSRV：工作区统一为 `[workspace.package] rust-version = "1.86"`（`smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86），本 crate 通过 `rust-version.workspace = true` 继承。工作区内不再存在两个 MSRV。
-- 工作区内依赖：`inox-common` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源（ADR 0002 规则 4）。
+- 工作区内依赖：`inox-common`、`inox-config` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源（ADR 0002 规则 4）。
   - **注意 `inox-compositor -> inox-protocols` 是 L2 → L2 的同层边**：ADR 0002 规则 1 禁止同层依赖，而协议集中到 `inox-protocols`（规则 4）又要求它。该边已登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`，规则 1 的裁决（层内顺序）尚未完成。
 - **`test-input` feature（默认关闭）**：`--test-input <PATH>` 只在启用该 feature 的构建里存在，用于让端到端测试驱动**正在运行的合成器进程**（`key`/`motion`/`button`/`dump-frame`，见 `src/test_input.rs`）。约束：默认构建必须直接以 `ConfigError` 拒绝该选项；该通道**不得**成为 Wayland 全局、不得自动启用、不得暴露除「向调用者指定 socket 写命令」以外的能力。修改它时必须同步 `README.md`、本文件与模块文档。
-- **后端开关（ADR 0010）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 失败时回落 headless 并 `warn!`；`drm` 失败直接 `RunError::BackendUnavailable`。CI 的集成测试必须显式或默认地走 headless 分支（runner 无 DRM master）。
+- **后端开关（accepted ADR 0012）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 与 `drm` 都必须得到可用物理输出，失败返回 `RunError::BackendUnavailable`，不得静默回落 headless。CI 进程测试显式 `--headless`；进程内 `InoxState::new` 始终是确定性的 headless 状态。物理路径首版为单 GPU/一个活动输出/scale 1，真实 VT、设备恢复仍须 O01/O04 的 E4 验收。
 
 ## 主要依赖
 
@@ -61,6 +61,7 @@
 - 进程级测试必须自备私有 `XDG_RUNTIME_DIR`（Wayland 套接字绑定需要绝对路径的运行时目录），并给子进程设定超时，避免 CI 挂死。
 - **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
 - **layer-shell**（`tests/layer_shell.rs`）：真实客户端覆盖四层像素顺序、独占区与平铺位置、显式/空输出、初次空提交后的 configure/ack、None/Exclusive/OnDemand 焦点、指针命中、frame callback、卸载/重映射、销毁和崩溃释放资源，以及未确认 configure 的客户端隔离。放置/独占区算法的属性测试覆盖极端整数参数；安全锁屏不属于该协议。
+- **物理后端边界**：`backend::frame` 覆盖首帧、空闲、提交中 damage、失败限流、pause/resume、移除与陈旧完成；`backend::input` 覆盖多设备按键引用与移除清理；DRM 模式排序使用 proptest。真实客户端测试补充能力变更、按键清理、软件光标像素和输出移除/恢复；`signal_shutdown` 强制无效 libseat 后端，验证 auto/drm 不回落、不伪报 ready。E4 真机结果不得由这些测试推断。
 - **剪贴板**（`tests/clipboard.rs`）：进程内、真实客户端——持焦点的客户端设置选择，随后获得焦点的客户端拿到 offer 并经 fd 读回字节（逐字节相等）；未获焦点的客户端**不得**被投递选择（这是 M3 的访问控制属性）。
 - **拖放**（`tests/drag_and_drop.rs`）：进程内、真实客户端——注入指针按下取得隐式抓取序号，客户端 A 发起拖放（两种 mime），指针移到 B 上后 B 收到 enter 与 mime，drop 后传输字节与源一致；另覆盖「指针移出所有表面后取消」（目标恰好收到一次 leave、不再收到 drop）与「拖放途中目标窗口被销毁」（合成器不崩、会话仍可用）。
 - 单线程驱动 + 截止时间：合成器与全部客户端在同一线程交替「收发」与「服务 display」，客户端套接字设为非阻塞，因此**不需要 sleep 排序、也不会有死锁线程**；每个等待都有超时。
@@ -83,7 +84,9 @@ src/
   test_input.rs   仅测试的控制通道（`--test-input`，`test-input` feature 默认关闭）
   backend/
     mod.rs        后端入口与说明
-    drm.rs        M2.5 真实 DRM/KMS 脚手架（libseat 会话 + card 探测，present 路径待 M3a）
+    drm.rs        DRM/GBM 扫描输出、模式选择、呈现与 fd 生命周期
+    input.rs      libinput 事件、设备能力与多设备按键清理
+    frame.rs      与 headless 共用的帧状态机、代次与有限重试
 tests/
   headless_render.rs     创建输出并渲染一帧（进程内）
   ipc_global.rs          进程级：广告 inox_ipc 全局并应答 get_version

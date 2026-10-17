@@ -71,7 +71,12 @@ use smithay::{
     backend::{
         input::{ButtonState, KeyState},
         renderer::{
-            element::AsRenderElements,
+            element::{
+                AsRenderElements, Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                surface::render_elements_from_surface_tree,
+            },
+            gles::{GlesError, GlesRenderer},
             utils::{on_commit_buffer_handler, with_renderer_surface_state},
         },
     },
@@ -82,12 +87,15 @@ use smithay::{
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::{FilterResult, KeyboardHandle, Keycode, XkbConfig},
-        pointer::{ButtonEvent, CursorImageStatus, MotionEvent, PointerHandle},
+        pointer::{
+            AxisFrame, ButtonEvent, CursorImageStatus, CursorImageSurfaceData, MotionEvent,
+            PointerHandle,
+        },
     },
     output::{Mode, Output, PhysicalProperties, Scale as OutputScale, Subpixel},
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-        backend::{ClientData, ClientId, DisconnectReason},
+        backend::{ClientData, ClientId, DisconnectReason, GlobalId},
         protocol::wl_data_source::WlDataSource,
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
@@ -124,7 +132,7 @@ use crate::{
     config::CompositorConfig,
     input::{Action, SwallowedPresses, action_for_key},
     layout::LayoutConfig,
-    render::{HeadlessRenderer, RenderError},
+    render::{HeadlessRenderer, RenderError, SceneElement},
     workspace::{WindowId, Workspace},
 };
 
@@ -138,6 +146,9 @@ const MILLIMETRES_PER_INCH_X10: i32 = 254;
 /// Errors produced while building the compositor state.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    /// An input value cannot be represented by the seat protocol.
+    #[error("invalid input configuration: {0}")]
+    InputConfig(String),
     /// The headless renderer could not be created.
     #[error("failed to create the headless renderer")]
     Renderer(#[from] RenderError),
@@ -181,6 +192,14 @@ pub struct InoxState {
     display_handle: DisplayHandle,
 
     output: Output,
+    output_active: bool,
+    output_global: Option<GlobalId>,
+    input_config: inox_config::InputConfig,
+    cursor_image: CursorImageStatus,
+    cursor_visible: bool,
+    cursor_buffer: MemoryRenderBuffer,
+    repaint: bool,
+    background: [f32; 4],
 
     seat_state: SeatState<Self>,
     seat: Seat<Self>,
@@ -213,7 +232,7 @@ pub struct InoxState {
     /// See [`InoxState::inject_key`] for why the press has to be remembered.
     swallowed_presses: SwallowedPresses,
 
-    renderer: HeadlessRenderer,
+    renderer: Option<HeadlessRenderer>,
     /// Monotonic origin the frame callbacks are timed against.
     ///
     /// A monotonic clock, not wall-clock time: clients only compare frame times with
@@ -224,6 +243,18 @@ pub struct InoxState {
     exit_after_frames: Option<u64>,
     exit_requested: bool,
     loop_signal: LoopSignal,
+}
+
+struct StateSetup {
+    output: Output,
+    renderer: Option<HeadlessRenderer>,
+    input: inox_config::InputConfig,
+    theme: inox_config::Theme,
+    physical: bool,
+}
+
+fn rgba_floats(color: inox_config::Rgba) -> [f32; 4] {
+    [color.r, color.g, color.b, color.a].map(|channel| f32::from(channel) / 255.0)
 }
 
 struct LayerEntry {
@@ -251,11 +282,68 @@ impl InoxState {
         config: &CompositorConfig,
         loop_signal: LoopSignal,
     ) -> Result<Self, StateError> {
+        let output = create_headless_output(config);
+        let setup = StateSetup {
+            output,
+            renderer: Some(HeadlessRenderer::new(config.output_size())?),
+            input: inox_config::InputConfig {
+                keyboard_repeat_delay_ms: 200,
+                ..Default::default()
+            },
+            theme: inox_config::Theme::builtin_dark(),
+            physical: false,
+        };
+        Self::build(display_handle, config, loop_signal, setup)
+    }
+
+    pub(crate) fn new_physical(
+        display_handle: &DisplayHandle,
+        config: &CompositorConfig,
+        loop_signal: LoopSignal,
+        output: Output,
+        input: inox_config::InputConfig,
+        theme: inox_config::Theme,
+        layout: LayoutConfig,
+    ) -> Result<Self, StateError> {
+        let mut state = Self::build(
+            display_handle,
+            config,
+            loop_signal,
+            StateSetup {
+                output,
+                renderer: None,
+                input,
+                theme,
+                physical: true,
+            },
+        )?;
+        state.set_input_capabilities(false, false)?;
+        state.layout = layout;
+        Ok(state)
+    }
+
+    fn build(
+        display_handle: &DisplayHandle,
+        config: &CompositorConfig,
+        loop_signal: LoopSignal,
+        setup: StateSetup,
+    ) -> Result<Self, StateError> {
+        let StateSetup {
+            output,
+            renderer,
+            input,
+            theme,
+            physical,
+        } = setup;
+        let repeat_delay = i32::try_from(input.keyboard_repeat_delay_ms).map_err(|_| {
+            StateError::InputConfig("keyboard repeat delay exceeds i32::MAX".to_owned())
+        })?;
+        let repeat_rate = i32::try_from(input.keyboard_repeat_rate_hz).map_err(|_| {
+            StateError::InputConfig("keyboard repeat rate exceeds i32::MAX".to_owned())
+        })?;
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display_handle);
-        let output = create_headless_output(config, display_handle);
-        let renderer = HeadlessRenderer::new(config.output_size())?;
-
+        let output_global = Some(output.create_global::<Self>(display_handle));
         let ipc_version = inox_ipc_version();
         let ipc_global = display_handle.create_global::<Self, InoxIpc, ()>(ipc_version, ());
         debug!(
@@ -276,20 +364,25 @@ impl InoxState {
 
         let mut seat_state = SeatState::<Self>::new();
         let mut seat = seat_state.new_wl_seat(display_handle, "seat-0");
-        let keyboard = seat.add_keyboard(keyboard_config(), 200, 25)?;
+        let keyboard = seat.add_keyboard(keyboard_config(&input), repeat_delay, repeat_rate)?;
         let pointer = seat.add_pointer();
 
         let mut space = Space::default();
         space.map_output(&output, (0, 0));
 
-        let work_area = Rectangle::from_size(Size::from(config.output_size()));
+        let work_area = Rectangle::from_size(
+            output
+                .current_mode()
+                .map(|mode| mode.size.to_logical(1))
+                .unwrap_or_default(),
+        );
 
         info!(
             output = %output.name(),
-            width = config.width,
-            height = config.height,
-            refresh_hz = config.refresh_hz,
-            "created headless output"
+            width = work_area.size.w,
+            height = work_area.size.h,
+            physical,
+            "created compositor output"
         );
 
         Ok(Self {
@@ -300,6 +393,18 @@ impl InoxState {
             primary_selection_state,
             display_handle: display_handle.clone(),
             output,
+            output_active: true,
+            output_global,
+            input_config: input,
+            cursor_image: CursorImageStatus::default_named(),
+            cursor_visible: false,
+            cursor_buffer: crate::cursor::fallback(&theme),
+            repaint: true,
+            background: if physical {
+                rgba_floats(theme.colors.background)
+            } else {
+                crate::render::CLEAR_COLOR
+            },
             seat_state,
             seat,
             keyboard,
@@ -336,39 +441,89 @@ impl InoxState {
     ///
     /// Returns a [`RenderError`] when the GLES rendering fails.
     pub fn render_frame(&mut self) -> Result<(), RenderError> {
-        self.space.refresh();
-        self.popups.cleanup();
-
-        let output_area = Rectangle::from_size(self.output_size().into());
-        let mut elements = Vec::new();
-        for layer in [Layer::Overlay, Layer::Top] {
-            self.layer_render_elements(layer, &mut elements);
-        }
-        elements.extend(self.space.render_elements_for_region(
-            self.renderer.renderer_mut(),
-            &output_area,
-            1.0f64,
-            1.0,
-        ));
-        for layer in [Layer::Bottom, Layer::Background] {
-            self.layer_render_elements(layer, &mut elements);
-        }
-        self.renderer.render_elements(&elements)?;
-
-        self.send_frame_callbacks();
-
-        self.frames_rendered = self.frames_rendered.saturating_add(1);
+        let mut renderer = self.renderer.take().ok_or(RenderError::NotHeadless)?;
+        let result = self
+            .scene_elements(renderer.renderer_mut())
+            .map_err(RenderError::from)
+            .and_then(|elements| renderer.render_elements(&elements));
+        self.renderer = Some(renderer);
+        result?;
+        self.frame_presented();
         Ok(())
     }
 
-    fn layer_render_elements(
+    pub(crate) fn scene_elements(
         &mut self,
+        renderer: &mut GlesRenderer,
+    ) -> Result<Vec<SceneElement>, GlesError> {
+        self.space.refresh();
+        self.popups.cleanup();
+        if !self.output_active {
+            return Ok(Vec::new());
+        }
+        let mut elements = Vec::new();
+        if self.cursor_visible {
+            match &self.cursor_image {
+                CursorImageStatus::Hidden => {}
+                CursorImageStatus::Surface(surface) if surface.is_alive() => {
+                    let hotspot = with_states(surface, |states| {
+                        states
+                            .data_map
+                            .get::<CursorImageSurfaceData>()
+                            .and_then(|data| data.lock().ok().map(|data| data.hotspot))
+                    })
+                    .unwrap_or_default();
+                    let location =
+                        (self.pointer_location - hotspot.to_f64()).to_physical_precise_round(1.0);
+                    elements.extend(render_elements_from_surface_tree(
+                        renderer,
+                        surface,
+                        location,
+                        1.0,
+                        1.0,
+                        Kind::Cursor,
+                    ));
+                }
+                _ => {
+                    elements.push(SceneElement::Cursor(
+                        MemoryRenderBufferRenderElement::from_buffer(
+                            renderer,
+                            self.pointer_location.to_physical(1.0),
+                            &self.cursor_buffer,
+                            None,
+                            None,
+                            None,
+                            Kind::Cursor,
+                        )?,
+                    ));
+                }
+            }
+        }
+        for layer in [Layer::Overlay, Layer::Top] {
+            self.layer_render_elements(layer, renderer, &mut elements);
+        }
+        elements.extend(
+            self.space
+                .render_elements_for_region(
+                    renderer,
+                    &Rectangle::from_size(self.output_size().into()),
+                    1.0f64,
+                    1.0,
+                )
+                .into_iter()
+                .map(SceneElement::Surface),
+        );
+        for layer in [Layer::Bottom, Layer::Background] {
+            self.layer_render_elements(layer, renderer, &mut elements);
+        }
+        Ok(elements)
+    }
+
+    fn layer_render_elements(
+        &self,
         layer: Layer,
-        elements: &mut Vec<
-            smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<
-                smithay::backend::renderer::gles::GlesRenderer,
-            >,
-        >,
+        renderer: &mut GlesRenderer,
+        elements: &mut Vec<SceneElement>,
     ) {
         for entry in self
             .layers
@@ -376,13 +531,30 @@ impl InoxState {
             .rev()
             .filter(|entry| entry.mapped && entry.surface.layer() == layer)
         {
-            elements.extend(entry.surface.render_elements(
-                self.renderer.renderer_mut(),
+            elements.extend(entry.surface.render_elements::<SceneElement>(
+                renderer,
                 entry.geometry.loc.to_physical_precise_round(1.0),
                 1.0.into(),
                 1.0,
             ));
         }
+    }
+
+    pub(crate) fn take_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.repaint)
+    }
+    pub(crate) fn background(&self) -> [f32; 4] {
+        self.background
+    }
+    pub(crate) fn frame_presented(&mut self) {
+        self.frames_rendered = self.frames_rendered.saturating_add(1);
+        self.send_frame_callbacks();
+    }
+    pub(crate) fn frame_callbacks(&mut self) {
+        self.send_frame_callbacks();
+    }
+    pub(crate) fn frame_budget(&self) -> bool {
+        self.exit_after_frames.is_some()
     }
 
     /// Send a `wl_surface.frame` callback to every mapped window.
@@ -433,7 +605,10 @@ impl InoxState {
     ///
     /// Returns a [`RenderError`] when the readback fails.
     pub fn read_frame_center_pixel(&mut self) -> Result<[u8; 4], RenderError> {
-        self.renderer.read_center_pixel()
+        self.renderer
+            .as_mut()
+            .ok_or(RenderError::NotHeadless)?
+            .read_center_pixel()
     }
 
     /// Read back the whole render target as tightly packed RGBA8 bytes.
@@ -445,11 +620,17 @@ impl InoxState {
     ///
     /// Returns a [`RenderError`] when the readback fails.
     pub fn read_frame_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
-        self.renderer.read_frame_rgba()
+        self.renderer
+            .as_mut()
+            .ok_or(RenderError::NotHeadless)?
+            .read_frame_rgba()
     }
 
     /// Size of the headless output in pixels, as `(width, height)`.
     pub fn output_size(&self) -> (i32, i32) {
+        if !self.output_active {
+            return (0, 0);
+        }
         let size = self
             .output
             .current_mode()
@@ -471,6 +652,168 @@ impl InoxState {
     /// The headless output advertised to clients.
     pub fn output(&self) -> &Output {
         &self.output
+    }
+
+    /// Whether an output is currently available and advertised.
+    pub fn output_active(&self) -> bool {
+        self.output_active
+    }
+
+    /// Replace the active output, preserving ordinary clients across device removal.
+    ///
+    /// Layers on a removed output receive `closed`; their clients recreate them for
+    /// the new output. This first hardware backend owns one active output at a time.
+    ///
+    /// # Errors
+    /// Returns a render error when a headless target cannot be resized.
+    pub fn replace_output(&mut self, output: Option<Output>) -> Result<(), RenderError> {
+        if let Some(output) = &output
+            && output
+                .current_mode()
+                .is_none_or(|mode| mode.size.w <= 0 || mode.size.h <= 0)
+        {
+            return Err(RenderError::InvalidSize {
+                width: 0,
+                height: 0,
+            });
+        }
+        if let Some(output) = &output
+            && let Some(renderer) = &mut self.renderer
+            && let Some(mode) = output.current_mode()
+        {
+            renderer.resize((mode.size.w, mode.size.h))?;
+        }
+        let same = output.as_ref() == Some(&self.output) && self.output_active;
+        if !same {
+            if let Some(global) = self.output_global.take() {
+                self.display_handle.remove_global::<Self>(global);
+            }
+            self.space.unmap_output(&self.output);
+            for entry in self.layers.drain(..) {
+                entry.surface.layer_surface().send_close();
+                entry
+                    .surface
+                    .with_surfaces(|surface, _| self.output.leave(surface));
+            }
+            self.layer_focus = None;
+        }
+        self.output_active = output.is_some();
+        if let Some(output) = output {
+            self.output = output;
+            if !same {
+                self.output_global = Some(self.output.create_global::<Self>(&self.display_handle));
+            }
+            self.space.map_output(&self.output, (0, 0));
+            self.work_area = Rectangle::from_size(self.output_size().into());
+            self.arrange_windows();
+            self.arrange_layers();
+            self.pointer_location = self.clamp_pointer(self.pointer_location);
+        } else {
+            self.work_area = Rectangle::default();
+        }
+        self.repaint = true;
+        self.sync_focus();
+        self.inject_pointer_motion(self.pointer_location);
+        Ok(())
+    }
+
+    /// Apply capabilities enumerated at the input-device boundary.
+    ///
+    /// Headless tests can drive this same path without mocking seat logic.
+    ///
+    /// # Errors
+    /// Returns an error when the configured keyboard cannot be created.
+    pub fn set_input_capabilities(
+        &mut self,
+        keyboard: bool,
+        pointer: bool,
+    ) -> Result<(), StateError> {
+        if keyboard && self.seat.get_keyboard().is_none() {
+            let delay = i32::try_from(self.input_config.keyboard_repeat_delay_ms)
+                .map_err(|_| StateError::InputConfig("repeat delay exceeds i32::MAX".to_owned()))?;
+            let rate = i32::try_from(self.input_config.keyboard_repeat_rate_hz)
+                .map_err(|_| StateError::InputConfig("repeat rate exceeds i32::MAX".to_owned()))?;
+            self.keyboard =
+                self.seat
+                    .add_keyboard(keyboard_config(&self.input_config), delay, rate)?;
+        } else if !keyboard && self.seat.get_keyboard().is_some() {
+            self.reset_keyboard();
+            let handle = self.keyboard.clone();
+            handle.set_focus(self, None, SERIAL_COUNTER.next_serial());
+            self.seat.remove_keyboard();
+        }
+        if pointer && self.seat.get_pointer().is_none() {
+            self.pointer = self.seat.add_pointer();
+            self.cursor_image = CursorImageStatus::default_named();
+        } else if !pointer && self.seat.get_pointer().is_some() {
+            let handle = self.pointer.clone();
+            handle.unset_grab(
+                self,
+                SERIAL_COUNTER.next_serial(),
+                smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                    .now()
+                    .as_millis(),
+            );
+            let event = MotionEvent {
+                location: self.pointer_location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                    .now()
+                    .as_millis(),
+            };
+            handle.motion(self, None, &event);
+            handle.frame(self);
+            self.seat.remove_pointer();
+        }
+        self.cursor_visible = pointer;
+        self.repaint = true;
+        self.sync_focus();
+        Ok(())
+    }
+
+    fn reset_keyboard(&mut self) {
+        if self.seat.get_keyboard().is_none() {
+            return;
+        }
+        for key in self.keyboard.pressed_keys() {
+            self.inject_key(key, KeyState::Released);
+        }
+        let keyboard = self.keyboard.clone();
+        keyboard.unset_grab(self);
+    }
+
+    pub(crate) fn reset_input(&mut self) {
+        self.reset_keyboard();
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.unset_grab(
+                self,
+                SERIAL_COUNTER.next_serial(),
+                smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                    .now()
+                    .as_millis(),
+            );
+        }
+    }
+
+    pub(crate) fn clamp_pointer(&self, location: Point<f64, Logical>) -> Point<f64, Logical> {
+        let (width, height) = self.output_size();
+        let clamp = |value: f64, size: i32| {
+            if value.is_finite() {
+                value.clamp(0.0, f64::from((size - 1).max(0)))
+            } else {
+                0.0
+            }
+        };
+        (clamp(location.x, width), clamp(location.y, height)).into()
+    }
+
+    pub(crate) fn inject_pointer_axis(&mut self, frame: AxisFrame) {
+        if self.seat.get_pointer().is_none() {
+            return;
+        }
+        let pointer = self.pointer.clone();
+        pointer.axis(self, frame);
+        pointer.frame(self);
     }
 
     /// The seat advertised to clients, carrying the keyboard and pointer capabilities.
@@ -516,7 +859,9 @@ impl InoxState {
 
     /// The surface currently holding the keyboard focus, if any.
     pub fn keyboard_focus(&self) -> Option<WlSurface> {
-        self.keyboard.current_focus()
+        self.seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
     }
 
     /// The last location reported for the pointer, in workspace coordinates.
@@ -542,6 +887,7 @@ impl InoxState {
     /// the compositor's, [`SwallowedPresses`] carries that decision to the release, and
     /// only a press can trigger an [`Action`].
     pub fn inject_key(&mut self, keycode: Keycode, state: KeyState) -> Option<Action> {
+        self.seat.get_keyboard()?;
         let keyboard = self.keyboard.clone();
         let serial = SERIAL_COUNTER.next_serial();
 
@@ -551,7 +897,9 @@ impl InoxState {
                 keycode,
                 state,
                 serial,
-                0,
+                smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                    .now()
+                    .as_millis(),
                 |data, modifiers, keysym| {
                     let action = match state {
                         KeyState::Pressed => action_for_key(keysym.modified_sym(), modifiers),
@@ -579,7 +927,11 @@ impl InoxState {
 
     /// Move the pointer to `location` and deliver the resulting enter/motion events.
     pub fn inject_pointer_motion(&mut self, location: Point<f64, Logical>) {
+        self.repaint |= self.cursor_visible && self.pointer_location != location;
         self.pointer_location = location;
+        if self.seat.get_pointer().is_none() {
+            return;
+        }
         let focus = self.surface_under(location);
 
         let pointer = self.pointer.clone();
@@ -587,7 +939,9 @@ impl InoxState {
         let event = MotionEvent {
             location,
             serial,
-            time: 0,
+            time: smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                .now()
+                .as_millis(),
         };
 
         pointer.motion(self, focus, &event);
@@ -596,6 +950,9 @@ impl InoxState {
 
     /// Deliver a pointer button press or release at the current location.
     pub fn inject_pointer_button(&mut self, button: u32, state: ButtonState) {
+        if self.seat.get_pointer().is_none() {
+            return;
+        }
         if state == ButtonState::Pressed && !self.pointer.is_grabbed() {
             self.focus_at_pointer();
         }
@@ -603,7 +960,9 @@ impl InoxState {
         let serial = SERIAL_COUNTER.next_serial();
         let event = ButtonEvent {
             serial,
-            time: 0,
+            time: smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                .now()
+                .as_millis(),
             button,
             state,
         };
@@ -626,6 +985,7 @@ impl InoxState {
                 self.sync_focus();
             }
             Action::Quit => self.request_exit(),
+            Action::SwitchVt(_) => {}
         }
     }
 
@@ -675,6 +1035,7 @@ impl InoxState {
 
     /// Suggest each managed window its tiled geometry and map it into the space.
     fn arrange_windows(&mut self) {
+        self.repaint = true;
         let tiles = self.workspace.arrange(self.work_area, self.layout);
         let mut mapped: Vec<Window> = Vec::with_capacity(tiles.len());
 
@@ -753,11 +1114,14 @@ impl InoxState {
         // is sent nothing at all — not even when the focus is set to `None`. Dropping
         // the offer is the client's own duty, and the protocol states it plainly
         // ("the data_offer is valid ... until the client loses keyboard focus").
+        let focused = focused.filter(|_| self.seat.get_keyboard().is_some() && self.output_active);
+        self.repaint |= self.keyboard.current_focus() != focused;
         let client = focused.as_ref().and_then(|surface| surface.client());
 
         let serial = SERIAL_COUNTER.next_serial();
-        let keyboard = self.keyboard.clone();
-        keyboard.set_focus(self, focused, serial);
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, focused, serial);
+        }
 
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
@@ -774,6 +1138,9 @@ impl InoxState {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if !self.output_active {
+            return None;
+        }
         for layer in [Layer::Overlay, Layer::Top] {
             if let Some(surface) = self.layer_under(layer, location) {
                 return Some(surface);
@@ -835,6 +1202,7 @@ impl InoxState {
     }
 
     fn arrange_layers(&mut self) {
+        self.repaint = true;
         let output_area = Rectangle::from_size(self.output_size().into());
         let mut area = output_area;
         // Reservations precede neutral surfaces regardless of creation order.
@@ -972,20 +1340,20 @@ fn clamp_size(size: Size<i32, Logical>) -> Size<i32, Logical> {
 
 /// The XKB configuration used for the seat keyboard.
 ///
-/// The layout is pinned rather than taken from the environment so that key codes
-/// resolve identically everywhere, which keeps the key bindings deterministic.
-fn keyboard_config() -> XkbConfig<'static> {
+/// Physical sessions use the loaded input configuration; headless tests pass
+/// deterministic defaults explicitly.
+fn keyboard_config(input: &inox_config::InputConfig) -> XkbConfig<'_> {
     XkbConfig {
         rules: "evdev",
         model: "pc105",
-        layout: "us",
-        variant: "",
+        layout: &input.keyboard_layout,
+        variant: &input.keyboard_variant,
         options: None,
     }
 }
 
 /// Create the headless output and advertise it to clients.
-fn create_headless_output(config: &CompositorConfig, display_handle: &DisplayHandle) -> Output {
+fn create_headless_output(config: &CompositorConfig) -> Output {
     let (width, height) = config.output_size();
 
     let output = Output::new(
@@ -1009,11 +1377,6 @@ fn create_headless_output(config: &CompositorConfig, display_handle: &DisplayHan
         Some(OutputScale::Integer(1)),
         Some(Point::from((0, 0))),
     );
-
-    // The global lives as long as the display does, and the compositor never removes
-    // outputs, so the handle is only reported and then dropped.
-    let global = output.create_global::<InoxState>(display_handle);
-    debug!(?global, output = %output.name(), "advertised wl_output global");
 
     output
 }
@@ -1065,6 +1428,7 @@ impl CompositorHandler for InoxState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        self.repaint = true;
         on_commit_buffer_handler::<Self>(surface);
         self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
@@ -1102,6 +1466,10 @@ impl WlrLayerShellHandler for InoxState {
         _layer: Layer,
         namespace: String,
     ) {
+        if !self.output_active {
+            surface.send_close();
+            return;
+        }
         if let Some(output) = output
             && Output::from_resource(&output).as_ref() != Some(&self.output)
         {
@@ -1149,8 +1517,9 @@ impl SeatHandler for InoxState {
         debug!(focused = focused.is_some(), "keyboard focus changed");
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {
-        // M2 has no cursor theme; the pointer is tracked but not drawn.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.repaint |= self.cursor_image != image;
+        self.cursor_image = image;
     }
 }
 

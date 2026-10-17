@@ -3,6 +3,7 @@
 - 状态：proposed
 - 日期：2026-10-16
 - 决策者：架构组
+- 关系：与 ADR 0012 冲突的条目已由其 accepted 决策取代（批准于 2026-10-17）；本文保留历史提案，不作为 `Session::auto()` / `Session::Direct`、静默 headless 回落、vblank 唯一帧源或 VT 延期的实施依据。
 
 ## 背景
 

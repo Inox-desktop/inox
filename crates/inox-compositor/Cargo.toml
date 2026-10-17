@@ -14,6 +14,7 @@ categories.workspace = true
 anyhow.workspace = true
 calloop.workspace = true
 inox-common.workspace = true
+inox-config.workspace = true
 # The single source of truth for the Wayland protocols the compositor consumes:
 # the curated core `wl_*` bindings and the private `inox-ipc` control protocol.
 inox-protocols.workspace = true

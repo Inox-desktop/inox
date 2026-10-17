@@ -1,10 +1,10 @@
 # ADR 0012: 输出拓扑、窗口焦点与帧调度采用显式生命周期
 
-- 状态：proposed
+- 状态：accepted
 - 日期：2026-10-16
-- 决策者：架构组（待人类评审）
-- 批准记录：待补
-- 关系：扩展 ADR 0005 的 headless 路径；收紧 ADR 0008 与真实后端提案的产品契约，不预先批准其具体 API 或 unsafe 清单
+- 决策者：项目维护者（当前开发会话用户）
+- 批准记录：2026-10-17，维护者在当前开发会话明确回复「批准了，继续」，批准按本 ADR 继续真实 DRM/GBM/libinput 后端；[实现 PR #18](https://github.com/Inox-desktop/inox/pull/18) 同步登记该批准。本记录是架构批准，不表示硬件验收通过。
+- 关系：扩展 ADR 0005 的 headless 路径；收紧 ADR 0008，取代 ADR 0010 提案中与本文冲突的 session API 假设、输出堆叠、vblank 唯一帧源、静默 headless 回落、无可见指针与 VT 延期条目；不预先批准具体 API 或 unsafe 清单
 
 ## 背景
 
@@ -77,3 +77,17 @@ M2.5 交付单屏真机闭环、VT 和可见指针；M4 完成多输出/布局/�
 影响面：`inox-compositor`、`inox-protocols`、`inox-config`、`inox-settings`、`inox-panel`、`inox-wallpaper` 与 `inox-integration`。不新增仓库或反向/横向 Cargo 依赖。
 
 复审条件：引入多 GPU/多 seat、HDR/VRR、远程输出或新的渲染后端时，另写 ADR 说明新增状态和支持矩阵；不得让实验能力自动进入 supported。
+
+## 实施记录（2026-10-17）
+
+当前开发会话获用户明确批准后接入单 GPU/一个活动输出的 DRM/GBM/libinput 路径。实际 API
+核对了锁定 Smithay 0.7.0 的 `backend/session/libseat.rs`、`backend/drm/device/mod.rs`、
+`backend/drm/surface/gbm.rs`、`backend/allocator/gbm.rs`、`backend/libinput/mod.rs` 与
+`backend/renderer/damage/mod.rs`。使用 `LibSeatSession::new`、`DrmDevice::new`、
+`GbmDevice::new`、`GbmBufferedSurface`、`Libinput::new_with_udev` 和现有 calloop 源；
+`KeyboardKeyEvent::key_code()` 已加 8，消费方不重复转换。仅物理 EGL/GLES 构造需要两处
+unsafe，均局限于 `backend/drm.rs::create_renderer` 并附 SAFETY 理由；不新增第三方依赖。
+
+从既有 L1 `inox-config` 消费启动期输入/平铺/主题/输出偏好，新增 L2→L1 的合法 path 边。
+首版不实现多屏/PRIME/旋转/非 1 倍缩放，不实施显示试用或配置事务的新 IPC。
+CI 证据与实现 PR 记录分开；O01/O04/H02 的硬件步骤未执行，不能预填通过。

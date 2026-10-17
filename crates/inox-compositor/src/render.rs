@@ -31,6 +31,9 @@ use smithay::{
         renderer::{
             Bind, ExportMem, Frame, Offscreen, Renderer,
             element::RenderElement,
+            element::{
+                memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
+            },
             gles::{GlesError, GlesRenderbuffer, GlesRenderer},
             utils::draw_render_elements,
         },
@@ -52,9 +55,26 @@ pub const CLEAR_COLOR: [f32; 4] = [
 /// Bytes per pixel of the render target, which uses [`Fourcc::Abgr8888`].
 const BYTES_PER_PIXEL: usize = 4;
 
+smithay::backend::renderer::element::render_elements! {
+    pub(crate) SceneElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
+
 /// Errors produced by the headless renderer.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
+    /// An offscreen target has invalid or unsupported dimensions.
+    #[error("invalid render target size {width}x{height}")]
+    InvalidSize {
+        /// Requested width.
+        width: i32,
+        /// Requested height.
+        height: i32,
+    },
+    /// A readback or headless render was requested on a physical output.
+    #[error("this operation requires a headless render target")]
+    NotHeadless,
     /// The EGL display or context could not be created.
     #[error("failed to create the EGL display or context")]
     Egl(#[from] EglError),
@@ -89,6 +109,7 @@ impl HeadlessRenderer {
     /// render target cannot be allocated.
     #[allow(unsafe_code)]
     pub fn new(size: (i32, i32)) -> Result<Self, RenderError> {
+        validate_size(size)?;
         // SAFETY: `EGLDisplay::new` takes ownership of the platform display and calls
         // `eglTerminate` when it is dropped. The compositor obtains its EGL display
         // through this single path, so there is no other owner to invalidate.
@@ -119,6 +140,23 @@ impl HeadlessRenderer {
     /// [`HeadlessRenderer::render_elements`].
     pub fn renderer_mut(&mut self) -> &mut GlesRenderer {
         &mut self.renderer
+    }
+
+    /// Replace the offscreen buffer while keeping the same EGL display.
+    ///
+    /// # Errors
+    /// Returns a render error if the new target cannot be allocated.
+    pub fn resize(&mut self, size: (i32, i32)) -> Result<(), RenderError> {
+        validate_size(size)?;
+        if self.size.w == size.0 && self.size.h == size.1 {
+            return Ok(());
+        }
+        let target = self
+            .renderer
+            .create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoord>::from(size))?;
+        self.target = target;
+        self.size = size.into();
+        Ok(())
     }
 
     /// Render `elements` over the background colour into the render target.
@@ -217,5 +255,29 @@ impl HeadlessRenderer {
         }
 
         Ok(data[..expected].to_vec())
+    }
+}
+
+fn validate_size((width, height): (i32, i32)) -> Result<(), RenderError> {
+    if !(1..=crate::config::MAX_DIMENSION).contains(&width)
+        || !(1..=crate::config::MAX_DIMENSION).contains(&height)
+    {
+        return Err(RenderError::InvalidSize { width, height });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_target_dimensions_are_rejected_before_egl_is_created() {
+        for size in [(-1, 1), (1, 0), (i32::MAX, 1)] {
+            assert!(matches!(
+                HeadlessRenderer::new(size),
+                Err(RenderError::InvalidSize { .. })
+            ));
+        }
     }
 }

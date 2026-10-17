@@ -12,28 +12,10 @@
 //! - `keyboard_layout` and `keyboard_variant` (`us`, empty) match the
 //!   `XkbConfig` its seat is created with in `src/state.rs`.
 //!
-//! Reserved for the milestone that wires this file into the input path:
-//!
-//! - `keyboard_repeat_delay_ms`, `keyboard_repeat_rate_hz`, `tap_to_click` and
-//!   `natural_scroll` are defaults this schema declares ahead of the input
-//!   backend; nothing reads them yet. inox-compositor has no libinput backend:
-//!   it hands Smithay's `add_keyboard` a hard-coded 200 ms repeat delay and
-//!   25 Hz repeat rate in `src/state.rs` — the rate coincides with the default
-//!   below, the delay deliberately does not — and it has no tap-to-click or
-//!   natural-scrolling setting at all.
-//!
-//!   The repeat delay is the one default where the two definitions disagree on
-//!   purpose. 600 ms is the user-facing default this schema declares; the 200 ms
-//!   in `src/state.rs` is an incidental argument of the M2 headless seat rather
-//!   than a recorded decision — ADR 0008 fixes the keymap rules, not the repeat
-//!   timing. When inox-compositor starts reading `compositor.toml`, the file
-//!   wins and the hard-coded pair is deleted: the resulting change in repeat
-//!   timing is a behaviour change for that component to make deliberately, and
-//!   not something this schema should pre-empt by shipping a 200 ms default.
-//!
-//! The values are duplicated instead of imported on purpose: root AGENTS.md
-//! forbids depending on a sibling component just to reuse a constant. Holding
-//! the two definitions together is a job for the planned M6 integration tests.
+//! The real backend reads this file at startup, including keyboard layout,
+//! repeat timing, tap-to-click and natural scrolling. Headless tests retain their
+//! deterministic input defaults. Timing values must fit the signed Wayland seat
+//! protocol representation; zero repeat rate disables repeat.
 
 use serde::{Deserialize, Deserializer};
 
@@ -84,8 +66,8 @@ const GAP_MIN: i32 = 0;
 pub struct CompositorConfig {
     /// Outputs to create, in the order they should be matched.
     ///
-    /// Empty — the default — means a single output using the built-in defaults
-    /// of [`OutputConfig`].
+    /// Empty selects backend defaults: native preferred mode for the physical
+    /// backend, or the deterministic CLI size for explicit headless tests.
     pub outputs: Vec<OutputConfig>,
     /// Input device settings.
     pub input: InputConfig,
@@ -134,10 +116,8 @@ impl Default for OutputConfig {
 
 /// Input device settings.
 ///
-/// These values are only checked for their type. The backend that would give a
-/// range to them does not exist yet — inox-compositor has no libinput backend,
-/// and it hands its own repeat delay and rate to Smithay — so a range check here
-/// would freeze a guess. Ranges arrive with the input backend.
+/// Keyboard timing must fit the signed seat protocol fields (0..=i32::MAX).
+/// Device-specific support for tap/scroll settings is checked by the real backend.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct InputConfig {
@@ -146,8 +126,10 @@ pub struct InputConfig {
     /// xkb variant of [`InputConfig::keyboard_layout`]; empty means none.
     pub keyboard_variant: String,
     /// Delay before a held key starts repeating, in milliseconds.
+    #[serde(deserialize_with = "validate_repeat_timing")]
     pub keyboard_repeat_delay_ms: u32,
     /// Repeat rate of a held key, in Hz.
+    #[serde(deserialize_with = "validate_repeat_timing")]
     pub keyboard_repeat_rate_hz: u32,
     /// Whether a tap on a touchpad counts as a click.
     pub tap_to_click: bool,
@@ -216,6 +198,19 @@ impl LayoutConfig {
             gap: self.gap.max(GAP_MIN),
         }
     }
+}
+
+fn validate_repeat_timing<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value > i32::MAX as u32 {
+        return Err(serde::de::Error::custom(
+            "keyboard repeat timing must fit 0..=2147483647",
+        ));
+    }
+    Ok(value)
 }
 
 /// Reject an output dimension outside 1..=[`MAX_DIMENSION`] pixels.
@@ -344,6 +339,26 @@ mod tests {
         assert_eq!(config.layout.master_ratio, 60);
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.layout.gap, 8);
+    }
+
+    #[test]
+    fn repeat_timings_fit_the_signed_wayland_protocol() {
+        for field in ["keyboard_repeat_delay_ms", "keyboard_repeat_rate_hz"] {
+            for value in [0, i32::MAX as u32] {
+                assert!(parse_compositor(&format!("[input]\n{field} = {value}\n")).is_ok());
+            }
+            let document = format!("[input]\n{field} = {}\n", u32::MAX);
+            let error = parse_compositor(&document).unwrap_err();
+            match error {
+                ConfigError::Parse {
+                    field: path, line, ..
+                } => {
+                    assert_eq!(path, Some(format!("input.{field}")));
+                    assert_eq!(line, Some(line_of(&document, field)));
+                }
+                other => panic!("unexpected error: {other}"),
+            }
+        }
     }
 
     #[test]

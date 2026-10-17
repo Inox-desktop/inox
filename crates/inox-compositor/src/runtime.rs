@@ -1,14 +1,21 @@
 //! The compositor event loop.
 //!
-//! The loop is driven by calloop (see ADR 0003) and wires together four sources:
-//! the Wayland listening socket, the Wayland display itself, the process signals
-//! that request a clean shutdown, and the timer that drives frames.
+//! Calloop drives Wayland sockets, the display and shutdown signals. Headless
+//! adds a paced timer; physical sessions add libseat, udev, libinput and DRM
+//! sources plus one-shot repaint/completion deadlines. Device event sources and
+//! their lifetime guards live in `physical`.
 //!
-//! A fifth source exists only in `test-input` builds: the control socket
-//! `--test-input` names (see `src/test_input.rs`). It is absent from a default build,
-//! which is also why the parser rejects the option there.
+//! The optional `test-input` source exists only in feature-enabled builds and
+//! remains inert without an explicit socket path.
 
-use std::{ffi::OsString, io, sync::Arc, time::Duration};
+use std::{
+    ffi::OsString,
+    io,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+mod physical;
 
 use calloop::{
     EventLoop, Interest, Mode, PostAction,
@@ -36,7 +43,7 @@ use crate::test_input::{
     to_ppm,
 };
 use crate::{
-    backend::DrmBackend,
+    backend::frame::FrameSchedule,
     config::{BackendKind, CompositorConfig},
     state::{ClientState, InoxState, StateError},
 };
@@ -44,6 +51,9 @@ use crate::{
 /// Errors that abort the compositor event loop.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
+    /// Headless rendering failed.
+    #[error(transparent)]
+    Render(#[from] crate::render::RenderError),
     /// The calloop event loop could not be created.
     #[error("failed to create the event loop")]
     EventLoop(#[from] calloop::Error),
@@ -87,12 +97,10 @@ pub enum RunError {
     /// The compositor was explicitly asked to run the DRM backend but the
     /// session, device or present path is not available on this system.
     ///
-    /// Emitted only under `--backend=drm`; both `--backend=auto` and
-    /// `--backend=headless` fall through to the headless path instead.
+    /// Both `auto` and `drm` require hardware. `headless` is explicit.
     #[error("the DRM backend is not runnable here: {reason}")]
     BackendUnavailable {
-        /// The rendered reason, either a libseat failure or the ADR 0010 §M3a
-        /// pending-present signal.
+        /// The failing session, device, allocation or presentation boundary.
         reason: String,
     },
 }
@@ -101,6 +109,12 @@ pub enum RunError {
 struct CalloopData {
     state: InoxState,
     display_handle: DisplayHandle,
+    physical: Option<physical::PhysicalState>,
+    frames: FrameSchedule,
+    paint_timer: Option<calloop::RegistrationToken>,
+    watchdog: Option<calloop::RegistrationToken>,
+    next_frame_at: Instant,
+    fatal: Option<RunError>,
     /// The live `--test-input` connection, if one is open.
     ///
     /// The registration token is kept next to the connection state so that the listener
@@ -121,7 +135,13 @@ struct CalloopData {
 /// socket or an event source cannot be set up, or when the compositor state cannot
 /// be built.
 pub fn run(config: CompositorConfig) -> Result<(), RunError> {
-    probe_backend(&config)?;
+    // Headless is an explicit choice. Auto selects hardware, never an invisible
+    // session with a success/ready report after device acquisition has failed.
+    let prepared = if config.backend == BackendKind::Headless {
+        None
+    } else {
+        Some(physical::prepare()?)
+    };
 
     let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
     let loop_handle = event_loop.handle();
@@ -130,11 +150,28 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
     let display: Display<InoxState> = Display::new()?;
     let display_handle = display.handle();
 
-    let state = InoxState::new(&display_handle, &config, loop_signal)?;
+    let state = match &prepared {
+        Some(prepared) => InoxState::new_physical(
+            &display_handle,
+            &config,
+            loop_signal,
+            prepared.output.clone(),
+            prepared.input.clone(),
+            prepared.theme.clone(),
+            prepared.layout,
+        )?,
+        None => InoxState::new(&display_handle, &config, loop_signal)?,
+    };
 
     let mut data = CalloopData {
         state,
         display_handle,
+        physical: None,
+        frames: FrameSchedule::default(),
+        paint_timer: None,
+        watchdog: None,
+        next_frame_at: Instant::now(),
+        fatal: None,
         #[cfg(feature = "test-input")]
         test_input: None,
     };
@@ -151,7 +188,11 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
 
     register_socket_source(&loop_handle, listening_socket, socket_name.clone())?;
     register_display_source(&loop_handle, display)?;
-    register_frame_source(&loop_handle, frame_interval(&config))?;
+    if let Some(prepared) = prepared {
+        physical::register(&loop_handle, &mut data, prepared)?;
+    } else {
+        register_frame_source(&loop_handle, frame_interval(&config))?;
+    }
 
     // In a default build the option cannot be set, so this block is compiled out and the
     // loop keeps exactly the four sources it always had.
@@ -162,9 +203,26 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         }
     }
 
-    info!(socket = ?socket_name, "inox-compositor ready");
+    if data.physical.is_none() {
+        info!(socket = ?socket_name, "inox-compositor ready (explicit headless backend)");
+    } else {
+        info!(socket = ?socket_name, "Wayland socket bound; waiting for first physical presentation");
+    }
 
-    event_loop.run(None, &mut data, |_| {})?;
+    let scheduling_handle = loop_handle.clone();
+    let result = event_loop.run(None, &mut data, move |data| {
+        if data.state.take_repaint() || data.state.frame_budget() {
+            data.frames.damage();
+        }
+        if data.physical.is_some() {
+            physical::arm_frame(&scheduling_handle, data);
+        }
+    });
+    physical::shutdown(&loop_handle, &mut data);
+    result?;
+    if let Some(error) = data.fatal.take() {
+        return Err(error);
+    }
 
     info!(
         frames = data.state.frames_rendered(),
@@ -179,50 +237,6 @@ fn frame_interval(config: &CompositorConfig) -> Duration {
     let refresh_hz = config.refresh_hz.max(1) as u64;
 
     Duration::from_nanos(1_000_000_000 / refresh_hz)
-}
-
-/// Decide whether the DRM backend can take over, and reflect that in the log.
-///
-/// ADR 0010 §6 pins three behaviours:
-///
-/// - `Headless` never touches libseat, so this returns `Ok(())` without probing.
-/// - `Auto` opens a session, and on any failure (session unavailable or the
-///   present path pending) logs a warning and lets the caller fall through to
-///   the headless event loop.
-/// - `Drm` is strict: any failure is surfaced as [`RunError::BackendUnavailable`]
-///   so the operator sees the real state instead of an implicit fallback.
-///
-/// Until M3a fills in the GBM/vblank present path, a successful probe still
-/// reports a pending signal and the compositor continues on headless.
-fn probe_backend(config: &CompositorConfig) -> Result<(), RunError> {
-    match config.backend {
-        BackendKind::Headless => {
-            debug!("backend=headless, skipping libseat probe");
-            Ok(())
-        }
-        BackendKind::Auto => match DrmBackend::open() {
-            Ok(backend) => {
-                if let Err(error) = backend.present() {
-                    warn!(%error, "backend=auto: DRM present path not ready, using headless");
-                }
-                Ok(())
-            }
-            Err(error) => {
-                warn!(%error, "backend=auto: DRM unavailable, using headless");
-                Ok(())
-            }
-        },
-        BackendKind::Drm => match DrmBackend::open() {
-            Ok(backend) => backend
-                .present()
-                .map_err(|error| RunError::BackendUnavailable {
-                    reason: error.to_string(),
-                }),
-            Err(error) => Err(RunError::BackendUnavailable {
-                reason: error.to_string(),
-            }),
-        },
-    }
 }
 
 /// Accept client connections and register them on the display.
@@ -319,13 +333,21 @@ fn register_frame_source(
         .insert_source(
             Timer::from_duration(interval),
             move |_, _, data: &mut CalloopData| {
+                if data.state.take_repaint() || data.state.frame_budget() {
+                    data.frames.damage();
+                }
+                let Some(token) = data.frames.begin() else {
+                    return TimeoutAction::ToDuration(interval);
+                };
                 if let Err(error) = data.state.render_frame() {
                     warn!(%error, "failed to render a frame, shutting down");
+                    data.fatal = Some(RunError::Render(error));
                     data.state.request_exit();
 
                     return TimeoutAction::Drop;
                 }
 
+                data.frames.complete(token);
                 // The frame callbacks `render_frame` just queued — and any selection
                 // offer a focus change queued before it — only leave the compositor once
                 // the display is flushed, and the display source fires on incoming data

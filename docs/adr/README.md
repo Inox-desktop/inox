@@ -58,7 +58,7 @@ proposed ──► accepted ──► superseded
 | [0009](./0009-configuration-model-and-reload.md) | 配置模型、设计令牌与热重载（L1 配置格式） | proposed | 2026-10-16 |
 | [0010](./0010-real-backend-drm-libinput.md) | M2.5 的真实后端（libseat session + DRM/KMS 输出 + libinput 输入） | proposed | 2026-10-16 |
 | [0011](./0011-evidence-based-acceptance.md) | 以用户场景、证据等级与支持矩阵验收桌面 | proposed | 2026-10-16 |
-| [0012](./0012-output-input-and-frame-lifecycle.md) | 输出拓扑、窗口焦点与帧调度采用显式生命周期 | proposed | 2026-10-16 |
+| [0012](./0012-output-input-and-frame-lifecycle.md) | 输出拓扑、窗口焦点与帧调度采用显式生命周期 | accepted | 2026-10-16 |
 | [0013](./0013-shell-service-and-interaction-contracts.md) | Shell 按服务契约协作，并验收完整用户任务 | proposed | 2026-10-16 |
 | [0014](./0014-configuration-apply-and-migration.md) | 配置应用、持久化与升级迁移具有失败原子性 | proposed | 2026-10-16 |
 | [0015](./0015-session-lock-and-failure-boundaries.md) | 会话监督、锁屏与特权能力按失败边界设计 | proposed | 2026-10-16 |
@@ -68,7 +68,7 @@ proposed ──► accepted ──► superseded
 
 ## 既有提案的复核与实施阻塞
 
-以下是新标准发现的差距，**不是**修改 accepted 历史正文或批准未决实现。ADR 0011–0015 全部仍为 proposed；彼此兼容性与下列事项须在人类评审中解决。
+以下是新标准发现的差距，**不是**修改 accepted 历史正文或批准未决实现。ADR 0011、0013–0015 仍为 proposed；ADR 0012 已于 2026-10-17 获当前开发会话批准；彼此兼容性与下列事项须在人类评审中解决。
 
 | 对象 | 要复核的具体问题 | 责任角色 / 最迟阶段 | 处理方向 |
 |------|------------------|--------------------|----------|

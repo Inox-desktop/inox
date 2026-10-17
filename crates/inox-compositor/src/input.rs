@@ -23,6 +23,8 @@ pub enum Action {
     FocusPrev,
     /// Ask the compositor to shut down cleanly.
     Quit,
+    /// Switch to a virtual terminal through the runtime's libseat session.
+    SwitchVt(u8),
 }
 
 /// Resolve a key press into a compositor [`Action`].
@@ -32,6 +34,15 @@ pub enum Action {
 /// different key symbols. Returns `None` when the key is not bound, in which
 /// case the event is forwarded to the focused client unchanged.
 pub fn action_for_key(sym: Keysym, modifiers: &ModifiersState) -> Option<Action> {
+    let raw = sym.raw();
+    if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&raw) {
+        return Some(Action::SwitchVt(
+            (raw - keysyms::KEY_XF86Switch_VT_1 + 1) as u8,
+        ));
+    }
+    if modifiers.ctrl && modifiers.alt && (keysyms::KEY_F1..=keysyms::KEY_F12).contains(&raw) {
+        return Some(Action::SwitchVt((raw - keysyms::KEY_F1 + 1) as u8));
+    }
     if modifiers.alt && is_tab(sym) {
         return Some(if modifiers.shift {
             Action::FocusPrev
@@ -99,6 +110,30 @@ impl SwallowedPresses {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_terminal_chords_are_intercepted_once() {
+        let modifiers = ModifiersState {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_F1), &modifiers),
+            Some(Action::SwitchVt(1))
+        );
+        assert_eq!(
+            action_for_key(
+                Keysym::new(keysyms::KEY_XF86Switch_VT_12),
+                &ModifiersState::default()
+            ),
+            Some(Action::SwitchVt(12))
+        );
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_F1), &ModifiersState::default()),
+            None
+        );
+    }
 
     fn tab() -> Keysym {
         Keysym::new(keysyms::KEY_Tab)

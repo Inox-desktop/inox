@@ -5,20 +5,16 @@
 //!
 //! # Current milestone
 //!
-//! The crate is on **M2.5** (PRD §13, ADR 0010): the M1/M2 headless path
-//! (surfaceless EGL, timer-driven frames, injected input) is complete and
-//! remains the CI target. The real DRM/KMS backend is being landed through a
-//! typed scaffold: `--backend` selects the surfaceless path (`headless`), the
-//! real path (`drm`) or an automatic probe that falls back to headless
-//! (`auto`, the default). Until M3a fills in the GBM swapchain and vblank
-//! present path, a successful DRM probe reports
-//! [`state::StateError`]-free `BackendError::Pending` and the compositor
-//! continues on headless, which is what ADR 0010 §9 defines as the CI
-//! contract. libinput arrives in M3b.
+//! The M2.5 hardware path uses libseat, Smithay DRM/GBM scanout, libinput
+//! and explicit frame lifetimes (accepted ADR 0012). Headless remains an explicit
+//! software-rendered CI backend. `auto` requires a usable physical output;
+//! device acquisition failure never reports a headless session as ready.
+//! Hardware support is limited to one active connector on one GPU, scale 1.
+//! CI evidence does not replace the O01/O04 human hardware acceptance.
 //!
 //! # Layout
 //!
-//! - [`backend`] — DRM/KMS real backend scaffold (ADR 0010).
+//! - [`backend`] — DRM/GBM, libinput and shared frame lifecycle (ADR 0012).
 //! - [`config`] — command line parsing into plain configuration data.
 //! - [`input`] — key presses mapped to compositor actions.
 //! - [`layout`] — the pure master/stack tiling geometry.
@@ -26,11 +22,12 @@
 //! - [`render`] — the EGL/GLES render target and one of the crate's `unsafe` sites.
 //! - `test_input` — the test-only control channel behind `--test-input`, present only in
 //!   builds with the `test-input` feature (off by default).
-//! - [`runtime`] — the calloop event loop: backend probe, Wayland socket, frame timer, signals.
+//! - [`runtime`] — the calloop event loop: Wayland, device sources, frame scheduling and signals.
 //! - [`state`] — Smithay compositor state and its protocol handlers.
 
 pub mod backend;
 pub mod config;
+mod cursor;
 pub mod input;
 mod layers;
 pub mod layout;
