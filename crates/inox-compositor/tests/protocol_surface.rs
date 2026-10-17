@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use inox_protocols::standard::wlr::layer_shell::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
@@ -49,6 +50,7 @@ const EXPECTED_GLOBALS: &[&str] = &[
     "wl_seat",
     "wl_output",
     "xdg_wm_base",
+    "zwlr_layer_shell_v1",
     "zxdg_output_manager_v1",
     "inox_ipc",
 ];
@@ -163,6 +165,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for RegistryClient {
 wayland_client::delegate_noop!(RegistryClient: ignore WpViewporter);
 wayland_client::delegate_noop!(RegistryClient: ignore WlDataDeviceManager);
 wayland_client::delegate_noop!(RegistryClient: ignore ZwpPrimarySelectionDeviceManagerV1);
+wayland_client::delegate_noop!(RegistryClient: ignore ZwlrLayerShellV1);
 
 /// What the client observed while talking to the compositor.
 #[derive(Debug, Default)]
@@ -192,6 +195,7 @@ fn talk_to_compositor(socket_path: &Path) -> anyhow::Result<ClientOutcome> {
     let _viewporter: WpViewporter = globals.bind(&queue_handle, 1..=1, ())?;
     let _data_device: WlDataDeviceManager = globals.bind(&queue_handle, 3..=3, ())?;
     let _primary: ZwpPrimarySelectionDeviceManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
+    let _layers: ZwlrLayerShellV1 = globals.bind(&queue_handle, 4..=4, ())?;
 
     // The compositor answers the sync only if every request above was accepted.
     queue.roundtrip(&mut state)?;

@@ -32,9 +32,10 @@ use smithay::{
             Bind, ExportMem, Frame, Offscreen, Renderer,
             element::RenderElement,
             gles::{GlesError, GlesRenderbuffer, GlesRenderer},
+            utils::draw_render_elements,
         },
     },
-    utils::{Buffer as BufferCoord, Physical, Rectangle, Scale, Size, Transform},
+    utils::{Buffer as BufferCoord, Physical, Rectangle, Size, Transform},
 };
 
 /// Background colour of the headless output, as 8-bit RGBA.
@@ -138,15 +139,11 @@ impl HeadlessRenderer {
             let mut frame = self.renderer.render(&mut bound, size, Transform::Normal)?;
             frame.clear(CLEAR_COLOR.into(), &damage)?;
 
-            for element in elements {
-                element.draw(
-                    &mut frame,
-                    element.src(),
-                    element.geometry(Scale::from(1.0f64)),
-                    &damage,
-                    &[],
-                )?;
-            }
+            // Smithay handles front-to-back ordering and element-local damage.
+            // This target always redraws fully, so no retained damage is needed.
+            drop(draw_render_elements::<GlesRenderer, _, _>(
+                &mut frame, 1.0f64, elements, &damage,
+            )?);
 
             // The readback performed by callers blocks until the frame is complete, so
             // the sync point is deliberately dropped rather than waited on.

@@ -6,7 +6,7 @@
 
 基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
 
-广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor`/`wl_subcompositor`、`wl_shm`、`wl_seat`、`wl_output`+`zxdg_output_manager_v1`、`xdg_wm_base`、私有 `inox_ipc`，以及 M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`）。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor`/`wl_subcompositor`、`wl_shm`、`wl_seat`、`wl_output`+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc`，以及 M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`）。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
 
 ## crate 特有约束
 
@@ -60,6 +60,7 @@
 - 一个测试进程只能持有一个 EGL display，**每个测试二进制中只保留一个创建 EGL 的测试**。
 - 进程级测试必须自备私有 `XDG_RUNTIME_DIR`（Wayland 套接字绑定需要绝对路径的运行时目录），并给子进程设定超时，避免 CI 挂死。
 - **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
+- **layer-shell**（`tests/layer_shell.rs`）：真实客户端覆盖四层像素顺序、独占区与平铺位置、显式/空输出、初次空提交后的 configure/ack、None/Exclusive/OnDemand 焦点、指针命中、frame callback、卸载/重映射、销毁和崩溃释放资源，以及未确认 configure 的客户端隔离。放置/独占区算法的属性测试覆盖极端整数参数；安全锁屏不属于该协议。
 - **剪贴板**（`tests/clipboard.rs`）：进程内、真实客户端——持焦点的客户端设置选择，随后获得焦点的客户端拿到 offer 并经 fd 读回字节（逐字节相等）；未获焦点的客户端**不得**被投递选择（这是 M3 的访问控制属性）。
 - **拖放**（`tests/drag_and_drop.rs`）：进程内、真实客户端——注入指针按下取得隐式抓取序号，客户端 A 发起拖放（两种 mime），指针移到 B 上后 B 收到 enter 与 mime，drop 后传输字节与源一致；另覆盖「指针移出所有表面后取消」（目标恰好收到一次 leave、不再收到 drop）与「拖放途中目标窗口被销毁」（合成器不崩、会话仍可用）。
 - 单线程驱动 + 截止时间：合成器与全部客户端在同一线程交替「收发」与「服务 display」，客户端套接字设为非阻塞，因此**不需要 sleep 排序、也不会有死锁线程**；每个等待都有超时。
@@ -74,6 +75,7 @@ src/
   config.rs       命令行解析、后端选择与配置数据（不依赖 Smithay）
   input.rs        按键 → 合成器动作的纯逻辑（Alt+Tab / Super+Q 等）
   layout.rs       master/stack 平铺几何（纯逻辑 + proptest）
+  layers.rs       layer-shell 放置与独占区计算（纯逻辑 + proptest）
   workspace.rs    窗口簿记与布局顺序（纯逻辑 + proptest）
   runtime.rs      calloop 事件循环：后端探测、套接字、信号、帧定时器（headless）
   render.rs       EGL surfaceless + GLES 离屏渲染（unsafe 例外之一）
