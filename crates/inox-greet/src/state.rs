@@ -121,6 +121,9 @@ impl Greeter {
     }
     /// Apply one event, rejecting stale, duplicated and expired successes.
     pub fn apply(&mut self, event: Event, now: Instant) -> Command {
+        if self.phase == Phase::SessionStarted {
+            return Command::None;
+        }
         if self.pending.is_some_and(|(_, deadline)| now >= deadline) {
             let old = self.pending.take();
             self.phase = Phase::Failed;
@@ -264,6 +267,8 @@ mod tests {
         );
         assert_eq!(greeter.phase(), Phase::Starting);
         greeter.apply(Event::SessionAnswered(current, true), now);
+        assert_eq!(greeter.phase(), Phase::SessionStarted);
+        assert_eq!(greeter.apply(Event::Cancel, now), Command::None);
         assert_eq!(greeter.phase(), Phase::SessionStarted);
     }
     #[test]

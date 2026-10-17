@@ -178,7 +178,7 @@ impl Process {
             .process_group(0);
         self.child = Some(command.spawn()?);
         self.restart_at = None;
-        info!(component = %self.spec.name, "started session process");
+        info!(component = %self.spec.name, pid = self.child.as_ref().map(Child::id), "started session process");
         Ok(())
     }
     fn signal(&self, signal: rustix::process::Signal) {
@@ -231,6 +231,8 @@ struct Supervisor {
     exit_deadline: Option<Instant>,
     stopping: Option<Instant>,
     compositor_stopping: bool,
+    services_killed: bool,
+    compositor_killed: bool,
     finished: bool,
     failure: Option<String>,
 }
@@ -265,8 +267,12 @@ impl Supervisor {
                 process.reap()?;
             }
             let elapsed = now.saturating_duration_since(stopped);
-            if elapsed >= Duration::from_secs(4) {
+            if elapsed >= Duration::from_secs(4) && !self.services_killed {
+                self.services_killed = true;
                 for process in self.services.iter().rev() {
+                    if process.child.is_some() {
+                        warn!(component = %process.spec.name, "shutdown grace period expired; sending SIGKILL");
+                    }
                     process.signal(rustix::process::Signal::KILL);
                 }
             }
@@ -277,7 +283,11 @@ impl Supervisor {
                 self.compositor.signal(rustix::process::Signal::TERM);
                 self.compositor_stopping = true;
             }
-            if elapsed >= Duration::from_secs(8) {
+            if elapsed >= Duration::from_secs(8) && !self.compositor_killed {
+                self.compositor_killed = true;
+                if self.compositor.child.is_some() {
+                    warn!("compositor shutdown grace period expired; sending SIGKILL");
+                }
                 self.compositor.signal(rustix::process::Signal::KILL);
             }
             self.finished =
@@ -423,6 +433,8 @@ pub fn run(spec: SessionSpec, options: RunOptions) -> Result<(), SessionError> {
         exit_deadline: options.exit_after.map(|d| now + d),
         stopping: None,
         compositor_stopping: false,
+        services_killed: false,
+        compositor_killed: false,
         finished: false,
         failure: None,
     };

@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 // without this reply must never start services. No desktop logic is mocked.
 const PEER: &str = r#"
 import os, socket, struct, signal, time
+assert os.environ['WAYLAND_DISPLAY'] == 'wayland-inox'
+assert 'WAYLAND_SOCKET' not in os.environ and 'DISPLAY' not in os.environ
 for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
     signal.signal(sig, lambda *_: exit(0))
 path = os.path.join(os.environ['XDG_RUNTIME_DIR'], 'wayland-inox')
@@ -113,12 +115,14 @@ fn protocol_readiness_crash_isolation_budgets_and_cleanup() {
     assert_eq!(std::fs::read(&marker).expect("bounded restarts"), b"xxxx");
     no_runtime_left(root.path());
 
+    let silent_marker = root.path().join("must-not-start");
+    let silent_script = format!("touch '{}'", silent_marker.display());
     let mut session = spec(
         root.path(),
         vec![service(
             "must-not-start",
             "/bin/sh",
-            &["-c", "exit 0"],
+            &["-c", &silent_script],
             true,
             true,
         )],
@@ -126,6 +130,10 @@ fn protocol_readiness_crash_isolation_budgets_and_cleanup() {
     session.environment.insert("SILENT".into(), "1".into());
     assert!(
         matches!(run(session, bounded(4)), Err(SessionError::Failed(reason)) if reason.contains("readiness timed out"))
+    );
+    assert!(
+        !silent_marker.exists(),
+        "socket existence must not start desktop services"
     );
     no_runtime_left(root.path());
 
@@ -245,4 +253,24 @@ fn actual_supervisor_signal_shutdown_is_graceful_and_cleans_its_runtime() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!root.path().join(format!("inox-session-{pid}")).exists());
+}
+
+#[test]
+fn unresponsive_service_is_killed_within_the_logout_budget() {
+    let root = tempfile::tempdir().expect("runtime root");
+    let session = spec(
+        root.path(),
+        vec![service(
+            "ignores-term",
+            "/bin/sh",
+            &["-c", "trap '' TERM; exec sleep 60"],
+            true,
+            false,
+        )],
+    );
+    let start = Instant::now();
+    run(session, bounded(1)).expect("forced cleanup still completes logout");
+    assert!(start.elapsed() >= Duration::from_secs(4));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    no_runtime_left(root.path());
 }
