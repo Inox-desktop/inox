@@ -66,8 +66,8 @@ const GAP_MIN: i32 = 0;
 pub struct CompositorConfig {
     /// Outputs to create, in the order they should be matched.
     ///
-    /// Empty — the default — means a single output using the built-in defaults
-    /// of [`OutputConfig`].
+    /// Empty selects backend defaults: native preferred mode for the physical
+    /// backend, or the deterministic CLI size for explicit headless tests.
     pub outputs: Vec<OutputConfig>,
     /// Input device settings.
     pub input: InputConfig,

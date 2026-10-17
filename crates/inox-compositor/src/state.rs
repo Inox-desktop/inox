@@ -668,6 +668,16 @@ impl InoxState {
     /// Returns a render error when a headless target cannot be resized.
     pub fn replace_output(&mut self, output: Option<Output>) -> Result<(), RenderError> {
         if let Some(output) = &output
+            && output
+                .current_mode()
+                .is_none_or(|mode| mode.size.w <= 0 || mode.size.h <= 0)
+        {
+            return Err(RenderError::InvalidSize {
+                width: 0,
+                height: 0,
+            });
+        }
+        if let Some(output) = &output
             && let Some(renderer) = &mut self.renderer
             && let Some(mode) = output.current_mode()
         {

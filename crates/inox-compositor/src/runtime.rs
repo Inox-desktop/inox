@@ -1,12 +1,12 @@
 //! The compositor event loop.
 //!
-//! The loop is driven by calloop (see ADR 0003) and wires together four sources:
-//! the Wayland listening socket, the Wayland display itself, the process signals
-//! that request a clean shutdown, and the timer that drives frames.
+//! Calloop drives Wayland sockets, the display and shutdown signals. Headless
+//! adds a paced timer; physical sessions add libseat, udev, libinput and DRM
+//! sources plus one-shot repaint/completion deadlines. Device event sources and
+//! their lifetime guards live in `physical`.
 //!
-//! A fifth source exists only in `test-input` builds: the control socket
-//! `--test-input` names (see `src/test_input.rs`). It is absent from a default build,
-//! which is also why the parser rejects the option there.
+//! The optional `test-input` source exists only in feature-enabled builds and
+//! remains inert without an explicit socket path.
 
 use std::{
     ffi::OsString,
