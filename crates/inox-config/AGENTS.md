@@ -16,15 +16,23 @@
 - `config.toml` 与组件配置文件缺失一律回退默认值；文件存在但读取或解析失败必须报错，不得吞掉。
   主题文件（`themes/<name>/theme.toml`）缺失是**错误**（`ThemeNotFound`）：显式选择却读不到，
   不得静默换成内置主题。
-- 只实现**当下有消费者**的 schema：`shell.toml` / `notifications.toml` 目前只登记路径，字段模型随各自里程碑引入，不得臆造。
+- 只实现**当下有消费者**的 schema：L3 里程碑到达后，`shell.toml`（`src/shell.rs`）与
+  `notifications.toml`（`src/notifications.rs`）的字段模型随各自的消费者一并落地；仍然没有消费者的
+  字段不得臆造。
+- `panel.clock_format` 只接受 `CLOCK_DIRECTIVES` 列出的指令子集，**不是** strftime 透传：其它 `%x`
+  与结尾的孤立 `%` 都在解析期报错，不得原样透传给面板。
+- `config.toml` 的 `[locale]` 是会话唯一的语言解析点：`LocaleConfig::resolve` 先 `Locale::parse`
+  再 `Locale::negotiate`，任何语言都落到 Inox 实际提供的目录上；标签不合法在解析期报错，
+  不得静默回退（`resolve` 只对**未经解析**的手工构造值兜底）。POSIX 的 `C` / `POSIX` 在配置文件里
+  同样报错并提示「省略 `[locale]` 以跟随环境」：它们是「没有语言」的标记，不是语言名。
 - 越界值必须在**解析期报错**，不得静默 clamp（ADR 0009 决策 4）：平铺参数由 `LayoutConfig`
   校验，输出参数（尺寸 1..=16384、刷新率 1..=1000、`scale` 为正有限数）由 `OutputConfig`
   校验，范围与 `inox-compositor` 的 `MAX_DIMENSION` / `MAX_REFRESH_HZ` 一致；
   `LayoutConfig::sanitised()` 只作消费方对非配置来源的防御兜底。
 - `[input]` 目前只校验类型，不校验范围：真实输入后端尚未落地，没有范围依据；范围校验随输入后端引入。
 - `ConfigError::InvalidComponentPath` 的校验必须在 `InoxConfig::load` 内对 `[components]`
-  的**三个**路径都执行：尚未实现 schema 的文件也要在启动期失败，而不是等组件启动才失败；
-  空值、绝对路径与逃逸路径一律拒绝（ADR 0009 决策 11）。
+  的**三个**路径都执行，且在任何组件文件被读取之前完成：路径逃逸要在 Inox 启动期失败，
+  而不是等某个组件启动才失败；空值、绝对路径与逃逸路径一律拒绝（ADR 0009 决策 11）。
 - 主题文件的 `appearance` 只接受 `light` / `dark`（`ThemeAppearance`）；`system` 只属于
   `config.toml` 的选择层，`Appearance::System` 仅在选择层出现。
 
@@ -68,7 +76,21 @@
   - `InoxConfig::load`：配置目录不存在（全默认）、组件文件缺失（默认）、组件文件损坏（`Parse` 带文件+行+字段）、磁盘上的自定义主题、主题缺失（`ThemeNotFound`）；
   - `ConfigStore`：首次加载、重载读到改动、重载失败（组件文件损坏、**主题文件损坏**）后保留原 `Arc` 内容并返回 `Err`、失败后仍能成功重载；
   - 覆盖率补齐：TOML 语法错误（无字段路径但有位置）、`config.toml` 自身损坏、`[components]` 只写一个键时其余取默认名、`[[outputs]]` 只写 `scale` 时其余取默认值；
-  - 错误位置的列按**字符**计：在出错点之前放多字节字符，断言列号不被字节数带偏。
+  - 错误位置的列按**字符**计：在出错点之前放多字节字符，断言列号不被字节数带偏；
+  - `shell` / `notifications` 的**每一项默认值**（空文档与各 section 的 `Default`），以及只写一个
+    section、section 写空时的部分回退；
+  - shell 与 notifications 每个范围各自的越界用例（报 `Parse`、字段路径形如 `panel.height`、
+    `launcher.max_results`、`display.width`、`queue.max_pending`、`timeouts.critical_ms`，带文件与行号）
+    与边界取值被接受；
+  - 时钟格式：`CLOCK_DIRECTIVES` 的每个指令与 `%%` 被接受，`%Q`、结尾的孤立 `%`、以及合法文本
+    中间的非法指令被拒绝；
+  - shell / notifications 的未知键与未知 section 报 `Parse` 并给出点分字段路径；
+  - 枚举拼写：`top`/`bottom`、`fill`/`tile`、`top-right`、`coalesce-by-app` 被接受，未知值被拒绝；
+  - `locale`：缺席为 `None`、合法标签被解析并协商、非法标签报 `Parse` 且字段为 `locale.language`、
+    `resolve()` 在 `None` 时跟随环境（经 `Locale::from_env_with` 注入验证，测试不得改进程环境）；
+  - `InoxConfig::load`：`shell.toml` / `notifications.toml` 缺席（默认）与损坏（`Parse` 带各自文件
+    路径与字段路径）、自定义 `shell.toml` / `notifications.toml` 被读到、`[locale]` 被解析并写入
+    `InoxConfig::locale`。
 - 测试中断言的行号/列号必须由所写文件内容推导，不得硬编码猜测。
 - **`ConfigPaths::discover`（以及 `XdgEnv::from_process`）不做单元测试**：edition 2024 下 `std::env::set_var` 是 `unsafe`，本 crate `forbid(unsafe_code)`，测试无法改写进程环境；解析逻辑全部经 `ConfigPaths::from_xdg` 注入快照验证。
 - `cargo test --all-features` 必须保持全绿。
@@ -79,9 +101,11 @@
 src/lib.rs          crate 入口与公开 API 再导出
 src/error.rs        ConfigError、读文件/解析辅助函数
 src/paths.rs        ConfigPaths：PRD §9.1 的目录布局
-src/root.rs         config.toml 模型
+src/root.rs         config.toml 模型（组件路径、环境、主题选择、locale）
 src/theme.rs        设计令牌、内置主题与主题解析
 src/compositor.rs   compositor.toml 模型
+src/shell.rs        shell.toml 模型（面板、启动器、壁纸）
+src/notifications.rs notifications.toml 模型（显示、超时、队列、策略）
 src/store.rs        InoxConfig::load 与 ConfigStore 热重载
 tests/              集成测试（按需创建）
 ```

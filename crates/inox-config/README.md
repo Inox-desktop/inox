@@ -20,8 +20,8 @@
   只是消费方对非配置来源的防御兜底。
 - `[input]` 目前只校验类型不校验范围：真实输入后端尚未落地，范围校验随它一起到来。
 - 文件缺失只记 `debug!`，所以排查「配置没生效」时用 `RUST_LOG=inox_config=debug` 运行。
-- `[components]` 的三个路径在**启动时**全部校验，即使 `shell.toml` / `notifications.toml`
-  的 schema 尚未实现；空值、绝对路径与越出配置目录的路径一律拒绝。
+- `[components]` 的三个路径在**启动时**全部校验，且在任何组件文件被读取之前完成；
+  空值、绝对路径与越出配置目录的路径一律拒绝。
 - 主题文件的 `appearance` 只接受 `light` / `dark`：主题只描述一种配色，
   `system` 只属于 `config.toml` 的选择层。
 
@@ -29,21 +29,23 @@
 
 ```
 ~/.config/inox/
-├── config.toml          # 顶层：组件文件、环境变量、主题选择
+├── config.toml          # 顶层：组件文件、环境变量、主题选择、语言
 ├── compositor.toml      # 输出、输入、平铺布局
-├── shell.toml           # 仅登记路径，schema 随 M4 到达
-├── notifications.toml   # 仅登记路径，schema 随 M5 到达
+├── shell.toml           # 面板、启动器、壁纸
+├── notifications.toml   # 通知显示、超时、队列与策略
 └── themes/
     └── <name>/
         ├── theme.toml   # 颜色、排版、间距、圆角、动效时长
         └── assets/
 ```
 
-- `config.toml` 与组件配置文件（`compositor.toml`，以及 M4/M5 的 `shell.toml`、`notifications.toml`）
+- `config.toml` 与三个组件配置文件（`compositor.toml`、`shell.toml`、`notifications.toml`）
   缺失不是错误：回退到默认值。文件存在却无法读取或解析则是错误。
 - **主题文件缺失是错误**：`themes/<name>/theme.toml` 不存在返回 `ThemeNotFound`（ADR 0009 决策 6）——
   显式选了一个主题却读不到，不能悄悄换成深色。
-- `shell.toml` 与 `notifications.toml` 目前只在 `[components]` 里给出**路径**，字段模型待各自里程碑引入，暂不臆造。
+- `shell.toml`（`src/shell.rs`）与 `notifications.toml`（`src/notifications.rs`）的字段模型随各自的消费者
+  落地：面板、启动器、壁纸与通知守护进程。`[locale]` 是会话唯一的语言解析点，消费方从
+  `InoxConfig::locale` 取已协商的语言，不自行读取环境变量。
 - `compositor.toml` 的输出默认值（1280x720@60、scale 1.0）与平铺默认值（`master_ratio` 60、
   `master_count` 1、`gap` 8）与 `inox-compositor` 当前实现一致；这一致性目前靠人工核对，
   计划在 M6 由 `inox-integration` 的对照测试钉住（该测试尚不存在）。
