@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="inox_ipc">
+  <copyright>
+    Copyright (c) 2026, Inox Desktop Contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="inox_ipc" version="1">
+    <description summary="Inox private IPC root global">
+      Private, unstable Inox protocol used for control messages between the
+      compositor and the Inox shell and session components.
+
+      This protocol is an Inox extension and is not part of the upstream
+      wayland-protocols. It is versioned independently and its interface may
+      change in a backwards-incompatible way until Inox 1.0; consumers must
+      negotiate via the version event instead of assuming a fixed revision.
+
+      The global is advertised by the compositor. A client binds it once and
+      uses it to ask the compositor to perform session-wide control actions.
+    </description>
+
+    <enum name="reload_result">
+      <description summary="outcome of an inox_ipc request"/>
+      <entry name="success" value="0" summary="the request completed successfully"/>
+      <entry name="rejected" value="1" summary="the request was rejected by the compositor"/>
+      <entry name="io_error" value="2" summary="reading or writing persistent state failed"/>
+      <entry name="unsupported" value="3" summary="the requested operation is not supported"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the inox_ipc object"/>
+    </request>
+
+    <request name="get_version">
+      <description summary="ask the compositor to report the inox-ipc protocol version">
+        Ask the compositor to send the current version event. Clients use this
+        to negotiate capabilities before issuing other requests.
+      </description>
+    </request>
+
+    <request name="reload_config">
+      <description summary="ask the compositor to reload its configuration from disk">
+        Ask the compositor to re-read its configuration and apply it
+        atomically. The compositor answers with a config_reloaded event. On
+        failure the compositor must keep the previously active configuration.
+      </description>
+    </request>
+
+    <event name="version">
+      <description summary="the inox-ipc protocol version implemented by the compositor"/>
+      <arg name="version" type="uint" summary="protocol version implemented by the compositor"/>
+    </event>
+
+    <event name="config_reloaded">
+      <description summary="result of a reload_config request"/>
+      <arg name="result" type="uint" enum="reload_result" summary="outcome of the reload"/>
+    </event>
+  </interface>
+</protocol>

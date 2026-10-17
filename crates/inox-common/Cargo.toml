@@ -1,0 +1,21 @@
+[package]
+name = "inox-common"
+description = "Shared types, error handling and logging utilities for the Inox desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# ADR 0002 rule 2: `inox-common` is the leaf. It depends on no other Inox crate,
+# and `crates/inox-integration/tests/layering.rs` enforces that on every run.
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

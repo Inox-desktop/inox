@@ -1,7 +1,7 @@
 # AGENTS.md — Inox Desktop
 
-> 本文件是 Inox 项目**面向 AI 代理的根级约束文档**。任何仓库、任何代理在开始工作前必须先完整阅读本文件，再阅读所在仓库的 `AGENTS.md`。
-> 仓库级 `AGENTS.md` 只能**追加/收紧**约束，**不得放宽或违反**本文件的硬性规则。
+> 本文件是 Inox 项目**面向 AI 代理的根级约束文档**。任何代理在开始工作前必须先完整阅读本文件，再阅读所在 crate 的 `AGENTS.md`。
+> crate 级 `AGENTS.md` 只能**追加/收紧**约束，**不得放宽或违反**本文件的硬性规则。
 > 目标读者：AI 编码代理（主要）、人类贡献者（次要）。
 
 ---
@@ -12,40 +12,43 @@ Inox 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + Ic
 采用 **AI-first** 开发：AI 写代码，人类做架构决策、PR 审查与真实硬件验收。**CI（GitHub Actions）是唯一构建与测试验证途径。**
 
 - 组织：https://github.com/Inox-desktop
-- 许可证：BSD 3-Clause（每个仓库根目录必须有 `LICENSE`）
-- 产品需求以 `inox` 元仓库的 `PRD.md` 为准。
-- 架构决策以 `inox` 元仓库的 `docs/adr/` 为准。
+- 代码组织：**单一仓库（Cargo workspace）**，组件在 `crates/`，文档在 `docs/`（ADR 0016，取代 ADR 0001 的多仓库策略）
+- 许可证：BSD 3-Clause（仓库根目录有 `LICENSE`）
+- 产品需求以本仓库的 `PRD.md` 为准。
+- 架构决策以本仓库的 `docs/adr/` 为准。
 
 ---
 
 ## 1. 适用范围与优先级
 
-1. 代理必须同时遵守 **根级 `AGENTS.md`（本文件）** 与 **当前仓库的 `AGENTS.md`**。
-2. 冲突时：仓库级规则优先，**但**凡属于第 3 节“硬性规则”的条目，任何仓库级文档都不得放宽。
+1. 代理必须同时遵守 **根级 `AGENTS.md`（本文件）** 与 **当前 crate 的 `AGENTS.md`**。
+2. 冲突时：crate 级规则优先，**但**凡属于第 3 节“硬性规则”的条目，任何 crate 级文档都不得放宽。
 3. 用户当次指令与本文档冲突时，以用户当次指令为准，但需在 PR 中说明理由。
-4. 若某仓库没有 `AGENTS.md`，视为仅受本文件约束，并应尽快按 §12 模板补齐。
+4. 若某 crate 没有 `AGENTS.md`，视为仅受本文件约束，并应尽快按 §12 模板补齐。
 
 ---
 
-## 2. 仓库地图（分层，依赖只能向下）
+## 2. 工作区 crate 地图（分层，依赖只能向下）
 
 ```
-L1  inox-common, inox-config, inox-docs
-L2  inox-compositor, inox-protocols, inox-xwayland
+L1  inox-common, inox-config
+L2  inox-protocols, inox-compositor, inox-xwayland
 L3  inox-shell, inox-panel, inox-launcher, inox-notifications,
     inox-settings, inox-lock, inox-wallpaper
 L4  inox-session, inox-idle, inox-greet
-元   inox, .github
 测试 inox-integration
 ```
 
+- 全部组件 crate 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（ADR 0016，取代 ADR 0001 的多仓库策略）。用户与开发者文档站点 `inox-docs` 位于 `docs/book/`，无 `Cargo.toml`，不参与依赖图，也不受 Rust 类规则约束。
+- **层级成员的唯一事实来源**是根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`；本节清单与 PRD §3.1 的组件表都必须与它一致。
 - `inox-common` 不得依赖任何其他 Inox crate。
 - 合成器与 Shell **不通过 Rust 依赖**耦合，只通过 Wayland 协议 / D-Bus / IPC 通信。
-- 禁止反向依赖、跨层横向依赖、循环依赖。
+- 禁止反向依赖、同层横向依赖、循环依赖。
+- 以上规则**由 CI 机械强制**，不再只靠约定：`cargo test -p inox-integration --test layering`（验收项 B04）读取真实依赖图逐条断言，失败信息指明具体的边与被违反的规则条目。新增 crate 而未在层级表登记会直接失败。
 
 ---
 
-## 3. 硬性规则（Hard Rules，任何仓库不可违反）
+## 3. 硬性规则（Hard Rules，任何 crate 不可违反）
 
 违反以下任一条的改动将被直接拒绝：
 
@@ -96,7 +99,7 @@ L4  inox-session, inox-idle, inox-greet
 - 每个 crate：对纯逻辑必须有单元测试；核心算法用 `proptest`（窗口管理、布局）。
 - 合成器：提供 **headless 集成测试**，软件渲染（`LIBGL_ALWAYS_SOFTWARE=1`），验证输出创建、渲染、输入事件、干净退出。
 - Shell / GUI：用 **waydriver** 在虚拟 Wayland 合成器（`weston --backend=headless`）中启动、截图、断言。
-- 覆盖率：核心 crate 行覆盖默认 ≥ 70%（可在仓库 `AGENTS.md` 收紧，不得放宽到 0）。
+- 覆盖率：核心 crate 行覆盖默认 ≥ 70%（可在 crate 级 `AGENTS.md` 收紧，不得放宽到 0）。
 - 禁止 mock 掉被测的核心逻辑；只在系统边界（DRM、输入设备、D-Bus）打桩。
 - 新增或修改行为必须同时新增/更新对应测试。
 
@@ -130,17 +133,25 @@ L4  inox-session, inox-idle, inox-greet
 
 ## 8. 依赖管理
 
-- 跨仓库依赖使用 Git 依赖并锁定 `tag` 或 `rev`：
+- 工作区**内部**的 Inox crate 之间使用 **path 依赖**，统一在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明一次，成员用 `{ workspace = true }` 引用：
 
   ```toml
-  inox-config = { git = "https://github.com/Inox-desktop/inox-config", tag = "v0.1.0" }
+  # 根 Cargo.toml
+  [workspace.dependencies]
+  inox-common = { path = "crates/inox-common", version = "0.1" }
+
+  # crates/inox-config/Cargo.toml
+  [dependencies]
+  inox-common.workspace = true
   ```
 
-  禁止使用未锁定的 `branch = "main"`。
+  path 依赖必须带显式 `version`，否则其隐式 `*` 会被 `deny.toml` 的 `[bans] wildcards = "deny"` 判为通配符依赖而失败。**禁止**再对 Inox crate 使用 git 依赖或 `tag` 锁定。
+- 第三方依赖同样只在 `[workspace.dependencies]` 声明版本，成员用 `{ workspace = true }` 引用并按需追加自己的 feature。版本升级只改这一处；禁止成员各自绑定不同版本。
+- 工作区**外部**的依赖仍必须锁定 `tag` 或 `rev`；禁止使用未锁定的 `branch = "main"`。
+- MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一取值（当前 1.86）：成员一律 `rust-version.workspace = true`，不得各自声明。
 - 新增依赖需在 PR 描述中说明用途与许可证；优先选择已有生态中被广泛使用的 crate。
 - 不随意升级 major 版本；升级需跑通 CI 并说明破坏性影响。
-- 依赖安全：`cargo deny check`（许可证 + RUSTSEC 漏洞 + 重复版本）必须通过。
-- 跨仓库升级流程：先升上游并发布 tag → 再更新下游 Git 依赖 → 最后在 `inox-integration` 验证兼容性。
+- 依赖安全：`cargo deny check`（许可证 + RUSTSEC 漏洞 + 重复版本）针对**完整依赖图**必须通过。
 
 ---
 
@@ -151,7 +162,7 @@ L4  inox-session, inox-idle, inox-greet
 格式：`<type>(<scope>): <subject>`
 
 - `type` ∈ `feat` `fix` `docs` `refactor` `perf` `test` `build` `ci` `chore` `revert`。
-- `scope` 使用仓库/模块名，如 `compositor`、`config`、`panel`。
+- `scope` 使用 crate/模块名（省略 `inox-` 前缀），如 `compositor`、`config`、`panel`。
 - 示例：
   - `feat(compositor): 支持 headless 后端创建输出`
   - `fix(config): 热重载失败时保留旧配置`
@@ -160,7 +171,7 @@ L4  inox-session, inox-idle, inox-greet
 
 ### 9.2 PR
 
-- 一个 PR 聚焦一件事；描述必须包含：动机、改动、影响的仓库、测试方式、性能影响（如有）。
+- 一个 PR 聚焦一件事；描述必须包含：动机、改动、受影响的 crate、测试方式、性能影响（如有）。
 - 涉及架构/协议/依赖方向变更时链接对应 ADR。
 - 必须通过：分支保护 + CI 全绿 + ≥1 名人类审查。
 - 由 AI 修复 CI 失败时，在 PR 追加说明改动了什么。
@@ -175,20 +186,25 @@ L4  inox-session, inox-idle, inox-greet
 |------|------|
 | 格式化 | `cargo fmt --all` |
 | 格式检查 | `cargo fmt --all -- --check` |
-| 静态检查 | `cargo clippy --all-targets --all-features -- -D warnings` |
-| 测试 | `cargo test --all-features` |
-| 构建 | `cargo build --release --all-features` |
-| 文档 | `cargo doc --no-deps --all-features` |
+| 静态检查 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
+| 全量测试 | `cargo test --workspace --all-features` |
+| **单个 crate 测试** | `cargo test -p <crate> --all-features` |
+| 分层方向检查 | `cargo test -p inox-integration --test layering` |
+| 构建 | `cargo build --workspace --release --all-features` |
+| 文档 | `cargo doc --workspace --no-deps --all-features` |
 | 依赖检查 | `cargo deny check` |
-| headless 渲染 | `LIBGL_ALWAYS_SOFTWARE=1 <bin> --headless` |
+| 用户文档站点 | `mdbook build docs/book` |
+| headless 渲染 | `LIBGL_ALWAYS_SOFTWARE=1 cargo run -p inox-compositor -- --headless` |
 
-**CI 期望**：以上 4–9 步全部通过；合成器/Shell 额外的 headless 与 waydriver 测试通过；无 clippy 警告。
+单 crate 命令与 CI 的测试矩阵逐条一致（见下），因此「本地这样跑过」与「CI 上这样跑」是同一件事；但结果仍**不作为验收依据**。
+
+**CI 期望**：`.github/workflows/ci.yml` 的全部 job 通过 —— `fmt`、`clippy`、`cargo-deny`、`doc`、release 构建，以及**按 crate 分片**的测试矩阵、XWayland 端到端与 mdbook 构建；无 clippy 警告。测试矩阵由 `plan` job 从层级表推导（一个 crate 只要登记了层级，就必然被构建与测试），因此分片不会漏 crate，失败也可归因到具体 crate。
 
 ---
 
 ## 11. AI 代理工作流
 
-1. 阅读本文件 + 当前仓库 `AGENTS.md` + 相关 PRD/ADR。
+1. 阅读本文件 + 当前 crate `AGENTS.md` + 相关 PRD/ADR。
 2. 明确任务范围，只改动必要文件。
 3. 实现代码并补齐测试/文档/文案（i18n）。
 4. 本地仅做轻量自检（`fmt` / `check` / `clippy`，可选），**不把结果当验收**。
@@ -199,30 +215,31 @@ L4  inox-session, inox-idle, inox-greet
 ### 常见任务配方
 
 - **新增一个协议**：在 `inox-protocols` 定义 → 合成器集成 → 加 headless 测试 → 更新 PRD 协议矩阵。
-- **新增一个仓库**：先写 ADR → 按 §12 建骨架（含 `AGENTS.md`、`LICENSE`、CI、`rust-toolchain.toml`）→ 更新 `inox` 元仓库 PRD §3.1 与兼容矩阵。
-- **跨仓库升级依赖**：见 §8。
+- **新增一个组件 crate**：先写 ADR（新增 crate 属破坏性架构变更）→ 在 `crates/<name>` 建骨架（`Cargo.toml`、`src/`、`README.md`、`AGENTS.md`，manifest 字段一律 `*.workspace = true`）→ **在根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]` 登记层级**（不登记则 `layering.rs` 失败）→ 更新根 `AGENTS.md` §2 与 PRD §3.1。
+- **在 crate 之间新增依赖**：先确认方向合法（§2）→ 在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明 → 成员 `{ workspace = true }` 引用 → 跑 `cargo test -p inox-integration --test layering`。
+- **升级依赖版本**：改根 `Cargo.toml` 的 `[workspace.dependencies]` 一处 → 跑 CI。工作区内部不再有 tag 升级流程。
 - **新增 UI 功能**：Iced 组件 → 走 Fluent 文案 → 用主题令牌 → waydriver 截图测试。
 
 ---
 
-## 12. 仓库级 `AGENTS.md` 模板
+## 12. crate 级 `AGENTS.md` 模板
 
-新仓库请以本模板创建 `AGENTS.md`，只补充仓库特有内容：
+新 crate 请以本模板创建 `crates/<name>/AGENTS.md`，只补充该 crate 特有内容：
 
 ```markdown
-# AGENTS.md — <repo-name>
+# AGENTS.md — <crate-name>
 
-本仓库遵循根级 `AGENTS.md`（https://github.com/Inox-desktop/inox/blob/main/AGENTS.md）的全部硬性规则。
+本 crate 遵循根级 `AGENTS.md`（https://github.com/Inox-desktop/inox/blob/main/AGENTS.md）的全部硬性规则。
 
 ## 职责
-<一句话职责 + 在分层中的位置>
+<一句话职责 + 在分层中的位置（与根 Cargo.toml 的层级表一致）>
 
-## 仓库特有约束
+## crate 特有约束
 - <例如：本 crate 允许受限 unsafe，范围：...>
 - <例如：额外禁止项>
 
 ## 主要依赖
-<上游 Inox crate 与其锁定 tag；关键第三方 crate>
+<同工作区的 Inox crate（path 依赖）；关键第三方 crate>
 
 ## 命令
 | 目的 | 命令 |
@@ -230,7 +247,7 @@ L4  inox-session, inox-idle, inox-greet
 | ... | ... |
 
 ## 测试要求
-<本仓库的测试类型、覆盖率阈值>
+<本 crate 的测试类型、覆盖率阈值>
 
 ## 目录结构
 <关键目录说明>
@@ -253,4 +270,4 @@ L4  inox-session, inox-idle, inox-greet
 
 ---
 
-*本文件是活文档；修改硬性规则需经人类批准并同步更新各仓库 `AGENTS.md`。*
+*本文件是活文档；修改硬性规则需经人类批准并同步更新各 crate `AGENTS.md`。*

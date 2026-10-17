@@ -1,0 +1,30 @@
+[package]
+name = "inox-xwayland"
+description = "XWayland integration service for the Inox compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+categories.workspace = true
+# The one crate that extends the shared keyword list.
+keywords = ["wayland", "desktop", "inox", "xwayland"]
+
+[dependencies]
+anyhow.workspace = true
+calloop.workspace = true
+inox-common.workspace = true
+# rustix is used to send SIGTERM to the supervised satellite process; the
+# `process` feature exposes the safe `process::kill_process` API, which keeps
+# the crate free of `unsafe`.
+rustix.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# No `unsafe` exception: the workspace default `forbid` applies unchanged.
+[lints]
+workspace = true

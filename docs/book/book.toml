@@ -1,0 +1,8 @@
+[book]
+title = "Inox Docs"
+authors = ["Inox Desktop Contributors"]
+language = "zh-CN"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/Inox-desktop/inox"

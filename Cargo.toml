@@ -1,0 +1,134 @@
+# Inox desktop — cargo workspace root.
+#
+# ADR 0016 replaced the multi-repository strategy (ADR 0001) with this single
+# workspace. Every component is a member under `crates/`; the layer table in
+# `[workspace.metadata.inox]` is the single source of truth for the L1–L4
+# layering of ADR 0002, and `crates/inox-integration/tests/layering.rs` asserts
+# the dependency-direction rules against it on every CI run.
+#
+# `inox-docs` (the mdBook in `docs/book/`) is deliberately not a member: it has
+# no `Cargo.toml`, takes part in no dependency graph, and is excluded from
+# `cargo deny` (see root AGENTS.md §2).
+
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+# One version for the whole workspace. Independent per-crate SemVer was the
+# compatibility matrix this ADR removed; a single release line replaces it.
+#
+# `0.1.1` and not `0.2.0`: `inox-common`'s live release line is `v0.1.1`, and
+# main's `compat.toml` records that `v0.2.0` was re-cut to it and the old tag is
+# retired (the `paths` addition is a compatible change, which is a patch under
+# 0.x per ADR 0010 版本号语义与发布流程, still `proposed`). Taking 0.2.0 would
+# reuse a retired number. If that ADR is rejected or changes the MSRV rule
+# (this migration raises MSRV to 1.86 for eleven crates), this is the one line
+# to revisit.
+version = "0.1.1"
+edition = "2024"
+# Converged on 1.86: `inox-protocols` (wayland-protocols 0.32) and
+# `inox-compositor` (calloop 0.14 via smithay 0.7) already required it.
+rust-version = "1.86"
+license = "BSD-3-Clause"
+repository = "https://github.com/Inox-desktop/inox"
+readme = "README.md"
+keywords = ["wayland", "desktop", "inox"]
+categories = ["desktop"]
+
+[workspace.dependencies]
+# --- workspace-internal crates (path dependencies; never a git tag) -------
+# The explicit `version` keeps `deny.toml`'s `[bans] wildcards = "deny"`
+# satisfied: a path dependency without one carries an implicit `*`.
+inox-common = { path = "crates/inox-common", version = "0.1" }
+
+# --- third-party: one version for the whole graph -------------------------
+anyhow = "1"
+calloop = { version = "0.14", features = ["signals"] }
+rustix = { version = "1", features = ["process"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_path_to_error = "0.1"
+toml = "0.8"
+
+wayland-backend = "0.3"
+wayland-client = "0.31"
+wayland-server = "0.31"
+wayland-scanner = "0.31"
+wayland-protocols = "0.32"
+wayland-protocols-wlr = { version = "0.3", features = ["client", "server"] }
+
+smithay = { version = "0.7.0", default-features = false, features = [
+    "desktop",
+    "renderer_gl",
+    "wayland_frontend",
+    # Real backend (ADR 0010): session ownership via libseat, DRM/KMS output,
+    # GBM render target, udev-enumerated libinput devices.
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session",
+    "backend_session_libseat",
+] }
+
+# --- dev-dependencies ----------------------------------------------------
+proptest = "1"
+tempfile = "3"
+serde_json = "1"
+
+[workspace.lints.rust]
+# Root AGENTS.md §3.2. `inox-compositor` and `inox-xwayland` are the two
+# crates allowed to narrow this to `deny` in their own manifest, because they
+# hold the approved local `unsafe` glue.
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+# Layer membership for ADR 0002. `crates/inox-integration/tests/layering.rs`
+# reads this table, checks that it covers exactly the workspace members, and
+# then enforces the dependency-direction rules. Adding a crate without giving
+# it a layer here fails CI rather than escaping the rules.
+[workspace.metadata.inox.layers]
+l1 = ["inox-common", "inox-config"]
+l2 = ["inox-protocols", "inox-compositor", "inox-xwayland"]
+l3 = [
+    "inox-shell",
+    "inox-panel",
+    "inox-launcher",
+    "inox-notifications",
+    "inox-settings",
+    "inox-lock",
+    "inox-wallpaper",
+]
+l4 = ["inox-session", "inox-idle", "inox-greet"]
+test = ["inox-integration"]
+
+[workspace.metadata.inox.rules]
+# ADR 0002 rule 3: no Rust dependency may cross this boundary in either
+# direction — the compositor and the shell talk over Wayland / inox-ipc / D-Bus.
+decoupled = [["inox-compositor", "inox-shell"]]
+
+# ADR 0002 rule 6: the only L3 crate permitted to depend on `inox-compositor`.
+# ADR 0013 proposes removing this exception; delete the entry when it is
+# accepted, and the check starts enforcing the stricter rule.
+l3_dependencies_on_compositor = ["inox-wallpaper"]
+
+# ADR 0002 rule 1 forbids same-layer edges, but `inox-config` depends on
+# `inox-common` by design (PRD §3.1): L1 has an internal order that a four-rank
+# layer model cannot express. The ADR index already tracks this ambiguity, and
+# the check enforces rule 1 as written, so the dependency is recorded here as a
+# machine-visible exception instead of being left implicit. Resolving it — by
+# amending rule 1 for intra-layer ordering, or by restating the leaf rule —
+# needs an ADR. Removing the entry turns CI red.
+#
+# The same list is where the shell family's ambiguity goes: PRD §3.1 lists
+# `inox-panel` and friends as depending on `inox-shell` (L3 -> L3), which rule 1
+# also forbids. Nothing does yet, so nothing is listed; adding those edges needs
+# an ADR and an entry here.
+same_layer_exceptions = [["inox-config", "inox-common"]]

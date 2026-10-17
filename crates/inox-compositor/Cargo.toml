@@ -1,0 +1,45 @@
+[package]
+name = "inox-compositor"
+description = "The Inox Wayland compositor, built on Smithay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+calloop.workspace = true
+inox-common.workspace = true
+smithay.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The window-management integration test drives a real Wayland client against an
+# in-process display, so it needs the client-side protocol bindings.
+wayland-client.workspace = true
+wayland-protocols = { workspace = true, features = ["client"] }
+
+# This crate cannot use `lints.workspace = true`: cargo rejects inheriting the
+# workspace lints while also overriding one of them. It therefore restates the
+# workspace set verbatim with the single approved difference. Keep it in sync
+# with `[workspace.lints]` in the root Cargo.toml — `tests/layering.rs` does not
+# cover this, so a drift here is a review item.
+[lints.rust]
+# Root AGENTS.md §3.2 exception. The workspace defaults to `forbid`; this crate
+# narrows it to `deny` because it holds the two approved `unsafe` sites:
+# `src/render.rs` (EGL/GLES construction, ADR 0005) and `src/runtime.rs` (the
+# calloop `Display` hand-off, ADR 0005). ADR 0010 §7 pre-authorises the same
+# pattern for the DRM/GBM/libinput backend as it lands. Each site still needs
+# its `// SAFETY:` note, and a new `allow` outside the AGENTS.md whitelist still
+# needs an ADR first.
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

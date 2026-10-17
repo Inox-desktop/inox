@@ -6,12 +6,12 @@
 
 - **组织**：<https://github.com/Inox-desktop>
 - **许可证**：BSD 3-Clause（见 [`LICENSE`](./LICENSE)）
-- **本仓库**：`inox` 元仓库（项目总览、路线图、PRD、ADR、组件兼容矩阵）
+- **本仓库**：`inox` 单仓库（Cargo workspace：产品代码、PRD、ADR、文档站点）
 
-产品质量要求见 [PRD 1.2](./PRD.md)、[桌面验收规范](./docs/quality/acceptance.md)与[验收报告模板](./docs/quality/acceptance-report.md)。本轮参考 [Plasma Desktop 固定快照](./docs/quality/plasma-reference.md)，新增 [ADR 0011–0015](./docs/adr/README.md) 均为 proposed，待人类评审；文档中的新门槛不代表 CI 已接线或产品已通过。
+产品质量要求见 [PRD 1.3](./PRD.md)、[桌面验收规范](./docs/quality/acceptance.md)与[验收报告模板](./docs/quality/acceptance-report.md)。本轮参考 [Plasma Desktop 固定快照](./docs/quality/plasma-reference.md)，新增 [ADR 0011–0015](./docs/adr/README.md) 均为 proposed，待人类评审；文档中的新门槛不代表 CI 已接线或产品已通过。
 
-> 本仓库是**元仓库**：它不包含产品代码，只承载跨仓库的架构决策与文档。
-> 各组件仓库是组织 `Inox-desktop` 下彼此独立的 GitHub 仓库；本地并行开发时它们聚合在本仓库的 `repos/` 目录中，该目录已被本仓库 `.gitignore` 忽略，不进入元仓库的版本控制。
+> 本仓库是**单一仓库（Cargo workspace）**：全部组件位于 [`crates/`](./crates)，架构决策与文档位于 [`docs/`](./docs)。
+> 各组件是工作区成员而非独立仓库，彼此通过 path 依赖连接、一次 PR 一次 CI 完成跨层改动；决策见 [ADR 0016](./docs/adr/0016-single-repository-cargo-workspace.md)（取代 [ADR 0001](./docs/adr/0001-polyrepo-strategy.md) 的多仓库策略）。
 
 ---
 
@@ -23,7 +23,7 @@ Inox 是一个现代 Wayland 桌面环境，目标是构建模块化、可维护
 
 - 构建一个模块化、可维护、高性能的 Wayland 桌面环境。
 - 最大化利用 Rust 生态中成熟的合成器库与 GUI 框架（Smithay / Iced / calloop）。
-- 通过多仓库拆分实现清晰的模块边界，便于 AI 独立开发与测试。
+- 通过单一职责的 crate 实现清晰的模块边界，既能局部开发与局部测试（`cargo test -p <crate>`），又允许跨 crate 的改动在一个 PR 内原子完成。
 - 建立以 GitHub Actions 为核心的持续集成流水线，作为唯一的构建验证途径。
 - 采用 BSD 3-Clause 许可证，保持开源友好。
 
@@ -42,13 +42,13 @@ Inox 是一个现代 Wayland 桌面环境，目标是构建模块化、可维护
 4. **配置即数据**：所有用户可见行为由 TOML 驱动，可热重载。
 5. **可观测性内建**：使用 `tracing` 结构化日志，默认无遥测上传。
 6. **无静默失败**：错误必须显式传播或记录，禁止吞掉错误。
-7. **AI 可读性**：命名、目录、文档保持一致性，任何仓库的约定不得与根级 [`AGENTS.md`](./AGENTS.md) 冲突。
+7. **AI 可读性**：命名、目录、文档保持一致性，任何 crate 的约定不得与根级 [`AGENTS.md`](./AGENTS.md) 冲突。
 
 ---
 
 ## 2. 架构分层
 
-Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`），禁止反向依赖、跨层横向依赖与循环依赖。
+Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`），禁止反向依赖、同层横向依赖与循环依赖。层级成员登记在根 [`Cargo.toml`](./Cargo.toml) 的 `[workspace.metadata.inox.layers]`，并由 `crates/inox-integration/tests/layering.rs`（验收项 B04）在 CI 中逐条断言。
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -65,7 +65,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 │  inox-protocols                              │
 ├─────────────────────────────────────────────┤
 │ Layer 1: 基础设施与共享库                    │
-│  inox-common, inox-config, inox-docs         │
+│  inox-common, inox-config                    │
 └─────────────────────────────────────────────┘
 ```
 
@@ -73,6 +73,8 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 - **Layer 2**：核心 Wayland 合成器，基于 Smithay，处理 DRM/KMS、输入、渲染、窗口管理与 XWayland 集成。
 - **Layer 3**：桌面 Shell，使用 Iced 构建面板、启动器、通知、设置等用户界面组件。
 - **Layer 4**：会话管理、显示管理器、空闲管理等系统级服务。
+
+全部 L1–L4 组件都是本仓库 `crates/` 下的工作区成员。文档站点 `inox-docs` 不属于任何层：它是 `docs/book/` 下的 mdBook，无 `Cargo.toml`，不参与依赖图。
 
 ### 运行时数据流
 
@@ -96,37 +98,36 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 ---
 
-## 3. 仓库清单
+## 3. 组件清单
 
-所有仓库位于 GitHub 组织 `Inox-desktop` 下，采用**多仓库策略**：每个仓库独立版本、独立 CI，跨仓库依赖通过锁定 `tag` 的 Git 依赖管理。
+全部组件都是本仓库 [`crates/`](./crates) 下同一个 Cargo workspace 的成员，依赖关系是工作区内的 **path 依赖**，版本由 `[workspace.package]` 统一给出。**层级成员的唯一事实来源是根 [`Cargo.toml`](./Cargo.toml) 的 `[workspace.metadata.inox.layers]`**，下表必须与它一致（由验收项 B04 断言）。
 
-| 仓库名 | 层级 | 职责 | 主要依赖 | 发布物 |
-|--------|------|------|----------|--------|
-| `.github` | 组织 | 组织级工作流模板、ISSUE/PR 模板、CONTRIBUTING | — | — |
-| `inox` | 元仓库 | 项目总览、路线图、PRD、ADR、集成测试入口、文档索引 | 所有子仓库 | 文档 |
-| `inox-common` | L1 | 共享类型、错误处理、日志、工具函数 | — | crate |
-| `inox-config` | L1 | 配置模型、TOML 解析、默认配置 | `inox-common`, serde | crate |
-| `inox-docs` | L1 | 用户与开发者文档 | — | 文档站点（mdBook） |
-| `inox-compositor` | L2 | Wayland 合成器，基于 Smithay | `inox-common`, `inox-config`, `inox-protocols` | 二进制 `inox-comp` |
-| `inox-protocols` | L2 | 标准协议绑定与自定义 Wayland 协议扩展 | `wayland-rs` | crate |
-| `inox-xwayland` | L2 | XWayland 集成（基于 xwayland-satellite） | `inox-compositor` | 二进制/服务 |
-| `inox-shell` | L3 | Shell 主框架，插件系统 | `inox-common`, `inox-config`, Iced | 二进制 `inox-shell` |
-| `inox-panel` | L3 | 面板（任务栏、系统托盘、时钟） | `inox-shell` | 二进制 `inox-panel` |
-| `inox-launcher` | L3 | 应用启动器 | `inox-shell` | 二进制 `inox-launcher` |
-| `inox-notifications` | L3 | 通知守护进程 | `inox-shell` | 二进制 `inox-notifications` |
-| `inox-settings` | L3 | 系统设置应用 | `inox-shell` | 二进制 `inox-settings` |
-| `inox-lock` | L3 | 锁屏 | `inox-shell` | 二进制 `inox-lock` |
-| `inox-wallpaper` | L3 | 壁纸设置与渲染 | `inox-compositor` | 二进制 `inox-wallpaper` |
-| `inox-session` | L4 | 会话管理器，启动合成器与 Shell | `inox-compositor`, `inox-shell` | 二进制 `inox-session` |
-| `inox-idle` | L4 | 空闲管理 | `inox-session` | 二进制 `inox-idle` |
-| `inox-greet` | L4 | 显示管理器（可选） | `inox-session` | 二进制 `inox-greet` |
-| `inox-integration` | 测试 | 端到端集成测试，聚合所有组件 | 所有仓库 | 测试报告 |
+| crate | 层级 | 路径 | 职责 | 发布物 |
+|-------|------|------|------|--------|
+| `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、工具函数 | crate |
+| `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate |
+| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate |
+| `inox-compositor` | L2 | `crates/inox-compositor` | Wayland 合成器，基于 Smithay | 二进制 `inox-compositor` |
+| `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 |
+| `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架，插件系统 | 二进制 `inox-shell` |
+| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` |
+| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` |
+| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` |
+| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` |
+| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` |
+| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` |
+| `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` |
+| `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` |
+| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` |
+| `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 |
 
-**规划中的仓库**（1.0 之后或按需提前）：`inox-portal`（PORTAL 后端）、`inox-screenshot`（截图/录屏）、`inox-osd`（屏幕提示）、`inox-cli`（`inoxctl` 命令行工具）。
+工作区之外还有两处非 crate 位置：`docs/book/`（用户与开发者文档站点，mdBook，无 `Cargo.toml`）与组织仓库 `.github`（组织级工作流与 ISSUE/PR 模板）。
 
-### 组件兼容矩阵
+**规划中的组件**（1.0 之后或按需提前，新增 crate 须先写 ADR）：`inox-portal`（Portal 后端）、`inox-screenshot`（截图/录屏）、`inox-osd`（屏幕提示）、`inox-cli`（`inoxctl` 命令行工具）。
 
-集成仓库 `inox-integration` 消费本仓库根目录的 [`compat.toml`](./compat.toml) 以获知各组件当前兼容版本。组件发布后在 `[components]` 段登记 `<name> = "<tag>"`。
+### 兼容性记录
+
+工作区唯一的 [`Cargo.lock`](./Cargo.lock) 就是组件兼容性记录，也是验收项 L01 的不可变清单来源。此前的 `compat.toml` 兼容矩阵已随 ADR 0016 删除：它需要人工维护，且在迁移前已经与实际依赖的 tag 不一致。
 
 ---
 
@@ -147,7 +148,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 以下“已完成”仅保留历史标准下的进展；新标准的差距与阻塞见 [ADR 复核清单](./docs/adr/README.md#既有提案的复核与实施阻塞)，本次未追认通过。
 
-当前状态：**M0、M1、M2 已完成**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main` 且 CI 全绿，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）；协议绑定集中于 `inox-protocols`（标准 `wl_*` 再导出 + 私有 `inox-ipc`，见 [ADR 0006](./docs/adr/0006-protocol-strategy.md)，状态 `accepted`），合成器以其为唯一协议来源。M2 在同一 headless 路径上扩展 `inox-compositor`：经 `wl_seat` 处理键盘/指针事件、以 `xdg-shell` toplevel 管理 ≥2 个窗口、按 master/stack 平铺布局（`proptest` 验证），决策见 [ADR 0008](./docs/adr/0008-m2-input-windows-tiling.md)；真实输入设备（libinput/udev）与 DRM/KMS 真实输出仍待后续里程碑。同期 `inox-xwayland` 实现 PRD M3 的 XWayland 侧：以**监督外部 `xwayland-satellite` 进程**（运行时系统依赖）的方式集成无根 XWayland，不链接其 crate，决策见 [ADR 0007](./docs/adr/0007-xwayland-satellite-integration.md)；其端到端验证在 headless 第三方合成器（weston）上进行，剪贴板/拖放与 `-listenfd` 按需激活仍待后续里程碑。`inox-common` 随 M1 新增 `logging` 模块，成为首个跨仓库依赖；`inox-common` `v0.1.0`、`inox-compositor` `v0.1.0` 与 `inox-protocols` `v0.1.0` 均已发布并登记于 [`compat.toml`](./compat.toml)。
+当前状态：**M0、M1、M2 已完成**。M1 的 headless 合成器实现（创建输出、渲染纯色帧、收到终止信号后干净退出，退出码 0）已合入 `inox-compositor` 的 `main` 且 CI 全绿，渲染路径见 [ADR 0005](./docs/adr/0005-headless-compositor-runtime.md)（现状态 `accepted`）；协议绑定集中于 `inox-protocols`（标准 `wl_*` 再导出 + 私有 `inox-ipc`，见 [ADR 0006](./docs/adr/0006-protocol-strategy.md)，状态 `accepted`），合成器以其为唯一协议来源。M2 在同一 headless 路径上扩展 `inox-compositor`：经 `wl_seat` 处理键盘/指针事件、以 `xdg-shell` toplevel 管理 ≥2 个窗口、按 master/stack 平铺布局（`proptest` 验证），决策见 [ADR 0008](./docs/adr/0008-m2-input-windows-tiling.md)；真实输入设备（libinput/udev）与 DRM/KMS 真实输出仍待后续里程碑。同期 `inox-xwayland` 实现 PRD M3 的 XWayland 侧：以**监督外部 `xwayland-satellite` 进程**（运行时系统依赖）的方式集成无根 XWayland，不链接其 crate，决策见 [ADR 0007](./docs/adr/0007-xwayland-satellite-integration.md)；其端到端验证在 headless 第三方合成器（weston）上进行，剪贴板/拖放与 `-listenfd` 按需激活仍待后续里程碑。`inox-common` 随 M1 新增 `logging` 模块。上述组件此前以多仓库形式开发，并在组件仓库中打过 `v0.1.0` / `v0.2.0` / `v0.1.0` 的 tag；[ADR 0016](./docs/adr/0016-single-repository-cargo-workspace.md) 把这些仓库的源码合并进本工作区（工作区统一版本 `0.1.1`），组件仓库待归档；`inox-common` 的 `v0.2.0` 已重切为 `v0.1.1` 并退役。
 
 ---
 
@@ -173,11 +174,11 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 Inox 采用 **AI-first** 工作流，贡献流程如下：
 
-1. 阅读根级 [`AGENTS.md`](./AGENTS.md)，以及目标仓库根目录的 `AGENTS.md`（仓库级规则只能收紧、不得放宽根级硬性规则）。
+1. 阅读根级 [`AGENTS.md`](./AGENTS.md)，以及目标 crate 目录下的 `AGENTS.md`（crate 级规则只能收紧、不得放宽根级硬性规则）。
 2. 涉及架构变更时，先在本仓库 `docs/adr/` 提交 ADR（状态 `proposed` → `accepted`）：
-   新增/删除仓库、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay/Iced/calloop）、改变 IPC 或配置格式的破坏性变更**必须先写 ADR**。
+   新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay/Iced/calloop）、改变 IPC 或配置格式的破坏性变更**必须先写 ADR**。
 3. 在功能分支（`feat/xxx`、`fix/xxx`、`chore/xxx`、`docs/xxx`）上改动，提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)：`<type>(<scope>): <subject>`。
-4. 创建 PR，描述包含：动机、改动、影响的仓库、测试方式、性能影响（如有）；涉及架构变更时链接对应 ADR。
+4. 创建 PR，描述包含：动机、改动、受影响的 crate、测试方式、性能影响（如有）；涉及架构变更时链接对应 ADR。
 5. 等待 **CI 全绿 + 至少 1 名人类审查**；不自行合并到 `main`，不使用 `--no-verify` 绕过 CI。
 
 ### 硬性规则速查
@@ -192,6 +193,23 @@ Inox 采用 **AI-first** 工作流，贡献流程如下：
 
 完整规则见 [`AGENTS.md`](./AGENTS.md)，产品需求见 [`PRD.md`](./PRD.md)。
 
+### 本地命令
+
+> 仅供参考，不作为本地验收依据；真正的判定在 CI。
+
+| 目的 | 命令 |
+|------|------|
+| 格式化 | `cargo fmt --all` |
+| 静态检查 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
+| 全部测试 | `cargo test --workspace --all-features` |
+| **单个 crate 测试** | `cargo test -p <crate> --all-features` |
+| 分层方向检查 | `cargo test -p inox-integration --test layering` |
+| 构建 | `cargo build --workspace --release --all-features` |
+| 依赖检查 | `cargo deny check` |
+| 文档站点 | `mdbook build docs/book` |
+
+CI 的测试矩阵由层级表推导，每个分片执行的正是上表的 `cargo test -p <crate>`，因此本地命令与 CI 命令逐字一致。
+
 ### 本仓库的文档检查
 
 `.md` 文件由 CI 工作流 `.github/workflows/docs.yml` 使用 `markdownlint-cli2` 检查（排除 `repos/` 与 `node_modules/`）；规则配置见 [`.markdownlint.json`](./.markdownlint.json)。
@@ -200,6 +218,6 @@ Inox 采用 **AI-first** 工作流，贡献流程如下：
 
 ## 7. 许可证
 
-本项目采用 **BSD 3-Clause** 许可证，版权归 Inox Desktop 贡献者所有。每个仓库根目录均包含 `LICENSE` 文件，见本仓库 [`LICENSE`](./LICENSE)。
+本项目采用 **BSD 3-Clause** 许可证，版权归 Inox Desktop 贡献者所有。仓库根目录的 [`LICENSE`](./LICENSE) 覆盖工作区内全部 crate。
 
 依赖许可证白名单与校验由 `cargo-deny` 强制执行（仅允许 BSD/MIT/Apache-2.0/ISC/Zlib 等宽松许可，禁止 GPL/AGPL/SSPL 进入核心依赖）。

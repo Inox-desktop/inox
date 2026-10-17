@@ -7,8 +7,8 @@
 - 任务 / PR / Release：待填
 - 产品配置、目标里程碑、[验收规范](./acceptance.md)版本或提交：待填
 - 基线 / 候选 tag 与 SHA：待填
-- `compat.toml` 提交、各组件 tag → 解析 SHA：待填
-- Cargo.lock / 依赖清单、SBOM、运行时系统组件版本：待填
+- `Cargo.lock` 提交、发布 tag → 解析 SHA（兼容性记录；原 `compat.toml` 已随 ADR 0016 删除）：待填
+- 依赖清单、SBOM、运行时系统组件版本：待填
 - 关联 ADR 及其状态 / 人类批准记录：待填
 - 适用 ID；新增 / 受影响 / 完整回归范围：待填
 

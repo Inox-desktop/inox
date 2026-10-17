@@ -1,0 +1,46 @@
+name: System libraries
+description: >-
+  Install the system libraries the Inox workspace needs in order to build.
+  One source of truth for the package list, so a job cannot silently drift
+  from the others.
+
+inputs:
+  egl:
+    description: >-
+      Also install EGL/Mesa. Only tests that actually render need it: Smithay's
+      GlesRenderer dlopen()s libEGL.so.1 at runtime and nothing links it at
+      build time, so type-checking and release builds can skip it.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # These are *build-script* dependencies as well as link-time ones, which is
+    # the part that is easy to get wrong: `libudev-sys`'s build script calls
+    # `pkg-config --libs --cflags libudev` and panics if libudev.pc is absent.
+    # Build scripts run for `cargo clippy` and `cargo doc` too, so those jobs
+    # need these packages even though neither of them links a final binary.
+    #
+    # libxkbcommon-dev: Smithay's `wayland_frontend` links the system
+    # `libxkbcommon` (-lxkbcommon) in the test and build link steps; the dev
+    # package also pulls the runtime libxkbcommon0.
+    # xkb-data: the rules files the compositor compiles its deterministic
+    # evdev/us keymap from; without it the seat keyboard cannot be created.
+    # libseat-dev / libdrm-dev / libgbm-dev / libinput-dev / libudev-dev: the
+    # M2.5 real backend (ADR 0010) links these through Smithay's `backend_*`
+    # features. The runner has no DRM master and no input-device permissions, so
+    # that code path is compile-checked only and never exercised here.
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libxkbcommon-dev xkb-data \
+          libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
+        if [ "${{ inputs.egl }}" = "true" ]; then
+          # libegl1 is the GLVND loader and pulls Mesa's EGL vendor driver
+          # (libegl-mesa0 -> libgbm1, libglapi-mesa, mesa-libgallium);
+          # libgl1-mesa-dri provides the DRI drivers including the llvmpipe /
+          # swrast software rasteriser behind LIBGL_ALWAYS_SOFTWARE=1.
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri
+        fi
