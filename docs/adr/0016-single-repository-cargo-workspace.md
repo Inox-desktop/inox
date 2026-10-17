@@ -83,7 +83,7 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 
 ## 实施顺序与未决项
 
-原计划先做最小原型实测 CI 分区收益再决定是否迁移。批准后的指示是直接实施，因此**该实测被推迟到迁移之后**：现在的工作区本身就是可测对象，首个 CI 运行的 job 时长、缓存命中与总分钟数应与「17 条独立流水线」的旧数据对比并回填本 ADR。若实测显示工作区 CI 反而更贵，按「复审 / 取代触发条件」第 1 条回退。**这是本 ADR 唯一以推测代替证据的环节，应在首个 CI 运行后立即补上。**
+原计划先做最小原型实测 CI 分区收益再决定是否迁移。批准后的指示是直接实施，因此该实测被推迟到迁移之后。**已回填**，见「首次 CI 运行的结果」；回退判据第 1 条未触发。
 
 未决项：
 
@@ -146,6 +146,7 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 | 分层机械检查 | `crates/inox-integration/tests/layering.rs`：17 个测试 = 15 个规则单元测试（对合成图）+ 2 个真实工作区断言；数据源为 `cargo metadata --no-deps` 与 `[workspace.metadata.inox.layers]` |
 | CI | `.github/workflows/ci.yml` 的 9 个 job：`fmt`、`clippy`、`deny`、`doc`、`build`、`plan`、`test`（按 crate 分片）、`xwayland-e2e`、`book` |
 | 删除 | `compat.toml`；`repos/` 目录流程（`repos/` 的 `.gitignore` 条目保留到本地克隆删除为止） |
+| 系统库单一来源 | `.github/actions/system-deps/action.yml`：apt 包列表从「4 个工作流 job 各抄一份」改为一个复合 action。理由是包列表是事实清单，抄本分叉会让某个 job 静默缺库——这与本 ADR 收敛样板是同一个理由。首次 CI 运行证明 `clippy` / `doc` **也**需要这些库（见「首次 CI 运行的结果」） |
 | 连带修正 | 根 `.gitignore` 增加 `/docs/book/book/`：文档站点原先自带 `.gitignore`（`book/`），而本 ADR 取消了逐组件忽略文件，根忽略文件必须接管。`docs/book/src/SUMMARY.md` 增加 `markdownlint-disable MD025`：该文件用多个 `#` 表示 mdBook 分卷标题，此前它位于被排除的 `repos/` 下、不在 lint 范围内，迁入 `docs/` 后进入范围 |
 
 `unsafe` 例外的表达方式有一个必须记录的实现细节：cargo **不允许**成员同时写 `lints.workspace = true` 与本地 `[lints]` 覆盖（`cannot override workspace.lints in lints`）。因此 `crates/inox-compositor/Cargo.toml` 无法继承工作区 lint 集，只能逐字重述后再改写 `unsafe_code = "deny"`。该 crate 的 manifest 中已注明这一约束；**`[workspace.lints]` 与它的副本之间的一致性没有机械检查，是审查项**。`inox-xwayland` 无 `unsafe`（源码中无 `#[allow(unsafe_code)]`）且源码注释明确声明无例外，故维持工作区默认的 `forbid`，不进入例外名单。
@@ -183,10 +184,22 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 
 **已知未纳入检查的项**：`docs/book/` 的构建只验证「能构建」，不验证链接有效性（mdBook 默认不检查章节互链）；本次以脚本核对了全仓库 Markdown 的相对链接（0 处失效），但该检查尚未接入 CI。
 
+### 首次 CI 运行的结果（PR #13，2026-10-17）
+
+共 25 个检查（9 个 job + 16 个 crate 测试分片）：**23 通过、2 失败**。
+
+**失败的是 `clippy` 与 `doc`，原因与 lint 无关**：两者都以 `--workspace` 运行且未安装系统库，而 `libudev-sys` 的 build script 会执行 `pkg-config --libs --cflags libudev` 并在缺 `libudev.pc` 时 panic（exit 101）。这推翻了被取代的 17 份工作流里那条注释——「clippy 不链接最终二进制，所以不需要系统库」：**build script 在 `cargo check` 类构建中同样会运行**，是否需要系统库不能只看链接。
+
+修复：把 apt 包列表从「多处各抄一份」收敛为 `.github/actions/system-deps` 复合 action，`clippy` / `doc` / `build` 共用基础集，`test` 仅对 `graphics` 分片追加 EGL/Mesa。这一处理与本 ADR 收敛样板是同一个理由（包列表是事实清单，抄本分叉会让某个 job 静默缺库）。
+
+**通过并因此获证的部分**：16 个 crate 的测试分片全过，其中 `test (inox-compositor)` 确实装上了 `libudev-dev`、编译通过并运行了 50 个 lib 测试 —— 说明 `plan` 由 manifest 推导 `graphics` 的判定是正确的；`plan` 本身成功产出 16 项矩阵（本 ADR 点名的首个未验证环节）；`build (release)`、`xwayland-e2e`、`fmt`、`cargo-deny`、`markdownlint`、`mdbook` 均通过。
+
+**CI 成本（回填「实施顺序与未决项」的阻塞项）**：整条流水线 wall clock ≈ **2 分 07 秒**；最长的 job 为 `xwayland-e2e` 2.0 min、`build (release)` 1.6 min、`test (inox-compositor)` 1.2 min，13 个桩 crate 分片各 0.3–0.4 min。相比 17 条独立流水线（各自从零编译同一批依赖、无跨仓库缓存共享），单一工作区流水线在墙钟时间上更好，**回退判据第 1 条未触发**。注意这是首个运行的观测值，且同一次运行内的分片会互相预热 rust-cache，稳态成本需在后续运行中复核。
+
 ### 尚未完成、需要人类动作
 
 - **组件仓库尚未归档。** 归档 17 个 GitHub 仓库是不可逆的对外操作且需要仓库管理权限，不在本 ADR 的批准指示范围内，未自行执行。本工作区首次 CI 全绿并合并后，应逐个归档并留说明指向本仓库。在此之前，旧仓库与新工作区**并存**，必须避免双向提交。
 - **CODEOWNERS 未落地。** 「失败、恢复与安全」把「根 `Cargo.toml` / `Cargo.lock` / 工作流变更需人类审查」列为控制爆炸半径的主要缓解手段，但本仓库目前没有 `.github/CODEOWNERS`，文档中也没有可确认的所有者 handle。**在补上该文件并把根配置路径登记为需审查之前，这一缓解手段不存在**——不应以本 ADR 提到它就认为已经生效。
 - **分支保护未按新 job 集合更新。** 受保护检查名从各仓库的 `fmt / clippy / test / build / doc / deny` 变为工作区 job（含分片矩阵的 `test (<crate>)`）。在更新之前，门禁与新工作流的对应关系不成立。
-- **CI 成本未实测。** 见「实施顺序与未决项」：原定的迁移前原型被推迟，本 ADR 的回退判据尚缺数据。
+- ~~**CI 成本未实测。**~~ 已在首个 CI 运行中观测并回填（见「首次 CI 运行的结果」）。仍需**稳态**数据：首个运行受益于同一次运行内互相预热的 rust-cache，不能代表缓存冷启动或长期成本。
 - **提交历史未迁移。** 16 个 crate 以当前工作树导入，组件仓库的提交历史留在（待归档的）旧仓库中；`git log` 在本仓库无法追溯到组件仓库的历史。

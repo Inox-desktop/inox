@@ -41,9 +41,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # No system libraries are installed here on purpose: clippy type-checks
-      # without linking, so it does not need them. See the `build` job for the
-      # libraries the link steps need.
+      # Clippy does not link a final binary, but it still runs dependency build
+      # scripts, and some of those need pkg-config entries: `libudev-sys`
+      # panics when `libudev.pc` is missing. System libraries are therefore
+      # required here too, not only in `build` and `test`.
+      - uses: ./.github/actions/system-deps
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   deny:
@@ -66,6 +68,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # `cargo doc` compiles dependency build scripts as well, so it needs the
+      # same system libraries as `clippy` (see that job).
+      - uses: ./.github/actions/system-deps
       - run: cargo doc --workspace --no-deps --all-features
 
   build:
@@ -75,24 +80,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # libxkbcommon-dev is a build-time dependency: Smithay's `wayland_frontend`
-      # feature links the system `libxkbcommon` (`-lxkbcommon`), so the `cargo
-      # test` and `cargo build` link steps need its `.so`; the dev package also
-      # pulls the runtime `libxkbcommon0`. xkb-data provides the rules files the
-      # compositor compiles its deterministic `evdev`/`us` keymap from; without
-      # it the seat keyboard cannot be created.
-      #
-      # The M2.5 real backend (ADR 0010) links against libseat, libdrm, gbm,
-      # libinput and libudev through Smithay's `backend_*` features, so their
-      # `-dev` packages are needed to link. The runner has no DRM master and no
-      # input-device permissions, so that code path is compile-checked only and
-      # never exercised here (see O01 and ADR 0012).
-      - name: Install build/runtime system libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev xkb-data \
-            libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
+      - uses: ./.github/actions/system-deps
       - run: cargo build --workspace --release --all-features
 
   plan:
@@ -159,21 +147,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install build/runtime system libraries
+      # Only the crates whose manifests declare `smithay` need these; the
+      # thirteen stub shards stay cheap. `egl: true` because this job runs
+      # tests, including the headless EGL/GLES render tests. The package lists
+      # live in one place — see `.github/actions/system-deps/action.yml`.
+      - uses: ./.github/actions/system-deps
         if: matrix.graphics
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev xkb-data \
-            libegl1 libgl1-mesa-dri \
-            libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
-      # EGL/Mesa is a test-time (runtime) dependency only: Smithay's
-      # GlesRenderer dlopen()s libEGL.so.1 and nothing links it at build time.
-      # libegl1 is the GLVND loader and pulls Mesa's EGL vendor driver
-      # (libegl-mesa0 -> libgbm1, libglapi-mesa, mesa-libgallium);
-      # libgl1-mesa-dri provides the DRI drivers including the llvmpipe/swrast
-      # software rasteriser behind LIBGL_ALWAYS_SOFTWARE=1.
-      #
+        with:
+          egl: "true"
       # One job per crate keeps a failure attributable and keeps the command the
       # same one a developer runs locally: `cargo test -p <crate>`.
       - run: cargo test -p ${{ matrix.crate }} --all-features
