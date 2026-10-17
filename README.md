@@ -116,9 +116,9 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 部分实现 |
 | `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（协议腿未实现） |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现 |
-| `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` | 骨架 |
-| `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 骨架 |
-| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 骨架 |
+| `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` | 部分实现：真实就绪往返、进程监督与限时注销 |
+| `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 部分实现：空闲协议客户端与策略，可信锁/挂起未接线 |
+| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 部分实现：登录模型与显式预览，真实认证未接线 |
 | `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 | 部分实现 |
 
 工作区之外还有两处非 crate 位置：`docs/book/`（用户与开发者文档站点，mdBook，无 `Cargo.toml`）与组织仓库 `.github`（组织级工作流与 ISSUE/PR 模板）。
@@ -155,6 +155,8 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 **M3**（[ADR 0017](./docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)，状态 `proposed`）在 Inox 自己的合成器上完成 X11/数据互通：合成器广告 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`，剪贴板的读取权**跟随键盘焦点**（`set_data_device_focus`），Wayland↔Wayland 拖放与 X11 内部拖放可用，每次渲染后发送 frame callback，`inox-xwayland` 的就绪判定改为真实的 X11 连接建立往返；E3 用例移入 `inox-integration`，以子进程方式驱动工作区构建的二进制，不新增依赖边。**跨 X11/Wayland 边界的拖放被上游阻塞**（`xwayland-satellite` v0.8.3 未实现 XDND），X02 的锁屏剪贴板断言与 `wlr-data-control` 推迟到 M5，`-listenfd` 按需激活仍不在范围内 —— 因此 M3 不是 X03 的完整通过。
 
 **M4 部分交付**（[ADR 0018](./docs/adr/0018-l3-component-architecture.md)，状态 `proposed`）：L3 的七个组件首次有了实现，`inox-config` 的 `shell.toml`、`notifications.toml` 与 `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1 加离屏渲染**：纯逻辑与不变量的单元/属性测试，加上用 iced 自己的运行时与 tiny-skia 渲染器在固定尺寸下绘制的**真实控件树**的像素与事件断言 —— 后者不需要合成器，也不需要 GPU。**E2/E3 未取得**，合成器的 `zwlr_layer_shell_v1` v4 宿主现已补齐，真实协议客户端测试纳入合成器 CI 分片；L3 的 Iced 客户端接线与 GUI 驱动仍未完成。此前 `iced_layershell` 0.19.1 与 0.19.0 都无法编译（其 `iced_exdevtools` 对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。因此 W05、O02–O03、D01–D05 与 Q01–Q03 的宿主侧证据均未取得，M4 的 DoD 不成立：这些组件目前以普通窗口运行，layer-shell 放置策略只被建模和测试，未被应用。锁屏的协议腿另受 ADR 0015 要求的人类安全审查约束，通知的 D-Bus 服务按 PRD §13 属 M5。
+
+**L4 首版**（[ADR 0021](./docs/adr/0021-l4-session-services.md)，状态 `proposed`）：会话管理器通过真实 Wayland 往返启动并监督桌面子进程，支持重启限流、故障隔离和限时注销；空闲组件消费标准通知并提供锁前挂起策略；可选登录组件提供有代次/限流的状态机和双语主题预览。真实认证、安全锁屏、logind 挂起和完整服务 ready 尚待审查/接线，M5 未完成。
 
 ---
 
