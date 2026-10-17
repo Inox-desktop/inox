@@ -188,7 +188,18 @@ fn manages_client_windows_and_input() {
     );
     assert_eq!(state.focused_window(), Some(stack));
 
-    state.inject_key(Keycode::new(KEY_TAB), KeyState::Released);
+    // Smithay hands the filter a release exactly as it does a press, so a binding
+    // that does not check the key state runs twice per chord: the focus would step
+    // to the next window and straight back to where it started.
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_TAB), KeyState::Released),
+        None
+    );
+    assert_eq!(
+        state.focused_window(),
+        Some(stack),
+        "releasing the bound key must not run the binding a second time"
+    );
     state.inject_key(Keycode::new(KEY_LEFT_ALT), KeyState::Released);
 
     // Super+Q asks the compositor to shut down cleanly.
@@ -202,7 +213,11 @@ fn manages_client_windows_and_input() {
     );
     assert!(state.exit_requested());
 
-    state.inject_key(Keycode::new(KEY_Q), KeyState::Released);
+    assert_eq!(
+        state.inject_key(Keycode::new(KEY_Q), KeyState::Released),
+        None,
+        "the quit binding must only fire on the press"
+    );
     state.inject_key(Keycode::new(KEY_LEFT_META), KeyState::Released);
 
     // Release the client so it drops its protocol objects, then let it finish.
