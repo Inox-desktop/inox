@@ -27,9 +27,13 @@ resolver = "3"
 # to revisit.
 version = "0.1.1"
 edition = "2024"
-# Converged on 1.86: `inox-protocols` (wayland-protocols 0.32) and
-# `inox-compositor` (calloop 0.14 via smithay 0.7) already required it.
-rust-version = "1.86"
+# Raised to 1.88 for the L3 milestone: `iced` 0.14 — the GUI toolkit ADR 0003
+# fixes for the shell components — declares `rust-version = "1.88"`, and so does
+# `image` 0.25, which the wallpaper and icon paths pull in. 1.86 was the floor
+# before that (`inox-protocols`' wayland-protocols 0.32 and `inox-compositor`'s
+# calloop 0.14 via smithay 0.7). Only the declared floor moves; CI tracks
+# `stable`. See docs/adr/0018-l3-component-architecture.md.
+rust-version = "1.88"
 license = "BSD-3-Clause"
 repository = "https://github.com/Inox-desktop/inox"
 readme = "README.md"
@@ -41,6 +45,7 @@ categories = ["desktop"]
 # The explicit `version` keeps `deny.toml`'s `[bans] wildcards = "deny"`
 # satisfied: a path dependency without one carries an implicit `*`.
 inox-common = { path = "crates/inox-common", version = "0.1" }
+inox-config = { path = "crates/inox-config", version = "0.1" }
 inox-protocols = { path = "crates/inox-protocols", version = "0.1" }
 
 # --- third-party: one version for the whole graph -------------------------
@@ -75,6 +80,49 @@ smithay = { version = "0.7.0", default-features = false, features = [
     "backend_session",
     "backend_session_libseat",
 ] }
+
+# --- L3 shell stack (ADR 0003 fixes Iced; see ADR 0018) -------------------
+# Software rendering only: the components run under `tiny-skia`, which needs no
+# GPU and is what the headless CI host can actually present. `wgpu` is
+# deliberately not enabled — it would add a second renderer that no Inox
+# configuration selects.
+iced = { version = "0.14", default-features = false, features = [
+    "tiny-skia",
+    "wayland",
+    "thread-pool",
+    "crisp",
+    "image",
+] }
+# `wlr-layer-shell` is how the panel, launcher, notification popups and the
+# wallpaper become real desktop surfaces; `iced` itself only knows xdg-shell.
+# Same iced 0.14 generation as the entry above (ADR 0018).
+iced_layershell = { version = "0.19", default-features = false }
+
+# The headless render harness every L3 component's `tests/render.rs` uses: it
+# builds the real widget tree, lays it out at a fixed size and draws it into a
+# pixmap through the same tiny-skia renderer the binaries use, with no
+# compositor and no GPU. `iced` re-exports neither `UserInterface` nor the
+# tiny-skia renderer, so the three crates are named directly -- as
+# dev-dependencies only, which keeps them out of every component's shipped
+# dependency surface.
+iced_core = "0.14"
+iced_runtime = "0.14"
+iced_tiny_skia = { version = "0.14", features = ["image"] }
+
+# Credential buffers that zero themselves on drop (M5 lock screen work, but the
+# buffer type belongs with the state machine that owns it). MIT/Apache-2.0.
+zeroize = "1"
+
+# Project Fluent (ADR 0003, PRD §11.2): every user-visible string is a message
+# in a catalog, so the loader lives in `inox-common::i18n`.
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+unic-langid = "0.9"
+
+# The panel clock needs civil time in the session's timezone; the wallpaper and
+# the launcher icon path need to decode PNG/JPEG.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # --- dev-dependencies ----------------------------------------------------
 proptest = "1"
