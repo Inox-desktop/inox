@@ -10,8 +10,9 @@
 //!
 //! * spawn `xwayland-satellite` for a chosen display (default `:1`) and let it
 //!   start `Xwayland`;
-//! * detect readiness by probing the X11 UNIX socket and report it through the
-//!   log and an optional readiness file;
+//! * detect readiness with a real X11 connection-setup round trip against the
+//!   display socket (acceptance item X01; socket existence is not enough) and
+//!   report it through the log and an optional readiness file;
 //! * supervise the child: notice an unexpected exit and forward termination
 //!   signals (`SIGTERM` with a `SIGKILL` escalation);
 //! * exit with status `0` on `SIGINT`/`SIGTERM`.
@@ -23,17 +24,20 @@
 //!
 //! * [`config`] — command line parsing, free of process and X11 side effects.
 //! * [`x11`] — display numbers and their sockets.
+//! * [`handshake`] — the X11 connection-setup round trip behind readiness.
 //! * [`process`] — spawning and terminating the satellite child.
 //! * [`service`] — the supervision state machine.
 //! * [`runtime`] — the calloop event loop tying it all together.
 
 pub mod config;
+pub mod handshake;
 pub mod process;
 pub mod runtime;
 pub mod service;
 pub mod x11;
 
 pub use config::{ConfigError, HELP, Invocation, ServiceConfig};
+pub use handshake::{HandshakeError, Setup};
 pub use process::ProcessError;
 pub use runtime::{ServiceOutcome, run};
 pub use service::{Phase, Progress, ServiceError, XwaylandService};

@@ -13,7 +13,8 @@ XWayland 集成服务：**监管外部 `xwayland-satellite` 进程**，把 rootl
 - 日志统一使用 `tracing`（默认级别 `info`）；`--help` / `--version` 与用法错误走显式 stdout / stderr 写入，不使用 `println!` / `eprintln!`。
 - **禁止链接 `xwayland-satellite`**：它是运行期系统依赖（MPL-2.0、应用形态、不在 crates.io 上），只能通过 `std::process::Command` 拉起；**不得**写入 `[dependencies]`、不得在构建期获取。命令行约定：显示号 `:N` 在**第一位**，其余均为 `--satellite-arg` 透传。
 - 事件循环必须使用 `calloop`（根级 §4），信号与定时器都注册为事件源；禁止自建线程轮询。
-- 就绪判定为「连接 `<x11-socket-dir>/X<N>` 成功」，探测失败一律视为未就绪，不得 panic。
+- **就绪判定必须是一次真实 X11 连接建立往返**（验收项 X01，`docs/quality/acceptance.md` §5 明确「socket 存在不足以通过」）：连接 `<x11-socket-dir>/X<N>` 后发送 12 字节连接请求（不含授权数据），再解析 8 字节应答头与后续 setup 主体，只有 status 1、协议主版本 11、厂商字符串边界合法且应答之后无多余数据才算就绪。socket 存在、可连接、甚至 accept 成功都不足以通过。
+- 握手实现在 `src/handshake.rs`，**只允许用 `std`**（`UnixStream`），不得链接任何 X11 库、不得为此新增第三方依赖。每一次读都受读超时约束：超时、对端关闭、应答截断、垃圾字节、status 0 / 2、未知 status、尾随数据一律映射为错误即「未就绪」，绝不 panic；单次探测总时长由 `handshake::SETUP_TIMEOUT` 界定（探测在 calloop 定时器回调中同步执行）。
 - 退出策略：`SIGINT` / `SIGTERM` 归零退出；子进程自行退出则沿用其退出码（被信号杀死视为失败）。
 - 面向用户的字符串目前只有 CLI 帮助与错误信息；新增用户可见文案必须走 Fluent（根级 §7.3），并在本文件登记。
 - MSRV：**1.86**（edition 2024）。
@@ -50,6 +51,8 @@ XWayland 集成服务：**监管外部 `xwayland-satellite` 进程**，把 rootl
 - 服务状态机必须通过**注入的假实现**（`ChildSupervisor` / `ReadinessProbe`）测试，不得为测试而 mock 掉被测逻辑本身。
 - 进程级测试（`tests/lifecycle.rs`）用 shell 替身驱动真实二进制，必须自备私有临时目录（含 `--x11-socket-dir`），并为每个等待设置超时，避免 CI 挂死；测试结束必须清理替身进程。
 - 真实 headless 端到端测试（`tests/headless_x11_mapping.rs`）以 `INOX_XWAYLAND_E2E` 为开关：未设置时打印 `skipping` 并直接返回（保证常规 CI 全绿）；设置后若缺少必需工具则**失败**并给出清晰提示。
+- 握手必须在 `src/handshake.rs` 的 `#[cfg(test)]` 中以固定字节序列驱动（`UnixStream::pair()` + 线程对端），覆盖成功 setup（断言厂商字符串）、status 0 带原因、status 2、截断应答、垃圾字节、尾随数据、对端静默；超时用例必须使用短超时并断言用例自身快速结束，不得 sleep 数秒。
+- `tests/lifecycle.rs` 的 X11 替身必须应答连接建立请求（只监听不应答会让所有就绪用例失败），并必须保留一个「接受连接但永不应答」的用例，证明 `--ready-timeout` 仍然生效。
 - 新增或修改行为必须同时新增/更新对应测试。
 
 ## 目录结构
@@ -59,7 +62,8 @@ src/
   lib.rs        库入口、crate 文档与再导出
   main.rs       可执行入口（CLI 输出、日志初始化、退出码策略）
   config.rs     命令行解析与配置数据（无进程/X11 副作用）
-  x11.rs        显示号与其 UNIX 套接字、就绪探测
+  x11.rs        显示号与其 UNIX 套接字、按连接建立往返判定就绪
+  handshake.rs  X11 连接建立往返（就绪判定的唯一依据，仅用 std）
   process.rs    xwayland-satellite 的生成与终止（ChildSupervisor）
   service.rs    监管状态机（Phase/Progress/ServiceError）
   runtime.rs    calloop 事件循环：信号源 + 轮询定时器

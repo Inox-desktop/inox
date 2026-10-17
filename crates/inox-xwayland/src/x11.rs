@@ -2,14 +2,20 @@
 //!
 //! The service only needs a small slice of X11 knowledge: how a display is
 //! spelled (`:1`), where its socket lives (`<dir>/X1`) and whether that socket
-//! currently accepts a connection. Keeping it here keeps the supervision logic
+//! completes a connection setup. Keeping it here keeps the supervision logic
 //! free of X11 details and makes the readiness probe trivially testable.
+//!
+//! "Ready" is deliberately *not* "the socket file exists and accepts a
+//! connection": acceptance item X01 requires a real X11 round trip, which lives
+//! in [`crate::handshake`].
 
 use std::{
     fmt,
-    os::unix::net::UnixStream,
     path::{Path, PathBuf},
+    time::Duration,
 };
+
+use crate::handshake::{self, HandshakeError, Setup};
 
 /// Default directory where Xwayland places its UNIX sockets.
 pub const DEFAULT_SOCKET_DIR: &str = "/tmp/.X11-unix";
@@ -97,12 +103,20 @@ impl Display {
         dir.join(format!("X{}", self.0))
     }
 
-    /// Whether a display socket in `dir` accepts a connection right now.
+    /// Connect to the display socket in `dir` and complete an X11 connection
+    /// setup, bounded by `timeout`.
     ///
-    /// Readiness is defined by a successful connection attempt, so a missing or
-    /// stale socket reports `false`. Never panics.
-    pub fn is_ready_in(self, dir: &Path) -> bool {
-        UnixStream::connect(self.socket_path_in(dir)).is_ok()
+    /// This is the readiness check: it only succeeds when the X11 server behind
+    /// the socket really answers a setup request, which is what acceptance item
+    /// X01 requires (a socket that merely exists is not enough). Never panics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HandshakeError::Connect`] when `<dir>/X<N>` cannot be connected
+    /// to, and any other [`HandshakeError`] when the round trip does not end in
+    /// a well formed successful setup reply.
+    pub fn setup_in(self, dir: &Path, timeout: Duration) -> Result<Setup, HandshakeError> {
+        handshake::probe(&self.socket_path_in(dir), timeout)
     }
 }
 
@@ -175,14 +189,27 @@ mod tests {
     }
 
     #[test]
-    fn readiness_follows_the_presence_of_the_socket() {
+    fn a_missing_socket_is_not_ready() {
         let dir = tempfile::tempdir().expect("temp dir");
         let display = Display::parse(":77").expect("valid");
 
-        assert!(!display.is_ready_in(dir.path()));
+        let outcome = display.setup_in(dir.path(), Duration::from_millis(200));
 
+        assert!(matches!(outcome, Err(HandshakeError::Connect { .. })));
+    }
+
+    #[test]
+    fn a_socket_that_never_answers_is_not_ready() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let display = Display::parse(":77").expect("valid");
+
+        // The listener accepts the connection (into its backlog) but never
+        // reads the request or writes a reply: exactly the case X01 says a
+        // "socket exists" probe would wrongly call ready.
         let _listener = UnixListener::bind(display.socket_path_in(dir.path())).expect("bind");
 
-        assert!(display.is_ready_in(dir.path()));
+        let outcome = display.setup_in(dir.path(), Duration::from_millis(200));
+
+        assert!(matches!(outcome, Err(HandshakeError::Timeout { .. })));
     }
 }
