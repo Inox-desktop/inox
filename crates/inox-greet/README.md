@@ -1,17 +1,9 @@
 # inox-greet
 
-显示管理器。属于 Inox 桌面环境的 **L4** 层。
+L4 可选登录组件，包含登录生命周期模型及显式 Iced 预览。`inox-greet --preview` 展示禁用登录按钮的界面，支持 Fluent 双语言、设计令牌、字体缩放、滚动与键盘操作；不会收集密码或启动会话。
 
-## 状态
+默认 `inox-greet` **拒绝真实登录并返回失败**：ADR 0015 要求的认证服务、helper 权限/许可证、可信通道及凭据清理尚待安全审查，不能用模型测试替代系统认证。预览是普通窗口，不是安全登录表面。模型提供当前代次关联、30 秒超时、滚动 60 秒最多 3 次尝试、取消清理及启动回执；没有接入 PAM、greetd 或其他认证实现。
 
-M0 骨架阶段：仅包含 crate 结构、工作区 CI 与文档；功能实现从后续里程碑开始。
+详见 [ADR 0021](../../docs/adr/0021-l4-session-services.md)。CI 验证旧/重复/超时成功不能启动、失败/取消/限流、默认拒绝登录，以及双主题/双语言/200% 字号的真实控件树离屏像素。真实 greeter 宿主、waydriver 与 AT-SPI 桥仍待实现。本地仅 fmt/check/clippy，测试验收以 CI 为准。
 
-## 开发约定
-
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
-- **CI（GitHub Actions）是唯一的构建与测试验证途径**，不在本地进行编译验证。
-- 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
-
-## 许可证
-
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+许可证 BSD 3-Clause，见根 LICENSE。

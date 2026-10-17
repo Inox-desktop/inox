@@ -65,6 +65,7 @@ proposed ──► accepted ──► superseded
 | [0016](./0016-single-repository-cargo-workspace.md) | 改为单一仓库（Cargo workspace）并取代多仓库策略 | accepted | 2026-10-16 |
 | [0017](./0017-m3-xwayland-host-clipboard-and-dnd.md) | M3 的 XWayland 宿主协议、剪贴板与拖放 | proposed | 2026-10-16 |
 | [0018](./0018-l3-component-architecture.md) | L3 组件的独立性、共享 UI 边界与 layer-shell 宿主 | proposed | 2026-10-16 |
+| [0021](./0021-l4-session-services.md) | L4 会话监督、空闲策略与登录边界的首版实现 | proposed | 2026-10-17 |
 
 ## 既有提案的复核与实施阻塞
 

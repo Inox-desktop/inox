@@ -260,6 +260,24 @@ jobs:
           INOX_M3_E2E_REAL_APPS: "1"
         run: cargo test -p inox-integration --all-features -- --nocapture
 
+  session-e2e:
+    name: L4 headless session
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/system-deps
+        with:
+          egl: "true"
+          fonts: "true"
+      - name: Build the real session components
+        run: cargo build -p inox-compositor -p inox-session -p inox-shell -p inox-panel -p inox-wallpaper -p inox-notifications -p inox-idle
+      - name: Verify startup and bounded logout on Inox
+        env:
+          INOX_SESSION_E2E_BIN_DIR: ${{ github.workspace }}/target/debug
+        run: dbus-run-session -- cargo test -p inox-session --test headless -- --nocapture
+
   book:
     name: mdbook
     runs-on: ubuntu-latest

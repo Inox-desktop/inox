@@ -1,17 +1,13 @@
 # inox-session
 
-会话管理器。属于 Inox 桌面环境的 **L4** 层。
+L4 会话监督器：通过真实 Wayland 往返等待合成器，再启动独立桌面子进程；提供有界重启、失败隔离、进程组退出与私有运行时目录清理。设计与限制见 [ADR 0021](../../docs/adr/0021-l4-session-services.md)。
 
-## 状态
+安装同一 CI 组合的二进制后运行 `inox-session`；软件渲染会话可显式使用 `inox-session --headless`。`--bin-dir PATH` 选择二进制目录，`--exit-after-seconds N` 在指定时长后正常注销。`XDG_RUNTIME_DIR` 必须由当前用户拥有且禁止其他用户访问。`config.toml` 的环境配置传给子进程，会话拥有的显示变量优先。
 
-M0 骨架阶段：仅包含 crate 结构、工作区 CI 与文档；功能实现从后续里程碑开始。
+Shell 是一次性检查；面板是必需服务；壁纸、通知与空闲监视为可选服务。每服务滚动 60 秒最多自动重启 3 次；合成器退出会结束会话，不承诺恢复应用连接。SIGINT/SIGTERM 注销；SIGHUP 只说明环境需下次登录才能替换，各组件仍拥有自己的重载机制。
 
-## 开发约定
+当前只确认合成器 ready，尚无完整桌面 ready 握手。L3 的 layer-shell、窗口服务与通知 D-Bus 等现有缺口不会因为 session 拉起进程而消失。安全锁定、认证、logind 挂起及用户自启动未接线；主动脱离进程组的子孙进程不在首版归属保证内。
 
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
-- **CI（GitHub Actions）是唯一的构建与测试验证途径**，不在本地进行编译验证。
-- 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
+测试由 CI 运行：纯重启策略、真实子进程/Wayland peer 故障、信号注销与目录清理，以及独立 job 中的真实 Inox headless 启动/退出。本地仅 fmt/check/clippy，不运行 build/test，不以自检代替验收。
 
-## 许可证
-
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+许可证 BSD 3-Clause，见根 LICENSE。

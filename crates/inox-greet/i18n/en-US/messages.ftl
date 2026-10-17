@@ -1,0 +1,9 @@
+usage = inox-greet --preview
+blocked = Login is unavailable until the system authentication boundary passes security review.
+title = Inox login preview
+user = Username
+session = Session
+login = Log in
+cancel = Clear
+preview = Preview only. No credentials are collected and no session is started.
+invalid-user = Enter a valid username.

@@ -1,0 +1,9 @@
+usage = inox-greet --preview
+blocked = 系统认证边界通过安全审查前，登录功能不可用。
+title = Inox 登录预览
+user = 用户名
+session = 会话
+login = 登录
+cancel = 清空
+preview = 仅供预览。不收集凭据，不启动会话。
+invalid-user = 请输入有效的用户名。
