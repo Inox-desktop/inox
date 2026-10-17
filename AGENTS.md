@@ -138,7 +138,7 @@ L4  inox-session, inox-idle, inox-greet
   ```toml
   # 根 Cargo.toml
   [workspace.dependencies]
-  inox-common = { path = "crates/inox-common", version = "0.2" }
+  inox-common = { path = "crates/inox-common", version = "0.1" }
 
   # crates/inox-config/Cargo.toml
   [dependencies]

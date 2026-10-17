@@ -63,7 +63,7 @@ ADR 0001 自述的取代条件已经触发。原文：「若跨仓库依赖成�
 
 - **外部消费者**：当前无组织外消费者，不存在需要在迁移中维持的公开 API 兼容承诺。
 - **已完成历史**：5 个有真实历史的 crate（`inox-common` 6 个 commit、`inox-config` 3 个、`inox-compositor` 15 个、`inox-protocols` 6 个、`inox-xwayland` 10 个）；11 个骨架仓库各 1 个 commit。骨架部分直接导入即可；有历史部分建议用 `git subtree` 或 `git filter-repo` 保留提交历史，是否保留列为未决项 2，不构成阻塞。
-- **已发布 tag**：`v0.1.0` / `v0.2.0` 保留在归档仓库中，不重写、不强推。迁移后新 tag 采用 `<crate>-vX.Y.Z`。
+- **已发布 tag**：`v0.1.0` / `v0.1.1` 保留在归档仓库中，不重写、不强推；`v0.2.0` 已被重切为 `v0.1.1` 并退役。迁移后新 tag 采用 `<crate>-vX.Y.Z`。
 - **迁移顺序**：（1）本 ADR 获批；（2）在选定仓库建立工作区骨架（根 `Cargo.toml` 含分层成员表与 `[workspace.lints]`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`.github/workflows/ci.yml`、`crates/`）；（3）逐 crate 导入源码并把 git 依赖改为 path 依赖，版本由工作区统一；（4）MSRV 收敛至 1.86；（5）接入分层方向检查（B04）并注入反向依赖与同层横向依赖的负向用例确认其会失败；（6）删除 `compat.toml`、`repos/` 流程与 `repos/` 的 `.gitignore` 条目，更新根 `AGENTS.md` §2/§8、PRD §1.1/§3/§6.1/§12、`README.md`、`docs/adr/README.md` 索引与 ADR 0002 的关系登记；（7）把 17 个组件仓库归档（archive）并留说明指向新仓库。步骤 3–6 可在同一 PR 或数个聚焦 PR 中完成，但**中间态不得双向提交**：旧仓库在迁移开始后只读。
 - **回退**：若工作区 CI 实测（见实施顺序）显示无法接受的退化，回退路径是把 path 依赖改写回 git 依赖并按现有目录结构拆回多个仓库 —— 相比反向迁移成本更低，因为 crate 内部结构与 `AGENTS.md` 都已按可拆分的方式保留。迁移分支在 CI 全绿并被批准前不合并。
 - **新依赖**：本决策不新增第三方 crate，因此无新增许可证审查对象；唯一的外部依赖面变化是 CI Action 与缓存组件的登记。
@@ -97,6 +97,8 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 | 6. 第三方 CI Action / 缓存组件的来源与锁定版本登记 | 集成维护者 | 迁移完成时 | **已定**：沿用既有 Action，未新增供应商（见实施记录） |
 | 7. **ADR 0002 规则 1 与层内顺序的冲突**（本次实施发现，见实施记录） | 架构组 + 人类审查者 | M4（`inox-panel → inox-shell` 落地）之前 | **未决，新增**。在裁决前，同层边只能以 `same_layer_exceptions` 逐条登记，且每条都需要 ADR |
 | 8. 组件仓库归档、CODEOWNERS、分支保护检查名更新 | 仓库所有者 | 本工作区首次 CI 全绿并合并后 | **未决，新增**。均需仓库管理权限或不可逆的对外操作，未自行执行 |
+| 9. 工作区统一版本的最终取值：`0.1.1` 是否合适 | 「版本号语义与发布流程」ADR 的所有者 + 架构组 | 该 ADR 离开 `proposed` 时 | **未决，新增**。该 ADR（PR #10，`proposed`）规定 0.x 阶段 patch 为兼容段、**提升 MSRV 属 minor**；本迁移把 11 个 crate 的 MSRV 由 1.85 提至 1.86，按该规则应是 minor（`0.2.x`），但 `v0.2.0` 恰好已被退役，两个约束直接冲突。本 ADR 取 `0.1.1`（不复用退役号、与现行发布线一致）并在此登记冲突，**不擅自裁定版本语义**；若该 ADR 最终采用 MSRV=minor，改的是一行 |
+| 10. 仓内存在**两个 ADR 0010** | 架构组 | 本 PR 合并前 | **未决，新增**。`docs/adr/0010-real-backend-drm-libinput.md` 已在 `main`，而开放中的 PR #10 要新增 `docs/adr/0010-versioning-and-release-policy.md`。`main` 的 `compat.toml` 已经在引用后者（“ADR 0010 第 10 条”），索引与引用链因此有歧义。编号冲突属 PR #10 的范围，本 ADR 不改写他人提案，仅登记 |
 
 上游发布 tag → 下游更新 → 集成验证的现有流程随本决策作废，替换为「工作区内一次 PR 一次 CI」。批准前，ADR 0011–0015 的 proposed 状态与既有 accepted ADR 的效力均不受影响。
 
@@ -139,7 +141,7 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 
 | 项 | 位置 |
 |----|------|
-| 工作区根清单 | `Cargo.toml`：`members = ["crates/*"]`、`resolver = "3"`、`[workspace.package]`（统一版本 `0.2.0`、MSRV 1.86）、`[workspace.dependencies]`、`[workspace.lints]`、`[workspace.metadata.inox]`（层级表与规则例外） |
+| 工作区根清单 | `Cargo.toml`：`members = ["crates/*"]`、`resolver = "3"`、`[workspace.package]`（统一版本 `0.1.1`、MSRV 1.86）、`[workspace.dependencies]`、`[workspace.lints]`、`[workspace.metadata.inox]`（层级表与规则例外） |
 | 统一样板 | `rust-toolchain.toml`（1 份，原 18 份完全相同）、`deny.toml`（1 份，原 18 份且已分叉成 4 版）、`LICENSE`（1 份，原 18 份完全相同）、`.github/workflows/ci.yml`（1 份，原 17 份且已分叉成 3 版） |
 | 组件导入 | 16 个 crate → `crates/`；mdBook → `docs/book/`（原 `inox-docs`，无 `Cargo.toml`，不参与依赖图与 `cargo deny`） |
 | 清单改写 | 16 个 manifest 全部改为工作区继承：`version`/`edition`/`rust-version`/`license`/`repository`/`readme`/`keywords`/`categories` 取 `*.workspace = true`；内部依赖改为 path 依赖（`inox-common.workspace = true`）；第三方依赖版本收敛到 `[workspace.dependencies]`，成员只追加自己的 feature |
@@ -155,7 +157,7 @@ B04 / B04b 已随本 ADR 的批准落地（见「实施记录」）：`layering.
 
 对应原「未决项」表的 1、2、3、5、6 项，逐项处置与依据见更新后的未决项表；其中三项取值值得单独说明：
 
-- **工作区统一版本取 `0.2.0`**（既有最高版本），而不是回到 `0.1.0`。理由：`inox-common` 已就 `0.2.0` 打过 tag，回退会与已发布历史矛盾。
+- **工作区统一版本取 `0.1.1`**。初稿曾取 `0.2.0`（当时 `inox-common` 名义上的最高版本），**该选择已被推翻**：本迁移期间 `main` 上的 `compat.toml` 记录 `inox-common` 的现行发布线是 `v0.1.1`（`paths` 属兼容新增，0.x 阶段走 patch），且 `v0.2.0` 已重切为 `v0.1.1` 并退役——继续用 `0.2.0` 等于复用已退役的版本号。见下方未决项 9。
 - **MSRV 统一为 1.86**，11 个此前为 1.85 的 crate 一并提升；1.86 本就是 `inox-protocols`（wayland-protocols 0.32）与 `inox-compositor`（calloop 0.14 via smithay 0.7）的既有要求。
 - **`inox-docs` 不再是 workspace 成员**，而是 `docs/book/`。它是本 ADR 中唯一「从 L1 成员变为非成员」的组件：没有 `Cargo.toml`，不参与依赖图、层级表与 `cargo deny`。若这一点被认为改变了 ADR 0002 的分层成员，需要人类在评审时确认——本 ADR 只主张它本来就已经不参与任何 Rust 依赖关系。
 

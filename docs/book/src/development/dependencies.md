@@ -9,7 +9,7 @@ Inox crate 之间一律使用 **path 依赖**，并在根 `Cargo.toml` 的 `[wor
 ```toml
 # 根 Cargo.toml
 [workspace.dependencies]
-inox-common = { path = "crates/inox-common", version = "0.2" }
+inox-common = { path = "crates/inox-common", version = "0.1" }
 
 # crates/inox-config/Cargo.toml
 [dependencies]
@@ -43,7 +43,7 @@ cargo test -p inox-integration --test layering
 
 旧方案有两处人工环节：`compat.toml` 依赖矩阵，以及「发布 tag」与「登记矩阵」两个必须成对完成、否则集成测试对不上版本的动作。两者都已随 ADR 0016 删除——`Cargo.lock` 由构建系统自己产出，不可能与其声称的组件版本不一致。迁移前 `compat.toml` 已经与实际依赖的 tag 不符（登记 `v0.1.0`，而 `inox-config` 依赖 `v0.2.0`），这一点正是删掉它的直接原因。
 
-组件仓库此前打过的 `v0.1.0` / `v0.2.0` 标签保留在待归档的旧仓库中，不重写历史。工作区统一版本为 `0.2.0`。
+组件仓库此前打过的 `v0.1.0` / `v0.1.1` 标签保留在待归档的旧仓库中，不重写历史。工作区统一版本为 **`0.1.1`**，与 `inox-common` 当前的发布线一致（0.x 阶段兼容变更走 patch，见 ADR 0010 版本号语义与发布流程，状态 `proposed`）；`v0.2.0` 已被重切为 `v0.1.1` 且不再使用。
 
 ## 新增第三方依赖
 

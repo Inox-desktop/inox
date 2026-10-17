@@ -5,7 +5,7 @@
 ## 状态
 
 - 作为工作区成员以 path 依赖被 `inox-compositor`、`inox-config`、`inox-xwayland` 消费；工作区统一版本 `0.2.0`。
-- `v0.2.0` 新增 `paths` 模块（非破坏性小幅版本）：按 XDG Base Directory Specification 解析 `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` / `$XDG_STATE_HOME` / `$XDG_CACHE_HOME` / `$XDG_RUNTIME_DIR`，并给出 Inox 的 `<base>/inox` 目录，供 `inox-config` 等上层组件复用（PRD §9.1）。
+- `v0.1.1` 新增 `paths` 模块（0.x 阶段属兼容新增，走 patch；该版本由 `v0.2.0` 重切而来，旧 tag 已退役）：按 XDG Base Directory Specification 解析 `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` / `$XDG_STATE_HOME` / `$XDG_CACHE_HOME` / `$XDG_RUNTIME_DIR`，并给出 Inox 的 `<base>/inox` 目录，供 `inox-config` 等上层组件复用（PRD §9.1）。
 
 当前模块：
 

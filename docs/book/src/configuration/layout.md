@@ -46,7 +46,7 @@ appearance = "system"              # light | dark | system（默认）
 
 ## 配置目录在哪里
 
-配置目录遵循 XDG Base Directory Specification，由 `inox-common` 的 `paths` 模块解析（计划随 `v0.2.0` 发布），各组件不自行拼路径：
+配置目录遵循 XDG Base Directory Specification，由 `inox-common` 的 `paths` 模块解析（已实现），各组件不自行拼路径：
 
 | 用途 | 取值 | 回退 |
 |------|------|------|

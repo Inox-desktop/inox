@@ -17,7 +17,15 @@ resolver = "3"
 [workspace.package]
 # One version for the whole workspace. Independent per-crate SemVer was the
 # compatibility matrix this ADR removed; a single release line replaces it.
-version = "0.2.0"
+#
+# `0.1.1` and not `0.2.0`: `inox-common`'s live release line is `v0.1.1`, and
+# main's `compat.toml` records that `v0.2.0` was re-cut to it and the old tag is
+# retired (the `paths` addition is a compatible change, which is a patch under
+# 0.x per ADR 0010 版本号语义与发布流程, still `proposed`). Taking 0.2.0 would
+# reuse a retired number. If that ADR is rejected or changes the MSRV rule
+# (this migration raises MSRV to 1.86 for eleven crates), this is the one line
+# to revisit.
+version = "0.1.1"
 edition = "2024"
 # Converged on 1.86: `inox-protocols` (wayland-protocols 0.32) and
 # `inox-compositor` (calloop 0.14 via smithay 0.7) already required it.
@@ -32,7 +40,7 @@ categories = ["desktop"]
 # --- workspace-internal crates (path dependencies; never a git tag) -------
 # The explicit `version` keeps `deny.toml`'s `[bans] wildcards = "deny"`
 # satisfied: a path dependency without one carries an implicit `*`.
-inox-common = { path = "crates/inox-common", version = "0.2" }
+inox-common = { path = "crates/inox-common", version = "0.1" }
 
 # --- third-party: one version for the whole graph -------------------------
 anyhow = "1"

@@ -46,7 +46,7 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 
 ### `inox-common` 是叶子节点
 
-`inox-common` 不得依赖任何其他 Inox crate，它是 L1 的依赖终点，因此只收纳**不依赖 Inox 其他部分**的共享能力。当前工作区版本为 `0.2.0`，提供 `logging`（统一的 `tracing` 初始化入口）与 `paths`（XDG 基础目录解析）模块。
+`inox-common` 不得依赖任何其他 Inox crate，它是 L1 的依赖终点，因此只收纳**不依赖 Inox 其他部分**的共享能力。当前工作区版本为 `0.1.1`，提供 `logging`（统一的 `tracing` 初始化入口）与 `paths`（XDG 基础目录解析）模块。
 
 这条规则由 `layering.rs` 机械断言：即使把 `inox-common` 加进同层例外表也无法放行，叶子规则先于例外检查。
 

@@ -30,7 +30,7 @@
 
 ## 主要依赖
 
-- 上游 Inox crate：`inox-common`（`v0.2.0`，使用其 `paths` 模块解析 XDG 目录）。
+- 上游 Inox crate：`inox-common`（工作区内 path 依赖，无 tag 锁定；使用其 `paths` 模块解析 XDG 目录）。
 - 第三方：`serde`(derive)、`toml`、`serde_path_to_error`（提供解析错误的字段路径）、`thiserror`、`tracing`。
 - 测试：`tempfile`（`[dev-dependencies]`，加载与热重载需要真实文件）。
 
