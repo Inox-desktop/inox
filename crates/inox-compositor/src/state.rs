@@ -68,11 +68,11 @@
 //! clients contribute nothing to what is on screen and receive no input. Four
 //! things enforce that, and each of them is the single place it could go wrong:
 //!
-//! - [`InoxState::scene_elements`] renders the locked scene (the lock surfaces and
+//! - `InoxState::scene_elements` renders the locked scene (the lock surfaces and
 //!   the opaque locked background) instead of the layer/window scene.
-//! - [`InoxState::sync_focus`] hands the keyboard to a lock surface and clears the
+//! - `InoxState::sync_focus` hands the keyboard to a lock surface and clears the
 //!   selection focus, so no ordinary client is granted the clipboard.
-//! - [`InoxState::surface_under`] only hit-tests lock surfaces, so pointer events
+//! - `InoxState::surface_under` only hit-tests lock surfaces, so pointer events
 //!   reach no ordinary client.
 //! - [`InoxState::inject_key`] stops intercepting the compositor's own chords, so a
 //!   locked session cannot be window-switched or closed from the keyboard.

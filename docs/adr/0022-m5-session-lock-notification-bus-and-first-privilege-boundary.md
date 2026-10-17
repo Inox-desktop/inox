@@ -118,7 +118,7 @@ PRD §13 的 M5 要求交付 D06（`org.freedesktop.Notifications` 服务端）�
 4. `inox-notifications`：`zbus` 传输层与总线测试，接上锁状态事件。
 5. `inox-session`：生成并投递令牌，把 `inox-lock` 从「不启动」改成「按策略启动」——策略是 `INOX_SESSION_TAKE_LOCK=1`，因为 `--take-lock` 没有解锁路径，无条件启动会锁住一个没人要求锁住的会话。
 6. **`inox-idle` 的锁完成确认尚未接线**：`session_lock_state` 已经存在并有往返测试，但 idle 还没有订阅它，因此 S03 的「准备挂起 → 收到锁完成确认」在真实会话里仍然不可达（挂起本身也还没有传输层）。这是本 ADR 交付范围之外的一步，登记在未决项里，不得读作已完成。
-6. 文档：README §4、`docs/book/src/roadmap.md`、PRD §2.3/§13、两个 crate 的 `AGENTS.md`、验收映射。
+7. 文档：README §4、`docs/book/src/roadmap.md`、PRD §2.3/§13、两个 crate 的 `AGENTS.md`、验收映射。
 
 未决项（阻塞或待人类决定，不能以「后续支持」掩盖）：
 
