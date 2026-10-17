@@ -11,6 +11,11 @@
 //! background colour and then draws the render elements produced by the desktop
 //! `Space` (see [`crate::state`]).
 //!
+//! Two readbacks make the drawn pixels observable:
+//! [`HeadlessRenderer::read_center_pixel`] for the integration tests and
+//! [`HeadlessRenderer::read_frame_rgba`] for the whole frame (the test-input
+//! channel's `dump-frame` command).
+//!
 //! # Unsafe code
 //!
 //! This module holds the crate's `unsafe` allowance, which is localised to
@@ -182,5 +187,38 @@ impl HeadlessRenderer {
                 expected: offset + BYTES_PER_PIXEL,
                 actual: data.len(),
             })
+    }
+
+    /// Read back the whole render target as tightly packed RGBA8 bytes.
+    ///
+    /// Row-major, top row first, four bytes per pixel with no padding — the layout
+    /// the PPM writer of the test-input channel (`crate::test_input`) consumes.
+    /// The colour order matches [`HeadlessRenderer::read_center_pixel`], so callers
+    /// compare with a one-step tolerance for the same reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::Gles`] when the readback fails, and
+    /// [`RenderError::ShortReadback`] when the mapping is smaller than the frame.
+    pub fn read_frame_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
+        let size = self.size;
+        let region = Rectangle::from_size(Size::<i32, BufferCoord>::from((size.w, size.h)));
+
+        let bound = self.renderer.bind(&mut self.target)?;
+        let mapping = self
+            .renderer
+            .copy_framebuffer(&bound, region, Fourcc::Abgr8888)?;
+        let data = self.renderer.map_texture(&mapping)?;
+
+        // `Abgr8888` readbacks are tightly packed, so the frame is exactly this long.
+        let expected = size.w as usize * size.h as usize * BYTES_PER_PIXEL;
+        if data.len() < expected {
+            return Err(RenderError::ShortReadback {
+                expected,
+                actual: data.len(),
+            });
+        }
+
+        Ok(data[..expected].to_vec())
     }
 }
