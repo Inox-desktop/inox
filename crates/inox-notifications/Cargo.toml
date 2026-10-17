@@ -12,8 +12,27 @@ categories.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# ADR 0003 fixes Iced for every shell component; the workspace entry selects the
+# tiny-skia renderer, which is what the headless render tests draw through.
+iced.workspace = true
+# L1: the shared Fluent loader and the design tokens. L3 components take no
+# same-layer dependency and none on the compositor (ADR 0013, 0018).
+inox-common.workspace = true
+inox-config.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# The headless render harness: `iced` re-exports neither `UserInterface` nor the
+# tiny-skia renderer, so the three crates are named directly (ADR 0018).
+iced_core.workspace = true
+iced_runtime.workspace = true
+iced_tiny_skia.workspace = true
+# `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02).
+image.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
