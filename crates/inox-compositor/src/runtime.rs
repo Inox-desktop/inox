@@ -142,6 +142,11 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         Some(physical::prepare()?)
     };
 
+    let input_method_argv = input_method::selected_argv(
+        &config.input_method,
+        prepared.as_ref().map(|prepared| &prepared.input),
+    );
+
     let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
     let loop_handle = event_loop.handle();
     let loop_signal = event_loop.get_signal();
@@ -206,7 +211,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         info!(socket = ?socket_name, "Wayland socket bound; waiting for first physical presentation");
     }
 
-    input_method::register(&loop_handle, &mut data, &config.input_method, &socket_name)?;
+    input_method::register(&loop_handle, &mut data, &input_method_argv, &socket_name)?;
 
     let scheduling_handle = loop_handle.clone();
     let result = event_loop.run(None, &mut data, move |data| {

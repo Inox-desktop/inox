@@ -14,11 +14,13 @@ categories.workspace = true
 anyhow.workspace = true
 # ADR 0003 fixes Iced for every shell component; the workspace entry selects
 # the tiny-skia renderer, which is what the headless render tests draw through.
-iced.workspace = true
+iced = { workspace = true, features = ["advanced"] }
 # L1: the shared Fluent loader and the design tokens. L3 components take no
 # same-layer dependency and no dependency on the compositor (ADR 0013, 0018).
 inox-common.workspace = true
 inox-config.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

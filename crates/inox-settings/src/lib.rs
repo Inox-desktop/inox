@@ -11,10 +11,10 @@
 //! |---|---|
 //! | [`draft`] | the values a user is editing, over the ones the files hold — pure, fully tested |
 //! | [`mod@validate`] | what a draft has to satisfy before it may be written, as Fluent ids |
-//! | [`document`] | the three configuration files as they were read, and the keys a save rewrites |
+//! | [`document`] | the four configuration files as they were read, and the keys a save rewrites |
 //! | [`persist`] | the atomic write: temporary file, flush, rename, directory sync, conflict detection |
 //! | [`apply`] | the difference between saved and in effect, per component, with generations |
-//! | [`pages`] | the four pages, each a pure description plus its view builder |
+//! | [`pages`] | the settings pages, each a pure description plus its view builder |
 //! | [`view_model`] | the projection from state to what the window draws |
 //! | [`app`] | `State`, `Message`, `update` (Elm) — no I/O, only [`app::OutgoingCommand`] |
 //! | [`view`] | iced widgets, built from the view model and the tokens |
@@ -54,12 +54,9 @@
 //!   configuration (ADR 0018: no transport exists in this milestone). The window
 //!   therefore reports the change as saved and *not* in effect, through
 //!   [`apply::Rejection::Unreachable`], rather than claiming it took.
-//! - **The keybinding and display pages.** Acceptance D04 names theme,
-//!   keybindings and display configuration; `compositor.toml` has no keybinding
-//!   table for a page to edit (`inox_config::InputConfig` holds keyboard layout,
-//!   repeat timing and pointer flags), and the output list is an array of
-//!   tables, which is a different kind of editor from the scalar fields
-//!   [`document`] rewrites. Both are reported rather than half-built.
+//! - **Custom keybindings and live display trials.** The output preference editor
+//!   saves the existing schema for the next session. Custom keybindings have no
+//!   schema or consumer yet; live display trials require server-owned rollback.
 //! - **E2/E3 GUI evidence**, which needs a host running an Inox session.
 
 #![forbid(unsafe_code)]
@@ -91,3 +88,8 @@ pub use crate::view_model::{
 
 /// The crate version as reported by Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Structured configuration editors and their authoritative schema checks.
+pub mod collections;
+
+mod focus;

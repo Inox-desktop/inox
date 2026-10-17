@@ -426,3 +426,80 @@ fn clicking_apply_writes_the_change() {
     );
     assert_eq!(window.drain(), 1, "exactly one file was written");
 }
+
+#[test]
+fn expanded_pages_render_in_both_locales_with_real_controls() {
+    for locale in ["en-US", "zh-CN"] {
+        for page in [
+            PageId::Input,
+            PageId::Layout,
+            PageId::Launcher,
+            PageId::Wallpaper,
+            PageId::Displays,
+            PageId::InputMethod,
+        ] {
+            let mut window = Window::with_locale(
+                &[],
+                inox_common::i18n::Locale::parse(locale).expect("locale"),
+                dark(),
+            );
+            window.update(Message::PageSelected(page));
+            if page == PageId::Displays {
+                window.update(Message::RowAdded(Field::Outputs));
+            }
+            if page == PageId::InputMethod {
+                window.update(Message::FieldSet {
+                    field: Field::InputMethodCommand,
+                    value: Value::Collection(vec![vec!["fcitx5".into()], vec!["--replace".into()]]),
+                });
+            }
+            let pixels = window.render();
+            assert!(distinct_colours(&pixels) > 4, "{locale} {page:?}");
+            snapshot(&format!("expanded-{locale}-{page:?}"), &pixels);
+        }
+    }
+}
+
+#[test]
+fn keyboard_focus_reveals_a_display_cell_below_the_viewport() {
+    let mut window = Window::new();
+    window.update(Message::PageSelected(PageId::Displays));
+    window.update(Message::RowAdded(Field::Outputs));
+    window.update(Message::RowAdded(Field::Outputs));
+    let before = window.render();
+    let target = inox_settings::view_model::FocusTarget::Cell(Field::Outputs, 1, 6);
+    let limit = window.state().model().focus_order.len();
+    for _ in 0..limit {
+        window.update(Message::FocusNext);
+        if window.state().focused() == Some(target) {
+            break;
+        }
+    }
+    assert_eq!(window.state().focused(), Some(target));
+    let after = window.render();
+    assert_ne!(
+        before, after,
+        "keyboard navigation must reveal the selected display cell"
+    );
+    snapshot("display-keyboard-scroll", &after);
+}
+
+#[test]
+fn enlarged_english_navigation_remains_reachable_by_keyboard() {
+    let mut tokens = dark();
+    tokens.typography.scale = 2.0;
+    let mut window = Window::with_locale(&[], inox_common::i18n::Locale::default_locale(), tokens);
+    let initial = window.render();
+    for _ in 0..PageId::ALL.len() {
+        window.update(Message::FocusNext);
+    }
+    assert_eq!(
+        window.state().focused(),
+        Some(inox_settings::view_model::FocusTarget::Page(
+            PageId::InputMethod
+        ))
+    );
+    let enlarged = window.render();
+    assert_ne!(initial, enlarged);
+    snapshot("enlarged-navigation", &enlarged);
+}

@@ -15,6 +15,8 @@
 
 #![allow(dead_code)]
 
+use iced::futures::{FutureExt, StreamExt};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -45,6 +47,8 @@ pub struct Window {
     directory: tempfile::TempDir,
     paths: ConfigPaths,
     state: State,
+    cache: RefCell<Cache>,
+    operations: RefCell<Vec<Box<dyn iced_core::widget::Operation>>>,
 }
 
 impl Window {
@@ -77,6 +81,8 @@ impl Window {
             directory,
             paths,
             state,
+            cache: RefCell::new(Cache::default()),
+            operations: RefCell::new(Vec::new()),
         }
     }
 
@@ -102,7 +108,17 @@ impl Window {
 
     /// Feeds a message to the update loop, the way the runtime would.
     pub fn update(&mut self, message: Message) {
-        let _ = app::update(&mut self.state, message);
+        let task = app::update(&mut self.state, message);
+        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+            while let Some(Some(action)) = stream.next().now_or_never() {
+                match action {
+                    iced_runtime::Action::Widget(operation) => {
+                        self.operations.borrow_mut().push(operation)
+                    }
+                    other => panic!("unexpected task action: {other:?}"),
+                }
+            }
+        }
     }
 
     /// Feeds several messages.
@@ -152,6 +168,7 @@ impl Window {
             mouse::Cursor::Available(Point::ORIGIN),
         );
 
+        self.cache.replace(ui.into_cache());
         Headless::screenshot(
             &mut renderer,
             Size::new(WIDTH as u32, HEIGHT as u32),
@@ -178,6 +195,7 @@ impl Window {
             &mut messages,
         );
 
+        self.cache.replace(ui.into_cache());
         messages
     }
 
@@ -282,12 +300,22 @@ impl Window {
         &'a self,
         renderer: &mut iced_tiny_skia::Renderer,
     ) -> UserInterface<'a, Message, iced::Theme, iced_tiny_skia::Renderer> {
-        UserInterface::build(
+        let mut ui = UserInterface::build(
             app::view(&self.state),
             self.size(),
-            Cache::default(),
+            self.cache.take(),
             renderer,
-        )
+        );
+        for mut operation in self.operations.take() {
+            loop {
+                ui.operate(renderer, operation.as_mut());
+                match operation.finish() {
+                    iced_core::widget::operation::Outcome::Chain(next) => operation = next,
+                    _ => break,
+                }
+            }
+        }
+        ui
     }
 }
 

@@ -177,16 +177,52 @@ impl State {
 
     /// Projects the state into what the window draws.
     pub fn model(&self) -> SettingsViewModel {
-        let errors = validate(self.draft.settings());
+        let mut errors = validate(self.draft.settings());
+        errors.extend(
+            self.draft
+                .invalid_numbers()
+                .map(|field| crate::validate::FieldError {
+                    path: field.path(),
+                    message: crate::validate::ValidationMessage::new(
+                        "settings-error-integer",
+                        vec![],
+                    ),
+                }),
+        );
 
-        SettingsInput {
+        let mut model = SettingsInput {
             page: self.page,
             draft: &self.draft,
             application: &self.application,
             errors: &errors,
             focused: self.focused,
         }
-        .project(&self.localizer)
+        .project(&self.localizer);
+        if !self.pending.is_empty() && !self.application.state().is_busy() {
+            let reason = self.localizer.message("settings-disabled-in-flight");
+            for field in &mut model.fields {
+                field.enabled = false;
+                field.disabled_reason = Some(reason.clone());
+                field.focused = false;
+                field.reset_focused = false;
+            }
+            for action in &mut model.actions {
+                action.enabled = false;
+                action.focused = false;
+                action.disabled_reason = Some(reason.clone());
+            }
+            model
+                .focus_order
+                .retain(|target| matches!(target, FocusTarget::Page(_)));
+            model.focused = model
+                .focused
+                .filter(|target| model.focus_order.contains(target));
+        }
+        model
+    }
+
+    fn is_busy(&self) -> bool {
+        !self.pending.is_empty() || self.application.state().is_busy()
     }
 
     /// The values the files hold, as the window last read them.
@@ -242,6 +278,28 @@ impl State {
         }
 
         match target {
+            FocusTarget::Cell(_, _, _) => {}
+            FocusTarget::RemoveRow(field, row) => {
+                if let Value::Collection(mut rows) = self.draft.field(field)
+                    && row < rows.len()
+                {
+                    rows.remove(row);
+                    if let Err(error) = self.set(field, Value::Collection(rows)) {
+                        debug!(%error, "cannot remove entry");
+                    }
+                    self.focused = Some(FocusTarget::Field(field));
+                }
+            }
+            FocusTarget::Field(field) if field.is_collection() => {
+                if let Value::Collection(mut rows) = self.draft.field(field) {
+                    let row = rows.len();
+                    rows.push(crate::collections::default_row(field));
+                    if let Err(error) = self.set(field, Value::Collection(rows)) {
+                        debug!(%error, "cannot add entry");
+                    }
+                    self.focused = Some(FocusTarget::Cell(field, row, 0));
+                }
+            }
             FocusTarget::Page(page) => self.page = page,
             FocusTarget::Field(field) => self.advance(field),
             FocusTarget::Reset(field) => {
@@ -265,7 +323,7 @@ impl State {
     /// this as its reason and is not drawn as usable — and it is here so that the
     /// rule holds however the message arrives.
     fn cancel(&mut self) {
-        if self.application.state().is_busy() {
+        if self.is_busy() {
             debug!("a save is in flight; the draft is not thrown away");
             return;
         }
@@ -312,7 +370,10 @@ impl State {
 
     /// Writes the changed fields and asks the components to apply them.
     fn apply(&mut self) {
-        if !is_valid(self.draft.settings()) {
+        if self.is_busy() {
+            return;
+        }
+        if self.draft.invalid_numbers().next().is_some() || !is_valid(self.draft.settings()) {
             debug!("the draft does not satisfy the schema; nothing was written");
             return;
         }
@@ -338,40 +399,48 @@ impl State {
             return;
         };
 
+        let mut requests = Vec::new();
         for file in files {
             let Some(document) = self.documents.get(file) else {
-                debug!(
-                    file = file.name(),
-                    "the window has no document for the file; it was not written"
+                self.application.fail(
+                    generation,
+                    Rejection::Save {
+                        file,
+                        reason: format!("{}: document was not loaded", file.name()),
+                    },
                 );
-                continue;
+                return;
             };
-
             let for_file: Vec<Edit> = edits
                 .iter()
                 .filter(|edit| edit.field().file() == file)
                 .cloned()
                 .collect();
-
-            self.pending.insert(
+            let content = document.patch(&for_file);
+            if let Err(reason) = crate::validate::document(file, &content, &for_file) {
+                self.application
+                    .fail(generation, Rejection::Save { file, reason });
+                return;
+            }
+            requests.push(SaveRequest {
+                generation,
                 file,
+                path: document.path().to_path_buf(),
+                content,
+                guard: document.guard(),
+                fields: for_file.iter().map(Edit::field).collect(),
+            });
+        }
+        for request in requests {
+            self.pending.insert(
+                request.file,
                 PendingWrite {
                     generation,
-                    content: document.patch(&for_file),
+                    content: request.content.clone(),
                 },
             );
-
-            if let Some(write) = self.pending.get(&file) {
-                self.outgoing
-                    .push_back(OutgoingCommand::Save(Box::new(SaveRequest {
-                        generation,
-                        file,
-                        path: document.path().to_path_buf(),
-                        content: write.content.clone(),
-                        guard: document.guard(),
-                        fields: for_file.iter().map(Edit::field).collect(),
-                    })));
-            }
+            self.outgoing
+                .push_back(OutgoingCommand::Save(Box::new(request)));
         }
     }
 
@@ -431,21 +500,25 @@ impl State {
 
     /// Records what a write left behind.
     fn settle_save(&mut self, generation: Generation, file: SettingFile, outcome: SaveOutcome) {
+        if !self
+            .pending
+            .get(&file)
+            .is_some_and(|write| write.generation == generation)
+        {
+            return;
+        }
+        let Some(write) = self.pending.remove(&file) else {
+            return;
+        };
         match outcome {
             SaveOutcome::Saved => {
-                if let Some(write) = self.pending.remove(&file)
-                    && write.generation == generation
-                {
-                    self.documents.install(file, write.content);
-                }
-
+                self.documents.install(file, write.content);
+                self.commit(file);
                 if self.application.file_written(generation, file) {
-                    self.commit(file);
                     self.notify(generation);
                 }
             }
             SaveOutcome::Conflicted { current_digest } => {
-                self.pending.remove(&file);
                 self.application.fail(
                     generation,
                     Rejection::Conflict {
@@ -455,7 +528,6 @@ impl State {
                 );
             }
             SaveOutcome::Failed { reason } => {
-                self.pending.remove(&file);
                 self.application
                     .fail(generation, Rejection::Save { file, reason });
             }
@@ -483,6 +555,33 @@ fn next_choice(control: &Control, current: &str) -> Option<Value> {
 /// Everything the settings window reacts to.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Add an entry to a structured list.
+    RowAdded(Field),
+    /// Remove one structured entry.
+    RowRemoved {
+        /// The collection field.
+        field: Field,
+        /// Row index in the current draft.
+        row: usize,
+    },
+    /// Change one cell without reparsing other entries.
+    CellEdited {
+        /// The collection field.
+        field: Field,
+        /// Row index in the current draft.
+        row: usize,
+        /// Column index.
+        column: usize,
+        /// The exact text entered.
+        text: String,
+    },
+    /// A numeric text input changed, including incomplete input.
+    NumberEdited {
+        /// The numeric setting being edited.
+        field: Field,
+        /// Its exact current text.
+        text: String,
+    },
     /// The user picked a page from the navigation list.
     PageSelected(PageId),
     /// The user activated one of a field's options.
@@ -569,12 +668,76 @@ pub enum Message {
 
 /// The Elm update: the only place [`State`] changes.
 pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
+    if state.is_busy()
+        && matches!(
+            &message,
+            Message::RowAdded(_)
+                | Message::RowRemoved { .. }
+                | Message::CellEdited { .. }
+                | Message::NumberEdited { .. }
+                | Message::FieldSet { .. }
+                | Message::FieldStepped { .. }
+                | Message::FieldReset(_)
+                | Message::AllReset
+                | Message::Reload
+        )
+    {
+        return iced::Task::none();
+    }
+    let previous_page = state.page;
+    let page_changed = matches!(&message, Message::PageSelected(_));
+    let move_focus = matches!(
+        &message,
+        Message::FocusNext | Message::FocusPrevious | Message::Activate | Message::Back
+    );
+
     match message {
+        Message::RowAdded(field) => {
+            if let Value::Collection(mut rows) = state.draft.field(field) {
+                rows.push(crate::collections::default_row(field));
+                if let Err(error) = state.set(field, Value::Collection(rows)) {
+                    debug!(%error, "cannot add entry");
+                }
+            }
+        }
+        Message::RowRemoved { field, row } => {
+            if let Value::Collection(mut rows) = state.draft.field(field)
+                && row < rows.len()
+            {
+                rows.remove(row);
+                if let Err(error) = state.set(field, Value::Collection(rows)) {
+                    debug!(%error, "cannot remove entry");
+                }
+            }
+        }
+        Message::CellEdited {
+            field,
+            row,
+            column,
+            text,
+        } => {
+            if let Value::Collection(mut rows) = state.draft.field(field)
+                && let Some(cell) = rows.get_mut(row).and_then(|cells| cells.get_mut(column))
+            {
+                *cell = text;
+                state.focused = Some(FocusTarget::Cell(field, row, column));
+                if let Err(error) = state.set(field, Value::Collection(rows)) {
+                    debug!(%error, "cannot edit entry");
+                }
+            }
+        }
+        Message::NumberEdited { field, text } => {
+            state.focused = Some(FocusTarget::Field(field));
+            state.draft.edit_number(field, text);
+        }
         Message::PageSelected(page) => {
             state.page = page;
             state.focused = None;
         }
         Message::FieldSet { field, value } => {
+            if field.control().kind == ValueKind::Text {
+                state.focused = Some(FocusTarget::Field(field));
+            }
             if let Err(error) = state.set(field, value) {
                 debug!(%error, "a value of the wrong shape was dropped");
             }
@@ -591,7 +754,14 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
                 return iced::Task::none();
             };
 
-            if let Err(error) = state.set(field, Value::Number(range.advance(current, delta))) {
+            if let Err(error) = state.set(
+                field,
+                Value::Number(
+                    current
+                        .saturating_add(range.step.saturating_mul(delta))
+                        .clamp(range.min, range.max),
+                ),
+            ) {
                 debug!(%error, "the stepped value was dropped");
             }
         }
@@ -633,6 +803,16 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
                 .component_unreachable(component, generation, reason);
         }
         Message::Reloaded { config, documents } => {
+            if state.is_busy() {
+                return iced::Task::none();
+            }
+            match crate::i18n::load(&config.locale) {
+                Ok(localizer) => state.localizer = Rc::new(localizer),
+                Err(error) => {
+                    debug!(%error, "cannot refresh locale");
+                }
+            }
+            state.tokens = config.theme.clone();
             state.documents = *documents;
             state.draft.rebase(Settings::from_config(&config));
             state.application.reset();
@@ -664,6 +844,18 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
         }
     }
 
+    if page_changed || state.page != previous_page {
+        return iced::Task::batch([
+            iced::widget::operation::snap_to(
+                "settings-content",
+                iced::widget::operation::RelativeOffset::START,
+            ),
+            crate::focus::reveal(Some(FocusTarget::Page(state.page))),
+        ]);
+    }
+    if move_focus {
+        return crate::focus::reveal(state.focused);
+    }
     iced::Task::none()
 }
 
@@ -876,8 +1068,7 @@ mod tests {
         // The default is 32; up, down, down leaves it one below where it began.
         assert_eq!(state.draft().settings().panel_height, 31);
 
-        // Stepping below the smallest value the schema accepts wraps round, so
-        // every stop of the range is reachable with one key (Q01).
+        // Pointer stepping clamps at the bounds; keyboard activation cycles separately.
         send(
             &mut state,
             Message::FieldSet {
@@ -892,7 +1083,7 @@ mod tests {
                 delta: -1,
             },
         );
-        assert_eq!(state.draft().settings().panel_height, 256);
+        assert_eq!(state.draft().settings().panel_height, 8);
     }
 
     #[test]

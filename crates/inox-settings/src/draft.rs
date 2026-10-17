@@ -61,6 +61,71 @@ const SYSTEM: &str = "system";
 /// fails until the catalogs agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Field {
+    /// `input.input_method`: trusted engine executable and literal arguments.
+    InputMethodCommand,
+    /// `outputs` preferences.
+    Outputs,
+    /// `launcher.terminal` preferences.
+    LauncherTerminal,
+    /// `wallpaper.per_output` preferences.
+    WallpaperPerOutput,
+
+    /// `panel.margin` in `shell.toml`.
+    PanelMargin,
+    /// `panel.exclusive` in `shell.toml`.
+    PanelExclusive,
+    /// `panel.clock_format` in `shell.toml`.
+    PanelClockFormat,
+    /// `panel.max_task_buttons` in `shell.toml`.
+    PanelMaxTaskButtons,
+    /// `panel.icon_size` in `shell.toml`.
+    PanelIconSize,
+    /// `launcher.max_results` in `shell.toml`.
+    LauncherMaxResults,
+    /// `launcher.icon_size` in `shell.toml`.
+    LauncherIconSize,
+    /// `launcher.include_hidden` in `shell.toml`.
+    LauncherIncludeHidden,
+    /// `launcher.max_query_chars` in `shell.toml`.
+    LauncherMaxQueryChars,
+    /// `wallpaper.image` in `shell.toml`.
+    WallpaperImage,
+    /// `wallpaper.mode` in `shell.toml`.
+    WallpaperMode,
+    /// `input.keyboard_layout` in `compositor.toml`.
+    KeyboardLayout,
+    /// `input.keyboard_variant` in `compositor.toml`.
+    KeyboardVariant,
+    /// `input.keyboard_repeat_delay_ms` in `compositor.toml`.
+    KeyboardRepeatDelay,
+    /// `input.keyboard_repeat_rate_hz` in `compositor.toml`.
+    KeyboardRepeatRate,
+    /// `input.tap_to_click` in `compositor.toml`.
+    TapToClick,
+    /// `input.natural_scroll` in `compositor.toml`.
+    NaturalScroll,
+    /// `layout.master_ratio` in `compositor.toml`.
+    LayoutMasterRatio,
+    /// `layout.master_count` in `compositor.toml`.
+    LayoutMasterCount,
+    /// `layout.gap` in `compositor.toml`.
+    LayoutGap,
+    /// `display.max_visible` in `notifications.toml`.
+    NotificationsMaxVisible,
+    /// `display.width` in `notifications.toml`.
+    NotificationsWidth,
+    /// `display.margin` in `notifications.toml`.
+    NotificationsMargin,
+    /// `display.icon_size` in `notifications.toml`.
+    NotificationsIconSize,
+    /// `queue.max_pending` in `notifications.toml`.
+    NotificationsMaxPending,
+    /// `queue.policy` in `notifications.toml`.
+    NotificationsQueuePolicy,
+    /// `policy.show_actions` in `notifications.toml`.
+    NotificationsShowActions,
+    /// `policy.hide_body_when_locked` in `notifications.toml`.
+    NotificationsHideBodyWhenLocked,
     /// `theme.appearance` in `config.toml`: light, dark, or the session's.
     ThemeAppearance,
     /// `locale.language` in `config.toml`: the session's language.
@@ -171,9 +236,75 @@ const TIMEOUT_RANGE: Range = Range {
     unit_id: "settings-unit-ms",
 };
 
+const WALLPAPER_MODE_CHOICES: &[Choice] = &[
+    Choice {
+        id: "fill",
+        label_id: "settings-choice-fill",
+    },
+    Choice {
+        id: "fit",
+        label_id: "settings-choice-fit",
+    },
+    Choice {
+        id: "stretch",
+        label_id: "settings-choice-stretch",
+    },
+    Choice {
+        id: "center",
+        label_id: "settings-choice-center",
+    },
+    Choice {
+        id: "tile",
+        label_id: "settings-choice-tile",
+    },
+];
+
+const QUEUE_POLICY_CHOICES: &[Choice] = &[
+    Choice {
+        id: "drop-oldest",
+        label_id: "settings-choice-drop-oldest",
+    },
+    Choice {
+        id: "coalesce-by-app",
+        label_id: "settings-choice-coalesce-by-app",
+    },
+];
+
 impl Field {
     /// Every field, in the order the pages draw them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 43] = [
+        Self::InputMethodCommand,
+        Self::Outputs,
+        Self::LauncherTerminal,
+        Self::WallpaperPerOutput,
+        Self::PanelMargin,
+        Self::PanelExclusive,
+        Self::PanelClockFormat,
+        Self::PanelMaxTaskButtons,
+        Self::PanelIconSize,
+        Self::LauncherMaxResults,
+        Self::LauncherIconSize,
+        Self::LauncherIncludeHidden,
+        Self::LauncherMaxQueryChars,
+        Self::WallpaperImage,
+        Self::WallpaperMode,
+        Self::KeyboardLayout,
+        Self::KeyboardVariant,
+        Self::KeyboardRepeatDelay,
+        Self::KeyboardRepeatRate,
+        Self::TapToClick,
+        Self::NaturalScroll,
+        Self::LayoutMasterRatio,
+        Self::LayoutMasterCount,
+        Self::LayoutGap,
+        Self::NotificationsMaxVisible,
+        Self::NotificationsWidth,
+        Self::NotificationsMargin,
+        Self::NotificationsIconSize,
+        Self::NotificationsMaxPending,
+        Self::NotificationsQueuePolicy,
+        Self::NotificationsShowActions,
+        Self::NotificationsHideBodyWhenLocked,
         Self::ThemeAppearance,
         Self::LocaleLanguage,
         Self::PanelPosition,
@@ -194,6 +325,40 @@ impl Field {
     /// names.
     pub const fn path(self) -> &'static str {
         match self {
+            Self::InputMethodCommand => "input.input_method",
+            Self::Outputs => "outputs",
+            Self::LauncherTerminal => "launcher.terminal",
+            Self::WallpaperPerOutput => "wallpaper.per_output",
+
+            Self::PanelMargin => "panel.margin",
+            Self::PanelExclusive => "panel.exclusive",
+            Self::PanelClockFormat => "panel.clock_format",
+            Self::PanelMaxTaskButtons => "panel.max_task_buttons",
+            Self::PanelIconSize => "panel.icon_size",
+            Self::LauncherMaxResults => "launcher.max_results",
+            Self::LauncherIconSize => "launcher.icon_size",
+            Self::LauncherIncludeHidden => "launcher.include_hidden",
+            Self::LauncherMaxQueryChars => "launcher.max_query_chars",
+            Self::WallpaperImage => "wallpaper.image",
+            Self::WallpaperMode => "wallpaper.mode",
+            Self::KeyboardLayout => "input.keyboard_layout",
+            Self::KeyboardVariant => "input.keyboard_variant",
+            Self::KeyboardRepeatDelay => "input.keyboard_repeat_delay_ms",
+            Self::KeyboardRepeatRate => "input.keyboard_repeat_rate_hz",
+            Self::TapToClick => "input.tap_to_click",
+            Self::NaturalScroll => "input.natural_scroll",
+            Self::LayoutMasterRatio => "layout.master_ratio",
+            Self::LayoutMasterCount => "layout.master_count",
+            Self::LayoutGap => "layout.gap",
+            Self::NotificationsMaxVisible => "display.max_visible",
+            Self::NotificationsWidth => "display.width",
+            Self::NotificationsMargin => "display.margin",
+            Self::NotificationsIconSize => "display.icon_size",
+            Self::NotificationsMaxPending => "queue.max_pending",
+            Self::NotificationsQueuePolicy => "queue.policy",
+            Self::NotificationsShowActions => "policy.show_actions",
+            Self::NotificationsHideBodyWhenLocked => "policy.hide_body_when_locked",
+
             Self::ThemeAppearance => "theme.appearance",
             Self::LocaleLanguage => "locale.language",
             Self::PanelPosition => "panel.position",
@@ -211,6 +376,40 @@ impl Field {
     /// The file the key lives in.
     pub const fn file(self) -> SettingFile {
         match self {
+            Self::InputMethodCommand => SettingFile::Compositor,
+            Self::Outputs => SettingFile::Compositor,
+            Self::LauncherTerminal => SettingFile::Shell,
+            Self::WallpaperPerOutput => SettingFile::Shell,
+
+            Self::PanelMargin => SettingFile::Shell,
+            Self::PanelExclusive => SettingFile::Shell,
+            Self::PanelClockFormat => SettingFile::Shell,
+            Self::PanelMaxTaskButtons => SettingFile::Shell,
+            Self::PanelIconSize => SettingFile::Shell,
+            Self::LauncherMaxResults => SettingFile::Shell,
+            Self::LauncherIconSize => SettingFile::Shell,
+            Self::LauncherIncludeHidden => SettingFile::Shell,
+            Self::LauncherMaxQueryChars => SettingFile::Shell,
+            Self::WallpaperImage => SettingFile::Shell,
+            Self::WallpaperMode => SettingFile::Shell,
+            Self::KeyboardLayout => SettingFile::Compositor,
+            Self::KeyboardVariant => SettingFile::Compositor,
+            Self::KeyboardRepeatDelay => SettingFile::Compositor,
+            Self::KeyboardRepeatRate => SettingFile::Compositor,
+            Self::TapToClick => SettingFile::Compositor,
+            Self::NaturalScroll => SettingFile::Compositor,
+            Self::LayoutMasterRatio => SettingFile::Compositor,
+            Self::LayoutMasterCount => SettingFile::Compositor,
+            Self::LayoutGap => SettingFile::Compositor,
+            Self::NotificationsMaxVisible => SettingFile::Notifications,
+            Self::NotificationsWidth => SettingFile::Notifications,
+            Self::NotificationsMargin => SettingFile::Notifications,
+            Self::NotificationsIconSize => SettingFile::Notifications,
+            Self::NotificationsMaxPending => SettingFile::Notifications,
+            Self::NotificationsQueuePolicy => SettingFile::Notifications,
+            Self::NotificationsShowActions => SettingFile::Notifications,
+            Self::NotificationsHideBodyWhenLocked => SettingFile::Notifications,
+
             Self::ThemeAppearance | Self::LocaleLanguage => SettingFile::Root,
             Self::PanelPosition
             | Self::PanelHeight
@@ -227,6 +426,40 @@ impl Field {
     /// The page the field is edited on.
     pub const fn page(self) -> PageId {
         match self {
+            Self::InputMethodCommand => PageId::InputMethod,
+            Self::Outputs => PageId::Displays,
+            Self::LauncherTerminal => PageId::Launcher,
+            Self::WallpaperPerOutput => PageId::Wallpaper,
+
+            Self::PanelMargin => PageId::Panel,
+            Self::PanelExclusive => PageId::Panel,
+            Self::PanelClockFormat => PageId::Panel,
+            Self::PanelMaxTaskButtons => PageId::Panel,
+            Self::PanelIconSize => PageId::Panel,
+            Self::LauncherMaxResults => PageId::Launcher,
+            Self::LauncherIconSize => PageId::Launcher,
+            Self::LauncherIncludeHidden => PageId::Launcher,
+            Self::LauncherMaxQueryChars => PageId::Launcher,
+            Self::WallpaperImage => PageId::Wallpaper,
+            Self::WallpaperMode => PageId::Wallpaper,
+            Self::KeyboardLayout => PageId::Input,
+            Self::KeyboardVariant => PageId::Input,
+            Self::KeyboardRepeatDelay => PageId::Input,
+            Self::KeyboardRepeatRate => PageId::Input,
+            Self::TapToClick => PageId::Input,
+            Self::NaturalScroll => PageId::Input,
+            Self::LayoutMasterRatio => PageId::Layout,
+            Self::LayoutMasterCount => PageId::Layout,
+            Self::LayoutGap => PageId::Layout,
+            Self::NotificationsMaxVisible => PageId::Notifications,
+            Self::NotificationsWidth => PageId::Notifications,
+            Self::NotificationsMargin => PageId::Notifications,
+            Self::NotificationsIconSize => PageId::Notifications,
+            Self::NotificationsMaxPending => PageId::Notifications,
+            Self::NotificationsQueuePolicy => PageId::Notifications,
+            Self::NotificationsShowActions => PageId::Notifications,
+            Self::NotificationsHideBodyWhenLocked => PageId::Notifications,
+
             Self::ThemeAppearance => PageId::Appearance,
             Self::LocaleLanguage => PageId::Locale,
             Self::PanelPosition
@@ -244,6 +477,42 @@ impl Field {
     /// The message id of the field's label.
     pub const fn label_id(self) -> &'static str {
         match self {
+            Self::InputMethodCommand => "settings-field-input-method-command",
+            Self::Outputs => "settings-field-outputs",
+            Self::LauncherTerminal => "settings-field-launcherterminal",
+            Self::WallpaperPerOutput => "settings-field-wallpaperperoutput",
+
+            Self::PanelMargin => "settings-field-panel-margin",
+            Self::PanelExclusive => "settings-field-panel-exclusive",
+            Self::PanelClockFormat => "settings-field-panel-clock-format",
+            Self::PanelMaxTaskButtons => "settings-field-panel-max-task-buttons",
+            Self::PanelIconSize => "settings-field-panel-icon-size",
+            Self::LauncherMaxResults => "settings-field-launcher-max-results",
+            Self::LauncherIconSize => "settings-field-launcher-icon-size",
+            Self::LauncherIncludeHidden => "settings-field-launcher-include-hidden",
+            Self::LauncherMaxQueryChars => "settings-field-launcher-max-query-chars",
+            Self::WallpaperImage => "settings-field-wallpaper-image",
+            Self::WallpaperMode => "settings-field-wallpaper-mode",
+            Self::KeyboardLayout => "settings-field-keyboard-layout",
+            Self::KeyboardVariant => "settings-field-keyboard-variant",
+            Self::KeyboardRepeatDelay => "settings-field-keyboard-repeat-delay",
+            Self::KeyboardRepeatRate => "settings-field-keyboard-repeat-rate",
+            Self::TapToClick => "settings-field-tap-to-click",
+            Self::NaturalScroll => "settings-field-natural-scroll",
+            Self::LayoutMasterRatio => "settings-field-layout-master-ratio",
+            Self::LayoutMasterCount => "settings-field-layout-master-count",
+            Self::LayoutGap => "settings-field-layout-gap",
+            Self::NotificationsMaxVisible => "settings-field-notifications-max-visible",
+            Self::NotificationsWidth => "settings-field-notifications-width",
+            Self::NotificationsMargin => "settings-field-notifications-margin",
+            Self::NotificationsIconSize => "settings-field-notifications-icon-size",
+            Self::NotificationsMaxPending => "settings-field-notifications-max-pending",
+            Self::NotificationsQueuePolicy => "settings-field-notifications-queue-policy",
+            Self::NotificationsShowActions => "settings-field-notifications-show-actions",
+            Self::NotificationsHideBodyWhenLocked => {
+                "settings-field-notifications-hide-body-when-locked"
+            }
+
             Self::ThemeAppearance => "settings-field-theme-appearance",
             Self::LocaleLanguage => "settings-field-locale-language",
             Self::PanelPosition => "settings-field-panel-position",
@@ -262,6 +531,120 @@ impl Field {
     /// two limits.
     pub const fn control(self) -> Control {
         match self {
+            Self::InputMethodCommand => Control::COLLECTION,
+            Self::Outputs => Control::COLLECTION,
+            Self::LauncherTerminal => Control::COLLECTION,
+            Self::WallpaperPerOutput => Control::COLLECTION,
+
+            Self::PanelMargin => Control::number(Range {
+                min: 0,
+                max: 64,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::PanelExclusive => Control::FLAG,
+            Self::PanelClockFormat => Control::TEXT,
+            Self::PanelMaxTaskButtons => Control::number(Range {
+                min: 1,
+                max: 64,
+                step: 1,
+                unit_id: "settings-unit-count",
+            }),
+            Self::PanelIconSize => Control::number(Range {
+                min: 8,
+                max: 128,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::LauncherMaxResults => Control::number(Range {
+                min: 1,
+                max: 64,
+                step: 1,
+                unit_id: "settings-unit-count",
+            }),
+            Self::LauncherIconSize => Control::number(Range {
+                min: 8,
+                max: 256,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::LauncherIncludeHidden => Control::FLAG,
+            Self::LauncherMaxQueryChars => Control::number(Range {
+                min: 1,
+                max: 512,
+                step: 1,
+                unit_id: "settings-unit-count",
+            }),
+            Self::WallpaperImage => Control::TEXT,
+            Self::WallpaperMode => Control::choices(WALLPAPER_MODE_CHOICES),
+            Self::KeyboardLayout => Control::TEXT,
+            Self::KeyboardVariant => Control::TEXT,
+            Self::KeyboardRepeatDelay => Control::number(Range {
+                min: 0,
+                max: 2147483647,
+                step: 50,
+                unit_id: "settings-unit-ms",
+            }),
+            Self::KeyboardRepeatRate => Control::number(Range {
+                min: 0,
+                max: 2147483647,
+                step: 1,
+                unit_id: "settings-unit-hz",
+            }),
+            Self::TapToClick => Control::FLAG,
+            Self::NaturalScroll => Control::FLAG,
+            Self::LayoutMasterRatio => Control::number(Range {
+                min: 10,
+                max: 90,
+                step: 1,
+                unit_id: "settings-unit-percent",
+            }),
+            Self::LayoutMasterCount => Control::number(Range {
+                min: 1,
+                max: 4294967295,
+                step: 1,
+                unit_id: "settings-unit-count",
+            }),
+            Self::LayoutGap => Control::number(Range {
+                min: 0,
+                max: 2147483647,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::NotificationsMaxVisible => Control::number(Range {
+                min: 1,
+                max: 16,
+                step: 1,
+                unit_id: "settings-unit-count",
+            }),
+            Self::NotificationsWidth => Control::number(Range {
+                min: 160,
+                max: 1024,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::NotificationsMargin => Control::number(Range {
+                min: 0,
+                max: 256,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::NotificationsIconSize => Control::number(Range {
+                min: 8,
+                max: 128,
+                step: 1,
+                unit_id: "settings-unit-px",
+            }),
+            Self::NotificationsMaxPending => Control::number(Range {
+                min: 1,
+                max: 1024,
+                step: 1,
+                unit_id: "settings-unit-count",
+            }),
+            Self::NotificationsQueuePolicy => Control::choices(QUEUE_POLICY_CHOICES),
+            Self::NotificationsShowActions => Control::FLAG,
+            Self::NotificationsHideBodyWhenLocked => Control::FLAG,
+
             Self::ThemeAppearance => Control::choices(APPEARANCE_CHOICES),
             Self::LocaleLanguage => Control::choices(LOCALE_CHOICES),
             Self::PanelPosition => Control::choices(PANEL_POSITION_CHOICES),
@@ -274,6 +657,17 @@ impl Field {
                 Control::FLAG
             }
         }
+    }
+
+    /// Whether the field is edited as a structured collection.
+    pub const fn is_collection(self) -> bool {
+        matches!(
+            self,
+            Self::InputMethodCommand
+                | Self::Outputs
+                | Self::LauncherTerminal
+                | Self::WallpaperPerOutput
+        )
     }
 
     /// Every message id the field's label, choices and unit need.
@@ -298,6 +692,56 @@ impl Field {
     /// Always a value of the shape [`Field::control`] offers.
     pub fn value(self, settings: &Settings) -> Value {
         match self {
+            Self::InputMethodCommand => Value::Collection(
+                settings
+                    .input_method
+                    .iter()
+                    .cloned()
+                    .map(|arg| vec![arg])
+                    .collect(),
+            ),
+            Self::Outputs => Value::Collection(settings.outputs.clone()),
+            Self::LauncherTerminal => Value::Collection(
+                settings
+                    .launcher_terminal
+                    .iter()
+                    .cloned()
+                    .map(|arg| vec![arg])
+                    .collect(),
+            ),
+            Self::WallpaperPerOutput => Value::Collection(settings.wallpaper_per_output.clone()),
+
+            Self::PanelMargin => Value::Number(settings.panel_margin),
+            Self::PanelExclusive => Value::Flag(settings.panel_exclusive),
+            Self::PanelClockFormat => Value::Text(settings.panel_clock_format.clone()),
+            Self::PanelMaxTaskButtons => Value::Number(settings.panel_max_task_buttons),
+            Self::PanelIconSize => Value::Number(settings.panel_icon_size),
+            Self::LauncherMaxResults => Value::Number(settings.launcher_max_results),
+            Self::LauncherIconSize => Value::Number(settings.launcher_icon_size),
+            Self::LauncherIncludeHidden => Value::Flag(settings.launcher_include_hidden),
+            Self::LauncherMaxQueryChars => Value::Number(settings.launcher_max_query_chars),
+            Self::WallpaperImage => Value::Text(settings.wallpaper_image.clone()),
+            Self::WallpaperMode => Value::Choice(settings.wallpaper_mode.clone()),
+            Self::KeyboardLayout => Value::Text(settings.input_keyboard_layout.clone()),
+            Self::KeyboardVariant => Value::Text(settings.input_keyboard_variant.clone()),
+            Self::KeyboardRepeatDelay => Value::Number(settings.input_keyboard_repeat_delay_ms),
+            Self::KeyboardRepeatRate => Value::Number(settings.input_keyboard_repeat_rate_hz),
+            Self::TapToClick => Value::Flag(settings.input_tap_to_click),
+            Self::NaturalScroll => Value::Flag(settings.input_natural_scroll),
+            Self::LayoutMasterRatio => Value::Number(settings.layout_master_ratio),
+            Self::LayoutMasterCount => Value::Number(settings.layout_master_count),
+            Self::LayoutGap => Value::Number(settings.layout_gap),
+            Self::NotificationsMaxVisible => Value::Number(settings.display_max_visible),
+            Self::NotificationsWidth => Value::Number(settings.display_width),
+            Self::NotificationsMargin => Value::Number(settings.display_margin),
+            Self::NotificationsIconSize => Value::Number(settings.display_icon_size),
+            Self::NotificationsMaxPending => Value::Number(settings.queue_max_pending),
+            Self::NotificationsQueuePolicy => Value::Choice(settings.queue_policy.clone()),
+            Self::NotificationsShowActions => Value::Flag(settings.policy_show_actions),
+            Self::NotificationsHideBodyWhenLocked => {
+                Value::Flag(settings.policy_hide_body_when_locked)
+            }
+
             Self::ThemeAppearance => Value::Choice(appearance_id(settings.theme_appearance)),
             Self::LocaleLanguage => Value::Choice(settings.locale.id()),
             Self::PanelPosition => Value::Choice(panel_position_id(settings.panel_position)),
@@ -355,6 +799,11 @@ impl Field {
             });
         }
 
+        if let Value::Collection(rows) = value {
+            return crate::collections::toml(self, rows)
+                .map(Some)
+                .ok_or(DraftError::InvalidCollection { field: self });
+        }
         if self == Self::LocaleLanguage
             && let Value::Choice(id) = value
             && id == ENVIRONMENT
@@ -362,8 +811,13 @@ impl Field {
             return Ok(None);
         }
 
+        if self == Self::WallpaperImage && matches!(value, Value::Text(text) if text.is_empty()) {
+            return Ok(None);
+        }
+
         Ok(Some(match value {
-            Value::Choice(id) => Toml::String(id.clone()),
+            Value::Collection(_) => return Err(DraftError::InvalidCollection { field: self }),
+            Value::Choice(id) | Value::Text(id) => Toml::String(id.clone()),
             Value::Flag(flag) => Toml::Bool(*flag),
             Value::Number(number) => Toml::Integer(*number),
         }))
@@ -376,6 +830,74 @@ impl Field {
     /// over came from `value(settings)` a moment earlier.
     fn assign(self, settings: &mut Settings, value: Value) {
         match (self, value) {
+            (Self::InputMethodCommand, Value::Collection(rows)) => {
+                settings.input_method = rows
+                    .into_iter()
+                    .filter_map(|row| row.into_iter().next())
+                    .collect()
+            }
+            (Self::Outputs, Value::Collection(rows)) => settings.outputs = rows,
+            (Self::LauncherTerminal, Value::Collection(rows)) => {
+                settings.launcher_terminal = rows
+                    .into_iter()
+                    .filter_map(|row| row.into_iter().next())
+                    .collect()
+            }
+            (Self::WallpaperPerOutput, Value::Collection(rows)) => {
+                settings.wallpaper_per_output = rows
+            }
+
+            (Self::PanelMargin, Value::Number(value)) => settings.panel_margin = value,
+            (Self::PanelExclusive, Value::Flag(value)) => settings.panel_exclusive = value,
+            (Self::PanelClockFormat, Value::Text(value)) => settings.panel_clock_format = value,
+            (Self::PanelMaxTaskButtons, Value::Number(value)) => {
+                settings.panel_max_task_buttons = value
+            }
+            (Self::PanelIconSize, Value::Number(value)) => settings.panel_icon_size = value,
+            (Self::LauncherMaxResults, Value::Number(value)) => {
+                settings.launcher_max_results = value
+            }
+            (Self::LauncherIconSize, Value::Number(value)) => settings.launcher_icon_size = value,
+            (Self::LauncherIncludeHidden, Value::Flag(value)) => {
+                settings.launcher_include_hidden = value
+            }
+            (Self::LauncherMaxQueryChars, Value::Number(value)) => {
+                settings.launcher_max_query_chars = value
+            }
+            (Self::WallpaperImage, Value::Text(value)) => settings.wallpaper_image = value,
+            (Self::WallpaperMode, Value::Choice(value)) => settings.wallpaper_mode = value,
+            (Self::KeyboardLayout, Value::Text(value)) => settings.input_keyboard_layout = value,
+            (Self::KeyboardVariant, Value::Text(value)) => settings.input_keyboard_variant = value,
+            (Self::KeyboardRepeatDelay, Value::Number(value)) => {
+                settings.input_keyboard_repeat_delay_ms = value
+            }
+            (Self::KeyboardRepeatRate, Value::Number(value)) => {
+                settings.input_keyboard_repeat_rate_hz = value
+            }
+            (Self::TapToClick, Value::Flag(value)) => settings.input_tap_to_click = value,
+            (Self::NaturalScroll, Value::Flag(value)) => settings.input_natural_scroll = value,
+            (Self::LayoutMasterRatio, Value::Number(value)) => settings.layout_master_ratio = value,
+            (Self::LayoutMasterCount, Value::Number(value)) => settings.layout_master_count = value,
+            (Self::LayoutGap, Value::Number(value)) => settings.layout_gap = value,
+            (Self::NotificationsMaxVisible, Value::Number(value)) => {
+                settings.display_max_visible = value
+            }
+            (Self::NotificationsWidth, Value::Number(value)) => settings.display_width = value,
+            (Self::NotificationsMargin, Value::Number(value)) => settings.display_margin = value,
+            (Self::NotificationsIconSize, Value::Number(value)) => {
+                settings.display_icon_size = value
+            }
+            (Self::NotificationsMaxPending, Value::Number(value)) => {
+                settings.queue_max_pending = value
+            }
+            (Self::NotificationsQueuePolicy, Value::Choice(value)) => settings.queue_policy = value,
+            (Self::NotificationsShowActions, Value::Flag(value)) => {
+                settings.policy_show_actions = value
+            }
+            (Self::NotificationsHideBodyWhenLocked, Value::Flag(value)) => {
+                settings.policy_hide_body_when_locked = value
+            }
+
             (Self::ThemeAppearance, Value::Choice(id)) => {
                 settings.theme_appearance = appearance_of(&id);
             }
@@ -457,11 +979,12 @@ impl Range {
     /// A value outside the range — which only a hand-edited draft can hold —
     /// snaps to the nearest stop rather than staying outside.
     pub fn advance(&self, value: i64, steps: i64) -> i64 {
-        let current = (value - self.min)
+        let current = value
+            .saturating_sub(self.min)
             .div_euclid(self.step)
             .clamp(0, self.stops() - 1);
 
-        self.min + (current + steps).rem_euclid(self.stops()) * self.step
+        self.min + (current + steps.rem_euclid(self.stops())).rem_euclid(self.stops()) * self.step
     }
 }
 
@@ -486,6 +1009,20 @@ impl Control {
         }
     }
 
+    /// A structured list of rows.
+    pub const COLLECTION: Self = Self {
+        kind: ValueKind::Collection,
+        choices: &[],
+        range: None,
+    };
+
+    /// Free-form text.
+    pub const TEXT: Self = Self {
+        kind: ValueKind::Text,
+        choices: &[],
+        range: None,
+    };
+
     /// A switch.
     pub const FLAG: Self = Self {
         kind: ValueKind::Flag,
@@ -506,6 +1043,10 @@ impl Control {
 /// The shape of a value a control edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueKind {
+    /// A structured collection.
+    Collection,
+    /// Free-form text.
+    Text,
     /// One of a fixed set of identifiers.
     Choice,
     /// A switch.
@@ -517,6 +1058,8 @@ pub enum ValueKind {
 impl std::fmt::Display for ValueKind {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::Collection => "collection",
+            Self::Text => "text",
             Self::Choice => "choice",
             Self::Flag => "switch",
             Self::Number => "number",
@@ -527,6 +1070,10 @@ impl std::fmt::Display for ValueKind {
 /// A value a field can hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
+    /// A list of rows; each row holds its editable column values.
+    Collection(Vec<Vec<String>>),
+    /// Text entered without shell interpretation.
+    Text(String),
     /// One of the identifiers the field's control offers, or — for a choice the
     /// control does not offer, such as a language tag a user wrote by hand — the
     /// value as it stands in the file.
@@ -541,6 +1088,8 @@ impl Value {
     /// The shape of the value.
     pub fn kind(&self) -> ValueKind {
         match self {
+            Self::Collection(_) => ValueKind::Collection,
+            Self::Text(_) => ValueKind::Text,
             Self::Choice(_) => ValueKind::Choice,
             Self::Flag(_) => ValueKind::Flag,
             Self::Number(_) => ValueKind::Number,
@@ -551,7 +1100,7 @@ impl Value {
     pub fn choice_id(&self) -> Option<&str> {
         match self {
             Self::Choice(id) => Some(id),
-            Self::Flag(_) | Self::Number(_) => None,
+            Self::Flag(_) | Self::Number(_) | Self::Text(_) | Self::Collection(_) => None,
         }
     }
 }
@@ -612,6 +1161,71 @@ impl LocaleChoice {
 /// [`mod@crate::validate`] is the gate on the way out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    /// Trusted input method command for the next physical session.
+    pub input_method: Vec<String>,
+    /// Output connector, width, height, refresh, scale, x and y, in display order.
+    pub outputs: Vec<Vec<String>>,
+    /// Terminal executable followed by arguments, without shell interpretation.
+    pub launcher_terminal: Vec<String>,
+    /// Per-output wallpaper names and paths, kept in editable order.
+    pub wallpaper_per_output: Vec<Vec<String>>,
+    /// `panel.margin`.
+    pub panel_margin: i64,
+    /// `panel.exclusive`.
+    pub panel_exclusive: bool,
+    /// `panel.clock_format`.
+    pub panel_clock_format: String,
+    /// `panel.max_task_buttons`.
+    pub panel_max_task_buttons: i64,
+    /// `panel.icon_size`.
+    pub panel_icon_size: i64,
+    /// `launcher.max_results`.
+    pub launcher_max_results: i64,
+    /// `launcher.icon_size`.
+    pub launcher_icon_size: i64,
+    /// `launcher.include_hidden`.
+    pub launcher_include_hidden: bool,
+    /// `launcher.max_query_chars`.
+    pub launcher_max_query_chars: i64,
+    /// `wallpaper.image`.
+    pub wallpaper_image: String,
+    /// `wallpaper.mode`.
+    pub wallpaper_mode: String,
+    /// `input.keyboard_layout`.
+    pub input_keyboard_layout: String,
+    /// `input.keyboard_variant`.
+    pub input_keyboard_variant: String,
+    /// `input.keyboard_repeat_delay_ms`.
+    pub input_keyboard_repeat_delay_ms: i64,
+    /// `input.keyboard_repeat_rate_hz`.
+    pub input_keyboard_repeat_rate_hz: i64,
+    /// `input.tap_to_click`.
+    pub input_tap_to_click: bool,
+    /// `input.natural_scroll`.
+    pub input_natural_scroll: bool,
+    /// `layout.master_ratio`.
+    pub layout_master_ratio: i64,
+    /// `layout.master_count`.
+    pub layout_master_count: i64,
+    /// `layout.gap`.
+    pub layout_gap: i64,
+    /// `display.max_visible`.
+    pub display_max_visible: i64,
+    /// `display.width`.
+    pub display_width: i64,
+    /// `display.margin`.
+    pub display_margin: i64,
+    /// `display.icon_size`.
+    pub display_icon_size: i64,
+    /// `queue.max_pending`.
+    pub queue_max_pending: i64,
+    /// `queue.policy`.
+    pub queue_policy: String,
+    /// `policy.show_actions`.
+    pub policy_show_actions: bool,
+    /// `policy.hide_body_when_locked`.
+    pub policy_hide_body_when_locked: bool,
+
     /// `theme.appearance`.
     pub theme_appearance: Appearance,
     /// `locale.language`.
@@ -644,6 +1258,88 @@ impl Settings {
         let timeouts = &config.notifications.timeouts;
 
         Self {
+            input_method: config.compositor.input.input_method.clone(),
+            outputs: config
+                .compositor
+                .outputs
+                .iter()
+                .map(|output| {
+                    vec![
+                        output.name.clone().unwrap_or_default(),
+                        output.width.to_string(),
+                        output.height.to_string(),
+                        output.refresh_hz.to_string(),
+                        output.scale.to_string(),
+                        output
+                            .position
+                            .map(|position| position.x.to_string())
+                            .unwrap_or_default(),
+                        output
+                            .position
+                            .map(|position| position.y.to_string())
+                            .unwrap_or_default(),
+                    ]
+                })
+                .collect(),
+            launcher_terminal: config.shell.launcher.terminal.clone(),
+            wallpaper_per_output: config
+                .shell
+                .wallpaper
+                .per_output
+                .iter()
+                .map(|(name, path)| vec![name.clone(), path.to_string_lossy().into_owned()])
+                .collect(),
+
+            panel_margin: i64::from(config.shell.panel.margin),
+            panel_exclusive: config.shell.panel.exclusive,
+            panel_clock_format: config.shell.panel.clock_format.clone(),
+            panel_max_task_buttons: i64::from(config.shell.panel.max_task_buttons),
+            panel_icon_size: i64::from(config.shell.panel.icon_size),
+            launcher_max_results: i64::from(config.shell.launcher.max_results),
+            launcher_icon_size: i64::from(config.shell.launcher.icon_size),
+            launcher_include_hidden: config.shell.launcher.include_hidden,
+            launcher_max_query_chars: i64::from(config.shell.launcher.max_query_chars),
+            wallpaper_image: config
+                .shell
+                .wallpaper
+                .image
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            wallpaper_mode: match config.shell.wallpaper.mode {
+                inox_config::WallpaperMode::Fill => "fill",
+                inox_config::WallpaperMode::Fit => "fit",
+                inox_config::WallpaperMode::Stretch => "stretch",
+                inox_config::WallpaperMode::Center => "center",
+                inox_config::WallpaperMode::Tile => "tile",
+            }
+            .to_owned(),
+            input_keyboard_layout: config.compositor.input.keyboard_layout.clone(),
+            input_keyboard_variant: config.compositor.input.keyboard_variant.clone(),
+            input_keyboard_repeat_delay_ms: i64::from(
+                config.compositor.input.keyboard_repeat_delay_ms,
+            ),
+            input_keyboard_repeat_rate_hz: i64::from(
+                config.compositor.input.keyboard_repeat_rate_hz,
+            ),
+            input_tap_to_click: config.compositor.input.tap_to_click,
+            input_natural_scroll: config.compositor.input.natural_scroll,
+            layout_master_ratio: i64::from(config.compositor.layout.master_ratio),
+            layout_master_count: i64::from(config.compositor.layout.master_count),
+            layout_gap: i64::from(config.compositor.layout.gap),
+            display_max_visible: i64::from(config.notifications.display.max_visible),
+            display_width: i64::from(config.notifications.display.width),
+            display_margin: i64::from(config.notifications.display.margin),
+            display_icon_size: i64::from(config.notifications.display.icon_size),
+            queue_max_pending: i64::from(config.notifications.queue.max_pending),
+            queue_policy: match config.notifications.queue.policy {
+                inox_config::QueuePolicy::DropOldest => "drop-oldest",
+                inox_config::QueuePolicy::CoalesceByApp => "coalesce-by-app",
+            }
+            .to_owned(),
+            policy_show_actions: config.notifications.policy.show_actions,
+            policy_hide_body_when_locked: config.notifications.policy.hide_body_when_locked,
+
             theme_appearance: config.root.theme.appearance,
             locale: LocaleChoice::from_config(config.root.locale.language.as_deref()),
             panel_position: panel.position,
@@ -665,23 +1361,14 @@ impl Settings {
     /// than a second copy of the numbers, so "reset to default" means what a
     /// missing key means.
     pub fn defaults() -> Self {
-        let root = RootConfig::default();
-        let shell = ShellConfig::default();
-        let notifications = NotificationsConfig::default();
-
-        Self {
-            theme_appearance: root.theme.appearance,
-            locale: LocaleChoice::from_config(root.locale.language.as_deref()),
-            panel_position: shell.panel.position,
-            panel_height: i64::from(shell.panel.height),
-            panel_autohide: shell.panel.autohide,
-            panel_show_clock: shell.panel.show_clock,
-            notifications_do_not_disturb: notifications.policy.do_not_disturb,
-            notifications_position: notifications.display.position,
-            notifications_low_ms: i64::from(notifications.timeouts.low_ms),
-            notifications_normal_ms: i64::from(notifications.timeouts.normal_ms),
-            notifications_critical_ms: i64::from(notifications.timeouts.critical_ms),
-        }
+        Self::from_config(&InoxConfig {
+            root: RootConfig::default(),
+            shell: ShellConfig::default(),
+            notifications: NotificationsConfig::default(),
+            compositor: inox_config::CompositorConfig::default(),
+            theme: inox_config::Theme::builtin_dark(),
+            locale: inox_common::i18n::Locale::default_locale(),
+        })
     }
 }
 
@@ -697,6 +1384,12 @@ pub enum Origin {
 /// Why a value could not be written into a draft.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DraftError {
+    /// A collection contains incomplete or invalid entries.
+    #[error("invalid collection for `{field}`")]
+    InvalidCollection {
+        /// The collection field.
+        field: Field,
+    },
     /// The value's shape is not the one the field's control edits.
     #[error("`{field}` takes a {expected} value, not a {found}")]
     Mismatched {
@@ -715,6 +1408,7 @@ pub struct Draft {
     base: Settings,
     current: Settings,
     touched: BTreeMap<Field, Origin>,
+    number_inputs: BTreeMap<Field, String>,
 }
 
 impl Draft {
@@ -724,6 +1418,7 @@ impl Draft {
             current: base.clone(),
             base,
             touched: BTreeMap::new(),
+            number_inputs: BTreeMap::new(),
         }
     }
 
@@ -744,7 +1439,7 @@ impl Draft {
 
     /// Whether anything differs from what the files hold.
     pub fn is_modified(&self) -> bool {
-        !self.touched.is_empty()
+        !self.touched.is_empty() || !self.number_inputs.is_empty()
     }
 
     /// The fields a save would write, in the order they are declared.
@@ -757,7 +1452,11 @@ impl Draft {
 
     /// Why a field is a change, or `None` when it is not one.
     pub fn origin(&self, field: Field) -> Option<Origin> {
-        self.touched.get(&field).copied()
+        self.touched.get(&field).copied().or_else(|| {
+            self.number_inputs
+                .contains_key(&field)
+                .then_some(Origin::User)
+        })
     }
 
     /// The lines a save would write, one per changed field.
@@ -785,6 +1484,39 @@ impl Draft {
         self.changed().into_iter().map(Field::file).collect()
     }
 
+    /// Text currently being entered into a numeric field, including incomplete input.
+    pub fn number_input(&self, field: Field) -> String {
+        self.number_inputs
+            .get(&field)
+            .cloned()
+            .unwrap_or_else(|| match self.field(field) {
+                Value::Number(value) => value.to_string(),
+                _ => String::new(),
+            })
+    }
+
+    /// Keeps incomplete or overflowing numbers visible without writing an older value.
+    pub fn edit_number(&mut self, field: Field, text: String) {
+        if field.control().kind != ValueKind::Number {
+            return;
+        }
+        match text.parse::<i64>() {
+            Ok(number) => {
+                self.set_current(field, Value::Number(number));
+                self.retouch(field, Origin::User);
+                self.number_inputs.remove(&field);
+            }
+            Err(_) => {
+                self.number_inputs.insert(field, text);
+            }
+        }
+    }
+
+    /// Numeric input that has not yet become an integer.
+    pub fn invalid_numbers(&self) -> impl Iterator<Item = Field> + '_ {
+        self.number_inputs.keys().copied()
+    }
+
     /// Changes a field.
     ///
     /// Returns whether the field is now a change. A field put back to the value
@@ -799,6 +1531,7 @@ impl Draft {
         let mut candidate = self.current.clone();
         field.set(&mut candidate, value)?;
         self.current = candidate;
+        self.number_inputs.remove(&field);
 
         Ok(self.retouch(field, Origin::User))
     }
@@ -810,6 +1543,7 @@ impl Draft {
     ///
     /// Returns whether the field is now a change.
     pub fn reset_to_default(&mut self, field: Field) -> bool {
+        self.number_inputs.remove(&field);
         let default = field.value(&Settings::defaults());
         self.set_current(field, default);
 
@@ -832,6 +1566,7 @@ impl Draft {
     pub fn discard(&mut self) {
         self.current = self.base.clone();
         self.touched.clear();
+        self.number_inputs.clear();
     }
 
     /// Takes a freshly loaded configuration as the new baseline.
@@ -963,7 +1698,11 @@ mod tests {
     #[test]
     fn every_field_belongs_to_a_file_and_a_page() {
         for field in Field::ALL {
-            assert_eq!(field.path().split('.').count(), 2, "`{field}`");
+            assert_eq!(
+                field.path().split('.').count(),
+                if field == Field::Outputs { 1 } else { 2 },
+                "`{field}`"
+            );
             assert_eq!(field.file(), field.page().fields()[0].file(), "`{field}`");
         }
     }

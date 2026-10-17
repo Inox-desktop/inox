@@ -8,7 +8,9 @@ Inox 提前接入 `text-input-v3`、`input-method-v2` 和 `virtual-keyboard-v1`�
 ## 启动 Fcitx5
 
 先通过发行版安装 Fcitx5、所需语言引擎与字体，例如拼音或 Rime。
-Inox 不内置引擎、不下载词库、不默认启动任何输入法。
+Inox 不内置引擎、不下载词库、不默认启动任何输入法。可在系统设置的「输入法」页保存引擎程序和逐项参数，
+例如第一项 `/usr/bin/fcitx5`；空列表禁用自动启动。设置在下次物理会话启动时读取。
+显式启动参数优先，headless 测试仍只使用命令行。参见[系统设置](settings.md)。
 在已有 D-Bus 会话中使用 CI 产物：
 
 ```bash
@@ -25,7 +27,8 @@ inox-compositor --input-method /usr/bin/fcitx5
 不要传入使引擎后台化的参数，也不要同时从其他自启动入口再启动一个引擎。
 合成器通过专用 Wayland 连接授予输入法权限；从普通终端另行启动的引擎没有
 `input-method-v2` 权限。引擎退出后最多重启三次，每次重新授予独立连接；
-关闭会话时终止并回收引擎。移除 `--input-method` 即可停用，无配置迁移。
+关闭会话时终止并回收引擎。停用时同时清空设置中的输入法列表并移除 `--input-method`。
+降级到不认识新字段的版本前，删除 `compositor.toml` 的 `[input] input_method`。
 
 用引擎自己的配置工具添加所需语言、设置切换快捷键和拼音/词库偏好。
 Fcitx5 中的键盘组布局应与 Inox 的键盘配置一致；不要在 Inox 里复制一套引擎快捷键。

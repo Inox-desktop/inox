@@ -38,9 +38,11 @@ use inox_config::{ConfigError, ConfigPaths, InoxConfig};
 use crate::draft::Field;
 use crate::persist::{Digest, Guard};
 
-/// One of the three configuration files the settings application writes.
+/// One of the four configuration files the settings application writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingFile {
+    /// `compositor.toml`: input and window layout preferences.
+    Compositor,
     /// `config.toml`: the theme selection and the session language.
     Root,
     /// `shell.toml`: the panel, the launcher and the wallpaper.
@@ -51,7 +53,12 @@ pub enum SettingFile {
 
 impl SettingFile {
     /// Every file, in the order they are listed.
-    pub const ALL: [Self; 3] = [Self::Root, Self::Shell, Self::Notifications];
+    pub const ALL: [Self; 4] = [
+        Self::Root,
+        Self::Compositor,
+        Self::Shell,
+        Self::Notifications,
+    ];
 
     /// The file's name, for a message or a log line.
     ///
@@ -62,6 +69,7 @@ impl SettingFile {
     /// rather than from here.
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Compositor => inox_config::paths::COMPOSITOR_FILE,
             Self::Root => inox_config::paths::ROOT_FILE,
             Self::Shell => inox_config::paths::SHELL_FILE,
             Self::Notifications => inox_config::paths::NOTIFICATIONS_FILE,
@@ -79,6 +87,7 @@ impl SettingFile {
     /// the loader applies, so a save can never write outside `~/.config/inox`.
     pub fn path(self, config: &InoxConfig, paths: &ConfigPaths) -> Result<PathBuf, ConfigError> {
         match self {
+            Self::Compositor => paths.file(&config.root.components.compositor),
             Self::Root => Ok(paths.root_file()),
             Self::Shell => paths.file(&config.root.components.shell),
             Self::Notifications => paths.file(&config.root.components.notifications),
@@ -89,6 +98,12 @@ impl SettingFile {
 /// A value as it is written into a TOML file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Toml {
+    /// An array, including arrays of inline tables.
+    Array(Vec<Toml>),
+    /// An inline table with explicit keys.
+    Table(BTreeMap<String, Toml>),
+    /// A finite, already parsed floating point value in canonical notation.
+    Decimal(String),
     /// `true` or `false`.
     Bool(bool),
     /// A decimal integer.
@@ -105,6 +120,27 @@ impl Toml {
     /// never produce a document that does not parse back.
     pub fn render(&self) -> String {
         match self {
+            Self::Array(values) => format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(Toml::render)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Table(entries) => format!(
+                "{{ {} }}",
+                entries
+                    .iter()
+                    .map(|(key, value)| format!(
+                        "{} = {}",
+                        Toml::String(key.clone()).render(),
+                        value.render()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Decimal(value) => value.clone(),
             Self::Bool(value) => value.to_string(),
             Self::Integer(value) => value.to_string(),
             Self::String(value) => {
@@ -345,6 +381,63 @@ impl Documents {
 /// - the document keeps its final newline if it had one, and a file this
 ///   application creates ends with one.
 pub fn patch(text: &str, edits: &[Edit]) -> String {
+    if edits.iter().any(|edit| edit.field().is_collection()) {
+        // These documents have already passed the authoritative configuration loader.
+        // Parse failures are checked again by the runtime before any save.
+        match text.parse::<toml_edit::DocumentMut>() {
+            Ok(mut document) => {
+                for edit in edits.iter().filter(|edit| edit.field().is_collection()) {
+                    let keys: Vec<_> = edit.path().split('.').collect();
+                    let mut table: &mut dyn toml_edit::TableLike = document.as_table_mut();
+                    for key in &keys[..keys.len() - 1] {
+                        if !table.contains_key(key) {
+                            table.insert(key, toml_edit::Item::Table(toml_edit::Table::new()));
+                        }
+                        let Some(next) = table
+                            .get_mut(key)
+                            .and_then(toml_edit::Item::as_table_like_mut)
+                        else {
+                            return patch_collection_inline(text, edits);
+                        };
+                        table = next;
+                    }
+                    if let Some(key) = keys.last() {
+                        if let Some(value) = edit.value() {
+                            let source = format!("value = {}", value.render());
+                            match source.parse::<toml_edit::DocumentMut>() {
+                                Ok(mut value_doc) => {
+                                    if let Some(item) = value_doc.remove("value") {
+                                        table.insert(key, item);
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::error!(%error, "invalid collection edit");
+                                    return text.to_owned();
+                                }
+                            }
+                        } else {
+                            table.remove(key);
+                        }
+                    }
+                }
+                let scalars: Vec<_> = edits
+                    .iter()
+                    .filter(|edit| !edit.field().is_collection())
+                    .cloned()
+                    .collect();
+                return patch(&document.to_string(), &scalars);
+            }
+            Err(error) => {
+                tracing::error!(%error, "cannot patch configuration collection");
+                return text.to_owned();
+            }
+        }
+    }
+
+    patch_scalars(text, edits)
+}
+
+fn patch_scalars(text: &str, edits: &[Edit]) -> String {
     if edits.is_empty() {
         return text.to_owned();
     }
@@ -398,6 +491,11 @@ pub fn patch(text: &str, edits: &[Edit]) -> String {
     }
 
     result
+}
+
+fn patch_collection_inline(text: &str, edits: &[Edit]) -> String {
+    // The scalar walker handles inline table members as well as scalar values.
+    patch_scalars(text, edits)
 }
 
 /// A key path: the components a dotted key or a `[table]` header names, with the
@@ -1180,16 +1278,22 @@ mod tests {
     }
 
     #[test]
-    fn every_field_has_a_table_and_a_key() {
+    fn every_field_has_a_key_and_reconstructs_its_path() {
         for field in Field::ALL {
             let edit = Edit::set(field, Toml::Bool(true));
 
-            assert!(edit.section().is_some(), "`{}` has no table", field.path());
+            assert_eq!(
+                edit.section().is_none(),
+                field == Field::Outputs,
+                "unexpected top-level key: {field}"
+            );
             assert!(!edit.key().is_empty(), "`{}` has no key", field.path());
             assert_eq!(
-                edit.section()
-                    .map(|section| format!("{section}.{key}", key = edit.key())),
-                Some(field.path().to_owned())
+                edit.section().map_or_else(
+                    || edit.key().to_owned(),
+                    |section| format!("{section}.{key}", key = edit.key())
+                ),
+                field.path().to_owned()
             );
         }
     }
