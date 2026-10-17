@@ -52,4 +52,17 @@ lock-boundary-timeout = 认证服务未在时限内应答
 
 # 二进制在非零退出前报告的内容（ADR 0015、ADR 0018）。
 lock-start-blocked = 本次构建无法启动会话锁定：{ $reason }
-lock-start-blocked-reason = 合成器未提供 ext-session-lock-v1，且 ADR 0015 要求先对认证边界完成人类安全审查，本界面在此之前不得认证任何用户
+lock-start-blocked-reason = ADR 0015 要求先对认证边界完成人类安全审查，而本次构建尚无认证边界；如只需验证会话锁协议本身，请加 --take-lock（该模式会遮蔽所有输出，且无法再次解锁）
+
+# 协议腿（ADR 0022 决策 6）。该模式会真实取锁，且没有任何释放路径，
+# 因为尚不存在经过审查的认证边界可供释放。
+lock-taking = 作为可信客户端取会话锁
+lock-taken = 会话已锁定，所有输出均已遮蔽
+lock-refused = 合成器拒绝了会话锁定请求
+lock-released = 合成器释放了会话锁
+lock-stopped-locked = 在已锁定状态下停止：会话将保持锁定，直到注销
+lock-stopped-unconfirmed = 在合成器确认锁定之前停止
+lock-take-failed = 无法取得会话锁：{ $reason }
+lock-token-missing = 未收到会话锁令牌，合成器会拒绝认领；请由 inox-session 启动本组件，令牌由它投递
+lock-no-display = 无法连接到会话的 Wayland 显示
+lock-missing-global = 合成器未提供 { $interface }

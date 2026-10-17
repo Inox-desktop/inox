@@ -14,6 +14,26 @@ use inox_compositor::{
 use tracing::info;
 
 fn main() -> Result<()> {
+    let mut child_args = std::env::args_os().skip(1);
+    if child_args
+        .next()
+        .is_some_and(|arg| arg == "--exec-input-method")
+    {
+        let signals = calloop::signals::Signals::new(&[
+            calloop::signals::Signal::SIGINT,
+            calloop::signals::Signal::SIGTERM,
+        ])?;
+        drop(signals);
+        let program = child_args
+            .next()
+            .context("input method launcher requires a program")?;
+        use std::os::unix::process::CommandExt;
+        return Err(std::process::Command::new(program)
+            .args(child_args)
+            .exec()
+            .into());
+    }
+
     let invocation =
         parse_args(std::env::args().skip(1)).context("invalid command line arguments")?;
 

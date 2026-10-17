@@ -23,7 +23,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="inox_ipc" version="1">
+  <interface name="inox_ipc" version="2">
     <description summary="Inox private IPC root global">
       Private, unstable Inox protocol used for control messages between the
       compositor and the Inox shell and session components.
@@ -35,9 +35,23 @@
 
       The global is advertised by the compositor. A client binds it once and
       uses it to ask the compositor to perform session-wide control actions.
+
+      Version 2 adds the trusted session-lock role: a client claims it with
+      claim_lock_role before the compositor will accept a session lock from it
+      (ADR 0015, ADR 0022), and the compositor reports whether the session is
+      currently locked through the session_lock_state event so that observers
+      such as the idle daemon and the notification daemon do not have to infer
+      it. The event is a notification from the authority, never a capability:
+      any binding client may observe it, and none gains a permission from it.
     </description>
 
-    <enum name="reload_result">
+    <enum name="lock_state">
+      <description summary="whether the compositor currently holds the session lock"/>
+      <entry name="unlocked" value="0" summary="no session lock is held"/>
+      <entry name="locked" value="1" summary="the session is locked and every output is covered"/>
+    </enum>
+
+  <enum name="reload_result">
       <description summary="outcome of an inox_ipc request"/>
       <entry name="success" value="0" summary="the request completed successfully"/>
       <entry name="rejected" value="1" summary="the request was rejected by the compositor"/>
@@ -64,6 +78,24 @@
       </description>
     </request>
 
+    <request name="claim_lock_role">
+      <description summary="claim the trusted session-lock role for this connection">
+        Claims the trusted session-lock role for the connection this object
+        belongs to. The compositor only accepts a session lock request from a
+        connection that has claimed the role with the token the session
+        delivered to the trusted lock client; a claim with a missing, wrong or
+        already-used token leaves the connection unauthorized.
+
+        Authorization is bound to the connection and its lifetime, not to a
+        client-supplied name, process id or application id: those are claims by
+        the client and are not evidence. A connection that never claims the
+        role is refused the lock with the finished event, which the
+        ext-session-lock-v1 protocol defines for exactly this case. A compositor
+        that has no token configured refuses every claim.
+      </description>
+      <arg name="token" type="string" summary="one-shot token delivered by the session"/>
+    </request>
+
     <event name="version">
       <description summary="the inox-ipc protocol version implemented by the compositor"/>
       <arg name="version" type="uint" summary="protocol version implemented by the compositor"/>
@@ -72,6 +104,21 @@
     <event name="config_reloaded">
       <description summary="result of a reload_config request"/>
       <arg name="result" type="uint" enum="reload_result" summary="outcome of the reload"/>
+    </event>
+
+    <event name="session_lock_state">
+      <description summary="the session lock state, sent on bind and on every change">
+        Reports whether the compositor currently holds the session lock. It is
+        sent once when the global is bound and again whenever the state changes,
+        so a client never has to guess the initial state and never has to poll.
+
+        This is the authoritative statement of the compositor that owns the
+        lock; it is not an authorization and carries no capability. It is what
+        lets the idle daemon require a confirmed lock before a suspend and what
+        lets the notification daemon withhold notification bodies while the
+        session is locked.
+      </description>
+      <arg name="state" type="uint" enum="lock_state" summary="current session lock state"/>
     </event>
   </interface>
 </protocol>

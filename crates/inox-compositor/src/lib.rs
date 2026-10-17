@@ -23,6 +23,8 @@
 //! - `test_input` — the test-only control channel behind `--test-input`, present only in
 //!   builds with the `test-input` feature (off by default).
 //! - [`runtime`] — the calloop event loop: Wayland, device sources, frame scheduling and signals.
+//! - [`session_lock`] — the pure half of the session lock: who may lock, and
+//!   when every output has been covered (ADR 0015, ADR 0022).
 //! - [`state`] — Smithay compositor state and its protocol handlers.
 
 pub mod backend;
@@ -33,6 +35,7 @@ mod layers;
 pub mod layout;
 pub mod render;
 pub mod runtime;
+pub mod session_lock;
 pub mod state;
 #[cfg(feature = "test-input")]
 pub mod test_input;

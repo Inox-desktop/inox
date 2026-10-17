@@ -22,8 +22,12 @@
 - **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`tests/catalog.rs` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」，所以新增/删除文案必须两边一起改。
 - **颜色、尺寸、间距、圆角只来自 `inox_config::Theme`。** `view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；界面宽度用 `Length::FillPortion` 的比例（无量纲），字号由 `typography.scale` 乘 iced 自己的默认字号推出。
 - **掩码不是文本框。** 凭据字段画的是由**长度**推出的掩码，按键经 `app::key_binding` 以消息到达；不得把明文交给 iced 的 `text_input`（它持有本 crate 无法清零的 `String`，并提供复制粘贴）。
-- 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 只依赖 L1：`inox-common`（i18n）、`inox-config`（设计令牌）。**不得**新增 L2 或 L3 依赖（ADR 0013、ADR 0018）；令牌映射与 Fluent 装配在每个 L3 组件里各有一份，这是 ADR 0018 明确接受的成本。
+- 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 依赖 L1：`inox-common`（i18n）、`inox-config`（设计令牌）；ADR 0022 决策 7 之后**另有一条向下的 L3 → L2 边**：`inox-protocols`（`ext-session-lock-v1` 与 `inox-ipc` 绑定）、`wayland-client` 与 `calloop`（协议腿的事件循环）、`rustix`（`memfd_create`，锁帧的共享内存）。**不得**新增 L3 依赖或依赖 `inox-compositor`（ADR 0013、ADR 0018 不变）；令牌映射与 Fluent 装配在每个 L3 组件里各有一份，这是 ADR 0018 明确接受的成本。
 - 新增依赖前先确认依赖方向合法（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
+
+- **协议腿没有解锁路径，这是刻意的。** `--take-lock` 取真实的会话锁、覆盖每个输出，然后一直保持；它**不得**发送 `unlock_and_destroy`，收到 `SIGTERM`/`SIGINT` 时也不得解锁——没有经过审查的认证边界，就没有任何东西可以构成一次解锁的凭据。凭据校验、提示与掩码字段都不在这条模式里：帧只是一层不透明底色。改动这条路径前先读 ADR 0022 决策 6 与 `src/session.rs` 的模块文档。
+- **令牌只经 `INOX_LOCK_TOKEN` 进入本进程，且不得打印。** 它由 `inox-session` 生成、只投递给本组件与合成器；日志、错误信息与用户可见文案里都不得出现它的值。
+- **协议错误不得被当成解锁。** 合成器发来 `finished` 表示拒绝或撤回：没有 `locked` 时它是拒绝（退出非零），有 `locked` 时是合成器自己释放；两种情况都不由本 crate 决定会话是否安全。
 
 ## 主要依赖
 

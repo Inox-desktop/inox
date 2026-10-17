@@ -65,6 +65,7 @@ wayland-client = "0.31"
 wayland-server = "0.31"
 wayland-scanner = "0.31"
 wayland-protocols = "0.32"
+wayland-protocols-misc = { version = "0.3", features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client", "server"] }
 
 smithay = { version = "0.7.0", default-features = false, features = [
@@ -120,6 +121,24 @@ iced_tiny_skia = { version = "0.14", features = ["image"] }
 # Credential buffers that zero themselves on drop (M5 lock screen work, but the
 # buffer type belongs with the state machine that owns it). MIT/Apache-2.0.
 zeroize = "1"
+
+# The notification daemon is the process behind `org.freedesktop.Notifications`,
+# so it needs a real D-Bus client and server (M5, acceptance D06). zbus is the
+# pure-Rust implementation: no `libdbus` system library, no FFI, no `unsafe` of
+# ours. Only the blocking API and the internal `async-io` runtime are used, which
+# is what lets the service run on an ordinary thread next to the iced application
+# instead of pulling an async runtime into the whole workspace (ADR 0022 §5).
+#
+# Pinned to the 5.x line on purpose: zbus 6.0 declares `rust-version = "1.89"`,
+# above this workspace's 1.88, so taking it would raise the MSRV in the same
+# change that adds the dependency. `p2p` is what the crate's tests use to serve
+# and call the interface over a socket pair, so a test needs no running bus
+# daemon.
+zbus = { version = "5.19", default-features = false, features = [
+    "async-io",
+    "blocking-api",
+    "p2p",
+] }
 
 # Project Fluent (ADR 0003, PRD §11.2): every user-visible string is a message
 # in a catalog, so the loader lives in `inox-common::i18n`.

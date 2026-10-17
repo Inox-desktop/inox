@@ -1,28 +1,42 @@
-//! The daemon binary: configuration, logging, catalogs, then the iced application.
+//! The daemon binary: configuration, logging, catalogs, the transport, then the
+//! iced application.
 //!
-//! Two things about how this binary runs today are worth stating before the code,
-//! because they are deliberate and are logged at startup rather than implied:
+//! This file is also the daemon's **runtime**. [`app::update`] performs no I/O —
+//! it queues [`inox_notifications::Outgoing`] items — and [`Runtime::update`]
+//! below is what carries them out, exactly as `inox-settings` does. That is why
+//! the state machine a user drives is the same one the unit tests drive: there
+//! is no second implementation of "answer this call" anywhere.
 //!
-//! - **The surface is an ordinary window.** The popup stack is meant to be a
-//!   `wlr-layer-shell` surface; the compositor does not advertise that protocol
+//! Three things about how this binary runs today are worth stating before the
+//! code, because they are deliberate and are logged at startup rather than
+//! implied:
+//!
+//! - **The D-Bus service is real and it starts first.** `notify-send hello`
+//!   reaches this daemon; a session that already has a notification daemon makes
+//!   this one exit non-zero with a readable reason rather than share the name
+//!   (ADR 0022 §5).
+//! - **The surface is still an ordinary window.** The popup stack is meant to be
+//!   a `wlr-layer-shell` surface; the compositor does not advertise that protocol
 //!   and `iced_layershell` has no release for iced 0.14, so the placement
 //!   computed by [`inox_notifications::placement`] is not applied. ADR 0018
 //!   records the decision and this binary names it in a warning.
-//! - **There is no bus yet.** The D-Bus service is M5 (PRD §13), so nothing
-//!   delivers the calls [`inox_notifications::app::Message::Request`] expects.
-//!   The daemon starts, draws its empty state honestly, and says so.
+//! - **The session lock state is watched, not owned.** The compositor says
+//!   whether the session is locked over `inox-ipc`; a session where that cannot
+//!   be read is logged as such and the daemon keeps running, because nothing
+//!   here is the compositor's supervisor.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
+use iced::Subscription;
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use inox_notifications::app::{self, State};
+use inox_notifications::app::{self, Inbox, State};
 use inox_notifications::view::StackGeometry;
-use inox_notifications::{i18n, theme};
+use inox_notifications::{bus, i18n, lock_state, theme};
 
 fn main() -> Result<()> {
     initialise_logging()?;
@@ -65,11 +79,24 @@ fn main() -> Result<()> {
         "ADR 0018: no wlr-layer-shell host is available, so the popup stack runs as \
          an ordinary window and its computed placement is not applied"
     );
-    warn!(
-        "the D-Bus service (org.freedesktop.Notifications) is not implemented in this \
-         milestone: nothing will deliver the calls the daemon answers, and no \
-         notification can arrive yet"
+    // The transport comes before the window. A session that already has a
+    // notification daemon, or has no session bus at all, is a reason not to
+    // start: a daemon that opened a window and then never answered a call would
+    // look healthy while being useless.
+    let inbox = Inbox::new();
+    let service = bus::Service::serve(inbox.clone())
+        .context("starting the org.freedesktop.Notifications service")?;
+
+    // The lock state is the opposite: the compositor is the authority, and a
+    // session where this daemon cannot read it is a session the daemon still
+    // serves. `watch` says what happened, in a warning and in its status.
+    let lock = lock_state::watch(inbox.clone());
+    info!(
+        tracking = ?lock.tracking(),
+        "following the session lock state the compositor publishes"
     );
+
+    let runtime = Runtime { service };
 
     // iced asks for the initial state through a factory, so the daemon's pieces
     // are cloned into the closure rather than moved into a state it cannot build
@@ -83,13 +110,44 @@ fn main() -> Result<()> {
         )
     };
 
-    iced::application(boot, app::update, app::view)
-        .title(app::title)
-        .theme(|state: &State| theme::iced_theme(state.tokens()))
-        .subscription(app::subscription)
-        .window_size((width, height))
-        .run()
-        .context("running the notification daemon")
+    iced::application(
+        boot,
+        move |state: &mut State, message: app::Message| runtime.update(state, message),
+        app::view,
+    )
+    .title(app::title)
+    .theme(|state: &State| theme::iced_theme(state.tokens()))
+    .subscription(move |state: &State| {
+        Subscription::batch([app::subscription(state), inbox.subscription()])
+    })
+    .window_size((width, height))
+    .run()
+    .context("running the notification daemon")
+}
+
+/// The daemon's runtime: what carries out what the update loop decided.
+///
+/// The Elm update is [`app::update`], unchanged and unaware of any of this. What
+/// the wrapper adds is the one side effect the daemon has — draining
+/// `take_outgoing` after every update and handing each item to the transport —
+/// which is what keeps "the daemon decided something" and "the wire knows about
+/// it" from being two different code paths.
+struct Runtime {
+    /// The running D-Bus service.
+    service: bus::Service,
+}
+
+impl Runtime {
+    /// The Elm update, plus the side effects it asked for.
+    fn update(&self, state: &mut State, message: app::Message) -> iced::Task<app::Message> {
+        let task = app::update(state, message);
+
+        for outgoing in state.take_outgoing() {
+            self.service.deliver(outgoing);
+        }
+
+        task
+    }
 }
 
 /// Starts logging, honouring `RUST_LOG`.

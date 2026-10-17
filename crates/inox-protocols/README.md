@@ -11,6 +11,10 @@
 
 协议定义以 [`protocol/inox-ipc.xml`](./protocol/inox-ipc.xml) 为**唯一事实来源（single source of truth）**：需要修改协议时先改 XML，再重新生成绑定，**不要直接改生成的 Rust 代码**。
 
+输入法绑定通过 `standard::wp::{text_input, input_method, virtual_keyboard}` 提供。
+应用端 v3 与输入法端 v2 的管理器在合成器中均广告接口 v1；输入法与虚拟键盘
+只对专用受信连接可见，生命周期与权限规则见 [ADR 0023](../../docs/adr/0023-input-method-support.md)。
+
 ### 版本策略
 
 `inox-ipc` 是 Inox 私有协议，且在 **1.0 之前为 unstable**：接口允许破坏性变更。消费者必须通过 `version` 事件协商能力，不得假定固定版本。破坏性变更需先在 `docs/adr/` 写 ADR（根级 AGENTS.md §4 / §7.2），并在 PRD 协议矩阵中同步更新。

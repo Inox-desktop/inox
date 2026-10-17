@@ -6,7 +6,7 @@
 
 基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
 
-广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc`，M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及 ADR 0020 起的 `wp_fractional_scale_manager_v1`）。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc`，M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及 ADR 0020 起的 `wp_fractional_scale_manager_v1`，以及 ADR 0022 起的 `ext_session_lock_manager_v1`（v1））。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
 
 输出拓扑按 [ADR 0019](../../docs/adr/0019-multi-output-topology-and-multi-gpu.md)：`InoxState` 持有一张输出表，所有输出映射进同一个 `Space`，位置是全局逻辑坐标（可为负）。分数缩放按 [ADR 0020](../../docs/adr/0020-fractional-scaling.md)：每个输出有自己的缩放因子，渲染、光标与 layer 放置按该因子折算为物理像素，命中测试、平铺与工作区留在逻辑坐标。
 
@@ -26,6 +26,11 @@
 - **后端开关（accepted ADR 0012）**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 与 `drm` 都必须得到可用物理输出，失败返回 `RunError::BackendUnavailable`，不得静默回落 headless。CI 进程测试显式 `--headless`；进程内 `InoxState::new` 始终是确定性的 headless 状态。
 - **多输出与多 GPU（ADR 0019）**：`InoxState::apply_outputs` 是拓扑变更的**唯一入口**，接受期望的输出集合、按 connector 名与 `Output` 实例复用未变的输出（保留其全局、layer 表面与窗口），并让消失输出的窗口迁移到主存活输出。禁止再新增「全量替换」的输出入口：`replace_output` 只是 `apply_outputs` 的单输出包装，仅为兼容既有调用点。物理后端枚举 seat 上的**每一块**能驱动输出的 GPU，每块用**自己的** libseat 租约、`DrmDevice`、`GbmDevice` 与 EGL/GLES 渲染器驱动自己的 connector；跨 GPU 没有复制路径，这一点在广告 `linux-dmabuf` 之前必须先解决。
 - **缩放（ADR 0020）**：`scale` 取值域为 `0.25..=8.0`，物理后端**不再拒绝**非整数缩放。渲染路径中不得出现硬编码的 `1.0` 缩放：元素位置按输出 scale 折算为物理像素，`draw_render_elements` 也必须收到该 scale（元素的**位置**是物理像素、**尺寸**由逻辑尺寸乘 scale 得出）。
+
+- **安全锁屏（ADR 0015、ADR 0022）**：`ext_session_lock_manager_v1` v1 由 Smithay 的 `SessionLockManagerState` 实现，本 crate 加上的是策略与锁定场景，四处强制点是**唯一**可能出错的地方，改动时必须一并核对：`scene_elements`（锁定期间只合成锁表面，没有锁表面时为不透明底色）、`sync_focus`（键盘交给锁表面、选区焦点清空）、`surface_under`（只命中锁表面）、`inject_key`（不再拦截合成器快捷键）。`locked` 只在**每个输出都渲染过一帧锁定帧**之后发送（`crate::session_lock::LockCoverage`，含锁定期间新增输出的覆盖）；客户端死亡**不**解锁，且**不**允许第二个客户端接管（理由与恢复缺口见 ADR 0022）。授权是默认拒绝：只有先在 `inox_ipc` 上用 `claim_lock_role` 认领过角色、且令牌与本 crate 启动参数 `--lock-token` 一致的连接才能取锁，其余立即收到 `finished`；未配置令牌时一切锁请求被拒绝，客户端自报名称/PID 不参与判断。
+- **`Dispatch<ExtSessionLockV1>` 是手工转发，不是 `delegate_session_lock!`**：Smithay 的 `unlock_and_destroy` 分支在发出 `invalid_unlock` 之后**仍然**会清空逐输出簿记并调用 `SessionLockHandler::unlock`（缺少 `return`），因此一个被拒绝或从未收到 `locked` 的连接本可以解开不属于它的锁。本 crate 在转发前先校验「就是当前持有的那个锁对象、且已经发过 `locked`」，这是「只有所有者、且只在确认之后才能解锁」在本合成器成立的原因。改动这条路径前先读 `src/state.rs` 里那段说明。
+
+- **输入法（ADR 0023）**：文本事务与输入法生命周期位于 `src/state/ime.rs`，公开文本全局为 `zwp_text_input_manager_v3` v1；`zwp_input_method_manager_v2` 与 `zwp_virtual_keyboard_manager_v1` 只对 `ClientState::input_method()` 的专用连接可见，公共监听套接字不得使用该状态。`sync_focus` 同步文本焦点与锁屏隔离；序号失配的编辑整批丢弃。候选窗按输出缩放绘制、鼠标交互不改变应用键盘焦点。新增权限路径必须同时检查锁定期间已绑定对象。`runtime/input_method.rs` 使用 calloop 监督显式选择的引擎，不用 shell 解析 argv。真实客户端、进程与 Fcitx5 拼音 CI 测试均须保留。
 
 ## 主要依赖
 
@@ -102,6 +107,7 @@ tests/
   signal_shutdown.rs     进程级：终止信号与帧预算都须以退出码 0 结束
   window_management.rs   真实客户端创建 ≥2 窗口，断言平铺与输入（进程内）
   protocol_surface.rs    进程级：M3 全局的接口与版本可绑定；未启用 feature 时拒绝 --test-input
+  session_lock.rs        进程内真实客户端：锁定遮蔽、`locked` 时序、输入/选区隔离、授权拒绝、协议错误与 UI 死亡后拒绝接管（ADR 0022）
   clipboard.rs           进程内真实客户端：只有焦点客户端能读到剪贴板
   drag_and_drop.rs       进程内真实客户端：拖放传输、取消、目标中途销毁
 ```

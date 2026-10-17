@@ -132,10 +132,10 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `fractional-scale-v1` | M4 必须 | 分数缩放，见 [ADR 0020](docs/adr/0020-fractional-scaling.md)（状态 `proposed`）。已实现：`wl_compositor` v6 的 `preferred_buffer_scale` 与 `wp_fractional_scale_manager_v1` v1，渲染/光标/layer 按输出 scale 折算物理像素，几何、命中与**离屏像素**断言在 CI（E1+E3）。真实混合 DPI 客户端在 125%/150% 下的模糊度与缓冲尺寸仍是 E4，**未取的 E4 不因 CI 全绿而追认** |
 | `wlr-output-management` | 计划 | 显示器管理 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 |
-| `ext-session-lock-v1` | M5 必须 | 安全锁屏，不能以 layer-shell 遮罩替代；见 ADR 0015 |
+| `ext-session-lock-v1` | M5 必须（**已广告**） | 安全锁屏，不能以 layer-shell 遮罩替代；见 ADR 0015。合成器已广告 `ext_session_lock_manager_v1` v1，客户端为 `inox-lock --take-lock`，授权与生命周期见 [ADR 0022](docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)；认证与锁屏界面仍未交付 |
 | `zwp_primary_selection_device_manager_v1`（本表此前记作 `gtk-primary-selection`） | M3 必须 | 主选区（X11 中键粘贴兼容）；与 `wl_data_device_manager` 一并广告，见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xwayland-shell` | 计划 | XWayland 集成 |
-| `wlr-virtual-keyboard` / `input-method-v2` | 仅规划 | 输入法（1.0 之后） |
+| `text-input-v3` / `input-method-v2` / `virtual-keyboard-v1` | 提前实现，待验收 | 管理器接口 v1；应用文本事务、受信输入法连接、键盘抓取、候选窗与锁屏隔离，见 [ADR 0023](docs/adr/0023-input-method-support.md)（proposed）。真实客户端与 Fcitx5 拼音测试交由 CI；GTK/Qt/XWayland 与其他引擎仍待逐项验收 |
 
 > 新增协议必须先在 `inox-protocols` 定义或引用，并说明安全与生命周期约束；破坏性变更需 ADR。
 > `wlr-data-control`（全局、无焦点限制的剪贴板读取路径，供剪贴板管理器使用）不在 M3 范围内：开放它需要按客户端凭据做授权过滤，因此与剪贴板管理器一并推迟到 M5（[ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。
@@ -540,7 +540,9 @@ O02/O03 的虚拟拓扑、几何与像素证据由 `crates/inox-compositor/tests
 
 ---
 
-L4 首版实现边界见 [ADR 0021](docs/adr/0021-l4-session-services.md)：会话监督、标准空闲通知客户端、登录状态模型与预览已经提供；完整服务 ready、真实认证、安全锁屏及 logind 挂起仍待审查/实现，不能视为 M5 验收通过。
+L4 首版实现边界见 [ADR 0021](docs/adr/0021-l4-session-services.md)：会话监督、标准空闲通知客户端、登录状态模型与预览已经提供。
+M5 的会话锁协议腿见 [ADR 0022](docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)（状态 `proposed`）：合成器广告 `ext_session_lock_manager_v1` v1 并以会话令牌默认拒绝授权，`inox-lock --take-lock` 真实取锁并覆盖每个输出，`inox-ipc` 升到 v2（`claim_lock_role` / `session_lock_state`），会话负责生成并只向可信锁屏客户端投递令牌；锁屏 UI 崩溃保持锁定且不支持接管。
+**仍未交付、因此不能视为 M5 验收通过**：完整服务 ready、真实认证与锁屏界面、logind 挂起、锁屏 UI 崩溃后的接管、通知的 D-Bus 服务（D06），以及 H02 的全部真机步骤。
 
 ## 14. 风险与缓解
 

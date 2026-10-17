@@ -3,10 +3,15 @@ use anyhow::{Context, Result, bail};
 use inox_common::i18n::Locale;
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
 use inox_session::runtime::{CommandSpec, RunOptions, ServiceSpec, SessionSpec};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{error, info, warn};
+
+/// The environment variable that asks the session to start the trusted lock
+/// client, which takes the session lock for the rest of the session.
+const LOCK_ON_START: &str = "INOX_SESSION_TAKE_LOCK";
 
 fn main() -> Result<()> {
     let mut raw = std::env::args_os().skip(1);
@@ -27,6 +32,7 @@ fn main() -> Result<()> {
     let early = inox_session::i18n::load(Locale::from_env())?;
     let mut args = std::env::args_os().skip(1);
     let mut headless = false;
+    let mut input_method = Vec::new();
     let mut bin_dir = std::env::current_exe()?
         .parent()
         .context("executable has no directory")?
@@ -39,6 +45,22 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             Some("--headless") => headless = true,
+            Some("--input-method") => {
+                let executable = args
+                    .next()
+                    .context("--input-method requires an executable")?;
+                if executable.is_empty() || !input_method.is_empty() {
+                    bail!("--input-method requires one nonempty executable, specified once");
+                }
+                input_method.extend([OsString::from("--input-method"), executable]);
+            }
+            Some("--input-method-arg") => {
+                let value = args.next().context("--input-method-arg requires a value")?;
+                if input_method.is_empty() {
+                    bail!("--input-method-arg must follow --input-method");
+                }
+                input_method.extend([OsString::from("--input-method-arg"), value]);
+            }
             Some("--bin-dir") => {
                 bin_dir = PathBuf::from(args.next().context("--bin-dir requires a path")?)
             }
@@ -57,12 +79,26 @@ fn main() -> Result<()> {
     }
     let config = InoxConfig::load(&ConfigPaths::discover()?, Appearance::System)?;
     let localizer = inox_session::i18n::load(config.locale)?;
+
+    // One capability per session, delivered to exactly two processes: the
+    // compositor, which decides whether a claim is honoured, and the trusted lock
+    // client, which claims the role with it (ADR 0022 decision 3). It is never
+    // logged, never written to disk, and never given to any other component — the
+    // shell would otherwise hold the right to take the session lock.
+    let lock_token = inox_session::policy::session_lock_token()?;
+
     let mut compositor = CommandSpec::new(bin_dir.join("inox-compositor"));
     compositor.arguments = vec![OsString::from("--socket"), OsString::from("wayland-inox")];
     if headless {
         compositor.arguments.push(OsString::from("--headless"));
     }
-    let services = [
+    compositor
+        .arguments
+        .extend([OsString::from("--lock-token"), OsString::from(&lock_token)]);
+
+    compositor.arguments.extend(input_method);
+
+    let mut services: Vec<ServiceSpec> = [
         ("shell", true, true),
         ("wallpaper", false, false),
         ("panel", true, false),
@@ -75,8 +111,30 @@ fn main() -> Result<()> {
         command: CommandSpec::new(bin_dir.join(format!("inox-{name}"))),
         required,
         oneshot,
+        environment: BTreeMap::new(),
     })
     .collect();
+
+    // The trusted lock client is started only when the session is asked for it.
+    // `inox-lock --take-lock` takes the real session lock and has no way to
+    // release it again, so starting it unconditionally would lock a session that
+    // nobody asked to lock; the switch is how an operator or an end-to-end test
+    // asks. Manual and idle-triggered locking are still open (ADR 0022 未决项).
+    if std::env::var_os(LOCK_ON_START).is_some_and(|value| value == "1") {
+        let mut lock = CommandSpec::new(bin_dir.join("inox-lock"));
+        lock.arguments = vec![OsString::from("--take-lock")];
+        services.push(ServiceSpec {
+            name: "lock".into(),
+            command: lock,
+            // A crashed lock UI keeps the session locked and is restarted within
+            // the same bounded budget as every other optional component (ADR
+            // 0015). Once the budget is spent the session stays locked and stops
+            // retrying, which is the fail-closed direction.
+            required: false,
+            oneshot: false,
+            environment: BTreeMap::from([("INOX_LOCK_TOKEN".to_owned(), lock_token)]),
+        });
+    }
     let spec = SessionSpec {
         compositor,
         services,

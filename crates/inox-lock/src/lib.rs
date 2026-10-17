@@ -88,6 +88,7 @@ pub mod attempts;
 pub mod contract;
 pub mod credential;
 pub mod i18n;
+pub mod session;
 pub mod state;
 pub mod suspend;
 pub mod theme;
@@ -101,6 +102,7 @@ pub use crate::contract::{
     ProtocolAbsence, ServiceFailure,
 };
 pub use crate::credential::Secret;
+pub use crate::session::{Outcome as SessionOutcome, SessionError, take as take_session_lock};
 pub use crate::state::{
     IgnoreReason, LockEvent, LockMachine, LockReason, OutputId, Phase, Transition,
 };

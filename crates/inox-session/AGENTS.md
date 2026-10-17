@@ -13,6 +13,9 @@
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）：在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明一次，本 crate 用 `{ workspace = true }` 引用。**新增依赖前先确认依赖方向合法**（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
 
+- **锁屏令牌是能力，不是身份。** 会话为每个会话生成一次性令牌，传给合成器（`--lock-token`）并**只**放进可信锁屏客户端的环境（`INOX_LOCK_TOKEN`）。不得把它加进会话级环境：那会把取锁权限发给 shell 与它启动的一切。令牌不得进日志、不得落盘。`ServiceSpec::environment` 就是为此存在的逐组件环境。
+- **锁屏客户端只在 `INOX_SESSION_TAKE_LOCK=1` 时启动。** `inox-lock --take-lock` 没有解锁路径，无条件启动会锁住一个没人要求锁住的会话。手动锁定与空闲触发的锁定仍未接线（ADR 0022 未决项），这条开关是在那之前唯一的启动途径。
+
 ## 主要依赖
 
 `anyhow`, `tracing`, `tracing-subscriber`；`calloop`、`rustix`、`wayland-client`、`inox-common`、`inox-config`、`inox-protocols`、`thiserror`。

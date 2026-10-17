@@ -98,8 +98,13 @@ mod tests {
         let message =
             localizer.message_with("lock-start-blocked", &[("reason", Arg::from(reason))]);
 
-        assert!(message.contains("ext-session-lock-v1"), "{message}");
-        assert!(message.contains("human security review"), "{message}");
+        // The block is the *authentication boundary*, not the protocol: the
+        // compositor offers `ext-session-lock-v1` from ADR 0022 onwards, so a
+        // message that still blamed the protocol would be telling the operator to
+        // look in the wrong place.
+        assert!(message.contains("ADR 0015"), "{message}");
+        assert!(message.contains("authentication"), "{message}");
+        assert!(message.contains("--take-lock"), "{message}");
         assert!(
             !message.contains("lock-start-blocked"),
             "a message id on screen is a missing translation: {message}"
@@ -108,7 +113,7 @@ mod tests {
         let chinese = load(&zh_cn()).expect("the catalogs parse");
         let reason = chinese.message("lock-start-blocked-reason");
         let message = chinese.message_with("lock-start-blocked", &[("reason", Arg::from(reason))]);
-        assert!(message.contains("ext-session-lock-v1"), "{message}");
+        assert!(message.contains("--take-lock"), "{message}");
         assert!(!message.contains("lock-start-blocked"), "{message}");
     }
 
@@ -126,7 +131,7 @@ mod tests {
             "lock-submit",
             "lock-verifying",
             "lock-attempts-waiting",
-            "lock-failed",
+            "lock-take-failed",
             "lock-failure-rejected",
             "lock-failure-timed-out",
             "lock-failure-unavailable",
@@ -150,6 +155,16 @@ mod tests {
             "lock-suspend-refused-no-protocol",
             "lock-start-blocked",
             "lock-start-blocked-reason",
+            "lock-taking",
+            "lock-taken",
+            "lock-refused",
+            "lock-released",
+            "lock-stopped-locked",
+            "lock-stopped-unconfirmed",
+            "lock-take-failed",
+            "lock-token-missing",
+            "lock-no-display",
+            "lock-missing-global",
         ];
 
         for locale in [Locale::default_locale(), zh_cn()] {

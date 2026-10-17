@@ -26,6 +26,7 @@ L2 的 layer-shell 宿主现已接入 Smithay `WlrLayerShellState`，广告
 普通窗口平铺在剩余工作区，背景与渲染目标仍使用完整输出尺寸。`None` 不接收键盘焦点，
 top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应用或 Alt+Tab 离开；
 选择焦点继续跟随实际键盘焦点。layer-shell 只用于普通桌面，不能替代安全锁屏。
+安全锁屏走 `ext_session_lock_manager_v1` v1（ADR 0015、ADR 0022）：只有先在 `inox_ipc` 上以会话令牌认领角色的连接才能取锁，锁定期间只合成锁表面（无锁表面时为不透明底色）、键盘与选区焦点清空、指针只命中锁表面、快捷键不再拦截，`locked` 只在每个输出都渲染过一帧锁定帧之后发送；客户端死亡不解除锁定。见 `tests/session_lock.rs`。
 
 `tests/layer_shell.rs` 用真实客户端与 shm 缓冲断言像素、指针、焦点、frame callback、
 独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 Iced 客户端宿主，
@@ -124,6 +125,16 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime cargo run --features test-input -- \
 - 由 cargo feature `test-input` 控制，**默认关闭**，且**默认构建的二进制里根本不存在**——`--test-input` 会被命令行解析拒绝；
 - **不是 Wayland 全局**，不向任何客户端暴露，也不会被客户端发现；
 - 唯一的能力是向调用者指定的 socket 写命令，权限不超过合成器自身的文件访问；套接字路径由调用者给出（测试放在私有的 `XDG_RUNTIME_DIR` 下），不存在固定公共路径。
+
+## 输入法
+
+使用 CI 产物启动 `inox-compositor --input-method /usr/bin/fcitx5`，或在
+`inox-session` 上传递相同选项；额外参数逐项用 `--input-method-arg`。
+输入法经独立的受信 Wayland 连接接入，普通应用只看到文本输入全局。
+支持 v3 文本事务、v2 输入法、虚拟键盘透传与候选窗，锁屏期间暂停输入法权限。
+输入法退出有界重启，会话退出回收子进程；不默认启动或安装引擎。
+详见[使用说明](../../docs/book/src/usage/input-methods.md)与
+[ADR 0023](../../docs/adr/0023-input-method-support.md)。新增用例仍待 CI 验收。
 
 ## 开发约定
 

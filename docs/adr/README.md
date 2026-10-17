@@ -68,6 +68,8 @@ proposed ──► accepted ──► superseded
 | [0019](./0019-multi-output-topology-and-multi-gpu.md) | 多输出拓扑、按输出的帧生命周期与多 GPU 设备模型 | proposed | 2026-10-17 |
 | [0020](./0020-fractional-scaling.md) | 分数缩放采用 `wp_fractional_scale_v1` 与按输出的缓冲区像素 | proposed | 2026-10-17 |
 | [0021](./0021-l4-session-services.md) | L4 会话监督、空闲策略与登录边界的首版实现 | proposed | 2026-10-17 |
+| [0022](./0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md) | M5 的会话锁协议腿、通知总线服务与首个特权边界 | proposed | 2026-10-17 |
+| [0023](./0023-input-method-support.md) | 提前接入桌面输入法 | proposed | 2026-10-17 |
 
 ## 既有提案的复核与实施阻塞
 

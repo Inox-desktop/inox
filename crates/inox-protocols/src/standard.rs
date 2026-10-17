@@ -65,6 +65,40 @@ pub mod xdg {
 
 /// General-purpose protocols (`wp` namespace).
 pub mod wp {
+    /// `text-input-v3`: focused applications' text editing context.
+    ///
+    /// Only the keyboard-focused client receives enter and editing events.
+    /// State is double buffered until commit, and reset on focus loss.
+    pub mod text_input {
+        /// Client-side text input bindings.
+        pub use wayland_protocols::wp::text_input::zv3::client;
+        /// Server-side text input bindings.
+        pub use wayland_protocols::wp::text_input::zv3::server;
+    }
+
+    /// `input-method-v2`: privileged input method service, one per seat.
+    ///
+    /// Only a compositor-launched connection may bind this global. Grabs,
+    /// candidate surfaces and editing access are suspended during session lock.
+    /// Input method commits must match the most recent done serial.
+    pub mod input_method {
+        /// Client-side input method bindings.
+        pub use wayland_protocols_misc::zwp_input_method_v2::client;
+        /// Server-side input method bindings.
+        pub use wayland_protocols_misc::zwp_input_method_v2::server;
+    }
+
+    /// `virtual-keyboard-v1`: privileged passthrough of unconsumed IME keys.
+    ///
+    /// Shares the input method connection's authority. Existing objects cannot
+    /// inject input while the session is locked or the seat has no keyboard.
+    pub mod virtual_keyboard {
+        /// Client-side virtual keyboard bindings.
+        pub use wayland_protocols_misc::zwp_virtual_keyboard_v1::client;
+        /// Server-side virtual keyboard bindings.
+        pub use wayland_protocols_misc::zwp_virtual_keyboard_v1::server;
+    }
+
     /// `viewporter`: surface scaling and cropping.
     ///
     /// PRD §2.3 support level: `必须`.
@@ -129,6 +163,37 @@ pub mod ext {
         pub use wayland_protocols::ext::idle_notify::v1::client;
         /// Server-side `ext-idle-notify-v1` bindings.
         pub use wayland_protocols::ext::idle_notify::v1::server;
+    }
+
+    /// `ext-session-lock-v1`: the secure session lock (PRD §2.3, ADR 0015).
+    ///
+    /// PRD §2.3 support level: `必须` from M5.
+    ///
+    /// This is a security boundary, not a placement hint. The compositor owns
+    /// the lock state; the client of this protocol is the trusted lock screen.
+    /// The rules the compositor must uphold are in the protocol description
+    /// itself and are quoted here so an implementer does not have to go looking:
+    ///
+    /// - The `locked` event must not be sent until a new "locked" frame has been
+    ///   presented on **all** outputs, so that no unlocked content is possibly
+    ///   visible when the client is told it owns the screen.
+    /// - A client that dies while the session is locked does **not** unlock it.
+    ///   The session may stay locked permanently; a compositor may instead let a
+    ///   new client take over the lock, which is compositor policy.
+    /// - While locked, the compositor stops rendering and providing input to
+    ///   normal clients, and hides their content behind an opaque frame.
+    /// - `destroy` is a protocol error once `locked` has been sent;
+    ///   `unlock_and_destroy` is a protocol error before it.
+    ///
+    /// The protocol is in upstream *staging*, so its version is pinned by this
+    /// crate rather than by a downstream consumer: `ext_session_lock_manager_v1`
+    /// and its two children are all at version 1, and a version bump upstream
+    /// lands here first as a Cargo update plus a review of the rules above.
+    pub mod session_lock {
+        /// Client-side `ext-session-lock-v1` bindings.
+        pub use wayland_protocols::ext::session_lock::v1::client;
+        /// Server-side `ext-session-lock-v1` bindings.
+        pub use wayland_protocols::ext::session_lock::v1::server;
     }
 }
 
