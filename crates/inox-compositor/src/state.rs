@@ -738,6 +738,8 @@ impl InoxState {
                     .add_keyboard(keyboard_config(&self.input_config), delay, rate)?;
         } else if !keyboard && self.seat.get_keyboard().is_some() {
             self.reset_keyboard();
+            let handle = self.keyboard.clone();
+            handle.set_focus(self, None, SERIAL_COUNTER.next_serial());
             self.seat.remove_keyboard();
         }
         if pointer && self.seat.get_pointer().is_none() {
@@ -752,6 +754,15 @@ impl InoxState {
                     .now()
                     .as_millis(),
             );
+            let event = MotionEvent {
+                location: self.pointer_location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                    .now()
+                    .as_millis(),
+            };
+            handle.motion(self, None, &event);
+            handle.frame(self);
             self.seat.remove_pointer();
         }
         self.cursor_visible = pointer;
@@ -761,6 +772,9 @@ impl InoxState {
     }
 
     fn reset_keyboard(&mut self) {
+        if self.seat.get_keyboard().is_none() {
+            return;
+        }
         for key in self.keyboard.pressed_keys() {
             self.inject_key(key, KeyState::Released);
         }
@@ -770,14 +784,15 @@ impl InoxState {
 
     pub(crate) fn reset_input(&mut self) {
         self.reset_keyboard();
-        let pointer = self.pointer.clone();
-        pointer.unset_grab(
-            self,
-            SERIAL_COUNTER.next_serial(),
-            smithay::utils::Clock::<smithay::utils::Monotonic>::new()
-                .now()
-                .as_millis(),
-        );
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.unset_grab(
+                self,
+                SERIAL_COUNTER.next_serial(),
+                smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+                    .now()
+                    .as_millis(),
+            );
+        }
     }
 
     pub(crate) fn clamp_pointer(&self, location: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -793,6 +808,9 @@ impl InoxState {
     }
 
     pub(crate) fn inject_pointer_axis(&mut self, frame: AxisFrame) {
+        if self.seat.get_pointer().is_none() {
+            return;
+        }
         let pointer = self.pointer.clone();
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -841,7 +859,9 @@ impl InoxState {
 
     /// The surface currently holding the keyboard focus, if any.
     pub fn keyboard_focus(&self) -> Option<WlSurface> {
-        self.keyboard.current_focus()
+        self.seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
     }
 
     /// The last location reported for the pointer, in workspace coordinates.
@@ -867,6 +887,7 @@ impl InoxState {
     /// the compositor's, [`SwallowedPresses`] carries that decision to the release, and
     /// only a press can trigger an [`Action`].
     pub fn inject_key(&mut self, keycode: Keycode, state: KeyState) -> Option<Action> {
+        self.seat.get_keyboard()?;
         let keyboard = self.keyboard.clone();
         let serial = SERIAL_COUNTER.next_serial();
 
@@ -1098,8 +1119,9 @@ impl InoxState {
         let client = focused.as_ref().and_then(|surface| surface.client());
 
         let serial = SERIAL_COUNTER.next_serial();
-        let keyboard = self.keyboard.clone();
-        keyboard.set_focus(self, focused, serial);
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, focused, serial);
+        }
 
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
