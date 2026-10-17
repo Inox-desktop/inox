@@ -10,10 +10,48 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# ADR 0002: `inox-launcher` is L3. It depends on L1 only — the index, the search
+# and the activation state machine are this crate's own, and no other L3
+# component or the compositor is linked in (ADR 0013, ADR 0018). The layer table
+# in the root `Cargo.toml` is enforced by
+# `cargo test -p inox-integration --test layering`.
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# L1: the Fluent catalogs and the XDG path rules.
+inox-common.workspace = true
+# L1: the shell configuration (`shell.toml`'s `[launcher]`) and the theme tokens
+# every colour and size in `view.rs` and `theme.rs` comes from.
+inox-config.workspace = true
+
+# ADR 0003/0018: Iced, tiny-skia only (no GPU needed, and no `wgpu` renderer no
+# configuration selects).
+#
+# `advanced` is this member's own addition (root AGENTS.md §8 lets a member add
+# features): it is the only thing that exposes
+# `iced::advanced::task::operate`, without which an `Operation` — the sole way to
+# focus the search field at startup — cannot be turned into a `Task`. Without it
+# the launcher opens with nothing focused and cannot be typed into.
+iced = { workspace = true, features = ["advanced"] }
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+# The headless render harness (`tests/support/mod.rs`): it lays the real widget
+# tree out and draws it through the same tiny-skia renderer the binary uses.
+# `iced` re-exports neither `UserInterface` nor the renderer, so the three
+# crates are named directly.
+iced_core.workspace = true
+iced_runtime.workspace = true
+iced_tiny_skia.workspace = true
+
+# Screenshots as CI artifacts (acceptance Q02), written only when
+# `INOX_SCREENSHOT_DIR` is set.
+image.workspace = true
 
 [lints]
 workspace = true
