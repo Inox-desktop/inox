@@ -21,12 +21,25 @@ smithay.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# Test-only channel. Off by default and inert unless `--test-input` is passed: it
+# registers a calloop source on a unix socket that answers line-based commands
+# (key/motion/button/frame-dump) so that an end-to-end test can drive a *running*
+# compositor process. In default builds the option does not exist at all — the
+# parser rejects `--test-input` — so nothing here can be reached by accident.
+# See `src/test_input.rs` for the protocol and the invariants.
+[features]
+test-input = []
+
 [dev-dependencies]
 proptest.workspace = true
 # The inox-ipc and window-management integration tests drive a real Wayland
 # client; Smithay does not re-export `wayland-client`.
 wayland-client.workspace = true
 wayland-protocols = { workspace = true, features = ["client"] }
+# The drag-and-drop test gives its clients a real `wl_shm` buffer (Smithay only has
+# geometry to hit-test once a surface has committed one); `tempfile` provides the
+# anonymous file such a buffer needs.
+tempfile.workspace = true
 
 # This crate cannot use `lints.workspace = true`: cargo rejects inheriting the
 # workspace lints while also overriding one of them. It therefore restates the

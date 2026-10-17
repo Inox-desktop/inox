@@ -1,10 +1,38 @@
 //! Smithay compositor state and protocol handlers.
 //!
-//! The compositor advertises the `wl_output`, `wl_compositor`, `wl_shm`,
-//! `wl_seat`, `xdg_wm_base` and private `inox_ipc` globals. Client toplevels
-//! become managed windows: they are registered in a [`Workspace`], tiled by
-//! [`LayoutConfig`] and mapped into a Smithay desktop `Space` that
-//! [`InoxState::render_frame`] composites.
+//! # Advertised globals
+//!
+//! Every global the compositor creates, and the version it binds at:
+//!
+//! - `wl_compositor` (5) and `wl_subcompositor` (1) — [`CompositorState`], which
+//!   creates both in one call.
+//! - `wl_shm` (2) — [`ShmState`], the only buffer transport besides client-provided
+//!   dmabufs, which are not advertised yet.
+//! - `wl_seat` (9) — [`SeatState`], carrying the keyboard and pointer capabilities.
+//! - `wl_output` (4) and `zxdg_output_manager_v1` (3) — the headless output and
+//!   [`OutputManagerState`].
+//! - `xdg_wm_base` (6) — [`XdgShellState`], the surface role managed windows use.
+//! - `wp_viewporter` (1) — [`ViewporterState`]. Required by XWayland clients that
+//!   scale themselves (ADR 0007); without it `xwayland-satellite` cannot run here.
+//! - `wl_data_device_manager` (3) — [`DataDeviceState`], the clipboard and
+//!   drag-and-drop channel.
+//! - `zwp_primary_selection_device_manager_v1` (1) — [`PrimarySelectionState`], the
+//!   X11-style primary selection (middle-click paste).
+//! - `inox_ipc` — the private control protocol from `inox-protocols`, at the version
+//!   its own interface declares.
+//!
+//! Client toplevels become managed windows: they are registered in a
+//! [`Workspace`], tiled by [`LayoutConfig`] and mapped into a Smithay desktop
+//! `Space` that [`InoxState::render_frame`] composites.
+//!
+//! # Clipboard, drag-and-drop and focus
+//!
+//! Both selection protocols follow the keyboard focus: only the focused client is
+//! offered the current selection, and only the focused client may set one (Smithay
+//! enforces the latter inside the `wl_data_device` handler). `InoxState::sync_focus` is
+//! the single place the keyboard focus changes, so it is also the single place the
+//! selection focus is handed over — see the note there for why that is what makes the
+//! XWayland clipboard bridge work.
 //!
 //! Input handling is split in two: Smithay's seat owns the keymap, modifier
 //! tracking and focus delivery, while [`crate::input::action_for_key`] turns a
@@ -17,7 +45,13 @@
 //! and the `inox-ipc` control protocol, so upstream versions are pinned in one
 //! place (see the workspace `AGENTS.md`).
 
-use std::{borrow::Cow, collections::HashMap, sync::OnceLock};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    os::unix::io::OwnedFd,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use calloop::LoopSignal;
 use inox_protocols::{
@@ -39,6 +73,7 @@ use smithay::{
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
         backend::{ClientData, ClientId, DisconnectReason},
+        protocol::wl_data_source::WlDataSource,
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
     wayland::{
@@ -46,10 +81,21 @@ use smithay::{
         compositor::{CompositorClientState, CompositorHandler, CompositorState},
         output::{OutputHandler, OutputManagerState},
         seat::WaylandFocus,
+        selection::{
+            SelectionHandler, SelectionSource, SelectionTarget,
+            data_device::{
+                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+                set_data_device_focus,
+            },
+            primary_selection::{
+                PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
+            },
+        },
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
         },
         shm::{ShmHandler, ShmState},
+        viewporter::ViewporterState,
     },
 };
 use tracing::{debug, info, warn};
@@ -93,6 +139,27 @@ pub struct InoxState {
     #[allow(dead_code)]
     output_manager_state: OutputManagerState,
 
+    /// Owns the `wp_viewporter` global clients scale their buffers with.
+    ///
+    /// Like `output_manager_state`, Smithay's viewporter dispatch is
+    /// generic over the compositor state, so the value is never read: keeping it is
+    /// what keeps the global alive.
+    #[allow(dead_code)]
+    viewporter_state: ViewporterState,
+
+    /// Owns the `wl_data_device_manager` global and the per-seat selection state.
+    data_device_state: DataDeviceState,
+
+    /// Owns the `zwp_primary_selection_device_manager_v1` global.
+    primary_selection_state: PrimarySelectionState,
+
+    /// The display the compositor sends events on.
+    ///
+    /// Held so that focus changes can hand the selection focus to the newly focused
+    /// client (see [`InoxState::sync_focus`]); the display itself is owned by the event
+    /// loop, and this handle is cheap to clone.
+    display_handle: DisplayHandle,
+
     output: Output,
 
     seat_state: SeatState<Self>,
@@ -118,6 +185,12 @@ pub struct InoxState {
     pointer_location: Point<f64, Logical>,
 
     renderer: HeadlessRenderer,
+    /// Monotonic origin the frame callbacks are timed against.
+    ///
+    /// A monotonic clock, not wall-clock time: clients only compare frame times with
+    /// each other, and `wl_surface.frame` timestamps must never jump backwards when the
+    /// system clock is adjusted.
+    start_time: Instant,
     frames_rendered: u64,
     exit_after_frames: Option<u64>,
     exit_requested: bool,
@@ -150,6 +223,12 @@ impl InoxState {
             "advertised inox_ipc global"
         );
 
+        // XWayland clients scale their buffers through `wp_viewporter`, so a satellite
+        // never gets far without it (ADR 0007).
+        let viewporter_state = ViewporterState::new::<Self>(display_handle);
+        let data_device_state = DataDeviceState::new::<Self>(display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
+
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
         let shm_state = ShmState::new::<Self>(display_handle, []);
 
@@ -174,6 +253,10 @@ impl InoxState {
         Ok(Self {
             compositor_state,
             output_manager_state,
+            viewporter_state,
+            data_device_state,
+            primary_selection_state,
+            display_handle: display_handle.clone(),
             output,
             seat_state,
             seat,
@@ -188,6 +271,7 @@ impl InoxState {
             work_area,
             pointer_location: Point::from((0.0, 0.0)),
             renderer,
+            start_time: Instant::now(),
             frames_rendered: 0,
             exit_after_frames: config.exit_after_frames,
             exit_requested: false,
@@ -199,7 +283,7 @@ impl InoxState {
     ///
     /// The desktop space is refreshed so that closed windows are dropped, the
     /// render elements for the whole work area are produced and drawn over the
-    /// background colour.
+    /// background colour, and every mapped window is told that a frame happened.
     ///
     /// # Errors
     ///
@@ -215,8 +299,30 @@ impl InoxState {
         );
         self.renderer.render_elements(&elements)?;
 
+        self.send_frame_callbacks();
+
         self.frames_rendered = self.frames_rendered.saturating_add(1);
         Ok(())
+    }
+
+    /// Send a `wl_surface.frame` callback to every mapped window.
+    ///
+    /// Without this a client that waits for its frame callback before drawing the next
+    /// frame never gets one, so it never repaints: a real client (an XWayland toplevel,
+    /// a GTK application) that asks for a frame first would stay blank. Note that the
+    /// callbacks only reach the client once the display is flushed, which the event loop
+    /// does after every frame it renders.
+    fn send_frame_callbacks(&mut self) {
+        let time = self.start_time.elapsed();
+
+        for window in self.windows.values() {
+            // Every managed window lives on the single output, and the closure reports
+            // exactly that, so the throttle never gates a callback; `ZERO` states that
+            // rather than leaving it to depend on the output comparison alone.
+            window.send_frame(&self.output, time, Some(Duration::ZERO), |_, _| {
+                Some(self.output.clone())
+            });
+        }
     }
 
     /// Number of frames rendered so far.
@@ -241,6 +347,23 @@ impl InoxState {
     /// Returns a [`RenderError`] when the readback fails.
     pub fn read_frame_center_pixel(&mut self) -> Result<[u8; 4], RenderError> {
         self.renderer.read_center_pixel()
+    }
+
+    /// Read back the whole render target as tightly packed RGBA8 bytes.
+    ///
+    /// The format the PPM writer of the test-input channel consumes; the pixel
+    /// integration tests use [`InoxState::read_frame_center_pixel`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RenderError`] when the readback fails.
+    pub fn read_frame_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
+        self.renderer.read_frame_rgba()
+    }
+
+    /// Size of the headless output in pixels, as `(width, height)`.
+    pub fn output_size(&self) -> (i32, i32) {
+        (self.work_area.size.w, self.work_area.size.h)
     }
 
     /// The headless output advertised to clients.
@@ -309,16 +432,30 @@ impl InoxState {
     ///
     /// Returns the compositor [`Action`] the key resolved to, or `None` when the
     /// event was not bound and was forwarded to the focused client.
+    ///
+    /// Smithay runs the filter for a release exactly as it does for a press, so a
+    /// bound chord is swallowed in both directions and acted on once, on the
+    /// press. Acting on the release as well would run the binding twice — the
+    /// focus would move forward and straight back — and forwarding only the
+    /// release would hand the client half of a chord it never saw begin.
     pub fn inject_key(&mut self, keycode: Keycode, state: KeyState) -> Option<Action> {
         let keyboard = self.keyboard.clone();
         let serial = SERIAL_COUNTER.next_serial();
+        let pressed = matches!(state, KeyState::Pressed);
 
-        let action = keyboard.input(self, keycode, state, serial, 0, |_, modifiers, keysym| {
-            match action_for_key(keysym.modified_sym(), modifiers) {
-                Some(action) => FilterResult::Intercept(action),
-                None => FilterResult::Forward,
-            }
-        });
+        let action = keyboard
+            .input(
+                self,
+                keycode,
+                state,
+                serial,
+                0,
+                |_, modifiers, keysym| match action_for_key(keysym.modified_sym(), modifiers) {
+                    Some(action) => FilterResult::Intercept(pressed.then_some(action)),
+                    None => FilterResult::Forward,
+                },
+            )
+            .flatten();
 
         if let Some(action) = action {
             self.perform(action);
@@ -462,9 +599,19 @@ impl InoxState {
             .and_then(|window| window.wl_surface())
             .map(Cow::into_owned);
 
+        // The selection protocols follow the keyboard focus: a client is only offered the
+        // clipboard (and only allowed to set one) while it is focused, and clearing the
+        // focus with `None` takes the offer away again. This is what makes the X11
+        // clipboard bridge work: `xwayland-satellite` is an ordinary Wayland client, so
+        // the focus handed to it here is the only thing that lets X11 selections through.
+        let client = focused.as_ref().and_then(|surface| surface.client());
+
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.keyboard.clone();
         keyboard.set_focus(self, focused, serial);
+
+        set_data_device_focus(&self.display_handle, &self.seat, client.clone());
+        set_primary_focus(&self.display_handle, &self.seat, client);
 
         if let Some(id) = self.workspace.focused() {
             if let Some(window) = self.windows.get(&id).cloned() {
@@ -623,6 +770,91 @@ impl SeatHandler for InoxState {
     }
 }
 
+impl DataDeviceHandler for InoxState {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+
+impl PrimarySelectionHandler for InoxState {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+
+/// Clipboard selection transitions.
+///
+/// The payload never passes through the compositor — clients hand it to each other over
+/// a pipe — so this only reports what changed, for the log and for a reader who wants to
+/// see the focus rules in action.
+impl SelectionHandler for InoxState {
+    type SelectionUserData = ();
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        match &source {
+            Some(source) => debug!(
+                target = ?ty,
+                mime_types = source.mime_types().len(),
+                "selection set by the focused client"
+            ),
+            None => debug!(target = ?ty, "selection cleared by the focused client"),
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        _fd: OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &Self::SelectionUserData,
+    ) {
+        // Only reachable for a compositor-set selection, which Inox does not provide yet;
+        // client-set selections are forwarded to the source client by Smithay instead.
+        debug!(target = ?ty, %mime_type, "client asked for a compositor-side selection");
+    }
+}
+
+/// Client-initiated drag and drop.
+///
+/// The transfer itself needs no compositor code: Smithay's `DnDGrab` takes over the
+/// pointer once a client answers an implicit grab with `start_drag`, and routes the
+/// enter/motion/drop/action events of the drag from there. All the compositor has to do
+/// is keep delivering pointer motion to the seat, which is what
+/// [`InoxState::inject_pointer_motion`] and, in M3b, the libinput backend do.
+impl ClientDndGrabHandler for InoxState {
+    fn started(
+        &mut self,
+        source: Option<WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        debug!(
+            offered = source.is_some(),
+            icon = icon.is_some(),
+            "client started a drag"
+        );
+    }
+
+    fn dropped(&mut self, target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
+        debug!(
+            dropped_on_a_surface = target.is_some(),
+            validated, "client drag ended"
+        );
+    }
+}
+
+/// Server-initiated drag and drop.
+///
+/// Inox never starts a drag itself, so there is nothing to react to; the trait is
+/// required by [`DataDeviceHandler`] regardless.
+impl ServerDndGrabHandler for InoxState {}
+
 impl ShmHandler for InoxState {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
@@ -743,6 +975,9 @@ smithay::delegate_output!(InoxState);
 smithay::delegate_seat!(InoxState);
 smithay::delegate_xdg_shell!(InoxState);
 smithay::delegate_shm!(InoxState);
+smithay::delegate_viewporter!(InoxState);
+smithay::delegate_data_device!(InoxState);
+smithay::delegate_primary_selection!(InoxState);
 
 #[cfg(test)]
 mod tests {
