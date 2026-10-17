@@ -505,6 +505,22 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 | M6 | 指定支持矩阵的发布候选 | `inox-integration` 与全部 crate | C04、P01–P05、H01–H03、L01–L03：迁移/回退、性能与长稳原始数据、两种渠道安装生命周期、无 P0/P1、人类批准 |
 
 > M3 的 X11↔Wayland 拖放腿**上游阻塞**：`xwayland-satellite` v0.8.3 未实现 XDND，因此上表 M3 行的 X03 只交付 **Wayland↔Wayland 拖放**与 **X11 内部拖放**，跨边界那条腿的 E3 用例延期——M3 不得被读作 X03 完整通过。X02 中「锁屏时读剪贴板」的断言因 `ext-session-lock-v1` 与 `inox-lock` 尚不存在而移至 M5 的 S02（延期，不是通过）。两条决策与依据见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)。
+>
+> **M4 只交付了 L3 的一部分，且同样不得被读作通过。** 七个 L3 组件已按 [ADR 0013](docs/adr/0013-shell-service-and-interaction-contracts.md)
+> 的服务契约有了实现：`inox-shell` 的跨入口导航与服务契约（快照/代次/命令结果/loading-empty-error-retry）、
+> `inox-panel` 的任务分组与托盘生命周期、`inox-launcher` 的 XDG 条目解析与带代次的搜索、`inox-notifications`
+> 的协议契约与有界队列策略、`inox-settings` 的草稿/校验/原子保存/回读状态机、`inox-lock` 的锁状态机与凭据清理、
+> `inox-wallpaper` 的缩放几何与原子应用；`inox-config` 的 `shell.toml`、`notifications.toml` 字段模型与
+> `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1**（编译、lint、文档、单元与属性测试）
+> 加**离屏渲染**（真实控件树在固定尺寸下的像素与事件断言，见[测试策略](docs/book/src/development/testing.md)）。
+> **E2/E3 尚未取得，未完成的 DoD 项包括 W05、O02–O03、C02–C03 的实测、D01–D05 与 Q01–Q03 的宿主侧证据**，
+> 原因是三个硬前提缺失：① `inox-compositor` 尚未广告 `zwlr_layer_shell_v1`，L3 的表面无法在 Inox 会话中创建；
+> ② CI 没有支持 layer-shell 的宿主（`weston` 不支持该协议）；③ `iced_layershell` 0.19.1 与 0.19.0
+> **都无法编译**（其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举
+> `NativeKeyCode` 做了穷尽匹配）。因此第 7 节与 ADR 0013 要求的「M4 前完成 Iced + layer-shell 原型」
+> **仍未完成**，各组件以普通窗口运行并把 layer-shell 放置策略建模为纯数据；锁屏的协议腿另受 ADR 0015
+> 的人类安全审查约束，通知的 D-Bus 服务按本表属 M5（D06）。决策与边界见
+> [ADR 0018](docs/adr/0018-l3-component-architecture.md)（状态 `proposed`）。
 
 ---
 

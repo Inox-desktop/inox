@@ -1,6 +1,6 @@
 # 合成器配置
 
-> **提案，尚未发布。** 本页的字段与默认值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）。当前 `inox-config` 仍是 M0 骨架，`inox-compositor` **只解析命令行参数、不读取 TOML**。合成器接入 `compositor.toml` 尚未实现。
+> **状态：模型已实现，合成器尚未接入。** 本页的字段与默认值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）。`inox-config` 已实现 `compositor.toml` 的模型、范围校验与错误定位并有测试；`inox-compositor` **仍只解析命令行参数、不读取 TOML**，合成器接入 `compositor.toml` 尚未实现。L3 组件已通过 `InoxConfig` 读取各自的配置文件。
 
 涉及两个文件：顶层 `config.toml` 给出环境变量、组件文件位置与主题选择；`compositor.toml` 给出输出、输入与平铺参数。目录位置与通用规则见[配置目录布局](./layout.md)。
 
@@ -12,12 +12,15 @@ MOZ_ENABLE_WAYLAND = "1"
 
 [components]                       # 相对配置目录的文件名，省略则用默认值
 compositor = "compositor.toml"
-shell = "shell.toml"               # 该文件的 schema 将在 M4 定义
-notifications = "notifications.toml"  # 该文件的 schema 将在 M5 定义
+shell = "shell.toml"               # 见「面板、启动器与壁纸配置」
+notifications = "notifications.toml"  # 见「通知配置」
 
 [theme]
 name = "inox-dark"                 # 省略则按 appearance 选择内置主题
 appearance = "system"              # light | dark | system（默认）
+
+[locale]
+language = "zh-CN"                 # 省略则跟随环境
 ```
 
 | 段 | 作用 |
@@ -25,6 +28,7 @@ appearance = "system"              # light | dark | system（默认）
 | `[environment]` | 会话范围内注入的环境变量（如 `MOZ_ENABLE_WAYLAND`）。键与值都必须是字符串 |
 | `[components]` | 各组件的配置文件路径，取值是**相对配置目录**的文件名；绝对路径与 `..` 会被拒绝 |
 | `[theme]` | 主题选择，详见[主题与设计令牌](./theme.md) |
+| `[locale]` | 会话语言；省略则跟随环境，详见[配置目录布局](./layout.md) |
 
 ## `compositor.toml`
 

@@ -9,7 +9,8 @@
 | 单元测试 | `cargo test` | 所有纯逻辑模块 | 每个 crate 都必须有 |
 | 属性测试 | `proptest` | 窗口管理与布局算法 | 合成器、Shell 的布局与窗口簿记 |
 | headless 集成测试 | `cargo test` + 软件渲染 | 合成器输出创建、渲染、输入、协议 | `inox-compositor` |
-| GUI 测试 | `waydriver` | Shell 组件的交互与外观 | L3 组件（M4 起） |
+| GUI 测试（离屏） | `iced_tiny_skia` + `iced_runtime::UserInterface` | 真实控件树的布局、绘制像素与事件处理 | L3 组件（已落地，见下） |
+| GUI 测试（虚拟合成器） | `waydriver` | 组件在真实合成器中的表面、焦点与截图 | L3 组件（待 layer-shell 宿主可用） |
 | 性能测试 | Tracy | 帧时间、输入延迟 | 性能预算验证（PRD §8） |
 | 依赖安全 | `cargo-deny` | 许可证、漏洞、重复版本 | 工作区 CI 的 `deny` job（完整依赖图） |
 | 静态检查 | clippy、fmt | 全部代码 | 工作区 CI 的 `clippy` / `fmt` job |
@@ -22,6 +23,44 @@
 - **不用 mock**：`tests/window_management.rs` 在**同一进程内**用 `UnixStream::pair()` 连接一个真实的 `wayland-client`，创建 ≥2 个 xdg toplevel，断言合成器可观测状态（托管窗口数、`Space` 中的平铺落点、焦点）。被验证的是真实协议处理路径，而不是桩。`wayland-client` / `wayland-protocols` 只作为 dev-dependency，不进入发布产物。
 - **断言要看得见**：渲染是否真的发生由**离屏像素读回**断言，不能只依赖日志。像素比较留 ±1 个 8 位步长的容差，因为不同驱动的 float → unorm 舍入不同。
 - **CI 无设备**：PRD §6.1 要求 CI 在没有显示设备与输入设备的环境中可复现，因此 M2 的输入通过进程内注入 API 驱动，真实输入设备链路（libinput/udev）推迟到具备后端能力的里程碑。
+
+## L3 组件的 GUI 测试：离屏渲染
+
+L3 组件的界面测试**不需要合成器，也不需要 GPU**。这是刻意的设计，因为 CI 里没有支持 `wlr-layer-shell-unstable-v1`
+的宿主，而面板、启动器、通知与壁纸在 PRD §2.3 中都是 layer-shell 客户端。
+
+做法是直接驱动 iced 自己的运行时：用 `iced_runtime::UserInterface` 在固定尺寸上布局**真实的控件树**，
+用 `iced_tiny_skia::Renderer`（与二进制使用同一个渲染器）绘制，再用 `Headless::screenshot` 取回 RGBA 像素：
+
+```rust
+let mut renderer = iced_tiny_skia::Renderer::new(Font::default(), Pixels(16.0));
+let mut ui = UserInterface::<Message, iced::Theme, iced_tiny_skia::Renderer>::build(
+    view(state), Size::new(1280.0, 32.0), Cache::default(), &mut renderer,
+);
+ui.draw(&mut renderer, &theme, &Style::default(), mouse::Cursor::AVAILABLE);
+let pixels = Headless::screenshot(&mut renderer, Size::new(1280, 32), 1.0, Color::WHITE);
+```
+
+由此得到三类断言，覆盖验收 Q02 的一部分：
+
+- **像素**：背景区域取到主题的 background/surface 令牌；禁用项与可用项渲染结果不同；浅色与深色两种主题各断言一次。
+- **交互**：`UserInterface::update(&[Event::...], cursor, renderer, clipboard, &mut messages)`
+  注入真实的鼠标与键盘事件，把产生的 `Message` 喂回组件自己的 `update()`，再断言状态与再次渲染的结果
+  —— 点击、键入、Esc、方向键这些验收 D01/D02/D04 的行为因此可以在 CI 中验证。
+- **产物**：设置 `INOX_SCREENSHOT_DIR` 时测试把像素写成 PNG，供 CI 作为 artifact 收集，用于人工比对基线；
+  基线变更仍需人类审查（Q02 要求截图差异有理由）。
+
+这套装置有三条边界，不能当作已通过的证据：
+
+1. 它证明**控件树与事件处理**正确，不证明组件在真实合成器中的表面、焦点与放置正确 —— 那部分需要 layer-shell 宿主，
+   目前被上游阻塞（`iced_layershell` 0.19.1/0.19.0 无法编译，见[依赖管理](./dependencies.md)与
+   [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。
+2. 它不覆盖 AT-SPI 语义导出与真实屏幕阅读器（Q01 的人工部分）。
+3. 运行测试的机器必须装有至少一种字体：文本经 cosmic-text 布局，没有字体时标签会渲染为空，
+   像素断言会变成在断言一张空帧（CI 的 `test` 分片为此安装 `fonts-dejavu-core`）。
+
+`waydriver` 仍在计划中，用于在虚拟合成器中做端到端 GUI 验证；它需要宿主支持组件所需的协议，
+因此排在 layer-shell 宿主之后。
 
 ## 合成器测试的注意事项
 

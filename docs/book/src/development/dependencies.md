@@ -61,9 +61,28 @@ cargo test -p inox-integration --test layering
 
 ## MSRV
 
-MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出，当前为 **1.86**；成员一律 `rust-version.workspace = true`，不再各自声明。
+MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出，当前为 **1.88**；成员一律 `rust-version.workspace = true`，不再各自声明。CI 跟随 `stable`，声明的下限只约束使用者。
 
-1.86 来自依赖本身的硬要求，而不是偏好：`inox-compositor` 经由 `smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86。旧方案中「`inox-compositor` 是 1.86、其余 L1 是 1.85」的分裂状态已随工作区统一而消失；根级 `AGENTS.md` §8 要求提升 MSRV 时说明破坏性影响。
+下限来自依赖本身的硬要求，而不是偏好：L3 里程碑引入的 `iced` 0.14 与 `image` 0.25 都声明 `rust-version = "1.88"`。此前的 1.86 同样是被依赖推着走 —— `inox-compositor` 经由 `smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86。旧方案中「`inox-compositor` 是 1.86、其余 L1 是 1.85」的分裂状态已随工作区统一而消失；根级 `AGENTS.md` §8 要求提升 MSRV 时说明破坏性影响，本次提升只排除 1.86/1.87 工具链的使用者，不改变任何已发布行为。
+
+## L3 的第三方依赖
+
+L3 组件（面板、启动器、通知、设置、锁屏、壁纸）在 L1/L2 之外引入下列依赖，全部在 `[workspace.dependencies]` 声明一次：
+
+| crate | 许可证 | 用途 | 作用范围 |
+|-------|--------|------|----------|
+| `iced` 0.14 | MIT | GUI 工具包（ADR 0003 已固定），`default-features = false`，只启用 `tiny-skia`、`wayland`、`thread-pool`、`crisp`、`image` | 六个有界面的组件 |
+| `fluent-bundle` / `fluent-syntax` 0.16 / 0.12 | Apache-2.0 OR MIT | 用户可见文案的加载与解析（PRD §11.2） | `inox-common::i18n` |
+| `unic-langid` 0.9 | MIT OR Apache-2.0 | BCP-47 语言标签 | 同上 |
+| `chrono` 0.4 | MIT OR Apache-2.0 | 面板时钟的民用时间 | `inox-panel` |
+| `image` 0.25 | MIT OR Apache-2.0 | 壁纸的 PNG/JPEG 解码（只启用这两种格式） | `inox-wallpaper`、渲染测试 |
+| `zeroize` 1 | MIT OR Apache-2.0 | 凭据缓冲在释放时清零（ADR 0015） | `inox-lock` |
+| `iced_core` / `iced_runtime` / `iced_tiny_skia` 0.14 | MIT | **仅 dev-dependency**：离屏渲染测试装置 | 各 L3 组件的 `tests/` |
+
+两个取舍值得记录：
+
+- **不启用 `wgpu`。** `tiny-skia` 是纯软件渲染，无 GPU 的 CI 与 llvmpipe 环境都能呈现，而 `wgpu` 会引入一个没有任何 Inox 配置会选中的第二渲染器。软件渲染是 CI 与回退路径，不是性能验收基准（PRD §8）。
+- **没有 `iced_layershell`。** 面板、启动器、通知与壁纸按 PRD §2.3 需要 layer-shell 表面，但截至本次实现，`iced_layershell` 0.19.1 与 0.19.0 **都无法编译**：其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举 `NativeKeyCode` 做了穷尽匹配。因此本次交付把 layer-shell 的**放置策略**建模为纯数据并测试，界面以普通窗口运行，表面协议腿留待上游修复或另择宿主方案（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。
 
 ## 本站点
 
