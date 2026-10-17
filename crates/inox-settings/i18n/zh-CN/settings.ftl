@@ -152,3 +152,6 @@ settings-error-collection = 请检查第 { $row } 项：尺寸 1–16384，刷�
 settings-page-input-method = 输入法
 settings-field-input-method-command = 引擎程序与参数
 settings-input-method-help = 第一项填写 fcitx5 或兼容的可执行程序，之后每项填写一个参数。空列表禁用自动启动。改动在下次物理会话生效，命令行选项优先。请单独安装引擎，并使用引擎配置工具管理语言、词库和切换快捷键；不要添加后台运行选项。
+
+settings-error-input-method-command = 请检查第 { $row } 项：首项必须为可执行程序，参数不能含有空字符。
+settings-error-wallpaper-entry = 请检查第 { $row } 项：显示器名称不能重复，图片路径不能为空。

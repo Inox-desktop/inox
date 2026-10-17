@@ -1278,16 +1278,22 @@ mod tests {
     }
 
     #[test]
-    fn every_field_has_a_table_and_a_key() {
+    fn every_field_has_a_key_and_reconstructs_its_path() {
         for field in Field::ALL {
             let edit = Edit::set(field, Toml::Bool(true));
 
-            assert!(edit.section().is_some(), "`{}` has no table", field.path());
+            assert_eq!(
+                edit.section().is_none(),
+                field == Field::Outputs,
+                "unexpected top-level key: {field}"
+            );
             assert!(!edit.key().is_empty(), "`{}` has no key", field.path());
             assert_eq!(
-                edit.section()
-                    .map(|section| format!("{section}.{key}", key = edit.key())),
-                Some(field.path().to_owned())
+                edit.section().map_or_else(
+                    || edit.key().to_owned(),
+                    |section| format!("{section}.{key}", key = edit.key())
+                ),
+                field.path().to_owned()
             );
         }
     }

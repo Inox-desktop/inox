@@ -460,6 +460,7 @@ fn control_widget<'a>(
                 step_button(decrease, field, -1, tokens, geometry, *value > *min),
                 text_input("", input)
                     .id(input_id(key))
+                    .on_submit(Message::FocusNext)
                     .on_input_maybe(
                         field
                             .enabled

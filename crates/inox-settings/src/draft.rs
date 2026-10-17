@@ -1697,7 +1697,11 @@ mod tests {
     #[test]
     fn every_field_belongs_to_a_file_and_a_page() {
         for field in Field::ALL {
-            assert_eq!(field.path().split('.').count(), 2, "`{field}`");
+            assert_eq!(
+                field.path().split('.').count(),
+                if field == Field::Outputs { 1 } else { 2 },
+                "`{field}`"
+            );
             assert_eq!(field.file(), field.page().fields()[0].file(), "`{field}`");
         }
     }

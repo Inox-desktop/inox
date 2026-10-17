@@ -54,12 +54,9 @@
 //!   configuration (ADR 0018: no transport exists in this milestone). The window
 //!   therefore reports the change as saved and *not* in effect, through
 //!   [`apply::Rejection::Unreachable`], rather than claiming it took.
-//! - **The keybinding and display pages.** Acceptance D04 names theme,
-//!   keybindings and display configuration; `compositor.toml` has no keybinding
-//!   table for a page to edit (`inox_config::InputConfig` holds keyboard layout,
-//!   repeat timing and pointer flags), and the output list is an array of
-//!   tables, which is a different kind of editor from the scalar fields
-//!   [`document`] rewrites. Both are reported rather than half-built.
+//! - **Custom keybindings and live display trials.** The output preference editor
+//!   saves the existing schema for the next session. Custom keybindings have no
+//!   schema or consumer yet; live display trials require server-owned rollback.
 //! - **E2/E3 GUI evidence**, which needs a host running an Inox session.
 
 #![forbid(unsafe_code)]

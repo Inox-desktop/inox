@@ -853,6 +853,8 @@ pub fn message_ids() -> Vec<&'static str> {
         "settings-error-locale",
         "settings-input-method-help",
         "settings-error-collection",
+        "settings-error-input-method-command",
+        "settings-error-wallpaper-entry",
         "settings-output-name",
         "settings-output-width",
         "settings-output-height",

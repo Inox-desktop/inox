@@ -684,6 +684,7 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
     {
         return iced::Task::none();
     }
+    let previous_page = state.page;
     let page_changed = matches!(&message, Message::PageSelected(_));
     let move_focus = matches!(
         &message,
@@ -843,7 +844,7 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
         }
     }
 
-    if page_changed {
+    if page_changed || state.page != previous_page {
         return iced::widget::operation::snap_to(
             "settings-content",
             iced::widget::operation::RelativeOffset::START,

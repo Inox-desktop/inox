@@ -107,7 +107,11 @@ pub fn validate_field(field: Field, settings: &Settings) -> Option<FieldError> {
         return Some(FieldError {
             path: field.path(),
             message: ValidationMessage::new(
-                "settings-error-collection",
+                match field {
+                    Field::InputMethodCommand => "settings-error-input-method-command",
+                    Field::WallpaperPerOutput => "settings-error-wallpaper-entry",
+                    _ => "settings-error-collection",
+                },
                 vec![("row", Arg::from((row + 1) as i64))],
             ),
         });

@@ -173,3 +173,6 @@ settings-error-collection = Check entry { $row }: dimensions 1–16384, refresh 
 settings-page-input-method = Input Method
 settings-field-input-method-command = Engine command and arguments
 settings-input-method-help = Enter fcitx5 or a compatible executable first, then one argument per entry. Leave the list empty to disable automatic startup. Changes take effect at the next physical session; command-line options override them. Install the engine separately and use its configuration tool for languages, dictionaries and switching shortcuts. Do not add a daemonize option.
+
+settings-error-input-method-command = Check entry { $row }: the first entry must name an executable and arguments cannot contain a NUL character.
+settings-error-wallpaper-entry = Check entry { $row }: use a unique display name and a nonempty image path.
