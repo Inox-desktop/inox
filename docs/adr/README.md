@@ -63,6 +63,7 @@ proposed ──► accepted ──► superseded
 | [0014](./0014-configuration-apply-and-migration.md) | 配置应用、持久化与升级迁移具有失败原子性 | proposed | 2026-10-16 |
 | [0015](./0015-session-lock-and-failure-boundaries.md) | 会话监督、锁屏与特权能力按失败边界设计 | proposed | 2026-10-16 |
 | [0016](./0016-single-repository-cargo-workspace.md) | 改为单一仓库（Cargo workspace）并取代多仓库策略 | accepted | 2026-10-16 |
+| [0017](./0017-m3-xwayland-host-clipboard-and-dnd.md) | M3 的 XWayland 宿主协议、剪贴板与拖放 | proposed | 2026-10-16 |
 
 ## 既有提案的复核与实施阻塞
 
