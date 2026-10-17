@@ -262,10 +262,15 @@ fn a_lock_with_no_ui_says_so_and_still_covers_the_screen() {
     );
 
     let model = lock.state().model();
-    let Face::HeldWithoutUi { line, detail } = &model.face else {
+    let Face::HeldWithoutUi { detail } = &model.face else {
         panic!("a lock with no UI says so: {:?}", model.face);
     };
-    assert!(!line.is_empty() && !detail.is_empty());
+    assert!(!detail.is_empty());
+    assert_eq!(
+        model.headline, "The session is locked",
+        "the headline says what the screen is, because it is not a prompt"
+    );
+    assert_eq!(model.hint, None);
 
     snapshot("held-without-ui", &pixels, size);
 }
@@ -303,16 +308,148 @@ fn an_unusable_boundary_offers_a_retry_that_is_drawn() {
     let tokens = lock.tokens().clone();
     let pixels = lock.render();
 
-    assert!(
-        count_of(&pixels, tokens.colors.surface_variant) > 0,
-        "the retry control is drawn"
-    );
     assert!(matches!(
         lock.state().model().face,
         Face::Unavailable { retry: Some(_), .. }
     ));
 
+    // "This colour appears" is not "a control is drawn": a card's antialiased
+    // border can land on exactly the fill token. What separates the two is how
+    // much of it there is — a filled control is an area — so the control is
+    // measured against the same screen in the state that draws no retry at all.
+    let without = {
+        let mut other = locked(Tokens::builtin_dark());
+        other.update(Message::AuthUnavailable(ServiceFailure::NotProvided));
+        other
+    };
+    let fill = count_of(&pixels, tokens.colors.surface_variant);
+    let without_retry = count_of(&without.render(), tokens.colors.surface_variant);
+
+    assert!(matches!(
+        without.state().model().face,
+        Face::Unavailable { retry: None, .. }
+    ));
+    assert!(
+        fill > without_retry,
+        "the retry control fills an area of the screen: {fill} pixels of the fill \
+         token here against {without_retry} on the same screen without it"
+    );
+    assert!(
+        support::bounds_of(&pixels, size, tokens.colors.surface_variant).is_some(),
+        "and the fill is bounded, which is what a drawn control looks like"
+    );
+
     snapshot("boundary-unavailable", &pixels, size);
+}
+
+#[test]
+fn a_boundary_this_build_does_not_have_draws_no_retry() {
+    // The shipped `--take-lock` state: the compositor offers the protocol and this
+    // build has no authentication boundary, so the screen says it cannot check
+    // anything and offers nothing to press (ADR 0025 decision 5). The difference
+    // from the case above is the whole point — a service that is down can come
+    // back, one that does not exist cannot — so this is asserted by comparing the
+    // two screens rather than by looking for a colour: the retry control's fill
+    // token turns up in a handful of antialiased border pixels on any screen, and
+    // a test that looked for it would pass for the wrong reason.
+    let missing = {
+        let mut lock = locked(Tokens::builtin_dark());
+        lock.update(Message::AuthUnavailable(ServiceFailure::NotProvided));
+        lock
+    };
+    let retryable = {
+        let mut lock = locked(Tokens::builtin_dark());
+        lock.update(Message::AuthUnavailable(ServiceFailure::Disconnected));
+        lock
+    };
+
+    let size = missing.size();
+    let tokens = missing.tokens().clone();
+    let pixels = missing.render();
+    let retryable_pixels = retryable.render();
+
+    let Face::Unavailable { reason, retry, .. } = &missing.state().model().face else {
+        panic!("a missing boundary is the unavailable face");
+    };
+    assert!(!reason.starts_with("lock-"), "`{reason}` is a message id");
+    assert_eq!(retry, &None, "there is nothing to try again");
+    assert_eq!(
+        missing.state().model().disabled_reason.as_deref(),
+        Some("This build has no authentication service")
+    );
+
+    assert!(
+        support::bounds_of(&pixels, size, tokens.colors.accent).is_none(),
+        "nothing on the screen is drawn as operable"
+    );
+    assert_eq!(
+        pixel(&pixels, size.width as u32, 0, 0),
+        support::token_pixel(tokens.colors.background),
+        "the screen still covers what is under it"
+    );
+
+    assert!(
+        matches!(
+            retryable.state().model().face,
+            Face::Unavailable { retry: Some(_), .. }
+        ),
+        "the other screen is the one that offers a retry, so it is the comparison"
+    );
+    assert!(
+        count_of(&pixels, tokens.colors.surface_variant)
+            < count_of(&retryable_pixels, tokens.colors.surface_variant),
+        "a boundary that cannot come back draws less than one that can"
+    );
+    assert!(
+        pixels != retryable_pixels,
+        "a screen with no retry control must not look like the same state with one"
+    );
+
+    snapshot("boundary-not-provided", &pixels, size);
+}
+
+#[test]
+fn the_chinese_catalog_renders_a_screen_that_still_fits() {
+    // Acceptance Q03 says the catalogs are complete; this is the other half of it,
+    // which a string comparison cannot see: the translated screen has to fit. It
+    // is a real risk here rather than a formality — `zh-CN` draws glyphs the Latin
+    // fallback does not have, the lines are a different length, and the widest
+    // text on this screen is the reason line under the prompt.
+    let locale = inox_common::i18n::Locale::parse("zh-CN").expect("a well-formed tag");
+    let mut tokens = Tokens::builtin_dark();
+    tokens.typography.scale = 2.0;
+    let mut lock = Lock::in_locale(tokens, &locale);
+
+    lock.update(Message::ProtocolPresent);
+    lock.update(Message::OutputAdded(output()));
+    lock.update(Message::LockRequested(LockReason::User));
+    lock.update(Message::OutputCovered(output()));
+    lock.update(Message::AuthUnavailable(ServiceFailure::Disconnected));
+
+    let size = lock.size();
+    let tokens = lock.tokens().clone();
+    let pixels = lock.render();
+
+    assert_eq!(
+        pixel(&pixels, size.width as u32, 0, 0),
+        support::token_pixel(tokens.colors.background),
+        "the screen still covers the output"
+    );
+    assert!(
+        !lock.state().model().headline.is_empty() && lock.state().model().headline != "lock-prompt",
+        "the headline came from the catalog: {:?}",
+        lock.state().model().headline
+    );
+
+    let retry = support::bounds_of(&pixels, size, tokens.colors.surface_variant)
+        .expect("the retry control is drawn");
+    assert!(
+        retry.x >= 0.0 && retry.x + retry.width <= size.width,
+        "the retry control is inside the screen at 200 % text in the translated \
+         catalog: {retry:?}"
+    );
+
+    snapshot("chinese-large-text", &pixels, size);
 }
 
 #[test]

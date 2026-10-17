@@ -12,25 +12,32 @@
 //!
 //! **With `--take-lock`**, it runs the protocol leg: it claims the trusted lock
 //! role with the token `inox-session` delivered in `INOX_LOCK_TOKEN`, asks the
-//! compositor for the session lock, covers every output with an opaque frame, and
-//! keeps it. That mode exists so the security-critical half of the component can
-//! be exercised against a real compositor, and it is deliberately incomplete:
+//! compositor for the session lock, gives every output a lock surface, and draws
+//! the lock screen onto each of them — the crate's real widget tree, rendered
+//! offscreen and committed to the surface (ADR 0025). That mode exists so the
+//! security-critical half of the component can be exercised against a real
+//! compositor, and it is deliberately incomplete:
 //!
 //! - it has **no authentication and no unlock path**, so entering it means the
 //!   session is released by logging out, not by typing a password;
-//! - the frame it commits is a cover, not an interface — no prompt, no field, no
-//!   keyboard input;
+//! - the state is told the truth about that, so what it draws is the screen's
+//!   *unavailable* face: a person reading it is told nothing here can check a
+//!   password, rather than invited to type one;
+//! - it reads no keyboard (ADR 0022 decision 6): with no boundary there is nothing
+//!   on the screen to operate;
 //! - it never sends `unlock_and_destroy`, not even when it is signalled.
 //!
 //! Everything above the protocol leg — the state machine, the limiter, the
-//! credential buffer, the suspend ordering and the interface — is still exercised
-//! by tests rather than by a running session, at evidence level E0/E1 (ADR 0018).
+//! credential buffer and the suspend ordering — is still exercised by tests rather
+//! than by a running session, at evidence level E0/E1 (ADR 0018). The interface is
+//! no longer in that list: the same `view` the render tests assert on is what the
+//! lock surface carries.
 
 use std::rc::Rc;
 
 use anyhow::{Context, Result, bail};
 use inox_common::i18n::{Arg, Localizer};
-use inox_config::{Appearance, ConfigPaths, InoxConfig};
+use inox_config::{Appearance, ConfigPaths, InoxConfig, Theme as Tokens};
 use inox_lock::i18n::{self};
 use inox_lock::{SessionError, SessionOutcome, take_session_lock};
 use tracing::{error, info, warn};
@@ -50,9 +57,10 @@ const USAGE: &str = "\
 inox-lock [OPTIONS]
 
 OPTIONS:
-    --take-lock    Take the real session lock and hold it. Needs INOX_LOCK_TOKEN,
-                   which inox-session delivers. This mode has no authentication and
-                   no way to release the lock again.
+    --take-lock    Take the real session lock and hold it, drawing the lock screen
+                   on every output. Needs INOX_LOCK_TOKEN, which inox-session
+                   delivers. This mode has no authentication and no way to release
+                   the lock again: what it draws says so.
     -h, --help     Print this help and exit
 ";
 
@@ -86,7 +94,7 @@ fn main() -> Result<()> {
         Rc::new(i18n::load(&config.locale).context("loading the lock screen's message catalogs")?);
 
     if take_lock {
-        return run_protocol_leg(&localizer);
+        return run_protocol_leg(localizer, &config.theme);
     }
 
     let reason = localizer.message("lock-start-blocked-reason");
@@ -106,13 +114,13 @@ fn main() -> Result<()> {
 }
 
 /// Take the lock, report what happened, and choose an exit status from it.
-fn run_protocol_leg(localizer: &Localizer) -> Result<()> {
+fn run_protocol_leg(localizer: Rc<Localizer>, tokens: &Tokens) -> Result<()> {
     let token = std::env::var("INOX_LOCK_TOKEN").ok();
 
-    let outcome = match take_session_lock(token.as_deref(), localizer) {
+    let outcome = match take_session_lock(token.as_deref(), localizer.clone(), tokens.clone()) {
         Ok(outcome) => outcome,
         Err(failure) => {
-            let reason = describe(&failure, localizer);
+            let reason = describe(&failure, &localizer);
             error!(
                 "{}",
                 localizer.message_with("lock-take-failed", &[("reason", Arg::from(reason))])

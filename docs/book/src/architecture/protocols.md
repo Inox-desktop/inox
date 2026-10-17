@@ -24,7 +24,7 @@
 | `fractional-scale-v1` | M4 必须 | 分数缩放 | 已支持（M4；`wl_compositor` v6 的 `preferred_buffer_scale` + `wp_fractional_scale_manager_v1` v1，见 [ADR 0020](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0020-fractional-scaling.md)，状态 `proposed`）。E1+E3 已取，E4 未取 |
 | `wlr-output-management` | 计划 | 显示器管理 | 尚未实现 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 | 尚未实现 |
-| `ext-session-lock-v1` | 计划 | 锁屏 | 尚未实现 |
+| `ext-session-lock-v1` | M5 必须 | 安全锁屏 | 已实现（M5；合成器广告 `ext_session_lock_manager_v1` v1 并以「会话令牌 + `inox_ipc` 认领」默认拒绝授权，`inox-lock --take-lock` 真实取锁并把界面画到每个锁表面，见 [ADR 0022](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md) 与 [ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。**认证仍未交付**，因此界面呈现的是「本构建没有认证边界」；E3 会话用例已取，真机 E4 未取 |
 | `zwp_primary_selection_device_manager_v1` | 必须 | 主选区（X11 中键粘贴兼容） | 已支持（M3；与 `wl_data_device_manager` 一并广告） |
 | `xwayland-shell` | 计划 | XWayland 集成 | 尚未实现 |
 | `text-input-v3` / `input-method-v2` / `virtual-keyboard-v1` | 提前实现 | 输入法与候选窗 | 管理器接口 v1，受信连接与锁屏隔离已接入；新增 CI 用例待运行，见[输入法](../usage/input-methods.md) |

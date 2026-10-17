@@ -1,6 +1,32 @@
 //! Login transitions. Only a current reply from the reviewed boundary may start a session.
 use std::collections::VecDeque;
+use std::fmt;
 use std::time::{Duration, Instant};
+
+impl fmt::Display for AttemptId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AttemptId {
+    /// An identifier no model ever issued.
+    ///
+    /// Test-only: it exists so a test can express "an answer arrived from
+    /// nowhere", which is the shape a forged or replayed success takes, without
+    /// making the identifier constructible in the code that has to trust it.
+    #[cfg(test)]
+    pub const fn that_was_never_issued(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+/// The most bytes of identity data the model retains.
+///
+/// A floor rather than a policy: it bounds what a paste can put into the model,
+/// so a window that receives a megabyte of text still has a finite amount of it
+/// to keep, to lay out and to hand to the system authenticator.
+pub const MAX_IDENTITY_BYTES: usize = 128;
 
 /// Correlation identifier for a single authentication and session-start attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +128,23 @@ impl Greeter {
     pub fn phase(&self) -> Phase {
         self.phase
     }
+
+    /// Whether a reviewed authentication transport is connected at all.
+    pub const fn available(&self) -> bool {
+        self.available
+    }
     /// The username being edited or authenticated.
     pub fn username(&self) -> &str {
         &self.username
+    }
+
+    /// Whether the last identity the user supplied was longer than the model
+    /// keeps, and was therefore cut down to [`MAX_IDENTITY_BYTES`].
+    ///
+    /// The interface shows this rather than silently submitting a name the user
+    /// did not type.
+    pub const fn identity_too_long(&self) -> bool {
+        self.identity_too_long
     }
     /// Whether submission is currently enabled, including the rolling rate limit.
     pub fn can_submit(&self, now: Instant) -> bool {
@@ -136,8 +176,8 @@ impl Greeter {
                 if self.pending.is_none() && self.phase != Phase::SessionStarted =>
             {
                 // Bound retained identity data even when the UI receives a large paste.
-                self.identity_too_long = value.len() > 128;
-                self.username = value.chars().take(128).collect();
+                self.identity_too_long = value.len() > MAX_IDENTITY_BYTES;
+                self.username = value.chars().take(MAX_IDENTITY_BYTES).collect();
                 Command::None
             }
             Event::Submit if self.can_submit(now) => {
@@ -214,7 +254,7 @@ impl Greeter {
 pub fn valid_username(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-        && name.len() <= 128
+        && name.len() <= MAX_IDENTITY_BYTES
         && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
@@ -316,7 +356,15 @@ mod tests {
         assert!(valid_username("alice-1.test"));
         let mut greeter = Greeter::new(true);
         greeter.apply(Event::Username("a".repeat(10000)), Instant::now());
-        assert_eq!(greeter.username().len(), 128);
+        assert_eq!(greeter.username().len(), MAX_IDENTITY_BYTES);
         assert!(!greeter.can_submit(Instant::now()));
+        assert!(
+            greeter.identity_too_long(),
+            "the interface has to be able to say that the name was cut down"
+        );
+
+        let mut greeter = Greeter::new(true);
+        greeter.apply(Event::Username("alice".into()), Instant::now());
+        assert!(!greeter.identity_too_long());
     }
 }

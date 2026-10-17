@@ -27,6 +27,8 @@ lock-failure-cancelled = 该次尝试在得到答复前已被放弃
 
 # 无法输入时的可读原因（验收 D05）。
 lock-disabled-boundary = 认证服务不可用
+# 同一问题的另一半：不是服务不应答，而是本次构建根本没有这个服务（ADR 0015 的评审项）。
+lock-disabled-boundary-missing = 本次构建没有认证服务
 lock-disabled-waiting = 当前尝试次数过多
 lock-disabled-verifying = 已有一次尝试正在验证
 lock-disabled-unlocked = 会话未处于锁定状态
@@ -49,6 +51,7 @@ lock-protocol-missing-global = 合成器未提供会话锁定协议（ext-sessio
 lock-protocol-registry-unavailable = 无法读取合成器注册表
 lock-boundary-disconnected = 认证服务不可达
 lock-boundary-timeout = 认证服务未在时限内应答
+lock-boundary-not-provided = 本次构建完全没有认证边界：ADR 0015 要求先对它完成人类安全审查，锁屏才能认证任何人；因此这里不校验任何东西，释放会话只能靠注销
 
 # 二进制在非零退出前报告的内容（ADR 0015、ADR 0018）。
 lock-start-blocked = 本次构建无法启动会话锁定：{ $reason }

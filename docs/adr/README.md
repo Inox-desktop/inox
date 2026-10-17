@@ -71,6 +71,7 @@ proposed ──► accepted ──► superseded
 | [0022](./0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md) | M5 的会话锁协议腿、通知总线服务与首个特权边界 | proposed | 2026-10-17 |
 | [0023](./0023-input-method-support.md) | 提前接入桌面输入法 | proposed | 2026-10-17 |
 | [0024](./0024-settings-coverage-and-input-method-preferences.md) | 设置覆盖现有配置，并持久化输入法启动偏好 | proposed | 2026-10-17 |
+| [0025](./0025-lock-screen-surface-ui-and-login-interface.md) | 锁屏界面绘制到会话锁表面与登录界面首版 | accepted | 2026-10-17 |
 
 ## 既有提案的复核与实施阻塞
 

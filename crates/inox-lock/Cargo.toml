@@ -30,6 +30,16 @@ rustix = { workspace = true, features = ["fs"] }
 # ADR 0003 fixes Iced for every shell component; the workspace entry selects the
 # tiny-skia renderer, which is what the headless render tests draw through.
 iced.workspace = true
+# The lock screen's own renderer (ADR 0025). A lock surface is not a window, so
+# `iced`'s Wayland support — which creates `xdg-shell` surfaces — cannot draw on
+# one; what it does expose is the pair `src/render.rs` uses: `UserInterface` lays
+# the widget tree out and routes events to it, and the tiny-skia renderer turns it
+# into the pixels `wl_shm` wants. `iced` re-exports neither, which is why the two
+# are named directly, and they are *dependencies* rather than dev-dependencies
+# because the binary draws with them.
+iced_core.workspace = true
+iced_runtime.workspace = true
+iced_tiny_skia.workspace = true
 # L1: the shared Fluent loader and the design tokens. L3 components take no
 # same-layer dependency and no dependency on the compositor (ADR 0013, 0018).
 inox-common.workspace = true
@@ -46,12 +56,9 @@ zeroize.workspace = true
 # `inox-idle/tests/protocol.rs` established.
 wayland-server.workspace = true
 tempfile.workspace = true
-# The headless render harness: `iced` re-exports neither `UserInterface` nor the
-# tiny-skia renderer, so the three crates are named directly (ADR 0018).
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
-# `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02).
+# `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02). The render harness
+# itself needs no dev-dependency: it draws through the same `crate::render` the
+# binary uses, which is the point.
 image.workspace = true
 proptest.workspace = true
 

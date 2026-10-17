@@ -1,12 +1,17 @@
 //! The harness the lock screen's render tests draw through.
 //!
-//! It builds the crate's real widget tree, lays it out at a fixed size and draws
-//! it with the same `tiny-skia` renderer the binary uses — with no compositor and
-//! no GPU, which is what makes acceptance Q02 testable in CI at all.
+//! It draws through [`inox_lock::render::Interface`], which is the code the binary
+//! commits its frames with: what the tests assert on are the pixels the lock
+//! surfaces carry, and not a second rendering path that could drift from them.
+//! There is no compositor and no GPU, which is what makes acceptance Q02 testable
+//! in CI at all.
 //!
-//! Interaction is driven the way iced itself drives it: the same `UserInterface`
-//! receives real `Event`s at a real cursor position, and the messages it produces
-//! are the ones the application's `update` would receive.
+//! Interaction is the one thing that has no production counterpart to borrow. No
+//! lock surface reads input — ADR 0022 decision 6, and this build has nothing on
+//! the screen to operate — so `click` builds its own `UserInterface` over the same
+//! `app::view` and drives it the way iced itself would. That is a harness for a
+//! question the binary cannot be asked yet, and it says so rather than implying
+//! the lock screen answers a pointer.
 //!
 //! Finding a control to click is done from the pixels rather than from a
 //! hand-computed coordinate. [`Lock::find`] returns the bounding box of a token
@@ -22,14 +27,13 @@ use std::time::Instant;
 
 use iced_core::clipboard;
 use iced_core::mouse;
-use iced_core::renderer::{Headless, Style};
-use iced_core::{Color, Event, Font, Pixels, Point, Rectangle, Size, window};
+use iced_core::{Event, Font, Pixels, Point, Rectangle, Size, window};
 use iced_runtime::UserInterface;
 use iced_runtime::user_interface::Cache;
 
 use inox_config::{Rgba, Theme as Tokens};
 use inox_lock::app::{self, Message, State};
-use inox_lock::{i18n, theme};
+use inox_lock::{i18n, render, theme};
 
 /// The size acceptance Q02 snapshots are taken at.
 pub const WIDTH: f32 = 1280.0;
@@ -54,8 +58,17 @@ impl Lock {
 
     /// A lock screen with `tokens`.
     pub fn with(tokens: Tokens) -> Self {
-        let locale = inox_common::i18n::Locale::default_locale();
-        let localizer = i18n::load(&locale).expect("the lock screen's catalogs parse");
+        Self::in_locale(tokens, &inox_common::i18n::Locale::default_locale())
+    }
+
+    /// A lock screen in a particular language.
+    ///
+    /// The catalogs are not only strings: a translated line has a different
+    /// length, and `zh-CN` draws glyphs the Latin fallback does not have, so a
+    /// screen that fits in one language may not fit in the other (acceptance
+    /// Q02 and Q03).
+    pub fn in_locale(tokens: Tokens, locale: &inox_common::i18n::Locale) -> Self {
+        let localizer = i18n::load(locale).expect("the lock screen's catalogs parse");
 
         Self {
             state: State::new(std::rc::Rc::new(localizer), tokens),
@@ -111,25 +124,16 @@ impl Lock {
     }
 
     /// Draws the lock screen and returns its RGBA8 pixels.
+    ///
+    /// Through the component's own renderer, so "the lock frame is opaque" and
+    /// "two faces look different" are claims about the frames the binary commits.
+    /// The size is the harness's own, so a frame that could not be drawn at it
+    /// would be a test bug rather than a case to handle.
     pub fn render(&self) -> Vec<u8> {
-        let mut renderer = renderer();
-        let mut ui = self.interface(&mut renderer);
+        let mut interface = render::Interface::new(self.size.width as u32, self.size.height as u32)
+            .expect("the harness draws at a size the component draws at");
 
-        frame(&mut ui, &mut renderer);
-
-        ui.draw(
-            &mut renderer,
-            &self.theme(),
-            &Style::default(),
-            mouse::Cursor::Available(Point::ORIGIN),
-        );
-
-        Headless::screenshot(
-            &mut renderer,
-            Size::new(self.size.width as u32, self.size.height as u32),
-            1.0,
-            Color::WHITE,
-        )
+        interface.render(&self.state).to_vec()
     }
 
     /// The bounding box of everything drawn in `colour`, in logical pixels.

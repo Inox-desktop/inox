@@ -76,8 +76,13 @@ fn card_children<'a>(model: &'a LockViewModel, tokens: &'a Tokens) -> Vec<Elemen
         text(model.headline.clone())
             .size(theme::text_size(tokens))
             .into(),
-        Field::new(model, tokens).into_element(),
     ];
+
+    // A password box on a screen that says it cannot check a password is the same
+    // invitation as a prompt, in a smaller font.
+    if model.prompts_for_credential {
+        children.push(Field::new(model, tokens).into_element());
+    }
 
     match &model.face {
         Face::Prompt => {}
@@ -87,16 +92,12 @@ fn card_children<'a>(model: &'a LockViewModel, tokens: &'a Tokens) -> Vec<Elemen
             children.push(line_of(reason, tokens, Line::Muted));
         }
         Face::Waiting { line } => children.push(line_of(line, tokens, Line::Warning)),
-        Face::HeldWithoutUi { line, detail } => {
-            children.push(line_of(line, tokens, Line::Plain));
+        // Neither of these is a prompt: the headline already says what the screen
+        // is, so what goes under the field is only what the user has to know.
+        Face::HeldWithoutUi { detail } => {
             children.push(line_of(detail, tokens, Line::Muted));
         }
-        Face::Unavailable {
-            line,
-            reason,
-            retry,
-        } => {
-            children.push(line_of(line, tokens, Line::Danger));
+        Face::Unavailable { reason, retry } => {
             children.push(line_of(reason, tokens, Line::Muted));
 
             if let Some(label) = retry {
@@ -117,17 +118,22 @@ fn card_children<'a>(model: &'a LockViewModel, tokens: &'a Tokens) -> Vec<Elemen
         children.push(line_of(reason, tokens, Line::Warning));
     }
 
-    children.push(line_of(&model.hint, tokens, Line::Muted));
+    // Absent where the keyboard has nothing to do — a hint about pressing Enter
+    // on a screen with nothing to press is worse than no hint.
+    if let Some(hint) = &model.hint {
+        children.push(line_of(hint, tokens, Line::Muted));
+    }
     children.push(submit(model, tokens));
 
     children
 }
 
 /// How a line of text is emphasized.
+///
+/// There is no "plain" variant: every line the card draws is one of these four,
+/// and a variant nothing constructs would be a colour nobody can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line {
-    /// Ordinary text.
-    Plain,
     /// Secondary text.
     Muted,
     /// A refusal or a failure.
@@ -139,7 +145,6 @@ enum Line {
 /// One line of text, in the colour its emphasis asks for.
 fn line_of<'a>(content: &'a str, tokens: &'a Tokens, line: Line) -> Element<'a, Message> {
     let colour = match line {
-        Line::Plain => theme::text(tokens),
         Line::Muted => theme::muted_text(tokens),
         Line::Danger => theme::danger_text(tokens),
         Line::Warning => theme::warning_text(tokens),

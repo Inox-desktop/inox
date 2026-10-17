@@ -77,7 +77,7 @@ L3 组件（面板、启动器、通知、设置、锁屏、壁纸）在 L1/L2 �
 | `chrono` 0.4 | MIT OR Apache-2.0 | 面板时钟的民用时间 | `inox-panel` |
 | `image` 0.25 | MIT OR Apache-2.0 | 壁纸的 PNG/JPEG 解码（只启用这两种格式） | `inox-wallpaper`、渲染测试 |
 | `zeroize` 1 | MIT OR Apache-2.0 | 凭据缓冲在释放时清零（ADR 0015） | `inox-lock` |
-| `iced_core` / `iced_runtime` / `iced_tiny_skia` 0.14 | MIT | **仅 dev-dependency**：离屏渲染测试装置 | 各 L3 组件的 `tests/` |
+| `iced_core` / `iced_runtime` / `iced_tiny_skia` 0.14 | MIT | iced 的离屏一半：`UserInterface` 负责布局与事件、tiny-skia 渲染器负责像素。各 L3 组件作 **dev-dependency**（渲染测试装置）；`inox-lock` 作 **dependency**——锁表面不是窗口，提交的帧由它画成（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)） | 各 L3 组件的 `tests/`；`inox-lock` 的 `src/render.rs` |
 
 两个取舍值得记录：
 

@@ -1,6 +1,6 @@
 # 构建与运行
 
-> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；L3 目前以普通窗口运行，layer-shell 客户端与完整服务 ready 尚未接线。真实登录、安全锁屏和挂起仍受认证/权限审查与协议实现阻塞。本页说明可运行路径及其限制。
+> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；L3 目前以普通窗口运行，layer-shell 客户端与完整服务 ready 尚未接线。锁屏的协议腿与界面已经落地（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），但**真实认证**仍受 ADR 0015 的人类安全评审阻塞，挂起与真实登录同样未接线。本页说明可运行路径及其限制。
 
 ## 今天能跑到什么程度
 
@@ -9,10 +9,10 @@
 | 构建 `inox-compositor` 并启动 headless 合成器 | **可以**：创建 `wl_output`、接受客户端、平铺窗口、渲染帧 |
 | 在物理显示器上看到画面 | **不行**：没有 DRM/KMS 后端，输出是逻辑输出，渲染到离屏缓冲 |
 | 用真实键盘/鼠标操作 | **不行**：没有 libinput/udev 后端；输入事件只能由测试注入（M3 起经测试专用套接字，需 `test-input` feature 构建） |
-| 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件都已实现，`cargo run -p inox-panel` 会打开一个普通窗口；由于合成器尚未广告 `zwlr_layer_shell_v1` 且 `iced_layershell` 当前无法编译（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)），它们**不是** layer-shell 客户端，放置策略只被建模与测试、未被应用；`inox-lock` 会以可读错误非零退出（协议腿与认证边界未实现） |
+| 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件都已实现，`cargo run -p inox-panel` 会打开一个普通窗口；由于合成器尚未广告 `zwlr_layer_shell_v1` 且 `iced_layershell` 当前无法编译（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)），它们**不是** layer-shell 客户端，放置策略只被建模与测试、未被应用；`inox-lock` 默认以可读错误非零退出（认证边界未评审），`--take-lock` 则真实取锁并把界面画到每个输出上 |
 | 启动与监督会话 | **部分可以**：`inox-session` 能启动合成器及桌面组件，提供有限重启、故障隔离和注销；尚无完整服务 ready，也未接入 XWayland 的 DISPLAY 发布 |
 | 真实登录、自动锁定与挂起 | **不行**：`inox-greet` 默认拒绝认证，只有显式预览；`inox-idle` 有协议客户端与策略，但 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线 |
-| 锁定会话、收发通知 | **不行**：`inox-lock` 的状态机与凭据处理、`inox-notifications` 的队列与脱敏策略都已实现并有测试，但前者缺 `ext-session-lock-v1` 客户端与认证边界（ADR 0015 要求人类安全审查），后者缺 D-Bus 服务（属 M5） |
+| 锁定会话、收发通知 | **部分可以**：`inox-lock --take-lock` 会话内真的会锁住屏幕并画出界面（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），`inox-notifications` 提供 `org.freedesktop.Notifications`；但锁屏**不能认证任何人**（ADR 0015 要求人类安全审查），因此它会如实显示「本构建没有认证边界」，释放会话只能靠注销 |
 | 运行 X11 应用 | **可以，但看不到画面**：合成器已广告 satellite 所需的宿主协议（含 `wp_viewporter`），`inox-xwayland` 可在会话中启动并监督它；运行时需自备 `xwayland-satellite`（≥ v0.8.3）与 `Xwayland` |
 | 剪贴板与拖放 | **可以（仅限 headless 内）**：剪贴板读取权跟随键盘焦点；Wayland↔Wayland 拖放与 X11 内部拖放可用；跨 X11/Wayland 边界的拖放**不可用**（上游 satellite 未实现 XDND） |
 | 构建本站点 | **可以**：`mdbook build` |
@@ -27,7 +27,31 @@ dbus-run-session -- /path/to/bin/inox-session --headless
 
 `--headless` 显式选择软件渲染；省略它会要求真实设备后端。`--bin-dir PATH` 可以选择另一套完整二进制，默认使用 session 自身所在目录。SIGINT/SIGTERM 请求注销；`--exit-after-seconds N` 从启动时开始计时，到期请求正常注销。合成器故障会结束会话，不恢复已断开的应用连接。`inox-idle` 是可选服务，宿主缺少空闲协议时会有限重试后报告退化。
 
-在可用 Wayland 宿主中，`inox-greet --preview` 打开普通预览窗口；它不采集密码、不认证、不启动用户会话。安全接线与证据边界见 [ADR 0021](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0021-l4-session-services.md)。
+### 锁住会话（并且只能靠注销释放）
+
+会话在 `INOX_SESSION_TAKE_LOCK=1` 时会启动可信锁屏客户端：
+
+```bash
+INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headless
+```
+
+也可以单独运行 `inox-lock --take-lock`，但它需要 `inox-session` 投递的 `INOX_LOCK_TOKEN`，手工会话拿不到。
+
+**这条模式没有解锁路径，误用会把会话留在锁定状态。** 它经 `inox_ipc` 用一次性令牌认领可信角色、请求锁、给每个输出一块锁表面，并把锁屏界面画上去（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）；它**不**读键盘、**不**校验任何凭据，收到 `SIGTERM`/`SIGINT` 时退出而**不**发 `unlock_and_destroy`，所以合成器保持锁定，恢复只能靠注销。
+
+屏幕上是**不可用**画面而不是密码提示，这是刻意的：本构建没有经过评审的认证边界，状态里的事实是「没有边界」，界面因此说它没法校验任何东西。这是 ADR 0015 要求的人类安全评审项，不是本页的安装步骤能绕过的。
+
+在不带 `--take-lock` 的默认路径下，`inox-lock` 会打印原因并以非零状态码退出——会话脚本据此就能看出「这一次并没有锁上」。
+
+### 登录界面
+
+在可用 Wayland 宿主中，`inox-greet --preview` 打开登录界面。要看清它显示的是什么：**界面为六个生命周期阶段各有一幅画面，而这台构建只会到达其中一幅**。
+
+界面在设计上覆盖不可用、就绪、验证中、会话启动中、失败与已启动六个阶段，键盘（Tab/Shift+Tab/Enter/Escape）与每个禁用控件的原因都已建模，并由测试逐阶段覆盖。但 `--preview` 把认证传输的可用性固定为「没有」——这正是本构建的事实——所以它显示的是**不可用**那一幅：身份字段不可输入，登录按钮禁用，键盘只剩 Escape（清空）。它**不采集密码、不认证、不启动用户会话**，界面上也写着这一点。
+
+换句话说：预览展示的是诚实的状态，不是一次演示。要看到其余五个阶段，只有测试与截图工件，没有运行的二进制会因为一个开关就假装自己有认证边界。
+
+安全接线与证据边界见 [ADR 0021](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0021-l4-session-services.md)。
 
 ## 前置条件
 
@@ -103,7 +127,7 @@ cargo run -p inox-launcher       # 启动器：普通窗口
 cargo run -p inox-settings       # 设置：普通窗口（唯一会写配置的组件）
 cargo run -p inox-wallpaper      # 壁纸预览：普通窗口
 cargo run -p inox-notifications  # 通知的弹窗层：普通窗口
-cargo run -p inox-lock           # 锁屏：打印原因并以非零状态退出（尚未实现协议腿）
+cargo run -p inox-lock           # 锁屏：打印原因并以非零状态退出（认证边界未评审；--take-lock 见下文）
 ```
 
 现在启动它们会看到**普通窗口**而不是桌面层：合成器还没有广告 `wlr-layer-shell-unstable-v1`，而第三方 `iced_layershell` 0.19.1 与 0.19.0 在当前依赖图下无法编译（`error[E0004]`，见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。组件在启动时会用 `warn!` 说明这件事，`placement.rs` 里的锚点、独占区与边距是**已经测试但尚未应用**的数据。

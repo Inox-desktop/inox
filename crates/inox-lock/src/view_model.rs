@@ -3,8 +3,9 @@
 //! Everything a user reads is decided here and only here: the labels come from
 //! the Fluent catalogs, a disabled field carries the reason it cannot be typed
 //! into, and the state the acceptance criteria name — prompting, checking
-//! (loading), failed (error), rate limited, held without a UI, and unavailable
-//! with a retry (acceptance D05) — is one variant of [`Face`]. The view then has
+//! (loading), failed (error), rate limited, held without a UI, and unavailable,
+//! with a retry where one could help (acceptance D05) — is one variant of
+//! [`Face`]. The view then has
 //! no decisions left: it walks this value and draws it, which is what keeps a
 //! colour or a message out of the widget tree.
 //!
@@ -60,6 +61,12 @@ pub struct Action {
 }
 
 /// The state under the prompt.
+///
+/// Two of these are not password screens at all: [`Face::Unavailable`] and
+/// [`Face::HeldWithoutUi`] are states in which nothing can be typed, and the
+/// projection gives them the screen's *headline* rather than a line under a
+/// prompt. That is the difference between a screen that explains why it cannot
+/// check a password and one that asks for a password nobody will check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Face {
     /// Nothing to report: the prompt is the whole screen.
@@ -83,15 +90,11 @@ pub enum Face {
     },
     /// The session is locked with no trusted UI running (ADR 0015).
     HeldWithoutUi {
-        /// The headline.
-        line: String,
         /// What is happening instead.
         detail: String,
     },
     /// The session lock cannot run at all, with a retry where one could help.
     Unavailable {
-        /// The headline.
-        line: String,
         /// Why, in the user's language.
         reason: String,
         /// The retry label, when retrying is meaningful.
@@ -104,7 +107,8 @@ pub enum Face {
 pub struct LockViewModel {
     /// The name of the surface.
     pub title: String,
-    /// The question the screen asks.
+    /// The question the screen asks — or, when it cannot check anything, what it
+    /// is instead of asking one.
     pub headline: String,
     /// The label of the credential field, which doubles as its accessible name.
     pub field_label: String,
@@ -112,8 +116,17 @@ pub struct LockViewModel {
     pub placeholder: String,
     /// One glyph per character typed — and nothing about the characters.
     pub mask: String,
-    /// The keyboard hint.
-    pub hint: String,
+    /// The keyboard hint, when the keyboard has something to do here.
+    pub hint: Option<String>,
+    /// Whether this screen asks for a credential at all.
+    ///
+    /// False in the two states that cannot check one. The label and the
+    /// placeholder are still in the model — they are what the field would say —
+    /// but nothing draws them: a screen that explains it cannot verify a password
+    /// must not also hold out a password box. `accepts_input` is the narrower
+    /// question ("can this be typed into right now"), and it is false for a screen
+    /// that is busy with a credential it already has.
+    pub prompts_for_credential: bool,
     /// Whether the credential field accepts input.
     pub accepts_input: bool,
     /// Why it does not, when it does not.
@@ -170,8 +183,8 @@ pub fn project(input: Projection<'_>) -> LockViewModel {
         None
     } else if !protocol_ready {
         Some(message("lock-disabled-protocol"))
-    } else if !boundary_usable {
-        Some(message("lock-disabled-boundary"))
+    } else if let Some(failure) = input.boundary.failure() {
+        Some(message(failure.disabled_message_id()))
     } else if input.phase == Phase::Unlocked {
         Some(message("lock-disabled-unlocked"))
     } else if !input.phase.ui_running() {
@@ -200,17 +213,34 @@ pub fn project(input: Projection<'_>) -> LockViewModel {
         focus.push(FocusTarget::Submit);
     }
 
+    let face = face(input);
+    // What a screen that cannot check a password says instead of asking for one.
+    // "Enter your password" over a disabled field, under a sentence saying no
+    // password will be checked, is an invitation this build cannot honour — and
+    // the whole point of reporting `ServiceFailure::NotProvided` is that the screen
+    // says what it is instead of asking for something it will discard. The three
+    // answers travel together: a screen either prompts — headline, hint and field —
+    // or states what it is and offers none of the three.
+    let (headline, hint, prompts_for_credential) = match &face {
+        Face::Unavailable { .. } => (message("lock-unavailable"), None, false),
+        Face::HeldWithoutUi { .. } => (message("lock-held-title"), None, false),
+        Face::Prompt | Face::Verifying { .. } | Face::Failed { .. } | Face::Waiting { .. } => {
+            (message("lock-prompt"), Some(message("lock-hint")), true)
+        }
+    };
+
     LockViewModel {
         title: message("lock-window-title"),
-        headline: message("lock-prompt"),
+        headline,
         field_label: message("lock-field-label"),
         placeholder: message("lock-field-placeholder"),
         mask: MASK_GLYPH.to_string().repeat(input.credential_len),
-        hint: message("lock-hint"),
+        hint,
+        prompts_for_credential,
         accepts_input,
         disabled_reason,
         submit,
-        face: face(input),
+        face,
         focus,
     }
 }
@@ -223,25 +253,26 @@ fn face(input: Projection<'_>) -> Face {
     // state of the boundary is not even known yet.
     if let Some(absence) = input.protocol.absence() {
         return Face::Unavailable {
-            line: message("lock-unavailable"),
             reason: message(absence.message_id()),
             retry: None,
         };
     }
 
-    // The boundary being unusable is next: it is what the user has to wait for,
-    // and unlike a protocol that is missing it can recover, so it offers a retry.
+    // The boundary being unusable is next: it is what the user has to wait for.
+    // A boundary that is down or slow can come back, so it offers a retry; a
+    // boundary this build does not contain cannot, and a retry control for it
+    // would be a control that is there only to be pressed for nothing.
     if let Some(failure) = input.boundary.failure() {
         return Face::Unavailable {
-            line: message("lock-unavailable"),
             reason: message(failure.message_id()),
-            retry: Some(message("lock-unavailable-retry")),
+            retry: failure
+                .is_retryable()
+                .then(|| message("lock-unavailable-retry")),
         };
     }
 
     if input.phase == Phase::LockedWithoutUi {
         return Face::HeldWithoutUi {
-            line: message("lock-held-title"),
             detail: message("lock-held-detail"),
         };
     }
@@ -344,7 +375,84 @@ mod tests {
 
         assert_eq!(model.placeholder, "Type your password");
         assert_eq!(model.field_label, "Password");
-        assert_eq!(model.hint, "Press Enter to unlock");
+        assert_eq!(model.hint.as_deref(), Some("Press Enter to unlock"));
+        assert_eq!(model.headline, "Enter your password");
+    }
+
+    #[test]
+    fn only_a_screen_that_prompts_draws_a_password_field() {
+        let localizer = localizer();
+
+        for phase in [
+            Phase::Unlocked,
+            Phase::Locking,
+            Phase::Locked,
+            Phase::Covering,
+            Phase::Unlocking,
+        ] {
+            for boundary in [
+                BoundaryState::Idle,
+                BoundaryState::Unavailable {
+                    failure: ServiceFailure::NotProvided,
+                },
+                BoundaryState::Unavailable {
+                    failure: ServiceFailure::Disconnected,
+                },
+            ] {
+                let mut input = locked(&localizer, &LockProtocol::Advertised, &boundary);
+                input.phase = phase;
+
+                let model = project(input);
+                let prompts = !matches!(
+                    model.face,
+                    Face::Unavailable { .. } | Face::HeldWithoutUi { .. }
+                );
+
+                assert_eq!(
+                    model.prompts_for_credential, prompts,
+                    "{:?} with {boundary:?} disagrees with its own face",
+                    model.face
+                );
+                assert_eq!(
+                    model.hint.is_some(),
+                    prompts,
+                    "a screen with nothing to type has nothing to hint about"
+                );
+                assert_eq!(model.headline == "Enter your password", prompts);
+            }
+        }
+    }
+
+    #[test]
+    fn a_screen_that_cannot_check_a_password_does_not_ask_for_one() {
+        // The whole point of reporting that this build has no boundary: the
+        // screen says what it is instead of inviting a credential it would
+        // discard. The prompt is not decoration — it is what a person reads as
+        // "type here".
+        let localizer = localizer();
+        let protocol = LockProtocol::Advertised;
+        let boundary = BoundaryState::Unavailable {
+            failure: ServiceFailure::NotProvided,
+        };
+
+        let model = project(locked(&localizer, &protocol, &boundary));
+
+        assert_eq!(model.headline, "The session lock cannot run");
+        assert_ne!(model.headline, "Enter your password");
+        assert_eq!(
+            model.hint, None,
+            "there is nothing to press, so there is nothing to hint about"
+        );
+
+        let held = {
+            let mut input = locked(&localizer, &protocol, &BoundaryState::Idle);
+            input.phase = Phase::LockedWithoutUi;
+            project(input)
+        };
+
+        assert_eq!(held.headline, "The session is locked");
+        assert_ne!(held.headline, "Enter your password");
+        assert_eq!(held.hint, None);
     }
 
     #[test]
@@ -483,10 +591,10 @@ mod tests {
         assert_eq!(
             model.face,
             Face::HeldWithoutUi {
-                line: "The session is locked".to_owned(),
                 detail: "The lock screen is restarting. Your session stays locked.".to_owned(),
             }
         );
+        assert_eq!(model.headline, "The session is locked");
         assert!(!model.accepts_input);
         assert_eq!(
             model.disabled_reason.as_deref(),
@@ -520,6 +628,36 @@ mod tests {
                 Some("The session lock protocol is not available")
             );
         }
+    }
+
+    #[test]
+    fn a_boundary_this_build_does_not_have_offers_no_retry() {
+        let localizer = localizer();
+        let protocol = LockProtocol::Advertised;
+        let boundary = BoundaryState::Unavailable {
+            failure: ServiceFailure::NotProvided,
+        };
+
+        let model = project(locked(&localizer, &protocol, &boundary));
+
+        let Face::Unavailable { reason, retry, .. } = &model.face else {
+            panic!("a missing boundary is the unavailable face");
+        };
+        assert!(!reason.starts_with("lock-"), "`{reason}` is not a message");
+        assert_eq!(
+            *retry, None,
+            "retrying cannot produce an authentication boundary this build does \
+             not ship"
+        );
+        assert!(!model.accepts_input);
+        assert!(
+            model.focus.is_empty(),
+            "nothing on the screen can be operated, so nothing is reachable"
+        );
+        assert_eq!(
+            model.disabled_reason.as_deref(),
+            Some("This build has no authentication service")
+        );
     }
 
     #[test]

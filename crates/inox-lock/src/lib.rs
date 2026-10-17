@@ -23,10 +23,17 @@
 //! either of those: the state machine ([`state`]), its rate limiter
 //! ([`attempts`]), the credential buffer ([`credential`]), the prepare-to-suspend
 //! ordering ([`suspend`]), the boundaries this screen talks across
-//! ([`contract`]) and the interface it draws ([`view_model`], [`view`],
-//! [`theme`]). The binary — `src/main.rs` — does not pretend otherwise: it loads
+//! ([`contract`]), the interface it draws ([`view_model`], [`view`], [`theme`])
+//! and the two halves that carry it to a real session ([`session`] and
+//! [`render`], ADR 0025).
+//!
+//! The binary — `src/main.rs` — does not pretend otherwise. With no flag it loads
 //! the configuration and its catalogs, says through Fluent why the lock cannot
-//! start, and exits non-zero.
+//! start, and exits non-zero, because a window that looked like a lock screen
+//! while the session behind it was unlocked would be worse than no lock screen at
+//! all. Under `--take-lock` it takes the real lock and draws the interface onto
+//! every output, *truthfully reporting that this build has no authentication
+//! boundary* — so what appears is a screen that says it cannot check a password.
 //!
 //! # The invariants, and where they are enforced
 //!
@@ -37,6 +44,7 @@
 //! | the UI dying, the boundary failing and a timeout all keep the session locked | `Phase::LockedWithoutUi` is a phase, not an error — see [`state::Phase`] |
 //! | a suspend waits for a *confirmed* lock, or is refused | [`suspend::SuspendCoordinator`] |
 //! | the credential cannot be printed, and does not survive a hide, a cancel or a suspend | [`credential::Secret`] |
+//! | a lock frame is opaque, exactly the configured size, and the projected screen | [`render::Interface`], asserted in `tests/render.rs` and read back from the wire in `tests/protocol.rs` |
 //!
 //! # How the crate is organised
 //!
@@ -49,35 +57,53 @@
 //! | [`contract`] | the protocol and authentication boundaries (ADR 0013) |
 //! | [`view_model`] | the projection from state to what the view shows |
 //! | [`app`] | `State`, `Message`, `update` (Elm), `view`, `subscription` |
+//! | [`render`] | the widget tree drawn offscreen, into the bytes a lock surface takes |
+//! | [`session`] | the `ext-session-lock-v1` client: the requests, and the frames |
 //! | [`view`] | iced widgets, built from the view model and the tokens |
 //! | [`theme`] | design tokens turned into iced's theme and styles |
 //! | [`i18n`] | the `en-US` and `zh-CN` catalogs this component ships |
 //!
 //! # What is verified, and what is not
 //!
-//! The crate is delivered at evidence level **E0/E1** (ADR 0018): it compiles,
-//! lints, documents itself, and its pure logic — the state machine, the limiter,
-//! the credential buffer, the suspend ordering, the projection — is covered by
-//! unit and property tests, with `en-US`/`zh-CN` catalog parity asserted by
-//! [`inox_common::i18n::compare_catalogs`]. `tests/render.rs` draws the real
-//! widget tree through the same tiny-skia renderer the binary uses and asserts on
-//! pixels, with no compositor involved.
+//! The crate is delivered at evidence level **E0/E1** for its pure logic (ADR
+//! 0018): it compiles, lints, documents itself, and the state machine, the
+//! limiter, the credential buffer, the suspend ordering and the projection are
+//! covered by unit and property tests, with `en-US`/`zh-CN` catalog parity asserted
+//! by [`inox_common::i18n::compare_catalogs`]. The interface is at **E1+E2**:
+//! `tests/render.rs` draws the real widget tree at 1280×720 and asserts on pixels,
+//! and `tests/protocol.rs` drives the built binary against a hand-written
+//! `ext-session-lock-v1` server and reads back the frame the binary committed to
+//! it. The protocol leg is additionally covered at **E3** by the session-level
+//! case in `inox-session`, which locks a real headless session and still logs out.
+//!
+//! Delivered:
+//!
+//! - **The protocol leg**, under `--take-lock` (ADR 0022 decision 6): this crate
+//!   claims the trusted role with the session's token, asks for the lock, gives
+//!   every output a lock surface, destroys it when an output goes away, and never
+//!   sends `unlock_and_destroy`.
+//! - **The interface, drawn onto those surfaces** (ADR 0025): [`render`] lays
+//!   [`app::view`] out at the configured size and commits it as the frame — the
+//!   same widget tree the render tests assert on, and the same [`app::State`] the
+//!   protocol events are fed into.
 //!
 //! Not delivered, not claimed, and each for a stated reason:
 //!
-//! - **The protocol leg.** Nothing here speaks `ext-session-lock-v1`. The
-//!   compositor does not advertise the global yet, and the protocol's lifecycle
-//!   rules ("a client that dies does not unlock the session", "an output added
-//!   while locked is covered before it is shown") must be implemented and tested
-//!   against a locking compositor, not against this crate's model of them.
 //! - **Authentication.** There is no PAM call, no helper, no privileged process
 //!   and no password verification of any kind. [`contract::AuthOutcome`] is the
 //!   shape an answer will arrive in; who is allowed to produce it is the review
-//!   item ADR 0015 names.
-//! - **A surface.** `main.rs` never creates one, so there is no lock frame on any
-//!   output. [`view_model`] and [`view`] are drawn by the test harness only.
+//!   item ADR 0015 names. The binary therefore tells the state the truth —
+//!   [`contract::ServiceFailure::NotProvided`] — and the screen draws its
+//!   *unavailable* face: it says it can check nothing, rather than asking for a
+//!   password nobody will look at.
+//! - **An input path.** No lock surface reads the keyboard (ADR 0022 decision 6,
+//!   kept by ADR 0025). With no reviewed boundary there is nothing on the screen
+//!   to operate, so the path would be code that can never run; it lands with the
+//!   boundary.
 //! - **The semantic tree** Q01 asks for: iced 0.14 has no AT-SPI bridge, so the
 //!   role/name/state/action export is blocked on that prototype.
+//! - **Taking over a lock whose UI died.** ADR 0022 decision 2: the compositor
+//!   refuses the second client, so the session stays locked until it is logged out.
 //!
 //! [ADR 0015]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0015-session-lock-and-failure-boundaries.md
 
@@ -88,6 +114,7 @@ pub mod attempts;
 pub mod contract;
 pub mod credential;
 pub mod i18n;
+pub mod render;
 pub mod session;
 pub mod state;
 pub mod suspend;

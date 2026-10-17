@@ -9,7 +9,7 @@
 //! ```text
 //!   Idle ──begin──▶ Sent ──▶ Accepted ──▶ Answered { Success | Failure }
 //!                     │
-//!                     └────▶ Unavailable { failure }   (and a retry)
+//!                     └────▶ Unavailable { failure }   (a retry, when one helps)
 //! ```
 //!
 //! Two things are deliberately *not* modelled here.
@@ -140,6 +140,15 @@ pub enum ServiceFailure {
     Disconnected,
     /// The boundary did not answer within its budget.
     Timeout,
+    /// This build ships no authentication boundary at all.
+    ///
+    /// Not a fault in a service but the absence of one: ADR 0015 makes the
+    /// authentication boundary — PAM or whatever else, the helper's privileges,
+    /// the handling of the credential — a human security review item, and this
+    /// build has not had that review. There is nothing to reach, and nothing a
+    /// retry could reach either, which is why the interface offers none (see
+    /// [`ServiceFailure::is_retryable`]).
+    NotProvided,
 }
 
 impl ServiceFailure {
@@ -148,7 +157,33 @@ impl ServiceFailure {
         match self {
             Self::Disconnected => "lock-boundary-disconnected",
             Self::Timeout => "lock-boundary-timeout",
+            Self::NotProvided => "lock-boundary-not-provided",
         }
+    }
+
+    /// The catalog id that says, next to the disabled field, why it cannot be
+    /// typed into.
+    ///
+    /// The same fact as [`message_id`](Self::message_id) seen from a different
+    /// place: the headline explains what the screen cannot do, this explains what
+    /// one control cannot do, and a person reading either should be able to tell
+    /// "there is no such service in this build" from "the service is not
+    /// answering".
+    pub const fn disabled_message_id(self) -> &'static str {
+        match self {
+            Self::NotProvided => "lock-disabled-boundary-missing",
+            Self::Disconnected | Self::Timeout => "lock-disabled-boundary",
+        }
+    }
+
+    /// Whether trying the boundary again could help.
+    ///
+    /// True for a service that is down or slow, because those can come back.
+    /// False for a boundary this build does not contain: a retry would be an
+    /// invitation to keep pressing a control that can never do anything, and the
+    /// interface draws no such control when this is false.
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, Self::Disconnected | Self::Timeout)
     }
 }
 
@@ -236,7 +271,11 @@ pub enum BoundaryState {
         /// What it said.
         outcome: AuthOutcome,
     },
-    /// The boundary is not usable at all; the interface offers a retry.
+    /// The boundary is not usable at all.
+    ///
+    /// The interface offers a retry only when the failure is one that could come
+    /// back — [`ServiceFailure::is_retryable`] is that question, and the projection
+    /// is what asks it.
     Unavailable {
         /// What is wrong with it.
         failure: ServiceFailure,
@@ -472,6 +511,17 @@ mod tests {
     }
 
     #[test]
+    fn only_a_boundary_that_could_come_back_is_retryable() {
+        assert!(ServiceFailure::Disconnected.is_retryable());
+        assert!(ServiceFailure::Timeout.is_retryable());
+        assert!(
+            !ServiceFailure::NotProvided.is_retryable(),
+            "a boundary this build does not contain cannot be retried into \
+             existence, and the interface must not offer to try"
+        );
+    }
+
+    #[test]
     fn an_unavailable_boundary_is_not_in_flight_and_offers_no_outcome() {
         let state = BoundaryState::Unavailable {
             failure: ServiceFailure::Timeout,
@@ -525,7 +575,11 @@ mod tests {
             assert!(reason.message_id().starts_with("lock-"));
         }
 
-        for failure in [ServiceFailure::Disconnected, ServiceFailure::Timeout] {
+        for failure in [
+            ServiceFailure::Disconnected,
+            ServiceFailure::Timeout,
+            ServiceFailure::NotProvided,
+        ] {
             assert!(failure.message_id().starts_with("lock-"));
         }
 

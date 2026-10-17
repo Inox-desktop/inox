@@ -13,6 +13,7 @@
 //! again".
 
 use std::{
+    os::unix::fs::FileExt as _,
     os::unix::net::UnixListener,
     process::{Child, Command},
     sync::{Arc, Mutex},
@@ -39,6 +40,18 @@ use wayland_server::{
 const OUTPUT_WIDTH: u32 = 320;
 const OUTPUT_HEIGHT: u32 = 240;
 
+/// The size it reconfigures it to, in the fixture that does.
+const RESIZED_WIDTH: u32 = 400;
+const RESIZED_HEIGHT: u32 = 300;
+
+/// How many times that fixture reconfigures it.
+///
+/// Three, and not one, because the property under test is about a frame the
+/// compositor has *released*: a client only learns that when it commits the frame
+/// after the one that replaced it, so the frame destroyed on the third commit is
+/// the one the second replaced.
+const RECONFIGURES: u32 = 3;
+
 /// The token `inox-session` would have delivered to both sides.
 const TOKEN: &str = "test-session-token";
 
@@ -52,9 +65,56 @@ struct Observed {
     acks: Vec<u32>,
     /// The size of every buffer attached to a lock surface, in attach order.
     attached: Vec<Option<(i32, i32)>>,
+    /// Every shared-memory frame the client handed over, measured.
+    frames: Vec<Frame>,
+    /// How many `wl_buffer` objects the client created.
+    buffers_created: usize,
+    /// How many it asked the compositor to destroy.
+    buffers_destroyed: usize,
     commits: usize,
     unlocks: usize,
     destroyed_locks: usize,
+}
+
+/// What one frame the client handed over looks like, measured from its pixels.
+///
+/// The point of measuring rather than trusting: the difference between a lock
+/// surface that carries the interface and one that carries a flat colour is
+/// exactly "how many different pixels are in it", and that is a fact about the
+/// bytes on the wire rather than about the client's own account of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Frame {
+    /// How many bytes the frame holds.
+    bytes: usize,
+    /// How many distinct RGBA pixels it holds.
+    distinct: usize,
+    /// How many pixels share the most common colour.
+    dominant: usize,
+    /// Whether every pixel is opaque.
+    opaque: bool,
+}
+
+impl Frame {
+    /// Summarise an `Argb8888` frame: the byte order on the wire is `B, G, R, A`.
+    fn measure(bytes: &[u8]) -> Self {
+        let mut counts: std::collections::HashMap<[u8; 4], usize> =
+            std::collections::HashMap::new();
+
+        for pixel in bytes.as_chunks::<4>().0 {
+            *counts.entry(*pixel).or_default() += 1;
+        }
+
+        Self {
+            bytes: bytes.len(),
+            distinct: counts.len(),
+            dominant: counts.values().copied().max().unwrap_or(0),
+            opaque: bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel[3] == 0xff),
+        }
+    }
 }
 
 /// The mutex around what the server saw, shared with the test thread.
@@ -76,9 +136,20 @@ impl Observations {
 #[derive(Default)]
 struct Server {
     observations: Arc<Observations>,
+    /// How this fixture answers the lock request.
+    answer: Answer,
     lock: Option<lock::ExtSessionLockV1>,
+    /// The lock surface, held so a test can configure it a second time.
+    lock_surface: Option<lock_surface::ExtSessionLockSurfaceV1>,
     /// Whether the client has committed a frame already, so `locked` is sent once.
     confirmed: bool,
+    /// How many reconfigures this fixture still owes the client.
+    reconfigures_left: u32,
+    /// The buffer currently on the lock surface, and the one the last attach
+    /// offered — held so the replaced one can be released, as a real compositor
+    /// releases it when it commits a different buffer.
+    current_buffer: Option<wayland_server::protocol::wl_buffer::WlBuffer>,
+    pending_buffer: Option<wayland_server::protocol::wl_buffer::WlBuffer>,
 }
 
 struct ClientState;
@@ -129,7 +200,7 @@ impl GlobalDispatch<wl_shm::WlShm, ()> for Server {
 
 impl Dispatch<wl_shm::WlShm, ()> for Server {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _: &Client,
         _: &wl_shm::WlShm,
         request: wl_shm::Request,
@@ -137,11 +208,27 @@ impl Dispatch<wl_shm::WlShm, ()> for Server {
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        if let wl_shm::Request::CreatePool { id, fd, .. } = request {
-            // The pool's *contents* are the client's business; what the server has
-            // to do here is accept the fd and keep the object alive. Closing the
-            // received descriptor is correct: the buffer is created from it next.
-            drop(fd);
+        if let wl_shm::Request::CreatePool { id, fd, size } = request {
+            // The server accepts the fd and creates the buffer object from it; the
+            // *contents* are what the client put there, and this test reads them
+            // back because "the lock surface carries the interface" is a claim
+            // about those bytes. The client writes the frame before it creates the
+            // pool, so everything is in the file by the time this runs. Closing the
+            // descriptor afterwards is correct: the buffer object holds its own
+            // reference.
+            let mut frame = vec![0u8; usize::try_from(size).unwrap_or(0)];
+            let file = std::fs::File::from(fd);
+
+            // Read *at* an offset rather than from the current one: a descriptor
+            // received over the socket shares its file description — and therefore
+            // its offset — with the client's, and the client has just written the
+            // frame, so the offset is at the end.
+            if file.read_exact_at(&mut frame, 0).is_ok() {
+                state
+                    .observations
+                    .record(|observed| observed.frames.push(Frame::measure(&frame)));
+            }
+
             init.init(id, ());
         }
     }
@@ -149,7 +236,7 @@ impl Dispatch<wl_shm::WlShm, ()> for Server {
 
 impl Dispatch<wl_shm_pool::WlShmPool, ()> for Server {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _: &Client,
         _: &wl_shm_pool::WlShmPool,
         request: wl_shm_pool::Request,
@@ -170,6 +257,9 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for Server {
                 wayland_server::WEnum::Value(wl_shm::Format::Argb8888),
                 "a lock frame must be a plain opaque ARGB buffer"
             );
+            state
+                .observations
+                .record(|observed| observed.buffers_created += 1);
             // The dimensions travel with the buffer object, so the commit handler
             // can check what was attached without a side table.
             init.init(id, (width, height));
@@ -179,14 +269,22 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for Server {
 
 impl Dispatch<wayland_server::protocol::wl_buffer::WlBuffer, (i32, i32)> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         _: &wayland_server::protocol::wl_buffer::WlBuffer,
-        _: wayland_server::protocol::wl_buffer::Request,
+        request: wayland_server::protocol::wl_buffer::Request,
         _: &(i32, i32),
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
+        // A client that drops its buffers without saying so leaves the compositor
+        // holding a mapping and a file descriptor for each one; this counts the
+        // requests that actually release them.
+        if let wayland_server::protocol::wl_buffer::Request::Destroy = request {
+            state
+                .observations
+                .record(|observed| observed.buffers_destroyed += 1);
+        }
     }
 }
 
@@ -208,9 +306,45 @@ impl Dispatch<wl_surface::WlSurface, ()> for Server {
                 state
                     .observations
                     .record(|observed| observed.attached.push(size));
+                state.pending_buffer = buffer;
             }
             wl_surface::Request::Commit => {
                 state.observations.record(|observed| observed.commits += 1);
+
+                // `wl_buffer.release` is the compositor's half of the buffer
+                // handshake, and the client's half — destroying a frame it may now
+                // reuse — is what this fixture exists to observe. Smithay sends it
+                // when a commit replaces the buffer with a different one
+                // (`wayland/compositor/handlers.rs`), so a server that never sends
+                // it would be testing a client against a compositor that does not
+                // exist.
+                if let Some(attached) = state.pending_buffer.take() {
+                    let replaced = state.current_buffer.replace(attached.clone());
+
+                    match replaced {
+                        Some(replaced) if replaced != attached => replaced.release(),
+                        _ => {}
+                    }
+                }
+
+                // A compositor that changes its mind about the size — a resize, a
+                // mode change — configures the surface again, and the client has to
+                // answer with a frame of the new size. One fixture asks for it, so
+                // that "the client redraws on a second configure" and "the frame it
+                // replaced is released" are both covered rather than only reasoned
+                // about.
+                if state.answer == Answer::Reconfigure && state.reconfigures_left > 0 {
+                    let serial = 9 + 2 * (RECONFIGURES - state.reconfigures_left);
+                    state.reconfigures_left -= 1;
+                    state
+                        .observations
+                        .record(|observed| observed.configures_sent.push(serial));
+
+                    if let Some(role) = state.lock_surface.as_ref() {
+                        role.configure(serial, RESIZED_WIDTH, RESIZED_HEIGHT);
+                    }
+                }
+
                 // The compositor confirms the lock once a covered frame has been
                 // presented on every output; with one output that is this commit.
                 if !state.confirmed
@@ -339,6 +473,7 @@ impl Dispatch<lock::ExtSessionLockV1, ()> for Server {
         match request {
             lock::Request::GetLockSurface { id, surface, .. } => {
                 let role = init.init(id, ());
+                state.lock_surface = Some(role.clone());
                 let serial = 7;
                 state.observations.record(|observed| {
                     observed.surfaces += 1;
@@ -417,8 +552,9 @@ impl Fixture {
         std::thread::spawn(move || {
             let mut state = Server {
                 observations: server_observations,
-                lock: None,
-                confirmed: false,
+                answer,
+                reconfigures_left: RECONFIGURES,
+                ..Server::default()
             };
             // A refusing compositor answers the lock request with `finished` as
             // soon as it arrives; one that accepts waits for the client's frames.
@@ -524,10 +660,14 @@ impl Fixture {
 }
 
 /// How the server answers the lock request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Answer {
     /// Configure the surface and confirm the lock once it is covered.
+    #[default]
     Confirm,
+    /// The same, and then configure the surface to a second size once the first
+    /// frame arrives — a compositor that changed its mind about the output.
+    Reconfigure,
     /// Refuse with the protocol's `finished`, as a compositor that will not lock
     /// does.
     Finished,
@@ -553,12 +693,51 @@ fn the_binary_claims_covers_and_never_unlocks_on_a_signal() {
         fixture.log().contains("The session is locked")
     });
 
+    // And what was committed is the lock screen, not a colour standing in for one.
+    // The frame's *contents* are the part of this that only the wire can show: the
+    // client's own tests assert on pixels it rendered into memory, this asserts on
+    // the bytes it handed to the compositor.
+    fixture.wait_for("a frame with pixels in it", |observed| {
+        observed
+            .frames
+            .first()
+            .is_some_and(|frame| frame.distinct > 1)
+    });
+
     {
         let observed = fixture.observations.read();
         assert_eq!(observed.claims, [TOKEN]);
         assert_eq!(observed.configures_sent, [7]);
         assert_eq!(observed.unlocks, 0);
         assert_eq!(observed.commits, 1, "one covered frame was committed");
+
+        let frame = observed
+            .frames
+            .first()
+            .copied()
+            .expect("a shared-memory frame");
+        let pixels = (OUTPUT_WIDTH * OUTPUT_HEIGHT) as usize;
+
+        assert_eq!(
+            frame.bytes,
+            pixels * 4,
+            "the frame is exactly the size the surface was configured to"
+        );
+        assert!(
+            frame.opaque,
+            "every pixel of a lock frame is opaque: a translucent cover would show \
+             the session it is hiding"
+        );
+        assert!(
+            frame.distinct > 1,
+            "the lock frame is a single colour, so nothing was drawn on it"
+        );
+        assert!(
+            frame.dominant * 2 > pixels,
+            "the background is not the largest thing on the screen, which is what a \
+             drawn screen looks like: {} of {pixels} pixels",
+            frame.dominant
+        );
     }
 
     // A signal stops the process. It must not release the session: this build has
@@ -582,6 +761,84 @@ fn the_binary_claims_covers_and_never_unlocks_on_a_signal() {
         "the operator must be told the session is still locked: {log}"
     );
     let _ = status;
+}
+
+#[test]
+fn a_reconfigure_is_drawn_at_the_new_size_and_the_frame_it_replaced_is_destroyed() {
+    // Two things the single-output fixture cannot show, and both are the kind of
+    // thing that only shows up in a session that runs for hours:
+    //
+    // - a second configure has to be answered with a frame of the *new* size, or
+    //   the surface is showing a frame the compositor has been told to scale;
+    // - the frame the new one replaced has to be destroyed. Dropping a
+    //   `wayland-client` proxy sends nothing, so a client that relies on the drop
+    //   leaves the compositor holding a shared-memory mapping and a descriptor per
+    //   frame — for the whole lock.
+    let mut fixture = Fixture::start("reconfigure", Some(TOKEN), Answer::Reconfigure);
+
+    fixture.wait_for("the lock to be confirmed and reported", |_| {
+        fixture.log().contains("The session is locked")
+    });
+    fixture.wait_for("a frame at the resized dimensions", |observed| {
+        observed
+            .frames
+            .iter()
+            .any(|frame| frame.bytes == (RESIZED_WIDTH * RESIZED_HEIGHT * 4) as usize)
+    });
+    fixture.wait_for("the replaced frame to be destroyed", |observed| {
+        observed.buffers_destroyed > 0
+    });
+    // The last of the three reconfigures is answered by the fourth commit, and the
+    // assertions below are about the whole exchange rather than about a prefix of
+    // it.
+    fixture.wait_for("every configure to be answered", |observed| {
+        // An ack goes out before the frame that answers the configure, so the
+        // exchange is complete only once both counts have caught up.
+        observed.acks.len() == 4 && observed.buffers_created == 4
+    });
+
+    {
+        let observed = fixture.observations.read();
+        let resized = observed
+            .frames
+            .iter()
+            .find(|frame| frame.bytes == (RESIZED_WIDTH * RESIZED_HEIGHT * 4) as usize)
+            .expect("a frame of the second size");
+
+        assert!(
+            resized.opaque && resized.distinct > 1,
+            "the redrawn frame is the interface too: {resized:?}"
+        );
+        assert_eq!(
+            observed.configures_sent,
+            [7, 9, 11, 13],
+            "every configure was sent, so every one is being answered"
+        );
+        assert_eq!(observed.acks, [7, 9, 11, 13], "and every one was acked");
+        assert_eq!(
+            observed.buffers_created, 4,
+            "one frame per configure, and no more"
+        );
+        assert!(
+            observed.buffers_created - observed.buffers_destroyed
+                <= inox_lock::session::MAX_FRAMES_IN_FLIGHT,
+            "the client is holding {} frames the compositor has released: \
+             created {}, destroyed {}",
+            observed.buffers_created - observed.buffers_destroyed,
+            observed.buffers_created,
+            observed.buffers_destroyed,
+        );
+    }
+
+    fixture.signal(Signal::TERM);
+    let _ = fixture.wait_for_exit();
+
+    assert_eq!(
+        fixture.observations.read().unlocks,
+        0,
+        "a signalled lock client must not unlock the session, however many times \
+         it was reconfigured"
+    );
 }
 
 #[test]

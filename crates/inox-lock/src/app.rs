@@ -587,9 +587,26 @@ fn handle(state: &mut State, message: Message) {
             // state where the user can type, and the next attempt is a new one
             // with a new generation (acceptance D05's "retry", not D05's
             // "the same action twice").
-            if state.boundary.failure().is_some() {
-                info!("trying the authentication boundary again");
-                state.boundary = BoundaryState::Idle;
+            //
+            // Only a boundary that could come back can be retried into one. This
+            // build ships no authentication boundary at all
+            // ([`ServiceFailure::NotProvided`]), and putting the screen back into
+            // `Idle` for it would make the field typable and then send the
+            // credential to a transport that is not there — the exact "a
+            // credential typed for nothing" the projection refuses.
+            match state.boundary.failure() {
+                Some(failure) if failure.is_retryable() => {
+                    info!(?failure, "trying the authentication boundary again");
+                    state.boundary = BoundaryState::Idle;
+                }
+                Some(failure) => {
+                    warn!(
+                        ?failure,
+                        "the retry changed nothing: this build has no \
+                         authentication boundary to try again"
+                    );
+                }
+                None => debug!("the boundary is usable; the retry changed nothing"),
             }
         }
         Message::UnlockConfirmed => {
@@ -1435,6 +1452,33 @@ mod tests {
         assert_eq!(state.boundary(), &BoundaryState::Idle);
         assert!(state.model().accepts_input, "{:?}", state.model().face);
         assert!(matches!(state.model().face, Face::Prompt));
+    }
+
+    #[test]
+    fn a_boundary_this_build_does_not_have_cannot_be_retried_into_one() {
+        let mut state = locked();
+        send(
+            &mut state,
+            Message::AuthUnavailable(ServiceFailure::NotProvided),
+        );
+        assert!(!state.model().accepts_input);
+
+        send(&mut state, Message::BoundaryRetried);
+
+        assert_eq!(
+            state.boundary(),
+            &BoundaryState::Unavailable {
+                failure: ServiceFailure::NotProvided
+            },
+            "a retry must not put the screen back into a state where a credential \
+             would be typed into a boundary that is not there"
+        );
+        assert!(!state.model().accepts_input);
+        assert!(
+            matches!(state.model().face, Face::Unavailable { retry: None, .. }),
+            "and the screen offers no retry control: {:?}",
+            state.model().face
+        );
     }
 
     #[test]

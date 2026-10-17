@@ -9,7 +9,7 @@
 | 单元测试 | `cargo test` | 所有纯逻辑模块 | 每个 crate 都必须有 |
 | 属性测试 | `proptest` | 窗口管理与布局算法 | 合成器、Shell 的布局与窗口簿记 |
 | headless 集成测试 | `cargo test` + 软件渲染 | 合成器输出创建、渲染、输入、协议 | `inox-compositor` |
-| GUI 测试（离屏） | `iced_tiny_skia` + `iced_runtime::UserInterface` | 真实控件树的布局、绘制像素与事件处理 | L3 组件（已落地，见下） |
+| GUI 测试（离屏） | `iced_tiny_skia` + `iced_runtime::UserInterface` | 真实控件树的布局、绘制像素与事件处理 | L3 组件（已落地，见下）；`inox-lock` 还把它作为**生产路径**（锁表面不是窗口） |
 | GUI 测试（虚拟合成器） | `waydriver` | 组件在真实合成器中的表面、焦点与截图 | L3 组件（待 layer-shell 宿主可用） |
 | 性能测试 | Tracy | 帧时间、输入延迟 | 性能预算验证（PRD §8） |
 | 依赖安全 | `cargo-deny` | 许可证、漏洞、重复版本 | 工作区 CI 的 `deny` job（完整依赖图） |
@@ -78,8 +78,8 @@ let pixels = Headless::screenshot(&mut renderer, Size::new(1280, 32), 1.0, Color
 | `inox-common` | `logging` 与 `paths` 的单元测试。`XdgEnv::from_process` 刻意不做单元测试：edition 2024 下改写进程环境是 `unsafe`，而该 crate `forbid(unsafe_code)`，因此解析逻辑全部经注入的环境快照验证 |
 | `inox-config` | 默认值、解析、字段路径与行列定位、范围校验、主题解析与 `ConfigStore` 热重载的单元测试（含「重载失败保留旧值」） |
 | `inox-protocols` | `tests/standard_bindings.rs` 断言再导出的接口名与版本；`tests/ipc_roundtrip.rs` 在真实连接上跑私有协议的往返 |
-| L3 组件（七个） | 纯逻辑的单元测试 + `proptest` 属性测试（导航栈、快照/请求代次、任务分组是划分、缩放几何、搜索排序、通知队列的终态、锁状态机的安全不变量）；每个组件的 `tests/catalog.rs` 用 `compare_catalogs` 钉住 `en-US`/`zh-CN` 的 id 与占位符；六个有界面的组件另有 `tests/render.rs`（离屏渲染的像素与事件断言，见上一节） |
-| L4 组件（`inox-session`、`inox-idle`、`inox-greet`） | 重启预算、进程组/注销/目录清理、Wayland 线协议 idle 通知、锁前挂起与登录状态；greeter 双主题/语言/字号离屏渲染；独立 CI job 验证真实 Inox headless 启动/注销。认证、锁屏与挂起 E3/E4 尚未完成 |
+| L3 组件（七个） | 纯逻辑的单元测试 + `proptest` 属性测试（导航栈、快照/请求代次、任务分组是划分、缩放几何、搜索排序、通知队列的终态、锁状态机的安全不变量）；每个组件的 `tests/catalog.rs` 用 `compare_catalogs` 钉住 `en-US`/`zh-CN` 的 id 与占位符；六个有界面的组件另有 `tests/render.rs`（离屏渲染的像素与事件断言，见上一节）。`inox-lock` 另有 `tests/protocol.rs`（手写的 `ext-session-lock-v1` 服务端 peer 驱动真实二进制，并**读回它提交的帧**）与 `tests/cli.rs`（默认拒绝路径） |
+| L4 组件（`inox-session`、`inox-idle`、`inox-greet`） | 重启预算、进程组/注销/目录清理、Wayland 线协议 idle 通知、锁前挂起与登录生命周期；greeter 的完整登录界面在双主题/双语言/200% 字号下的离屏渲染与 `tests/catalog.rs` 双向目录检查；独立 CI job 验证真实 Inox headless 启动/注销。认证、greeter 宿主与挂起 E3/E4 尚未完成 |
 | 本站点（`docs/book/`） | 无单元测试要求。文档正确性由 CI 的 `book` job（`mdbook build`）保证，站点结构由 `SUMMARY.md` 与实际章节文件的一致性约束 |
 
 ## 新增行为时的要求

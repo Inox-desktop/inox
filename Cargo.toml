@@ -108,13 +108,12 @@ iced = { version = "0.14", default-features = false, features = [
 # Same iced 0.14 generation as the entry above (ADR 0018).
 iced_layershell = { version = "0.19", default-features = false }
 
-# The headless render harness every L3 component's `tests/render.rs` uses: it
-# builds the real widget tree, lays it out at a fixed size and draws it into a
-# pixmap through the same tiny-skia renderer the binaries use, with no
-# compositor and no GPU. `iced` re-exports neither `UserInterface` nor the
-# tiny-skia renderer, so the three crates are named directly -- as
-# dev-dependencies only, which keeps them out of every component's shipped
-# dependency surface.
+# The offscreen half of iced, named directly because `iced` re-exports neither
+# `UserInterface` nor the tiny-skia renderer. Every L3 component's
+# `tests/render.rs` draws its real widget tree through them, and `inox-lock`
+# also *ships* on them: a lock surface is not a window, so the frame the lock
+# client commits is drawn here rather than by iced's windowing backend
+# (ADR 0025). Dev-dependency everywhere else, a dependency in `inox-lock`.
 iced_core = "0.14"
 iced_runtime = "0.14"
 iced_tiny_skia = { version = "0.14", features = ["image"] }

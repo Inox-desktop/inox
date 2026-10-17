@@ -28,11 +28,11 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 部分实现（XDG 条目解析、Exec 展开、带代次的搜索、Iced 界面；layer-shell 客户端待接线） |
 | `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏与界面模型；D-Bus 服务属 M5） |
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 部分实现（草稿/校验/原子保存/回读状态机与 Iced 界面；普通窗口，无需 layer-shell） |
-| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿与认证边界未实现，见 ADR 0015） |
+| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿与**锁表面界面**已落地——界面由离屏渲染绘制到 configure 尺寸并提交，见 [ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)；认证边界与键鼠输入路径未实现，见 ADR 0015） |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现（来源解析、缩放几何、原子应用与预览窗口；layer-shell 背景客户端待接线） |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，拉起合成器与 Shell | 二进制 `inox-session` | 部分实现：Wayland 往返就绪、有界进程监督/注销；完整服务 ready 待实现 |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 部分实现：标准空闲通知客户端与锁前挂起策略；可信锁/挂起通道待审查 |
-| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 部分实现：登录状态机与 Iced 预览；真实认证默认拒绝 |
+| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 部分实现：登录状态机与阶段驱动的登录界面（六个阶段各有画面、键盘可达、双语，由测试覆盖）；`--preview` 显示的是本构建真实所处的阶段——没有认证边界，因此是不可用、不可输入的那一幅；真实认证与 greeter 宿主未接线 |
 | `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 | 部分实现（分层检查已落地；M3 的 XWayland/剪贴板/拖放 E3 用例以进程方式驱动工作区二进制，完整会话 E2E 待 M6） |
 
 工作区之外还有两处非 crate 位置：

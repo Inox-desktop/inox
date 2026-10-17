@@ -30,6 +30,9 @@ lock-failure-cancelled = the attempt was abandoned before it was answered
 
 # Why nothing can be typed, shown next to the disabled field (acceptance D05).
 lock-disabled-boundary = The authentication service is not available
+# The other half of the same question: not a service that is not answering, but a
+# build that contains no such service at all (ADR 0015's review item).
+lock-disabled-boundary-missing = This build has no authentication service
 lock-disabled-waiting = Too many attempts for now
 lock-disabled-verifying = An attempt is already being checked
 lock-disabled-unlocked = The session is not locked
@@ -52,6 +55,7 @@ lock-protocol-missing-global = the compositor does not offer the session lock pr
 lock-protocol-registry-unavailable = the compositor's registry could not be read
 lock-boundary-disconnected = the authentication service is not reachable
 lock-boundary-timeout = the authentication service did not answer in time
+lock-boundary-not-provided = this build ships no authentication boundary at all: ADR 0015 requires a human security review of one before the lock screen may authenticate anyone, so nothing is checked here and the session is released by logging out
 
 # What the binary reports before exiting non-zero (ADR 0015, ADR 0018).
 lock-start-blocked = The session lock cannot start in this build: { $reason }

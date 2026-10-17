@@ -16,6 +16,7 @@
 | 1.1 | 2026-10-16 | 补充 Wayland 协议支持矩阵、非功能需求与性能预算、配置与 IPC 模型、安全/Portal、无障碍与国际化、打包与分发、里程碑验收标准、ADR 流程、命名与版本策略、术语表 |
 | 1.2 | 2026-10-16 | 参考 Plasma Desktop 的实际测试与状态处理，提出分级证据、完整用户任务、多屏/故障/迁移/锁屏验收、性能测量口径和发布支持矩阵；新增 ADR 0011–0015。新增规范与架构调整待人类评审，不代表已开启门禁或已通过验收 |
 | 1.3 | 2026-10-16 | 按 [ADR 0016](docs/adr/0016-single-repository-cargo-workspace.md) 把多仓库策略改为单一仓库（Cargo workspace）：§3 由「仓库架构」改为「工作区与组件架构」，依赖改为工作区内 path 依赖，删除 `compat.toml` 与 `repos/` 流程；§2.1 的依赖方向改由 `layering.rs`（B04）机械强制。ADR 0001 已由 ADR 0016 取代 |
+| 1.4 | 2026-10-17 | 按 [ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md) 记录锁屏界面已绘制到会话锁表面、登录界面已补全：§2.3 的 `ext-session-lock-v1` 行、§10 的锁屏条目与 §13 的 M5 交付出处随之修正。真实认证仍是 ADR 0015 的人类安全评审项，本修订不改变该边界 |
 
 ---
 
@@ -132,7 +133,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `fractional-scale-v1` | M4 必须 | 分数缩放，见 [ADR 0020](docs/adr/0020-fractional-scaling.md)（状态 `proposed`）。已实现：`wl_compositor` v6 的 `preferred_buffer_scale` 与 `wp_fractional_scale_manager_v1` v1，渲染/光标/layer 按输出 scale 折算物理像素，几何、命中与**离屏像素**断言在 CI（E1+E3）。真实混合 DPI 客户端在 125%/150% 下的模糊度与缓冲尺寸仍是 E4，**未取的 E4 不因 CI 全绿而追认** |
 | `wlr-output-management` | 计划 | 显示器管理 |
 | `wlr-screencopy` / `ext-image-copy-capture` | 计划 | 截图与录屏 |
-| `ext-session-lock-v1` | M5 必须（**已广告**） | 安全锁屏，不能以 layer-shell 遮罩替代；见 ADR 0015。合成器已广告 `ext_session_lock_manager_v1` v1，客户端为 `inox-lock --take-lock`，授权与生命周期见 [ADR 0022](docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)；认证与锁屏界面仍未交付 |
+| `ext-session-lock-v1` | M5 必须（**已广告**） | 安全锁屏，不能以 layer-shell 遮罩替代；见 ADR 0015。合成器已广告 `ext_session_lock_manager_v1` v1，客户端为 `inox-lock --take-lock`，授权与生命周期见 [ADR 0022](docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)；锁屏界面已绘制到锁表面上（[ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），**真实认证仍未交付**，因此该界面当前呈现的是「本构建没有认证边界」这一事实，键盘路径也未接线 |
 | `zwp_primary_selection_device_manager_v1`（本表此前记作 `gtk-primary-selection`） | M3 必须 | 主选区（X11 中键粘贴兼容）；与 `wl_data_device_manager` 一并广告，见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xwayland-shell` | 计划 | XWayland 集成 |
 | `text-input-v3` / `input-method-v2` / `virtual-keyboard-v1` | 提前实现，待验收 | 管理器接口 v1；应用文本事务、受信输入法连接、键盘抓取、候选窗与锁屏隔离，见 [ADR 0023](docs/adr/0023-input-method-support.md)（proposed）。真实客户端与 Fcitx5 拼音测试交由 CI；GTK/Qt/XWayland 与其他引擎仍待逐项验收 |
@@ -446,7 +447,7 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 
 - **权限模型**：合成器不以 root 运行，设备访问通过 `libseat`。所有客户端按 Wayland 安全模型隔离，无全局输入注入给未授权客户端。
 - **剪贴板/拖放**：仅在获得焦点的客户端间传递，遵守 `wl_data_device` 语义。
-- **锁屏**：使用 `ext-session-lock-v1`，合成器拥有锁定状态；所有输出安全遮蔽后确认 locked，UI 崩溃或认证失败保持锁定，新增输出先遮蔽。挂起须等待锁定完成，见 [ADR 0015](docs/adr/0015-session-lock-and-failure-boundaries.md) 与 S02–S03。
+- **锁屏**：使用 `ext-session-lock-v1`，合成器拥有锁定状态；所有输出安全遮蔽后确认 locked，UI 崩溃或认证失败保持锁定，新增输出先遮蔽。锁屏界面由 `inox-lock` 以离屏渲染绘制到锁表面上（[ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），但**认证仍是人类安全评审项**：本构建对状态报告「没有认证边界」，界面因此呈现不可用画面而不是密码提示，键鼠路径与边界一起落地。挂起须等待锁定完成，见 [ADR 0015](docs/adr/0015-session-lock-and-failure-boundaries.md) 与 S02–S03。
 - **特权能力**：输出管理、配置控制、捕获/注入和锁屏分别登记可信调用方、授权来源、撤销和版本范围；校验在服务端执行，不能用 app_id/PID 或同 UID 直接授予能力，见 S04。
 - **Portal**：通过 `inox-portal` 提供 `xdg-desktop-portal` 后端，覆盖截图、屏幕共享、文件选择、设置；前端应用通过标准 Portal 接口访问，避免合成器直接暴露特权接口。
 - `inox-portal` 仍是规划仓库，创建与后端方案须另有 ADR；未实现时明确披露，拒绝未经授权的捕获/注入，不能用默认开放私有接口替代。提供能力时须验证授权、拒绝、撤销和锁屏中止。
@@ -534,15 +535,17 @@ O02/O03 的虚拟拓扑、几何与像素证据由 `crates/inox-compositor/tests
 > L3 的 Iced 客户端接线与 GUI 驱动证据仍缺失。此前 `iced_layershell` 0.19.1 与 0.19.0
 > **都无法编译**（其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举
 > `NativeKeyCode` 做了穷尽匹配）。因此第 7 节与 ADR 0013 要求的「M4 前完成 Iced + layer-shell 原型」
-> **仍未完成**，各组件以普通窗口运行并把 layer-shell 放置策略建模为纯数据；锁屏的协议腿另受 ADR 0015
-> 的人类安全审查约束，通知的 D-Bus 服务按本表属 M5（D06）。决策与边界见
+> **仍未完成**，各组件以普通窗口运行并把 layer-shell 放置策略建模为纯数据；锁屏的协议腿已由 ADR 0022 落地、
+> 界面已由 ADR 0025 绘制到锁表面上，**它唯一还不能做的是认证任何人**（ADR 0015 的人类安全审查项，
+> 键鼠输入路径与边界一起落地），通知的 D-Bus 服务按本表属 M5（D06）。决策与边界见
 > [ADR 0018](docs/adr/0018-l3-component-architecture.md)（状态 `proposed`）。
 
 ---
 
-L4 首版实现边界见 [ADR 0021](docs/adr/0021-l4-session-services.md)：会话监督、标准空闲通知客户端、登录状态模型与预览已经提供。
+L4 首版实现边界见 [ADR 0021](docs/adr/0021-l4-session-services.md)：会话监督、标准空闲通知客户端、登录生命周期模型与阶段驱动的登录界面（`--preview`）已经提供——界面为六个阶段各有一幅画面，但 `--preview` 只显示本构建真实处于的阶段（没有认证边界，所以是不可用、不可输入的那一幅）。
 M5 的会话锁协议腿见 [ADR 0022](docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)（状态 `proposed`）：合成器广告 `ext_session_lock_manager_v1` v1 并以会话令牌默认拒绝授权，`inox-lock --take-lock` 真实取锁并覆盖每个输出，`inox-ipc` 升到 v2（`claim_lock_role` / `session_lock_state`），会话负责生成并只向可信锁屏客户端投递令牌；锁屏 UI 崩溃保持锁定且不支持接管。
-**仍未交付、因此不能视为 M5 验收通过**：完整服务 ready、真实认证与锁屏界面、logind 挂起、锁屏 UI 崩溃后的接管、通知的 D-Bus 服务（D06），以及 H02 的全部真机步骤。
+锁屏界面见 [ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)（状态 `accepted`）：`inox-lock` 用一个输出一个离屏渲染器把 `app::view` 画成 configure 尺寸的 `wl_shm` 帧，协议腿改由 crate 自己的状态机驱动，锁表面承载的是真实控件树而非一块纯色；本构建没有经过评审的认证边界，因此状态里的事实是 `ServiceFailure::NotProvided`，界面呈现不可用画面，**并且不读键鼠**——输入路径与边界一起落地。
+**仍未交付、因此不能视为 M5 验收通过**：完整服务 ready、真实认证、logind 挂起、锁屏 UI 崩溃后的接管、锁屏的键盘输入路径、通知的 D-Bus 服务在真实会话总线上的名字所有权测试，以及 H02 的全部真机步骤。（通知的 D-Bus 服务 D06 已由 ADR 0022 的后续实现落地，见 §2.3 与 `inox-notifications`。）
 
 ## 14. 风险与缓解
 

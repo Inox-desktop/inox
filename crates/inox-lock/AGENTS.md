@@ -25,7 +25,11 @@
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 依赖 L1：`inox-common`（i18n）、`inox-config`（设计令牌）；ADR 0022 决策 7 之后**另有一条向下的 L3 → L2 边**：`inox-protocols`（`ext-session-lock-v1` 与 `inox-ipc` 绑定）、`wayland-client` 与 `calloop`（协议腿的事件循环）、`rustix`（`memfd_create`，锁帧的共享内存）。**不得**新增 L3 依赖或依赖 `inox-compositor`（ADR 0013、ADR 0018 不变）；令牌映射与 Fluent 装配在每个 L3 组件里各有一份，这是 ADR 0018 明确接受的成本。
 - 新增依赖前先确认依赖方向合法（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
 
-- **协议腿没有解锁路径，这是刻意的。** `--take-lock` 取真实的会话锁、覆盖每个输出，然后一直保持；它**不得**发送 `unlock_and_destroy`，收到 `SIGTERM`/`SIGINT` 时也不得解锁——没有经过审查的认证边界，就没有任何东西可以构成一次解锁的凭据。凭据校验、提示与掩码字段都不在这条模式里：帧只是一层不透明底色。改动这条路径前先读 ADR 0022 决策 6 与 `src/session.rs` 的模块文档。
+- **协议腿没有解锁路径，这是刻意的。** `--take-lock` 取真实的会话锁、遮蔽每个输出、把界面画上去，然后一直保持；它**不得**发送 `unlock_and_destroy`，收到 `SIGTERM`/`SIGINT` 时也不得解锁——没有经过审查的认证边界，就没有任何东西可以构成一次解锁的凭据。改动这条路径前先读 ADR 0022 决策 6、ADR 0025 与 `src/session.rs` 的模块文档。
+- **本构建对状态说真话，界面因此是「不可用」而不是「请输密码」。** `--take-lock` 在请求取锁**之前**喂进 `ServiceFailure::NotProvided`，投影画出 `Face::Unavailable`，凭据字段与提交控件一律禁用且带可读原因，`retry` 为 `None`（`is_retryable()` 为假）。**不得**让这条路径在没有边界时表现出可以认证的样子——`Message::BoundaryRetried` 也不得把边界复位成 `Idle`，那会让字段变得可输入并把凭据送给一条不存在的传输。改动 `contract`/`view_model`/`app` 的这三处，必须同时改另两处。
+- **锁表面不读键盘，也不读指针。** `src/session.rs` 不绑定 `wl_seat`/`wl_keyboard`/`wl_pointer`，`src/render.rs` 不消费任何 `Message`。理由不是省事：没有可用边界时屏幕上没有任何可操作的东西，输入路径会是不可能执行的代码。它必须与经过评审的认证边界一起落地（ADR 0025 未决项）。
+- **帧由 `src/render.rs` 画，不由别处画。** 锁表面的内容是 `app::view(&state)` 在 configure 尺寸下的渲染结果，尺寸取自 configure、不取自本地推断；不被绘制的尺寸（0 或超过 `MAX_FRAME_BYTES`）拒绝提交，让输出回到合成器的锁定底色，**绝不**提交空缓冲或尺寸不符的缓冲（那是协议错误，会断开连接并把会话留在锁定）。绘制只能经 `iced_core`/`iced_runtime`/`iced_tiny_skia`，**不得**引入 `iced` 的窗口后端来「顺手」得到一个表面：它创建的是 xdg-shell 表面，正是 ADR 0015 拒绝的东西。
+- **协议腿由 `app::State` 驱动，不得再长出第二份覆盖簿记。** 协议事件喂 `app::Message`，`State::take_outgoing()` 是唯一出口。合成器的 `locked` 与 `LockMachine::reports_locked()` 不一致时必须留下 warn，而不是静默接受。
 - **令牌只经 `INOX_LOCK_TOKEN` 进入本进程，且不得打印。** 它由 `inox-session` 生成、只投递给本组件与合成器；日志、错误信息与用户可见文案里都不得出现它的值。
 - **协议错误不得被当成解锁。** 合成器发来 `finished` 表示拒绝或撤回：没有 `locked` 时它是拒绝（退出非零），有 `locked` 时是合成器自己释放；两种情况都不由本 crate 决定会话是否安全。
 
@@ -33,7 +37,8 @@
 
 - 上游 Inox crate：`inox-common`（`i18n::Localizer`/`Locale`、`i18n::compare_catalogs`）、`inox-config`（`Theme` 令牌、`InoxConfig`/`ConfigPaths`）。
 - 第三方：`iced` 0.14（`tiny-skia` 渲染器）、`zeroize`（凭据清零）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
-- 测试：`proptest`、`iced_core` / `iced_runtime` / `iced_tiny_skia`（无头渲染）、`image`（仅在设置 `INOX_SCREENSHOT_DIR` 时写 PNG 工件）。
+- 第三方（协议与界面）：`iced_core` 0.14、`iced_runtime` 0.14、`iced_tiny_skia` 0.14（ADR 0025：锁表面不是窗口，`UserInterface` 负责布局与事件、tiny-skia 渲染器负责像素；三者由 `iced` 0.14 已在依赖图内，许可证 MIT/Apache-2.0）。
+- 测试：`proptest`、`wayland-server`（`tests/protocol.rs` 扮演合成器一侧）、`image`（仅在设置 `INOX_SCREENSHOT_DIR` 时写 PNG 工件）。
 
 ## 命令
 
@@ -54,7 +59,9 @@
 - 属性测试每项 ≥1000 样本（`ProptestConfig::with_cases(1000)`）：
   - **除认证成功外，任何事件序列都不会让会话离开锁定**（UI 退出、认证失败、认证超时、新增/移除输出、挂起请求、挂起完成）；
   - **覆盖簿记与独立写出的模型一致**，且「报锁定」必然跟随「所有现存输出已被遮蔽」。
-- 渲染测试必须包含浅色、深色、限流等待、失败、无可信 UI 与 200% 字号等场景（1280×720），并断言像素与「禁用控件与启用控件渲染不同」。测试夹具每帧先投递一次 `RedrawRequested`：iced 的控件只在处理它时确定交互状态，没有它每个控件都会被画成禁用（`iced_widget::button`）。
+- 渲染测试必须包含浅色、深色、限流等待、失败、无可信 UI、**本构建没有认证边界（`NotProvided`，无重试控件）** 与 200% 字号等场景（1280×720），并断言像素与「禁用控件与启用控件渲染不同」。测试夹具经 `inox_lock::render::Interface` 绘制——那是二进制提交帧走的同一段代码——而不是另建一条渲染路径。
+- `tests/protocol.rs` 除了原有的认领/遮蔽/信号不解锁断言，还必须读回客户端交出的共享内存帧并断言：字节数等于 configure 尺寸的 4 倍、每个 alpha 为 `0xff`、像素不止一种颜色、背景占多数。只断言 buffer 的**格式**与**尺寸**不足以说明锁表面承载了界面。
+- `tests/cli.rs` 覆盖默认路径：不带参数时非零退出、文案含 ADR 0015 与 `--take-lock`、**不含**密码提示；`--help` 不需要显示；未知参数失败。
 - `tests/catalog.rs` 与 `tests/render.rs` 之外，新增行为必须同时新增测试。
 - 测试代码不受「禁止 unwrap/expect/panic」约束。
 
