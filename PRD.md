@@ -123,7 +123,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `wl_data_device`（`wl_data_device_manager` v3） | M3 必须 | 剪贴板与拖放；读取权跟随键盘焦点（`set_data_device_focus`），见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xdg-shell` | 必须 | 标准窗口 |
 | `xdg-decoration` | 必须 | 服务端/客户端装饰协商；M3 不广告，X11 窗口标题栏由 satellite 自绘（[ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
-| `wlr-layer-shell-unstable-v1` | 必须 | 面板/壁纸等普通桌面层；安全锁屏另用 session-lock |
+| `wlr-layer-shell-unstable-v1`（`zwlr_layer_shell_v1` v4） | 必须 | 已接入合成器：四层合成、锚点/边距/独占区、configure/ack 与卸载清理、键盘交互；真实客户端协议/像素测试交由 CI。仅普通桌面层，安全锁屏另用 session-lock；L3 的 Iced 客户端接线尚未完成 |
 | `viewporter`（`wp_viewporter`） | M3 必须 | 缩放与裁剪；`xwayland-satellite` 的宿主硬前提（缺失即启动失败），见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `linux-dmabuf` | 必须 | GPU 缓冲零拷贝 |
 | `presentation-time` | 必须 | 帧同步反馈 |
@@ -514,8 +514,8 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 > `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1**（编译、lint、文档、单元与属性测试）
 > 加**离屏渲染**（真实控件树在固定尺寸下的像素与事件断言，见[测试策略](docs/book/src/development/testing.md)）。
 > **E2/E3 尚未取得，未完成的 DoD 项包括 W05、O02–O03、C02–C03 的实测、D01–D05 与 Q01–Q03 的宿主侧证据**，
-> 原因是三个硬前提缺失：① `inox-compositor` 尚未广告 `zwlr_layer_shell_v1`，L3 的表面无法在 Inox 会话中创建；
-> ② CI 没有支持 layer-shell 的宿主（`weston` 不支持该协议）；③ `iced_layershell` 0.19.1 与 0.19.0
+> 合成器的 `zwlr_layer_shell_v1` v4 宿主已补齐，真实协议客户端测试纳入合成器 CI 分片；
+> L3 的 Iced 客户端接线与 GUI 驱动证据仍缺失。此前 `iced_layershell` 0.19.1 与 0.19.0
 > **都无法编译**（其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举
 > `NativeKeyCode` 做了穷尽匹配）。因此第 7 节与 ADR 0013 要求的「M4 前完成 Iced + layer-shell 原型」
 > **仍未完成**，各组件以普通窗口运行并把 layer-shell 放置策略建模为纯数据；锁屏的协议腿另受 ADR 0015

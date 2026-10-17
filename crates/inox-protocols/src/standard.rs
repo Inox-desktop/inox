@@ -124,6 +124,13 @@ pub mod wlr {
     /// `wlr-layer-shell-unstable-v1`: layers for panels, wallpapers and locks.
     ///
     /// PRD §2.3 support level: `必须`.
+    ///
+    /// This is ordinary desktop placement, not a security or authentication
+    /// boundary. Exclusive keyboard focus follows the mapped top/overlay surface;
+    /// clients with `None` never receive keyboard focus. A null output selects the
+    /// compositor's output. Clients must commit without a buffer, acknowledge the
+    /// configure, then attach a buffer; null-buffer commits unmap the surface and
+    /// release its exclusive zone and focus. Destroying either surface does likewise.
     pub mod layer_shell {
         /// Client-side `wlr-layer-shell` bindings.
         pub use wayland_protocols_wlr::layer_shell::v1::client;

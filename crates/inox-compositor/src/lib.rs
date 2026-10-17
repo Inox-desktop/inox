@@ -32,6 +32,7 @@
 pub mod backend;
 pub mod config;
 pub mod input;
+mod layers;
 pub mod layout;
 pub mod render;
 pub mod runtime;

@@ -19,6 +19,17 @@ M3（PRD §13，[ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/a
 
 尚未实现（后续里程碑）：XWayland 服务端本身（在 [`inox-xwayland`](../../crates/inox-xwayland)）、真实输入设备链路（libinput/udev/seat）、DRM/KMS 真实输出。
 
+L2 的 layer-shell 宿主现已接入 Smithay `WlrLayerShellState`，广告
+`zwlr_layer_shell_v1` v4。四层按 background → bottom → 普通窗口 → top → overlay
+合成并命中测试，支持锚点、边距、独占区、初次 configure/ack、空缓冲卸载、重新映射与销毁清理。
+普通窗口平铺在剩余工作区，背景与渲染目标仍使用完整输出尺寸。`None` 不接收键盘焦点，
+top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应用或 Alt+Tab 离开；
+选择焦点继续跟随实际键盘焦点。layer-shell 只用于普通桌面，不能替代安全锁屏。
+
+`tests/layer_shell.rs` 用真实客户端与 shm 缓冲断言像素、指针、焦点、frame callback、
+独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 Iced 客户端宿主，
+L3 的 layer-shell 客户端接线仍待完成，亦不宣称 DRM 或完整 M4 已验收。
+
 ### 运行
 
 ```console

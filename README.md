@@ -107,7 +107,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、国际化、工具函数 | crate | 已实现 |
 | `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate | 已实现（含 `shell.toml`、`notifications.toml` 与会话语言） |
 | `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现 |
-| `inox-compositor` | L2 | `crates/inox-compositor` | Wayland 合成器，基于 Smithay | 二进制 `inox-compositor` | 已实现（M1–M3，未读配置、无 layer-shell） |
+| `inox-compositor` | L2 | `crates/inox-compositor` | Wayland 合成器，基于 Smithay | 二进制 `inox-compositor` | 部分实现（M1–M3、layer-shell v4；配置应用与真实后端未完成） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现 |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架，插件系统 | 二进制 `inox-shell` | 部分实现 |
 | `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现 |
@@ -154,7 +154,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 **M3**（[ADR 0017](./docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)，状态 `proposed`）在 Inox 自己的合成器上完成 X11/数据互通：合成器广告 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`，剪贴板的读取权**跟随键盘焦点**（`set_data_device_focus`），Wayland↔Wayland 拖放与 X11 内部拖放可用，每次渲染后发送 frame callback，`inox-xwayland` 的就绪判定改为真实的 X11 连接建立往返；E3 用例移入 `inox-integration`，以子进程方式驱动工作区构建的二进制，不新增依赖边。**跨 X11/Wayland 边界的拖放被上游阻塞**（`xwayland-satellite` v0.8.3 未实现 XDND），X02 的锁屏剪贴板断言与 `wlr-data-control` 推迟到 M5，`-listenfd` 按需激活仍不在范围内 —— 因此 M3 不是 X03 的完整通过。
 
-**M4 部分交付**（[ADR 0018](./docs/adr/0018-l3-component-architecture.md)，状态 `proposed`）：L3 的七个组件首次有了实现，`inox-config` 的 `shell.toml`、`notifications.toml` 与 `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1 加离屏渲染**：纯逻辑与不变量的单元/属性测试，加上用 iced 自己的运行时与 tiny-skia 渲染器在固定尺寸下绘制的**真实控件树**的像素与事件断言 —— 后者不需要合成器，也不需要 GPU。**E2/E3 未取得**，原因是三个硬前提缺失：`inox-compositor` 尚未广告 `zwlr_layer_shell_v1`，CI 没有支持 layer-shell 的宿主，`iced_layershell` 0.19.1 与 0.19.0 都无法编译（其 `iced_exdevtools` 对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。因此 W05、O02–O03、D01–D05 与 Q01–Q03 的宿主侧证据均未取得，M4 的 DoD 不成立：这些组件目前以普通窗口运行，layer-shell 放置策略只被建模和测试，未被应用。锁屏的协议腿另受 ADR 0015 要求的人类安全审查约束，通知的 D-Bus 服务按 PRD §13 属 M5。
+**M4 部分交付**（[ADR 0018](./docs/adr/0018-l3-component-architecture.md)，状态 `proposed`）：L3 的七个组件首次有了实现，`inox-config` 的 `shell.toml`、`notifications.toml` 与 `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1 加离屏渲染**：纯逻辑与不变量的单元/属性测试，加上用 iced 自己的运行时与 tiny-skia 渲染器在固定尺寸下绘制的**真实控件树**的像素与事件断言 —— 后者不需要合成器，也不需要 GPU。**E2/E3 未取得**，合成器的 `zwlr_layer_shell_v1` v4 宿主现已补齐，真实协议客户端测试纳入合成器 CI 分片；L3 的 Iced 客户端接线与 GUI 驱动仍未完成。此前 `iced_layershell` 0.19.1 与 0.19.0 都无法编译（其 `iced_exdevtools` 对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。因此 W05、O02–O03、D01–D05 与 Q01–Q03 的宿主侧证据均未取得，M4 的 DoD 不成立：这些组件目前以普通窗口运行，layer-shell 放置策略只被建模和测试，未被应用。锁屏的协议腿另受 ADR 0015 要求的人类安全审查约束，通知的 D-Bus 服务按 PRD §13 属 M5。
 
 ---
 

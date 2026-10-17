@@ -138,7 +138,8 @@ impl HeadlessRenderer {
             let mut frame = self.renderer.render(&mut bound, size, Transform::Normal)?;
             frame.clear(CLEAR_COLOR.into(), &damage)?;
 
-            for element in elements {
+            // Smithay produces front-to-back elements; painter's order is reversed.
+            for element in elements.iter().rev() {
                 element.draw(
                     &mut frame,
                     element.src(),

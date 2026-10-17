@@ -12,6 +12,7 @@
 //! - `wl_output` (4) and `zxdg_output_manager_v1` (3) — the headless output and
 //!   [`OutputManagerState`].
 //! - `xdg_wm_base` (6) — [`XdgShellState`], the surface role managed windows use.
+//! - `zwlr_layer_shell_v1` (4) — [`WlrLayerShellState`], ordinary desktop layers.
 //! - `wp_viewporter` (1) — [`ViewporterState`]. Required by XWayland clients that
 //!   scale themselves (ADR 0007); without it `xwayland-satellite` cannot run here.
 //! - `wl_data_device_manager` (3) — [`DataDeviceState`], the clipboard and
@@ -56,14 +57,25 @@ use std::{
 use calloop::LoopSignal;
 use inox_protocols::{
     ipc::inox_ipc::server::inox_ipc::{InoxIpc, ReloadResult, Request as InoxIpcRequest},
-    standard::core::server::{wl_buffer::WlBuffer, wl_seat::WlSeat, wl_surface::WlSurface},
+    standard::{
+        core::server::{
+            wl_buffer::WlBuffer, wl_output::WlOutput, wl_seat::WlSeat, wl_surface::WlSurface,
+        },
+        wlr::layer_shell::server::zwlr_layer_surface_v1,
+    },
 };
 use smithay::{
     backend::{
         input::{ButtonState, KeyState},
-        renderer::utils::on_commit_buffer_handler,
+        renderer::{
+            element::AsRenderElements,
+            utils::{on_commit_buffer_handler, with_renderer_surface_state},
+        },
     },
-    desktop::{Space, Window, WindowSurfaceType},
+    desktop::{
+        LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
+        WindowSurfaceType,
+    },
     input::{
         Seat, SeatHandler, SeatState,
         keyboard::{FilterResult, KeyboardHandle, Keycode, XkbConfig},
@@ -78,7 +90,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
         output::{OutputHandler, OutputManagerState},
         seat::WaylandFocus,
         selection::{
@@ -91,8 +103,12 @@ use smithay::{
                 PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
             },
         },
-        shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+        shell::{
+            wlr_layer::{
+                KeyboardInteractivity, Layer, LayerSurface, LayerSurfaceCachedState,
+                LayerSurfaceConfigure, WlrLayerShellHandler, WlrLayerShellState,
+            },
+            xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         },
         shm::{ShmHandler, ShmState},
         viewporter::ViewporterState,
@@ -168,6 +184,10 @@ pub struct InoxState {
     pointer: PointerHandle<Self>,
 
     xdg_shell_state: XdgShellState,
+    layer_shell_state: WlrLayerShellState,
+    layers: Vec<LayerEntry>,
+    layer_focus: Option<WlSurface>,
+    popups: PopupManager,
     shm_state: ShmState,
 
     /// The desktop space that owns the managed windows and their positions.
@@ -202,6 +222,18 @@ pub struct InoxState {
     loop_signal: LoopSignal,
 }
 
+struct LayerEntry {
+    surface: DesktopLayerSurface,
+    geometry: Rectangle<i32, Logical>,
+    committed: bool,
+    mapped: bool,
+    initial_configure: Option<Serial>,
+    acknowledged: bool,
+}
+
+// Front to back, shared by rendering, hit testing and exclusive keyboard focus.
+const LAYER_ORDER: [Layer; 4] = [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background];
+
 impl InoxState {
     /// Build the state, the headless output, the seat and the render target.
     ///
@@ -235,6 +267,7 @@ impl InoxState {
         let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
 
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(display_handle);
         let shm_state = ShmState::new::<Self>(display_handle, []);
 
         let mut seat_state = SeatState::<Self>::new();
@@ -268,6 +301,10 @@ impl InoxState {
             keyboard,
             pointer,
             xdg_shell_state,
+            layer_shell_state,
+            layers: Vec::new(),
+            layer_focus: None,
+            popups: PopupManager::default(),
             shm_state,
             space,
             workspace: Workspace::new(),
@@ -296,19 +333,52 @@ impl InoxState {
     /// Returns a [`RenderError`] when the GLES rendering fails.
     pub fn render_frame(&mut self) -> Result<(), RenderError> {
         self.space.refresh();
+        self.popups.cleanup();
 
-        let elements = self.space.render_elements_for_region(
+        let output_area = Rectangle::from_size(self.output_size().into());
+        let mut elements = Vec::new();
+        for layer in [Layer::Overlay, Layer::Top] {
+            self.layer_render_elements(layer, &mut elements);
+        }
+        elements.extend(self.space.render_elements_for_region(
             self.renderer.renderer_mut(),
-            &self.work_area,
+            &output_area,
             1.0f64,
             1.0,
-        );
+        ));
+        for layer in [Layer::Bottom, Layer::Background] {
+            self.layer_render_elements(layer, &mut elements);
+        }
         self.renderer.render_elements(&elements)?;
 
         self.send_frame_callbacks();
 
         self.frames_rendered = self.frames_rendered.saturating_add(1);
         Ok(())
+    }
+
+    fn layer_render_elements(
+        &mut self,
+        layer: Layer,
+        elements: &mut Vec<
+            smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<
+                smithay::backend::renderer::gles::GlesRenderer,
+            >,
+        >,
+    ) {
+        for entry in self
+            .layers
+            .iter()
+            .rev()
+            .filter(|entry| entry.mapped && entry.surface.layer() == layer)
+        {
+            elements.extend(entry.surface.render_elements(
+                self.renderer.renderer_mut(),
+                entry.geometry.loc.to_physical_precise_round(1.0),
+                1.0.into(),
+                1.0,
+            ));
+        }
     }
 
     /// Send a `wl_surface.frame` callback to every mapped window.
@@ -328,6 +398,13 @@ impl InoxState {
             window.send_frame(&self.output, time, Some(Duration::ZERO), |_, _| {
                 Some(self.output.clone())
             });
+        }
+        for entry in self.layers.iter().filter(|entry| entry.mapped) {
+            entry
+                .surface
+                .send_frame(&self.output, time, Some(Duration::ZERO), |_, _| {
+                    Some(self.output.clone())
+                });
         }
     }
 
@@ -369,7 +446,22 @@ impl InoxState {
 
     /// Size of the headless output in pixels, as `(width, height)`.
     pub fn output_size(&self) -> (i32, i32) {
-        (self.work_area.size.w, self.work_area.size.h)
+        let size = self
+            .output
+            .current_mode()
+            .map(|mode| mode.size)
+            .unwrap_or_default();
+        (size.w, size.h)
+    }
+
+    /// The logical rectangle available to ordinary windows after layer reservations.
+    pub fn work_area(&self) -> Rectangle<i32, Logical> {
+        self.work_area
+    }
+
+    /// Number of layer surfaces with a committed buffer.
+    pub fn layer_count(&self) -> usize {
+        self.layers.iter().filter(|entry| entry.mapped).count()
     }
 
     /// The headless output advertised to clients.
@@ -500,6 +592,9 @@ impl InoxState {
 
     /// Deliver a pointer button press or release at the current location.
     pub fn inject_pointer_button(&mut self, button: u32, state: ButtonState) {
+        if state == ButtonState::Pressed && !self.pointer.is_grabbed() {
+            self.focus_at_pointer();
+        }
         let pointer = self.pointer.clone();
         let serial = SERIAL_COUNTER.next_serial();
         let event = ButtonEvent {
@@ -517,10 +612,12 @@ impl InoxState {
     fn perform(&mut self, action: Action) {
         match action {
             Action::FocusNext => {
+                self.layer_focus = None;
                 self.workspace.focus_next();
                 self.sync_focus();
             }
             Action::FocusPrev => {
+                self.layer_focus = None;
                 self.workspace.focus_prev();
                 self.sync_focus();
             }
@@ -609,12 +706,36 @@ impl InoxState {
 
     /// Point the keyboard focus at the focused window and activate it in the space.
     fn sync_focus(&mut self) {
-        let focused = self
-            .workspace
-            .focused()
-            .and_then(|id| self.windows.get(&id))
-            .and_then(|window| window.wl_surface())
-            .map(Cow::into_owned);
+        let exclusive = LAYER_ORDER[..2].iter().find_map(|layer| {
+            self.layers
+                .iter()
+                .rev()
+                .find(|entry| {
+                    entry.mapped
+                        && entry.surface.layer() == *layer
+                        && entry.surface.cached_state().keyboard_interactivity
+                            == KeyboardInteractivity::Exclusive
+                })
+                .map(|entry| entry.surface.wl_surface().clone())
+        });
+        let on_demand = self
+            .layer_focus
+            .as_ref()
+            .filter(|surface| {
+                self.layers.iter().any(|entry| {
+                    entry.mapped
+                        && entry.surface.wl_surface() == *surface
+                        && entry.surface.can_receive_keyboard_focus()
+                })
+            })
+            .cloned();
+        let focused = exclusive.or(on_demand).or_else(|| {
+            self.workspace
+                .focused()
+                .and_then(|id| self.windows.get(&id))
+                .and_then(|window| window.wl_surface())
+                .map(Cow::into_owned)
+        });
 
         // The selection protocols follow the keyboard focus: a client is only offered the
         // clipboard (and only allowed to set one) while it is focused. This is what makes
@@ -649,12 +770,184 @@ impl InoxState {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, window_location) = self.space.element_under(location)?;
-        let relative = location - window_location.to_f64();
-        let (surface, surface_location) = window.surface_under(relative, WindowSurfaceType::ALL)?;
-        let absolute = (window_location + surface_location).to_f64();
+        for layer in [Layer::Overlay, Layer::Top] {
+            if let Some(surface) = self.layer_under(layer, location) {
+                return Some(surface);
+            }
+        }
+        if let Some((window, window_location)) = self.space.element_under(location) {
+            let relative = location - window_location.to_f64();
+            if let Some((surface, surface_location)) =
+                window.surface_under(relative, WindowSurfaceType::ALL)
+            {
+                return Some((surface, (window_location + surface_location).to_f64()));
+            }
+        }
+        [Layer::Bottom, Layer::Background]
+            .iter()
+            .find_map(|layer| self.layer_under(*layer, location))
+    }
 
-        Some((surface, absolute))
+    fn layer_under(
+        &self,
+        layer: Layer,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        self.layers
+            .iter()
+            .rev()
+            .filter(|entry| entry.mapped && entry.surface.layer() == layer)
+            .find_map(|entry| {
+                let relative = location - entry.geometry.loc.to_f64();
+                entry
+                    .surface
+                    .surface_under(relative, WindowSurfaceType::ALL)
+                    .map(|(surface, offset)| (surface, (entry.geometry.loc + offset).to_f64()))
+            })
+    }
+
+    fn focus_at_pointer(&mut self) {
+        let Some((surface, _)) = self.surface_under(self.pointer_location) else {
+            return;
+        };
+        if let Some(entry) = self
+            .layers
+            .iter()
+            .find(|entry| entry.mapped && entry.surface.wl_surface() == &surface)
+        {
+            if entry.surface.can_receive_keyboard_focus() {
+                self.layer_focus = Some(surface);
+            }
+        } else if let Some(id) = self.window_id_for_surface(&surface) {
+            self.layer_focus = None;
+            self.workspace.focus(id);
+        }
+        self.sync_focus();
+    }
+
+    fn arrange_layers(&mut self) {
+        let output_area = Rectangle::from_size(self.output_size().into());
+        let mut area = output_area;
+        // Reservations precede neutral surfaces regardless of creation order.
+        for exclusive in [true, false] {
+            for layer in LAYER_ORDER {
+                for entry in self
+                    .layers
+                    .iter_mut()
+                    .rev()
+                    .filter(|entry| entry.committed && entry.surface.layer() == layer)
+                {
+                    let cached = entry.surface.cached_state();
+                    let reserves = matches!(
+                        cached.exclusive_zone,
+                        smithay::wayland::shell::wlr_layer::ExclusiveZone::Exclusive(_)
+                    );
+                    if reserves != exclusive {
+                        continue;
+                    }
+                    let source = if cached.exclusive_zone
+                        == smithay::wayland::shell::wlr_layer::ExclusiveZone::DontCare
+                    {
+                        output_area
+                    } else {
+                        area
+                    };
+                    entry.geometry = crate::layers::geometry(source, cached);
+                    let surface = entry.surface.layer_surface();
+                    surface.with_pending_state(|state| state.size = Some(entry.geometry.size));
+                    if entry.initial_configure.is_none() {
+                        entry.initial_configure = Some(surface.send_configure());
+                    } else {
+                        surface.send_pending_configure();
+                    }
+                    if entry.mapped {
+                        crate::layers::reserve(&mut area, cached);
+                    }
+                }
+            }
+        }
+        if self.work_area != area {
+            self.work_area = area;
+            self.arrange_windows();
+        }
+        self.sync_focus();
+    }
+
+    fn commit_layer(&mut self, surface: &WlSurface) {
+        let Some(entry) = self
+            .layers
+            .iter_mut()
+            .find(|entry| entry.surface.wl_surface() == surface)
+        else {
+            return;
+        };
+        let cached = entry.surface.cached_state();
+        if cached.size.w < 0 || cached.size.h < 0 {
+            entry.surface.layer_surface().shell_surface().post_error(
+                zwlr_layer_surface_v1::Error::InvalidSize,
+                "layer dimensions exceed the supported coordinate range",
+            );
+            return;
+        }
+        let has_buffer =
+            with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+        if has_buffer && !entry.acknowledged {
+            entry.surface.layer_surface().shell_surface().post_error(
+                zwlr_layer_surface_v1::Error::InvalidSurfaceState,
+                "a buffer requires acknowledgement of the initial configure",
+            );
+            return;
+        }
+        if entry.mapped && !has_buffer {
+            entry.mapped = false;
+            entry.committed = false;
+            entry.initial_configure = None;
+            entry.acknowledged = false;
+            entry
+                .surface
+                .with_surfaces(|surface, _| self.output.leave(surface));
+            let layer = entry.surface.layer();
+            with_states(surface, |states| {
+                let reset = LayerSurfaceCachedState {
+                    layer,
+                    ..Default::default()
+                };
+                *states
+                    .cached_state
+                    .get::<LayerSurfaceCachedState>()
+                    .current() = reset;
+                *states
+                    .cached_state
+                    .get::<LayerSurfaceCachedState>()
+                    .pending() = reset;
+            });
+        } else {
+            entry.committed = true;
+            entry.mapped = has_buffer;
+            if has_buffer {
+                entry
+                    .surface
+                    .with_surfaces(|surface, _| self.output.enter(surface));
+            }
+        }
+        self.arrange_layers();
+    }
+
+    fn remove_layer(&mut self, surface: &WlSurface) {
+        if let Some(index) = self
+            .layers
+            .iter()
+            .position(|entry| entry.surface.wl_surface() == surface)
+        {
+            let entry = self.layers.remove(index);
+            entry
+                .surface
+                .with_surfaces(|surface, _| self.output.leave(surface));
+            if self.layer_focus.as_ref() == Some(surface) {
+                self.layer_focus = None;
+            }
+            self.arrange_layers();
+        }
     }
 }
 
@@ -764,6 +1057,14 @@ impl CompositorHandler for InoxState {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        self.popups.commit(surface);
+        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
+            && !popup.is_initial_configure_sent()
+            && let Err(error) = popup.send_configure()
+        {
+            warn!(%error, "failed to configure popup");
+        }
+        self.commit_layer(surface);
 
         let Some(id) = self.window_id_for_surface(surface) else {
             return;
@@ -773,6 +1074,56 @@ impl CompositorHandler for InoxState {
             // Refresh the bounding box the space uses for hit-testing and tiling.
             window.on_commit();
         }
+    }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        self.remove_layer(surface);
+    }
+}
+
+impl WlrLayerShellHandler for InoxState {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        output: Option<WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        if let Some(output) = output
+            && Output::from_resource(&output).as_ref() != Some(&self.output)
+        {
+            surface.send_close();
+            return;
+        }
+        self.layers.push(LayerEntry {
+            surface: DesktopLayerSurface::new(surface, namespace),
+            geometry: Rectangle::default(),
+            committed: false,
+            mapped: false,
+            initial_configure: None,
+            acknowledged: false,
+        });
+    }
+
+    fn ack_configure(&mut self, surface: WlSurface, configure: LayerSurfaceConfigure) {
+        if let Some(entry) = self
+            .layers
+            .iter_mut()
+            .find(|entry| entry.surface.wl_surface() == &surface)
+            && entry
+                .initial_configure
+                .is_some_and(|initial| configure.serial >= initial)
+        {
+            entry.acknowledged = true;
+        }
+    }
+
+    fn layer_destroyed(&mut self, surface: LayerSurface) {
+        self.remove_layer(surface.wl_surface());
     }
 }
 
@@ -900,8 +1251,13 @@ impl XdgShellHandler for InoxState {
         self.add_window(surface);
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        // M2 does not track popups; they are rendered through their parent window.
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+        });
+        if let Err(error) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+            warn!(%error, "failed to track popup");
+        }
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
@@ -911,11 +1267,10 @@ impl XdgShellHandler for InoxState {
     fn reposition_request(
         &mut self,
         surface: PopupSurface,
-        _positioner: PositionerState,
+        positioner: PositionerState,
         token: u32,
     ) {
-        // Acknowledge the reposition so the client stops waiting; the geometry is
-        // unchanged because M2 does not place popups itself.
+        surface.with_pending_state(|state| state.geometry = positioner.get_geometry());
         surface.send_repositioned(token);
     }
 
@@ -998,6 +1353,7 @@ smithay::delegate_compositor!(InoxState);
 smithay::delegate_output!(InoxState);
 smithay::delegate_seat!(InoxState);
 smithay::delegate_xdg_shell!(InoxState);
+smithay::delegate_layer_shell!(InoxState);
 smithay::delegate_shm!(InoxState);
 smithay::delegate_viewporter!(InoxState);
 smithay::delegate_data_device!(InoxState);
