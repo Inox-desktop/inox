@@ -217,13 +217,13 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Client {
             wl_data_device::Event::Enter { serial, .. } => {
                 state.enters += 1;
 
-                if state.accept_offers {
-                    if let Some(offer) = state.offer.clone() {
-                        offer.accept(serial, Some(ACCEPTED_MIME.to_owned()));
-                        // The actions the target is willing to perform. Without one of
-                        // these the compositor never validates the drop.
-                        offer.set_actions(DndAction::Copy, DndAction::Copy);
-                    }
+                if state.accept_offers
+                    && let Some(offer) = state.offer.clone()
+                {
+                    offer.accept(serial, Some(ACCEPTED_MIME.to_owned()));
+                    // The actions the target is willing to perform. Without one of
+                    // these the compositor never validates the drop.
+                    offer.set_actions(DndAction::Copy, DndAction::Copy);
                 }
             }
             wl_data_device::Event::Leave => state.leaves += 1,

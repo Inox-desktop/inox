@@ -449,7 +449,7 @@ mod tests {
         );
         body.extend_from_slice(vendor.as_bytes());
 
-        while body.len() % 4 != 0 {
+        while !body.len().is_multiple_of(4) {
             body.push(0);
         }
 

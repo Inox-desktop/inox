@@ -374,7 +374,7 @@ pub fn to_ppm(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, PpmError>
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     ppm.reserve(pixels * 3);
 
-    for pixel in rgba[..expected].chunks_exact(RGBA_BYTES_PER_PIXEL) {
+    for pixel in rgba[..expected].as_chunks::<RGBA_BYTES_PER_PIXEL>().0 {
         ppm.extend_from_slice(&pixel[..3]);
     }
 
