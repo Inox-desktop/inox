@@ -21,6 +21,17 @@ inputs:
       be testing an empty frame. Only the crates that declare `iced` need it.
     required: false
     default: "false"
+  qt:
+    description: >-
+      Also install the Qt 6 development packages the QML/Qt Quick host needs
+      (ADR 0033 / ADR 0035). cxx-qt builds rust-side QObject bridges and its
+      build script resolves Qt through `pkg-config` (Qt6Core/Qt6Gui/Qt6Qml/
+      Qt6Quick/Qt6QmlModels), so every job that runs a build script that touches
+      a QML crate needs the dev packages — even when a job only type-checks.
+      qt6-wayland-dev pulls the Wayland client the L3 layer surfaces attach
+      with. Only the crates that declare `cxx-qt` need it.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -43,8 +54,11 @@ runs:
     - shell: bash
       run: |
         sudo apt-get update
+        # libpam0g-dev: `pam-sys`'s build script links -lpam and -lpam_misc, so
+        # every job that runs a build script needs the dev symlink even when it
+        # does not link a final binary (clippy and doc included). ADR 0029.
         sudo apt-get install -y --no-install-recommends \
-          libxkbcommon-dev xkb-data \
+          libxkbcommon-dev xkb-data libpam0g-dev \
           libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
         if [ "${{ inputs.fonts }}" = "true" ]; then
           sudo apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk
@@ -55,4 +69,17 @@ runs:
           # libgl1-mesa-dri provides the DRI drivers including the llvmpipe /
           # swrast software rasteriser behind LIBGL_ALWAYS_SOFTWARE=1.
           sudo apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri
+        fi
+        if [ "${{ inputs.qt }}" = "true" ]; then
+          # Qt 6 development + QML host for the Qt Quick migration (ADR 0035).
+          # qt6-base-dev / qt6-declarative-dev provide Qt6Core/Gui/Qml/Quick
+          # .pc files and headers (cxx-qt resolves them via pkg-config);
+          # qml6-module-quick is the QtQuick QML module itself (needed at runtime
+          # to load a `.qml` root offscreen). libqt6waylandclient6 + qt6-wayland-dev
+          # are the Wayland client the L3 layer surfaces attach through. No
+          # GPL-only Qt module (Qt Wayland Compositor etc.) is pulled here — see
+          # the license-audit job which asserts exactly that (ADR 0033/0034).
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev qt6-declarative-dev qml6-module-quick \
+            qt6-wayland-dev
         fi
