@@ -118,7 +118,7 @@ pub fn decode_ppm(bytes: &[u8]) -> Result<Ppm, PpmDecodeError> {
 /// avoids mistaking a `255\n` inside the width/height or the pixel data for the
 /// end of the header.
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
-    if !bytes.starts_with(b"P6") || bytes.get(2)? < &b'0' {
+    if !bytes.starts_with(b"P6") {
         return None;
     }
     let mut index = 3;
