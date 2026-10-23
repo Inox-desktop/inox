@@ -294,6 +294,78 @@ jobs:
           INOX_M3_E2E_REAL_APPS: "1"
         run: cargo test -p inox-integration --all-features -- --nocapture
 
+  waydriver-e2e:
+    # ADR 0036 decision 2 / acceptance D02: the waydriver host. A real Qt Quick
+    # client (`inox-qml-prototype`, cxx-qt) is composited by the real Inox
+    # compositor, screenshotted through the test-only `dump-frame` channel and
+    # asserted on pixels. Opt-in for the same reason the M3 job is: the default
+    # per-crate shard has neither the Qt Wayland platform plugin nor a
+    # `test-input` compositor build.
+    #
+    # Layer surfaces are NOT covered here and must not be claimed: `ubuntu-latest`
+    # is Ubuntu 24.04 (noble), whose archive carries only the Qt 5 `layer-shell-qt`
+    # (`liblayershellqtinterface-dev` 5.27.11-0ubuntu3) and no Qt 6 package, so
+    # `LayerShellQt::Window::get` cannot be built on this runner. The test records
+    # that blocker in `the_layer_surface_leg_is_blocked_on_the_ci_runner`; the
+    # surface this job asserts is a plain xdg_toplevel, per ADR 0036 §失败、恢复与安全.
+    name: waydriver host end-to-end (Qt Quick on Inox)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `egl` for the compositor's EGL/GLES render path (software llvmpipe),
+      # `qt` for the cxx-qt build script, the Qt 6 development packages and the
+      # Qt 6 Wayland *platform plugin* the client runs on. The package list lives
+      # only in the action, so this job and the `test` shards cannot drift apart.
+      - uses: ./.github/actions/system-deps
+        with:
+          egl: "true"
+          qt: "true"
+      # Record what the runner actually has, so the blocker recorded in the test
+      # is verifiable from the job log rather than only from the test comment.
+      - name: Record the LayerShellQt situation on this runner
+        run: |
+          echo "--- apt candidates for LayerShellQt ---"
+          apt-cache policy liblayershellqtinterface-dev \
+            liblayershellqtinterface6-dev || true
+          echo "--- pkg-config ---"
+          pkg-config --modversion LayerShellQtInterface 2>&1 || \
+            echo "LayerShellQtInterface is not available: the layer-surface leg of D02 stays blocked"
+          echo "--- the Qt 6 Wayland platform plugin ---"
+          ls -1 /usr/lib/x86_64-linux-gnu/qt6/plugins/platforms/ | grep -i wayland || {
+            echo "the Qt Wayland platform plugin is missing; the client cannot run" >&2
+            exit 1
+          }
+      # The tests drive the compositor as a process and find it next to their own
+      # executable, so the binary must be built first, with the non-default
+      # `test-input` feature that provides `--test-input` (ADR 0017 decision 7).
+      - name: Build the binaries under test
+        run: cargo build --workspace --features inox-compositor/test-input
+      # `qt6-wayland` (installed for the platform plugin) depends on the GPL-only
+      # Qt Wayland Compositor library. That library is allowed to exist on the
+      # runner but must never end up linked into an Inox binary: assert the Qt
+      # client we are about to run links only LGPL modules. This is the same
+      # invariant `license-audit` checks for the shell, applied here because this
+      # is the only job that installs the package which carries the GPL module.
+      - name: The Qt client links no GPL-only Qt module
+        run: |
+          set -euo pipefail
+          ldd target/debug/inox-qml-prototype > qml-prototype.ldd
+          if grep -E 'libQt6(WaylandCompositor|VirtualKeyboard|QmlCompiler|Scxml)' \
+              qml-prototype.ldd; then
+            echo "a GPL-only Qt module is linked into the Qt client" >&2
+            exit 1
+          fi
+          echo "inox-qml-prototype links only LGPL Qt modules:"
+          grep -oE 'libQt6[A-Za-z]+\.so' qml-prototype.ldd | sort -u
+      # E2 evidence (docs/quality/acceptance.md §1): the Inox compositor itself
+      # hosts the real Qt client; no third-party compositor stands in.
+      - name: Waydriver host end-to-end
+        env:
+          INOX_WAYDRIVER_E2: "1"
+        run: cargo test -p inox-integration --all-features --test waydriver_host -- --nocapture --test-threads=1
+
   session-e2e:
     name: L4 headless session
     runs-on: ubuntu-latest

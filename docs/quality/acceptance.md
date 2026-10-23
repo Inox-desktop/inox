@@ -18,6 +18,14 @@
 
 不在本地构建或运行产品测试；E4 使用 CI 产出的二进制，由人类完成并在 Issue 留证。E4 补充 CI 证据，不能替代失败的 CI。第三方 headless 合成器仅适合 E2；需要 layer-shell 等协议时必须提供相应宿主，不能假设 Weston 支持所有 Inox 所需协议。E3 必须使用 Inox 自己的合成器。
 
+### waydriver 宿主的当前状态（ADR 0036 决策 2，其验收表中的 D02）
+
+waydriver 宿主（真实 Qt Quick 表面在真实 Inox 合成器上被截图断言）的 **xdg_toplevel 腿已交付**：`crates/inox-integration/tests/waydriver_host.rs`（opt-in `INOX_WAYDRIVER_E2=1`，CI job `waydriver-e2e`）启动 `inox-compositor`（headless + `test-input`）与真实 Qt 6 客户端 `inox-qml-prototype`，经 `dump-frame` 解码 PPM 断言尺寸与像素。证据等级 E2：证明 Inox 能承载并合成真实 Qt 表面，**不**代表完整会话或真机。
+
+> 注意验收 ID 冲突：ADR 0036 验收表里的 **D02** 指「waydriver 宿主」，与本文 §6 的 **D02**（`inox-launcher`）不是同一项；引用时须带 ADR 编号。
+
+**layer 表面腿仍为 `blocked`，不得声明已生效。** LayerShellQt 在 Qt 侧包装 layer 表面需要 Qt 6 版开发包，而 CI runner（`ubuntu-latest` = Ubuntu 24.04 noble）只有 Qt 5 版 `liblayershellqtinterface-dev` 5.27.11-0ubuntu3，无 `liblayershellqtinterface6-dev`（据 Launchpad 发布 API 逐条核对：该二进制在 `noble/amd64` 无已发布记录）。因此 `waydriver_host.rs` 断言的只是普通 `xdg_toplevel`，测试内以 `the_layer_surface_leg_is_blocked_on_the_ci_runner` 把该阻塞写成可执行断言；按 ADR 0036 §失败、恢复与安全，**不得**用普通窗口伪装成已生效的 layer 放置。解除条件：runner 提供 LayerShellQt Qt 6（更新镜像或自建），届时该断言会失败并提示补齐真实 layer 证据。
+
 ## 2. 共用门槛与报告
 
 | ID | 适用范围 / 责任 crate | 通过条件 | 最低证据 |

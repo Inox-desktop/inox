@@ -49,6 +49,13 @@
   - 共享装置在 `tests/support/`：`mod.rs`（私有 runtime 目录、空闲显示号、子进程与进程组回收、注入套接字客户端、帧转储解码、布局期望值）、`wayland_client.rs`（真实 `wayland-client` 客户端）、`x11_client.rs`（基于 `x11rb` 的真实 X11 客户端）。
   - 全部等待有超时；就绪以注入套接字的 `ok`、就绪文件、套接字或客户端自身观察到的事件为准，不用固定 sleep 判定。
   - 同一二进制内的用例各自开一个会话（私有 runtime/显示号/socket），并以进程内互斥串行执行，避免争抢同一个空闲显示号。
+- **waydriver 宿主（D02，ADR 0036 决策 2）**位于 `tests/waydriver_host.rs`，共享装置在 `tests/support/waydriver.rs`。
+  - 用途：证明「**真实 Qt Quick 表面**运行在**真实 Inox 合成器**上，并被截图断言」——这是后续 L3 组件成为真实 Qt 表面、被像素断言的前提。
+  - 开关：`INOX_WAYDRIVER_E2=1`；未设置时每个用例打印一行 `skipping` 并返回。设置后缺失前置（二进制、Qt Wayland 平台插件）**失败**，不静默跳过。
+  - 流程：启动 `inox-compositor --backend=headless --socket <NAME> --test-input <PATH>`（需 `--features inox-compositor/test-input` 构建）→ 以 `QT_QPA_PLATFORM=wayland` 启动 `inox-qml-prototype` → 有界轮询 `dump-frame` → 解码 PPM → 断言尺寸与像素 → 注入 `Escape` 让客户端经自身事件循环退出（断言退出码 0）→ `SIGTERM` 关停宿主（断言退出码 0、进程组清空）。
+  - 就绪判定**只**以合成器自己的帧为准（`Host::wait_for_frame` 轮询到预期像素），不用固定 sleep；客户端提前死亡会立刻带着它的日志失败。
+  - **未覆盖项（如实登记，不得声称已生效）**：layer 表面腿阻塞。CI runner 为 Ubuntu 24.04 noble，apt 只有 Qt 5 版 `liblayershellqtinterface-dev` 5.27.11-0ubuntu3，无 `liblayershellqtinterface6-dev`，因此 `LayerShellQt::Window::get` 无法在该 runner 上构建。测试内 `the_layer_surface_leg_is_blocked_on_the_ci_runner` 把该阻塞写成可执行断言。按 ADR 0036 §失败、恢复与安全，**不得**用普通窗口冒充已生效的 layer 放置。
+  - 命令：`cargo build --workspace --features inox-compositor/test-input`，然后 `INOX_WAYDRIVER_E2=1 cargo test -p inox-integration --all-features --test waydriver_host`。
 - M6 会在同一装置上扩展完整会话的兼容性用例（PRD §13）。
 
 ## 目录结构
@@ -61,6 +68,7 @@ crates/inox-integration/
   tests/m3_x11_window.rs     X01：真实 X11 客户端在 Inox 会话中的映射、平铺、resize、焦点与输入
   tests/m3_clipboard.rs      X02：X11↔Wayland 剪贴板逐字节一致、不支持类型、焦点授权、source 退出
   tests/m3_drag_and_drop.rs  X03：Wayland↔Wayland 拖放（跨 X11 边界那条腿见该文件模块文档的说明）
+  tests/waydriver_host.rs    D02：真实 Qt Quick 表面在真实 Inox 合成器上被截图断言（opt-in，layer 腿阻塞）
   tests/support/             上述用例的共享装置（见「测试要求」）
   README.md     本 crate 说明
   AGENTS.md     本文件（CLAUDE.md 是其符号链接）
