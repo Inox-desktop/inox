@@ -24,7 +24,13 @@ mod tests {
         assert!(diff.is_clean(), "{diff:?}");
         for tag in ["en-US", "zh-CN"] {
             let localizer = load(Locale::parse(tag).expect("locale")).expect("catalog");
-            assert_ne!(localizer.message("usage"), "usage");
+            for id in ["usage", "self-check", "blocked", "title", "user", "login"] {
+                assert_ne!(
+                    localizer.message(id),
+                    id,
+                    "message `{id}` must exist in both catalogs"
+                );
+            }
         }
     }
 }

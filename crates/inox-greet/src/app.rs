@@ -1,199 +1,184 @@
-//! The preview deliberately has no credential field or authentication transport.
-use crate::state::{Event, Greeter};
-use iced::{
-    Border, Color, Element, Length, Subscription, Task, Theme,
-    widget::{button, column, container, scrollable, text, text_input},
-};
-use inox_common::i18n::Localizer;
-use inox_config::{Rgba, Theme as Tokens};
-use std::{rc::Rc, time::Instant};
+//! Qt-free UI logic of the preview: the one place a QML event is interpreted.
+//!
+//! The QML surface only renders and emits [`Action`]s. Turning an action into a
+//! [`Greeter`] event — and every authentication/session decision that follows
+//! from it — stays here, in safe Rust (ADR 0036 §失败、恢复与安全). Credentials
+//! are not part of this type: the preview collects a public account name and
+//! nothing else, and the shipped binary always constructs the greeter with the
+//! reviewed transport unavailable.
 
-/// Preview UI state with its resolved language and design tokens.
-pub struct State {
-    greeter: Greeter,
-    localizer: Rc<Localizer>,
-    tokens: Tokens,
-    clear_focused: bool,
-}
-/// User actions; credentials are never part of a UI message.
-#[derive(Debug, Clone)]
-pub enum Message {
-    /// Edit a public account name.
-    Username(String),
+use std::time::Instant;
+
+use crate::state::{Command, Event, Greeter, valid_username};
+
+/// A user action from the preview surface.
+///
+/// There is deliberately no "submit credentials" variant: the login button is
+/// disabled and [`Action::Activate`] cannot start a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Edit the public account name.
+    EditUsername(String),
     /// Clear the identity.
-    Cancel,
-    /// Move the visible keyboard focus between the editable name and Clear.
-    FocusNext,
-    /// Activate the focused control; login remains disabled.
+    Clear,
+    /// Activate the focused control; login stays disabled.
     Activate,
 }
-impl State {
-    /// A preview with no authenticator attached.
-    pub fn new(localizer: Rc<Localizer>, tokens: Tokens) -> Self {
-        Self {
-            greeter: Greeter::new(false),
-            localizer,
-            tokens,
-            clear_focused: false,
-        }
-    }
-    /// Localized window title.
-    pub fn title(&self) -> String {
-        self.localizer.message("title")
-    }
-    /// Convert the configured semantic palette for Iced's built-in widgets.
-    pub fn theme(&self) -> Theme {
-        Theme::custom(
-            self.tokens.name.clone(),
-            iced::theme::Palette {
-                background: color(self.tokens.colors.background),
-                text: color(self.tokens.colors.text),
-                primary: color(self.tokens.colors.accent),
-                success: color(self.tokens.colors.success),
-                danger: color(self.tokens.colors.danger),
-                warning: color(self.tokens.colors.warning),
-            },
-        )
-    }
-}
-fn color(value: Rgba) -> Color {
-    Color::from_rgba8(value.r, value.g, value.b, f32::from(value.a) / 255.0)
+
+/// The explanation the surface shows below the account field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    /// Login is unavailable until the authentication boundary is reviewed.
+    Blocked,
+    /// The typed identity is not a valid account name.
+    InvalidUser,
 }
 
-/// Apply one UI action. There is no outgoing authentication request in preview mode.
-pub fn update(state: &mut State, message: Message) -> Task<Message> {
-    match message {
-        Message::FocusNext => {
-            state.clear_focused = !state.clear_focused;
-            return if state.clear_focused {
-                iced::widget::operation::focus("preview-clear")
-            } else {
-                iced::widget::operation::focus("username")
-            };
+impl Notice {
+    /// The Fluent message id that explains this notice.
+    pub fn message_id(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::InvalidUser => "invalid-user",
         }
-        Message::Activate if !state.clear_focused => return Task::none(),
-        _ => {}
-    }
-    let event = match message {
-        Message::Username(value) => {
-            state.clear_focused = false;
-            Event::Username(value)
-        }
-        Message::Cancel | Message::Activate => Event::Cancel,
-        Message::FocusNext => return Task::none(),
-    };
-    let cancelled = matches!(event, Event::Cancel);
-    state.greeter.apply(event, Instant::now());
-    if cancelled {
-        state.clear_focused = false;
-        iced::widget::operation::focus("username")
-    } else {
-        Task::none()
     }
 }
-/// Keyboard navigation for the two enabled controls. Escape clears the identity.
-pub fn subscription(_: &State) -> Subscription<Message> {
-    iced::keyboard::listen().filter_map(|event| {
-        use iced::keyboard::{Event, Key, key::Named};
-        match event {
-            Event::KeyPressed {
-                key: Key::Named(Named::Tab),
-                ..
-            } => Some(Message::FocusNext),
-            Event::KeyPressed {
-                key: Key::Named(Named::Enter | Named::Space),
-                ..
-            } => Some(Message::Activate),
-            Event::KeyPressed {
-                key: Key::Named(Named::Escape),
-                ..
-            } => Some(Message::Cancel),
-            _ => None,
-        }
-    })
+
+/// The preview's view model: the greeter state machine plus what QML shows.
+///
+/// The state machine is unchanged — this type only feeds it the events the
+/// surface produces and remembers which notice to render. It never executes a
+/// [`Command`]; the returned command is the contract a future reviewed
+/// transport would honour, and the preview drops it.
+#[derive(Debug)]
+pub struct Preview {
+    greeter: Greeter,
+    notice: Notice,
 }
-/// Draw the same preview tree used by the render tests.
-pub fn view(state: &State) -> Element<'_, Message> {
-    let t = &state.tokens;
-    let size = iced::Settings::default().default_text_size.0 * t.typography.scale;
-    let content = column![
-        text(state.localizer.message("title")).size(size),
-        text(state.localizer.message("preview"))
-            .size(size)
-            .color(color(t.colors.warning)),
-        text(state.localizer.message("user")).size(size),
-        text_input(&state.localizer.message("user"), state.greeter.username())
-            .id("username")
-            .on_input(Message::Username)
-            .style(move |theme, status| {
-                let mut style = text_input::default(theme, status);
-                style.background = color(t.colors.surface).into();
-                style.border.radius = f32::from(t.radii.md).into();
-                style.border.color = if matches!(status, text_input::Status::Focused { .. }) {
-                    color(t.colors.accent)
+
+impl Preview {
+    /// A preview with no authenticator attached.
+    ///
+    /// `Greeter::new(false)` is what keeps the preview from authenticating: with
+    /// the boundary unavailable, `Submit` is rejected by the state machine
+    /// itself, not by the UI.
+    pub fn new() -> Self {
+        Self {
+            greeter: Greeter::new(false),
+            notice: Notice::Blocked,
+        }
+    }
+
+    /// The account name being edited.
+    pub fn username(&self) -> &str {
+        self.greeter.username()
+    }
+
+    /// The explanation currently shown below the account field.
+    pub fn notice(&self) -> Notice {
+        self.notice
+    }
+
+    /// Whether the login control is enabled; always `false` without a reviewed
+    /// transport, including the rolling attempt limit.
+    pub fn can_login(&self, now: Instant) -> bool {
+        self.greeter.can_submit(now)
+    }
+
+    /// Apply one surface action and return the (never executed) transport command.
+    pub fn apply(&mut self, action: Action, now: Instant) -> Command {
+        let event = match action {
+            Action::EditUsername(value) => {
+                // The notice is derived from the value as typed: the greeter
+                // truncates an oversized identity, which can turn it into a
+                // syntactically valid name that is still rejected.
+                self.notice = if value.len() > 128 || (!value.is_empty() && !valid_username(&value))
+                {
+                    Notice::InvalidUser
                 } else {
-                    color(t.colors.border)
+                    Notice::Blocked
                 };
-                style.value = color(t.colors.text);
-                style.placeholder = color(t.colors.text_muted);
-                style.selection = color(t.colors.accent);
-                style
-            })
-            .size(size)
-            .padding(f32::from(t.spacing.sm)),
-        text(state.localizer.message("blocked")).size(size),
-        button(text(state.localizer.message("login")).size(size))
-            .padding(f32::from(t.spacing.sm))
-            .style(move |_, _| button::Style {
-                background: Some(color(t.colors.surface_variant).into()),
-                text_color: color(t.colors.text_muted),
-                border: Border {
-                    radius: f32::from(t.radii.md).into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-        button(text(state.localizer.message("cancel")).size(size))
-            .on_press(Message::Cancel)
-            .padding(f32::from(t.spacing.sm))
-            .style(move |_, status| button::Style {
-                background: Some(
-                    color(
-                        if matches!(status, button::Status::Hovered | button::Status::Pressed)
-                            || state.clear_focused
-                        {
-                            t.colors.accent
-                        } else {
-                            t.colors.surface_variant
-                        }
-                    )
-                    .into()
-                ),
-                text_color: color(
-                    if matches!(status, button::Status::Hovered | button::Status::Pressed)
-                        || state.clear_focused
-                    {
-                        t.colors.on_accent
-                    } else {
-                        t.colors.text
-                    }
-                ),
-                border: Border {
-                    radius: f32::from(t.radii.md).into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-    ]
-    .spacing(f32::from(t.spacing.md))
-    .padding(f32::from(t.spacing.lg));
-    container(scrollable(content))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(color(t.colors.background).into()),
-            text_color: Some(color(t.colors.text)),
-            ..Default::default()
-        })
-        .into()
+                Event::Username(value)
+            }
+            Action::Clear => {
+                self.notice = Notice::Blocked;
+                Event::Cancel
+            }
+            Action::Activate => Event::Submit,
+        };
+        let command = self.greeter.apply(event, now);
+        tracing::debug!(
+            notice = self.notice.message_id(),
+            ?command,
+            "preview action applied"
+        );
+        command
+    }
+}
+
+impl Default for Preview {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_preview_never_authenticates_or_starts_a_session() {
+        let now = Instant::now();
+        let mut preview = Preview::new();
+        assert!(!preview.can_login(now));
+        preview.apply(Action::EditUsername("alice".into()), now);
+        assert_eq!(preview.apply(Action::Activate, now), Command::None);
+        assert!(!preview.can_login(now));
+        assert_eq!(preview.username(), "alice");
+    }
+
+    #[test]
+    fn clearing_resets_the_identity_and_the_notice() {
+        let now = Instant::now();
+        let mut preview = Preview::new();
+        preview.apply(Action::EditUsername("alice".into()), now);
+        assert_eq!(preview.notice(), Notice::Blocked);
+        assert_eq!(preview.apply(Action::Clear, now), Command::None);
+        assert_eq!(preview.username(), "");
+        assert_eq!(preview.notice(), Notice::Blocked);
+    }
+
+    #[test]
+    fn an_invalid_or_oversized_identity_is_explained() {
+        let now = Instant::now();
+        for invalid in ["-user", "alice;id", "a b", "alice\n"] {
+            let mut preview = Preview::new();
+            preview.apply(Action::EditUsername(invalid.into()), now);
+            assert_eq!(
+                preview.notice(),
+                Notice::InvalidUser,
+                "{invalid:?} must be explained"
+            );
+        }
+
+        let mut preview = Preview::new();
+        preview.apply(Action::EditUsername("a".repeat(4096)), now);
+        assert_eq!(preview.notice(), Notice::InvalidUser);
+        assert_eq!(preview.username().len(), 128);
+        assert!(!preview.can_login(now));
+    }
+
+    #[test]
+    fn a_valid_name_keeps_the_blocked_notice() {
+        let now = Instant::now();
+        let mut preview = Preview::new();
+        preview.apply(Action::EditUsername("alice-1.test".into()), now);
+        assert_eq!(preview.notice(), Notice::Blocked);
+    }
+
+    #[test]
+    fn notice_ids_name_messages_that_exist_in_both_catalogs() {
+        assert_eq!(Notice::Blocked.message_id(), "blocked");
+        assert_eq!(Notice::InvalidUser.message_id(), "invalid-user");
+    }
 }
