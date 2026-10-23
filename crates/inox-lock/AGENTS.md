@@ -20,7 +20,7 @@
 - **凭据不出安全边界。** 明文只能经 `credential::Secret::expose` 取出，其唯一调用方是发往认证边界的 `contract::AuthAttempt`；禁止把凭据写入日志、通知、剪贴板或截图，禁止给 `Secret` 加 `Clone`/`PartialEq`/`Deref`/`AsRef<str>`。凭据在**取消、UI 隐藏或退出、解锁与挂起**时清零（ADR 0015：UI 隐藏、取消、切换用户/认证器或挂起时清理敏感输入，不依赖动画结束）。改 `app::update` 时，新增任何会让会话离开屏幕的路径都必须先清零——`Message::SuspendRequested` 与 `Message::UiExited` 都是这么做的。
 - **限流文案不含计时。** 「还剩几次」「还要等 37 秒」都是限流器的内部状态，不得出现在任何面向用户的字符串里；等待时长只属于 `attempts::AttemptLimiter`，供调度者使用。
 - **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`tests/catalog.rs` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」，所以新增/删除文案必须两边一起改。
-- **颜色、尺寸、间距、圆角只来自 `inox_config::Theme`。** `view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；界面宽度用 `Length::FillPortion` 的比例（无量纲），字号由 `typography.scale` 乘 iced 自己的默认字号推出。
+- **颜色、尺寸、间距、圆角只来自 `inox_config::Theme`。** `view.rs` 与 `theme.rs` 里没有**设计色与设计尺寸**的字面量（结构性哨兵如 `Color::TRANSPARENT`、边框宽 `0.0` 除外）；界面宽度用 `Length::FillPortion` 的比例（无量纲），字号四角色由 `spacing.lg × typography.scale` 派生，倍数为 1.5 / 1.25 / 1.0 / 0.875，hairline 为 `spacing.xs / 2`，焦点环为 `spacing.xs`（`docs/quality/ui-guidelines.md` §1–§2）。
 - **掩码不是文本框。** 凭据字段画的是由**长度**推出的掩码，按键经 `app::key_binding` 以消息到达；不得把明文交给 iced 的 `text_input`（它持有本 crate 无法清零的 `String`，并提供复制粘贴）。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 依赖 L1：`inox-common`（i18n）、`inox-config`（设计令牌）；ADR 0022 决策 7 之后**另有一条向下的 L3 → L2 边**：`inox-protocols`（`ext-session-lock-v1` 与 `inox-ipc` 绑定）、`wayland-client` 与 `calloop`（协议腿的事件循环）、`rustix`（`memfd_create`，锁帧的共享内存）。**不得**新增 L3 依赖或依赖 `inox-compositor`（ADR 0013、ADR 0018 不变）；令牌映射与 Fluent 装配在每个 L3 组件里各有一份，这是 ADR 0018 明确接受的成本。
 - 新增依赖前先确认依赖方向合法（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。

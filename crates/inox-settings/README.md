@@ -72,4 +72,4 @@ INOX_SCREENSHOT_DIR=/tmp/inox-shots cargo test -p inox-settings --test render
 [ADR 0024](../../docs/adr/0024-settings-coverage-and-input-method-preferences.md)。
 开发遵循根级与本 crate 的 `AGENTS.md`，提交 scope 为 `settings`。
 
-BSD 3-Clause，见仓库根的 `LICENSE`。
+LGPL-3.0，见仓库根的 `LICENSE`。

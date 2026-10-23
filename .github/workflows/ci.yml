@@ -315,12 +315,62 @@ jobs:
           INOX_FCITX5_E2E: "1"
         run: dbus-run-session -- cargo test -p inox-compositor --all-features --test input_method -- --nocapture
 
-  book:
-    name: mdbook
+  license-audit:
+    # ADR 0034 / ADR 0033: cargo-deny only sees the Cargo dependency graph and
+    # cannot audit the system Qt `.so` the runtime links. After the Qt-quick
+    # migration the project is LGPLv3 and must never pull GPL-only Qt modules
+    # (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler — see
+    # ADR 0033 §"Qt 许可的客观事实"). This job installs the exact system
+    # packages the shell links, then asserts (a) the apt-provided Qt modules are
+    # present for the build and (b) at runtime `ldd` resolves only the declared
+    # Qt modules and none of the forbidden GPL-only ones.
+    name: license-audit (system Qt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: latest
-      - run: mdbook build docs/book
+      - name: Install system Qt (LGPL route, ADR 0033)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev qt6-declarative-dev \
+            qml6-module-quick qml6-module-quick-window \
+            libqt6waylandclient6 qt6-wayland-dev
+          # GPL-only modules must NOT be present: their presence means a build
+          # could silently link a GPL dependency into the LGPL project.
+          if dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard|qtdeclarative-scxml' >/dev/null; then
+            echo "a GPL-only Qt module is installed; refusing" >&2
+            dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard'
+            exit 1
+          fi
+      - name: Assert only LGPL Qt modules are linked (ldd)
+        run: |
+          # Compile a trivial Qt Quick program against the installed LGPL modules
+          # and assert its runtime link set stays within the LGPL allow-list.
+          set -euo pipefail
+          cat > /tmp/linkcheck.cpp <<'CPP'
+          #include <QGuiApplication>
+          #include <QQmlApplicationEngine>
+          int main(int argc, char **argv) {
+              QGuiApplication app(argc, argv);
+              QQmlApplicationEngine engine;
+              return app.exec();
+          }
+          CPP
+          QT_PKG=$(pkg-config --cflags --libs Qt6Gui Qt6Qml Qt6Quick)
+          # shellcheck disable=SC2086
+          c++ /tmp/linkcheck.cpp -o /tmp/linkcheck $QT_PKG
+          ldd /tmp/linkcheck > /tmp/linkcheck.ldd || true
+          # Every linked Qt library must be one allowed LGPL module.
+          grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u
+          while read -r mod; do
+            case "$mod" in
+              libQt6Core|libQt6Gui|libQt6Qml|libQt6Quick)
+                echo "OK (LGPL): $mod"
+                ;;
+              *)
+                echo "FORBIDDEN GPL-only Qt module linked: $mod" >&2
+                exit 1
+                ;;
+            esac
+          done < <(grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u)
+          echo "license-audit: only LGPL Qt modules linked"

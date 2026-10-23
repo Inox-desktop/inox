@@ -13,6 +13,10 @@
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - 工作区内依赖（`inox-common`）是**path 依赖**：在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用（根级 §8）。path 依赖必须带显式 `version`，否则会被 `deny.toml` 的 `[bans] wildcards = "deny"` 判为通配符依赖。注意 L1 内部存在 `inox-config → inox-common` 的同层顺序，该边登记在 `[workspace.metadata.inox.rules] same_layer_exceptions` 中。
 - 所有配置结构体必须带 `#[serde(deny_unknown_fields)]`：拼写错误不得被静默忽略（根级 §13）。
+- **`wallpapers::BUNDLED` 是目录清单，不是文件列表**：它只回答「有哪些内置壁纸、叫什么标识、装成什么文件名、
+  署名给谁」，**不含路径**——文件装在哪里是运行时事实，由 `inox_common::paths` 解析（ADR 0030）。
+  标识一经发布不得更改（用户会写进配置）；`BACKGROUND_ID` 是「主题背景」的保留取值，不得与任何标识相同，
+  `DEFAULT_ID` 必须在清单中（均由单元测试强制）。
 - `config.toml` 与组件配置文件缺失一律回退默认值；文件存在但读取或解析失败必须报错，不得吞掉。
   主题文件（`themes/<name>/theme.toml`）缺失是**错误**（`ThemeNotFound`）：显式选择却读不到，
   不得静默换成内置主题。
@@ -20,7 +24,17 @@
   `notifications.toml`（`src/notifications.rs`）的字段模型随各自的消费者一并落地；仍然没有消费者的
   字段不得臆造。
 - `panel.clock_format` 只接受 `CLOCK_DIRECTIVES` 列出的指令子集，**不是** strftime 透传：其它 `%x`
-  与结尾的孤立 `%` 都在解析期报错，不得原样透传给面板。
+  与结尾的孤立 `%` 都在解析期报错，不得原样透传给面板。`menubar.clock_format` 走同一套校验，
+  且错误信息必须点名 `menubar.clock_format` 而不是 `panel.clock_format`。
+- `panel.surface` 只接受 `taskbar` / `menubar` / `dock`（`PanelSurface`，默认 `taskbar`）：它决定面板
+  进程画哪一种表面。`[menubar]`（height 8..=256、margin 0..=64、exclusive、show_app_name、
+  show_clock、clock_format、show_tray）与 `[dock]`（icon_size 8..=128、margin 0..=64、
+  exclusive 默认 false、autohide、show_tray）是这两者的独立 section；三者呈现同一份
+  任务/托盘/时钟数据，所以只允许出现**当下有消费者**的字段。
+- 主题的 `glass` 令牌组（`tint` / `tint_strong` / `highlight` / `shade` / `blur`）必须带
+  `#[serde(default)]`：在它出现之前写下的 `theme.toml` 仍要能解析，缺 `[glass]` 时继承内置深色玻璃；
+  `blur = 0` 是「不做背景模糊」的显式取值而不是错误。浅色与深色内置主题都要给出真实取值，
+  且 `tint.a < 0xff`（玻璃是半透明，不是不透明表面）。
 - `config.toml` 的 `[locale]` 是会话唯一的语言解析点：`LocaleConfig::resolve` 先 `Locale::parse`
   再 `Locale::negotiate`，任何语言都落到 Inox 实际提供的目录上；标签不合法在解析期报错，
   不得静默回退（`resolve` 只对**未经解析**的手工构造值兜底）。POSIX 的 `C` / `POSIX` 在配置文件里
@@ -86,12 +100,17 @@
   - `shell` / `notifications` 的**每一项默认值**（空文档与各 section 的 `Default`），以及只写一个
     section、section 写空时的部分回退；
   - shell 与 notifications 每个范围各自的越界用例（报 `Parse`、字段路径形如 `panel.height`、
-    `launcher.max_results`、`display.width`、`queue.max_pending`、`timeouts.critical_ms`，带文件与行号）
-    与边界取值被接受；
+    `launcher.max_results`、`menubar.height`、`dock.icon_size`、`display.width`、`queue.max_pending`、
+    `timeouts.critical_ms`，带文件与行号）与边界取值被接受；
+  - `[menubar]` / `[dock]` 的**每一项默认值**、只写一个 section 的部分回退、未知键被拒绝且字段路径
+    形如 `menubar.heigth` / `dock.icon`，以及只写 `[panel] surface = "dock"` 的最小文档能解析；
   - 时钟格式：`CLOCK_DIRECTIVES` 的每个指令与 `%%` 被接受，`%Q`、结尾的孤立 `%`、以及合法文本
-    中间的非法指令被拒绝；
+    中间的非法指令被拒绝；`menubar.clock_format` 走同一套规则，且错误信息点名的是它自己；
+  - 玻璃令牌：缺 `[glass]` 的旧 `theme.toml` 仍解析为深色玻璃、部分 `[glass]` 保留其余字段、
+    未知子键报 `Parse`、两套内置主题的 `blur` 非零且 `tint` 半透明；
   - shell / notifications 的未知键与未知 section 报 `Parse` 并给出点分字段路径；
-  - 枚举拼写：`top`/`bottom`、`fill`/`tile`、`top-right`、`coalesce-by-app` 被接受，未知值被拒绝；
+  - 枚举拼写：`top`/`bottom`、`taskbar`/`menubar`/`dock`、`fill`/`tile`、`top-right`、`coalesce-by-app`
+    被接受，未知值被拒绝；
   - `locale`：缺席为 `None`、合法标签被解析并协商、非法标签报 `Parse` 且字段为 `locale.language`、
     `resolve()` 在 `None` 时跟随环境（经 `Locale::from_env_with` 注入验证，测试不得改进程环境）；
   - `InoxConfig::load`：`shell.toml` / `notifications.toml` 缺席（默认）与损坏（`Parse` 带各自文件
@@ -110,7 +129,8 @@ src/paths.rs        ConfigPaths：PRD §9.1 的目录布局
 src/root.rs         config.toml 模型（组件路径、环境、主题选择、locale）
 src/theme.rs        设计令牌、内置主题与主题解析
 src/compositor.rs   compositor.toml 模型
-src/shell.rs        shell.toml 模型（面板、启动器、壁纸）
+src/wallpapers.rs   内置壁纸清单（标识/文件/作者/来源/许可、默认与保留取值）
+src/shell.rs        shell.toml 模型（面板表面、菜单栏、Dock、启动器、壁纸）
 src/notifications.rs notifications.toml 模型（显示、超时、队列、策略）
 src/store.rs        InoxConfig::load 与 ConfigStore 热重载
 tests/              集成测试（按需创建）

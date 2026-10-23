@@ -6,4 +6,4 @@ L4 可选登录组件，包含登录生命周期模型及显式 Iced 预览。`i
 
 详见 [ADR 0021](../../docs/adr/0021-l4-session-services.md)。CI 验证旧/重复/超时成功不能启动、失败/取消/限流、默认拒绝登录，以及双主题/双语言/200% 字号的真实控件树离屏像素。真实 greeter 宿主、waydriver 与 AT-SPI 桥仍待实现。本地仅 fmt/check/clippy，测试验收以 CI 为准。
 
-许可证 BSD 3-Clause，见根 LICENSE。
+许可证 LGPL-3.0，见根 LICENSE。

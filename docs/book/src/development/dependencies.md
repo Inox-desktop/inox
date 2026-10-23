@@ -55,7 +55,7 @@ cargo test -p inox-integration --test layering
 
 ### 许可证白名单
 
-仅允许 BSD / MIT / Apache-2.0 / ISC / Zlib 等宽松许可证；**禁止 GPL / AGPL / SSPL 进入核心依赖**。由单一 `cargo deny check` 强制，同时检查 RUSTSEC 漏洞与重复版本。
+允许宽松许可 + LGPL（项目本身 LGPL-3.0，ADR 0034）；**禁止 AGPL / SSPL 进入核心依赖**，并禁止 GPL-only 的 Qt 模块（Qt Wayland Compositor、Qt Virtual Keyboard、Qt QML Compiler）。由单一 `cargo deny check` 检查 Cargo 依赖图；系统库许可由独立的 `license-audit` CI job 校验。
 
 **检查范围是完整依赖图**，而不是旧方案中 18 份 `deny.toml` 各自看到的子图；因此迁移后可能出现此前被分割掩盖的真实告警，这类告警应逐条处理，不得靠放宽白名单消除。
 

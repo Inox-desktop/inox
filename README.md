@@ -5,7 +5,7 @@
 名称取自「不锈钢」(Inox)，与 Rust 的「锈」形成反差，寓意坚固、耐腐蚀、长期可维护。
 
 - **组织**：<https://github.com/Inox-desktop>
-- **许可证**：BSD 3-Clause（见 [`LICENSE`](./LICENSE)）
+- **许可证**：LGPL-3.0（见 [`LICENSE`](./LICENSE)）
 - **本仓库**：`inox` 单仓库（Cargo workspace：产品代码、PRD、ADR、文档站点）
 
 产品质量要求见 [PRD 1.3](./PRD.md)、[桌面验收规范](./docs/quality/acceptance.md)与[验收报告模板](./docs/quality/acceptance-report.md)。本轮参考 [Plasma Desktop 固定快照](./docs/quality/plasma-reference.md)，新增 [ADR 0011–0015](./docs/adr/README.md) 均为 proposed，待人类评审；文档中的新门槛不代表 CI 已接线或产品已通过。
@@ -25,7 +25,7 @@ Inox 是一个现代 Wayland 桌面环境，目标是构建模块化、可维护
 - 最大化利用 Rust 生态中成熟的合成器库与 GUI 框架（Smithay / Iced / calloop）。
 - 通过单一职责的 crate 实现清晰的模块边界，既能局部开发与局部测试（`cargo test -p <crate>`），又允许跨 crate 的改动在一个 PR 内原子完成。
 - 建立以 GitHub Actions 为核心的持续集成流水线，作为唯一的构建验证途径。
-- 采用 BSD 3-Clause 许可证，保持开源友好。
+- 采用 LGPL-3.0 许可证，保持开源友好并与 Qt 生态同族。
 
 ### 非目标
 
@@ -197,7 +197,7 @@ Inox 采用 **AI-first** 工作流，贡献流程如下：
 - 默认禁止 `unsafe`（仅 `inox-compositor` / `inox-xwayland` 的 FFI 胶水代码可例外，需 `// SAFETY:` 注释）。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一用 `tracing`，禁止 `println!` / `eprintln!`。
-- 依赖许可证白名单：仅 BSD/MIT/Apache-2.0/ISC/Zlib 等宽松许可；禁止 GPL/AGPL/SSPL。
+- 依赖许可证白名单：允许宽松许可 + LGPL；项目本身 LGPL-3.0；禁止 AGPL/SSPL，禁止 GPL-only 的 Qt 模块。
 - 用户可见文案必须走 Fluent，禁止硬编码；组件只消费主题令牌（design tokens），禁止硬编码颜色/尺寸。
 - 代码注释与标识符用英文；面向人的文档（`README.md` / `AGENTS.md`）用中文。
 
@@ -228,6 +228,6 @@ CI 的测试矩阵由层级表推导，每个分片执行的正是上表的 `car
 
 ## 7. 许可证
 
-本项目采用 **BSD 3-Clause** 许可证，版权归 Inox Desktop 贡献者所有。仓库根目录的 [`LICENSE`](./LICENSE) 覆盖工作区内全部 crate。
+本项目采用 **LGPL-3.0** 许可证，版权归 Inox Desktop 贡献者所有（ADR 0034）。仓库根目录的 [`LICENSE`](./LICENSE) 覆盖工作区内全部 crate。
 
-依赖许可证白名单与校验由 `cargo-deny` 强制执行（仅允许 BSD/MIT/Apache-2.0/ISC/Zlib 等宽松许可，禁止 GPL/AGPL/SSPL 进入核心依赖）。
+依赖许可证白名单与校验由 `cargo-deny` 强制执行（允许宽松许可 + LGPL）；GPL-only 的 Qt 模块（Qt Wayland Compositor、Qt Virtual Keyboard、Qt QML Compiler）禁止引入（ADR 0033）。系统库许可由独立的 `license-audit` CI job 校验（`cargo-deny` 管不到系统 Qt `.so`）。

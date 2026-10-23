@@ -6,4 +6,4 @@ L4 空闲监视器，使用 `ext-idle-notify-v1` 的 inhibitor-respecting 通知
 
 设计与审查前提见 [ADR 0021](../../docs/adr/0021-l4-session-services.md)、[ADR 0015](../../docs/adr/0015-session-lock-and-failure-boundaries.md)。CI 覆盖策略、缺能力拒绝以及真实 Wayland 线协议的 idled/resumed 往返；不代表 S03 的真实挂起/恢复通过。本地仅 fmt/check/clippy，测试与验收交给 CI。
 
-许可证 BSD 3-Clause，见根 LICENSE。
+许可证 LGPL-3.0，见根 LICENSE。

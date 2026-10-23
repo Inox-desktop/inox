@@ -13,10 +13,11 @@
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - 本 crate **被工作区内的其他 crate 消费**：`inox-compositor`、`inox-config`、`inox-xwayland` 都依赖它。依赖是工作区内的 path 依赖（根级 §8），因此破坏性变更会在**同一次 CI** 中暴露给全部下游，不存在「下游仍锁在旧版本」的漂移窗口——这也意味着改动本 crate 的公开 API 时必须同时修好全部消费者。
 - 新增模块只在**出现真实消费者**时引入（依赖排期见 [ADR 0004](../../docs/adr/0004-m0-skeleton-and-dependency-policy.md)）：不接受为「以后可能要用」而提前声明抽象或依赖。
+- **`secret::Secret` 是全工作区唯一的凭据缓冲实现**（ADR 0029 §1.4）。它的三条不变量（清零、不可打印、唯一出口）是安全属性：**不得**给它加 `Clone` / `PartialEq` / `Deref` / `AsRef`，**不得**在 `Debug`/`Display` 里输出值或长度。`inox-greet`（登录）与 `inox-auth`（边界）已经消费它；`inox-lock` 目前仍有自己的一份（解锁路径未接），两份必须保持同一组规则，**解锁路径落地时把锁屏那份换成这里这一份**。
 
 ## 主要依赖
 
-`tracing`, `tracing-subscriber`（`env-filter`）, `thiserror`
+`tracing`, `tracing-subscriber`（`env-filter`）, `thiserror`, `zeroize`（`secret` 模块：口令缓冲在清零与 drop 时归零）
 
 `i18n` 模块另外依赖 `fluent-bundle`、`fluent-syntax` 与 `unic-langid`（Apache-2.0 OR MIT / MIT OR
 Apache-2.0）：`fluent-syntax` 直接使用是为了让目录一致性检查（id 与占位符）走解析后的 AST，
@@ -45,7 +46,7 @@ Apache-2.0）：`fluent-syntax` 直接使用是为了让目录一致性检查（
 - 纯逻辑必须有单元测试（`#[cfg(test)]`）。
 - 测试代码不受“禁止 unwrap/expect/panic”约束。
 - `logging` 模块的单元测试覆盖：显式指令优先、缺失/空白回退默认、首尾空白 trim、非法指令报错并携带原指令。
-- `paths` 模块的单元测试覆盖：绝对路径直达、空值与相对路径被忽略并回退到默认、各基础目录的规范默认值、`$HOME` 缺失/空/相对时报错、`$XDG_RUNTIME_DIR` 无回退、`<base>/inox` 嵌套、非 XDG 变量被忽略且后出现的取值生效。
+- `paths` 模块的单元测试覆盖：绝对路径直达、空值与相对路径被忽略并回退到默认、各基础目录的规范默认值、`$HOME` 缺失/空/相对时报错、`$XDG_RUNTIME_DIR` 无回退、`<base>/inox` 嵌套、非 XDG 变量被忽略且后出现的取值生效；数据目录回退链为 `$XDG_DATA_HOME` → `$XDG_DATA_DIRS` 的每一项（空项按规范跳过）→ 规范默认，壁纸目录是这些基目录下的 `inox/wallpapers`，并接受 `$INOX_WALLPAPER_DIR`（绝对路径）作为最先搜索的目录。
 - **`XdgEnv::from_process` 不做单元测试**：edition 2024 下 `std::env::set_var` 是 `unsafe`，而本 crate `forbid(unsafe_code)`，测试中改写进程环境不可行；因此解析逻辑全部经 `XdgEnv::from_pairs` 注入快照来验证，`from_process` 只负责取值这一层薄封装。
 - `cargo test --all-features` 必须保持全绿。
 
