@@ -249,7 +249,7 @@ mod tests {
             decode_ppm(b"P6\n0 1\n255\n"),
             Err(PpmDecodeError::InvalidField)
         );
-        let bytes = format!("P6\n1000001 1\n255\n").into_bytes();
+        let bytes = b"P6\n1000001 1\n255\n".to_vec();
         assert!(matches!(
             decode_ppm(&bytes),
             Err(PpmDecodeError::TooLarge {

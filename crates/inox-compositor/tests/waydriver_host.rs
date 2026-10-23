@@ -178,7 +178,7 @@ impl ControlClient {
     fn command(&mut self, line: &str) -> bool {
         // The compositor only parses a complete line, so every command is
         // terminated with a newline (test_input.rs `read_available`).
-        write!(self.stream, "{line}\n").expect("failed to write the control command");
+        writeln!(self.stream, "{line}").expect("failed to write the control command");
         // The reply is at most a handful of bytes — "ok\n" or "err <message>\n" —
         // always one line. Loop until the newline, retrying a timed-out or
         // interrupted read, and fail the test once the deadline passes.
@@ -244,7 +244,7 @@ fn assert_matches_clear_scene(ppm: &Ppm, width: u32, height: u32, tolerance: u8)
         "the frame geometry must match the headless output"
     );
     let expected = scene::CLEAR_RGBA;
-    for (pixel_index, pixel) in ppm.pixels.chunks_exact(3).enumerate() {
+    for (pixel_index, pixel) in ppm.pixels.as_chunks::<3>().0.iter().enumerate() {
         for channel in 0..3 {
             let actual = pixel[channel];
             let want = expected[channel];
