@@ -10,7 +10,7 @@
 | 属性测试 | `proptest` | 窗口管理与布局算法 | 合成器、Shell 的布局与窗口簿记 |
 | headless 集成测试 | `cargo test` + 软件渲染 | 合成器输出创建、渲染、输入、协议 | `inox-compositor` |
 | GUI 测试（离屏） | `iced_tiny_skia` + `iced_runtime::UserInterface` | 真实控件树的布局、绘制像素与事件处理 | L3 组件（已落地，见下） |
-| GUI 测试（虚拟合成器） | `waydriver` | 组件在真实合成器中的表面、焦点与截图 | L3 组件（待 layer-shell 宿主可用） |
+| GUI 测试（真实合成器宿主） | `inox-compositor` + Qt Quick 客户端 | 组件在真实合成器中的表面、像素与退出 | L3 组件（xdg_toplevel 腿已落地；layer 表面腿阻塞，见下） |
 | 性能测试 | Tracy | 帧时间、输入延迟 | 性能预算验证（PRD §8） |
 | 依赖安全 | `cargo-deny` | 许可证、漏洞、重复版本 | 工作区 CI 的 `deny` job（完整依赖图） |
 | 静态检查 | clippy、fmt | 全部代码 | 工作区 CI 的 `clippy` / `fmt` job |
@@ -59,8 +59,19 @@ let pixels = Headless::screenshot(&mut renderer, Size::new(1280, 32), 1.0, Color
 3. 运行测试的机器必须装有至少一种字体：文本经 cosmic-text 布局，没有字体时标签会渲染为空，
    像素断言会变成在断言一张空帧（CI 的 `test` 分片为此安装 `fonts-dejavu-core`）。
 
-`waydriver` 仍在计划中，用于在虚拟合成器中做端到端 GUI 验证；它需要宿主支持组件所需的协议，
-因此排在 layer-shell 宿主之后。
+**真实合成器宿主（ADR 0036 的 M02）已落地**：`crates/inox-integration/tests/waydriver_host.rs`（opt-in
+`INOX_WAYDRIVER_E2=1`，CI job `waydriver-e2e`）在 **Inox 自己的** headless 合成器上启动真实 Qt 6 客户端，
+经合成器的测试专用 `dump-frame` 通道读回像素并断言。宿主是 `inox-compositor` 而不是第三方合成器：
+验收规范 §1 规定第三方 headless 合成器只够 E2，且宿主必须支持组件所需的协议。
+
+两条如实登记的边界：
+
+1. 断言对象是普通 `xdg_toplevel`。**layer 表面腿仍阻塞**：`LayerShellQt::Window::get` 需要 Qt 6 版
+   LayerShellQt，而 CI runner（`ubuntu-latest` = Ubuntu 24.04 noble）的归档只有 Qt 5 版
+   `liblayershellqtinterface-dev` 5.27.11，没有 Qt 6 对应包。测试内
+   `the_layer_surface_leg_is_blocked_on_the_ci_runner` 把该阻塞写成可执行断言；按 ADR 0036
+   §失败、恢复与安全，不得用普通窗口冒充已生效的 layer 放置。
+2. 它证明 Inox 能承载并合成真实 Qt 表面（E2），不代表完整会话或真机。
 
 ## 合成器测试的注意事项
 
@@ -88,5 +99,5 @@ let pixels = Headless::screenshot(&mut renderer, Size::new(1280, 32), 1.0, Color
 
 - 新的纯逻辑 → 单元测试；属于核心算法（窗口管理、布局）的 → 补 `proptest` 不变量。
 - 新的合成器能力 → 在 headless 路径上补集成测试，断言可观测状态而非日志。
-- 新的 Shell 界面 → M4 起用 `waydriver` 在虚拟合成器（`weston --backend=headless`）中启动、截图并断言。
+- 新的 Shell 界面 → 用真实合成器宿主（`INOX_WAYDRIVER_E2=1`，见上）启动、截图并断言；迁移到 QML 的组件另需按其 `AGENTS.md` 补 headless 的 QML 加载证据。
 - 性能相关的改动若引入可测量的回退，需要在 PR 中给出 Tracy 证据（PRD §8）。

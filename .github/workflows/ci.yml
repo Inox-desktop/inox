@@ -295,7 +295,7 @@ jobs:
         run: cargo test -p inox-integration --all-features -- --nocapture
 
   waydriver-e2e:
-    # ADR 0036 decision 2 / acceptance D02: the waydriver host. A real Qt Quick
+    # ADR 0036 decision 2 / acceptance M02: the waydriver host. A real Qt Quick
     # client (`inox-qml-prototype`, cxx-qt) is composited by the real Inox
     # compositor, screenshotted through the test-only `dump-frame` channel and
     # asserted on pixels. Opt-in for the same reason the M3 job is: the default
@@ -331,7 +331,7 @@ jobs:
             liblayershellqtinterface6-dev || true
           echo "--- pkg-config ---"
           pkg-config --modversion LayerShellQtInterface 2>&1 || \
-            echo "LayerShellQtInterface is not available: the layer-surface leg of D02 stays blocked"
+            echo "LayerShellQtInterface is not available: the layer-surface leg of M02 stays blocked"
           echo "--- the Qt 6 Wayland platform plugin ---"
           ls -1 /usr/lib/x86_64-linux-gnu/qt6/plugins/platforms/ | grep -i wayland || {
             echo "the Qt Wayland platform plugin is missing; the client cannot run" >&2

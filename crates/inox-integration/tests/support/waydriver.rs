@@ -2,7 +2,7 @@
 //!
 //! ADR 0036 decision 2 asks for a reusable harness that starts a real L3 Qt surface
 //! on a real compositor host, screenshots it and asserts on the pixels. This module
-//! is that harness; `tests/waydriver_host.rs` is its first user (acceptance D02).
+//! is that harness; `tests/waydriver_host.rs` is its first user (acceptance M02).
 //!
 //! It is deliberately built on the same primitives as the M3 harness rather than on
 //! a second, parallel one: [`RuntimeDir`] gives every run a private `XDG_RUNTIME_DIR`
@@ -16,7 +16,7 @@
 //!
 //! `docs/quality/acceptance.md` §1 states it plainly: a third-party headless
 //! compositor is only good enough for E2, and a host that does not implement a
-//! protocol the component needs cannot stand in for one that does. D02 is E1/E2
+//! protocol the component needs cannot stand in for one that does. M02 is E1/E2
 //! evidence about *Inox* hosting a real Qt surface, so the host is the workspace's
 //! own binary, built with the non-default `test-input` feature that provides
 //! `--test-input` (`crates/inox-compositor/src/test_input.rs`).
@@ -35,7 +35,7 @@
 //!   published binaries for `noble/amd64`.
 //!
 //! So the surface this harness asserts on is a plain `xdg_toplevel` — a real Qt Quick
-//! window on a real Inox compositor, which is genuine D02 evidence for "the harness
+//! window on a real Inox compositor, which is genuine M02 evidence for "the harness
 //! can drive a Qt surface and assert its pixels" — and the layer-surface leg stays a
 //! documented blocker. Per ADR 0036 §"失败、恢复与安全", the tests must not dress a
 //! plain window up as a layer placement that took effect: nothing here claims a layer
@@ -100,7 +100,7 @@ pub fn enabled() -> bool {
 
 /// Print the "skipping" line and report whether the caller should return early.
 ///
-/// Usage: `if skip_unless_enabled("D02") { return; }`
+/// Usage: `if skip_unless_enabled("M02") { return; }`
 pub fn skip_unless_enabled(acceptance_id: &str) -> bool {
     if enabled() {
         return false;

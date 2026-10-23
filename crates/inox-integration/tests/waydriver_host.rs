@@ -1,4 +1,5 @@
-//! Acceptance D02 (`docs/quality/acceptance.md` §1, ADR 0036 decision 2): the
+//! Acceptance M02 (ADR 0036 decision 2; ID prefixed `M` to keep it distinct from
+//! the long-standing `D01–D06` shell-task IDs in `docs/quality/acceptance.md` §6): the
 //! waydriver host — a **real Qt Quick surface** composited by the **real Inox
 //! compositor**, screenshotted and asserted on pixels.
 //!
@@ -60,7 +61,7 @@
 //! applied layer placement: **no assertion in this file claims a layer surface
 //! exists**, and `the_layer_surface_leg_is_blocked_on_the_ci_runner` below records
 //! the blocker in a form that runs. The layer leg is deferred to the component
-//! migration PRs (D04), which need a runner with LayerShellQt Qt 6 — either a newer
+//! migration PRs (M04), which need a runner with LayerShellQt Qt 6 — either a newer
 //! Ubuntu image or a self-built LayerShellQt — and stays `blocked` until then.
 //!
 //! # Opt-in
@@ -145,11 +146,11 @@ fn shows_the_qt_surface(frame: &support::Frame) -> bool {
     background * 2 >= expected
 }
 
-/// D02's positive leg: a real Qt Quick surface is composited, and its pixels are
+/// M02's positive leg: a real Qt Quick surface is composited, and its pixels are
 /// asserted against the geometry the QML and the layout imply.
 #[test]
 fn a_real_qt_quick_surface_is_composited_and_asserted_on_pixels() {
-    if skip_unless_enabled("D02") {
+    if skip_unless_enabled("M02") {
         return;
     }
 
@@ -278,7 +279,7 @@ fn a_real_qt_quick_surface_is_composited_and_asserted_on_pixels() {
     host.shutdown("the waydriver host after the client exited");
 }
 
-/// D02's mapping leg: the compositor really registers the Qt client's toplevel.
+/// M02's mapping leg: the compositor really registers the Qt client's toplevel.
 ///
 /// The pixel assertions above are the primary evidence, but they say "a white surface
 /// with a dark card is on screen". This leg adds the compositor's own account of the
@@ -287,7 +288,7 @@ fn a_real_qt_quick_surface_is_composited_and_asserted_on_pixels() {
 /// why it is asserted only after the frame check has already passed.
 #[test]
 fn the_host_registers_the_qt_client_as_a_mapped_toplevel() {
-    if skip_unless_enabled("D02") {
+    if skip_unless_enabled("M02") {
         return;
     }
 
@@ -322,7 +323,7 @@ fn the_host_registers_the_qt_client_as_a_mapped_toplevel() {
 /// assumption visible in a failing assertion rather than silently stale.
 #[test]
 fn the_layer_surface_leg_is_blocked_on_the_ci_runner() {
-    if skip_unless_enabled("D02") {
+    if skip_unless_enabled("M02") {
         return;
     }
 
@@ -344,7 +345,7 @@ fn the_layer_surface_leg_is_blocked_on_the_ci_runner() {
 
     assert!(
         !available,
-        "LayerShellQt is now available on this host, so the layer-surface leg of D02 \
+        "LayerShellQt is now available on this host, so the layer-surface leg of M02 \
          (ADR 0036 decision 2) is no longer blocked by the runner image. Implement it in \
          this file — a real layer surface wrapped with `LayerShellQt::Window::get` and \
          asserted on pixels — and update ADR 0036 and the waydriver module docs. Do not \
