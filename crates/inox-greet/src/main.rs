@@ -174,7 +174,10 @@ fn run_preview(options: Options) -> Result<()> {
         drop(engine);
         drop(app);
         if !ready {
-            bail!("the preview QML module did not load (see the Qt warnings above)");
+            bail!(
+                "the preview did not come up: the QML module failed to load, or the tree it \
+                 built does not match the Rust projection (see the warnings above)"
+            );
         }
         info!("preview self-check passed");
         return Ok(());

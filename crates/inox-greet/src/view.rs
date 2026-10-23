@@ -26,6 +26,15 @@ pub const WINDOW_WIDTH: i32 = 480;
 /// Height of the preview window, in logical pixels.
 pub const WINDOW_HEIGHT: i32 = 360;
 
+/// Number of items in the preview that expose an accessibility role.
+///
+/// The QML tree counts the same thing and reports it back through
+/// `reportReady`; a mismatch means a control lost its `Accessible.role`, which
+/// root AGENTS.md §7.4 forbids. The items are the content pane, the heading, the
+/// preview notice, the account label, the account field, the notice line and the
+/// two buttons.
+pub const ACCESSIBLE_ITEMS: i32 = 8;
+
 /// Font size the tokens' `typography.scale` multiplies, in logical pixels.
 const BASE_FONT_PX: f32 = 16.0;
 

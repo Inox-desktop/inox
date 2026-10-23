@@ -28,8 +28,23 @@ Window {
     }
 
     // The self-check waits for this: it proves the engine instantiated the
-    // Rust element and that its properties crossed the bridge intact.
-    Component.onCompleted: preview.reportReady(preview.title)
+    // Rust element, that its properties crossed the bridge intact, and that the
+    // semantic tree a screen reader walks is actually populated (root
+    // AGENTS.md §7.4). `reportReady` only accepts the report when both the title
+    // and the accessible-item count agree with the projection.
+    Component.onCompleted: preview.reportReady(preview.title, root.accessibleItemCount(content))
+
+    // Count the items that expose an accessibility role, so the headless check
+    // can assert the semantic tree exists instead of trusting that it does.
+    function accessibleItemCount(item) {
+        var count = item.Accessible.role !== undefined
+                && item.Accessible.role !== Accessible.NoRole ? 1 : 0
+        var children = item.children
+        for (var i = 0; i < children.length; ++i) {
+            count += root.accessibleItemCount(children[i])
+        }
+        return count
+    }
 
     // Escape clears the identity and returns focus to the field, matching the
     // keyboard order of the Iced preview it replaces.

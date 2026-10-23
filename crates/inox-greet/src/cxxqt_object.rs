@@ -220,7 +220,7 @@ pub mod qobject {
         fn activate(self: Pin<&mut Self>);
 
         #[qinvokable]
-        fn report_ready(self: Pin<&mut Self>, title: QString);
+        fn report_ready(self: Pin<&mut Self>, title: QString, accessible_items: i32);
     }
 }
 
@@ -246,15 +246,29 @@ impl qobject::GreetPreview {
         self.apply_action(Action::Activate);
     }
 
-    /// Confirm from QML that the tree completed and that the projected title
-    /// arrived intact, which proves the Rust → QML property path works.
-    pub fn report_ready(self: Pin<&mut Self>, title: QString) {
+    /// Confirm from QML that the tree completed, that the projected title
+    /// arrived intact, and that the semantic tree is populated.
+    ///
+    /// The readiness flag is only set when all three agree, so the headless
+    /// self-check fails when a control loses its `Accessible.role` (root
+    /// AGENTS.md §7.4) instead of silently passing on a load that produced no
+    /// usable surface.
+    pub fn report_ready(self: Pin<&mut Self>, title: QString, accessible_items: i32) {
         let expected = self.title().clone();
-        if title == expected {
-            QML_READY.store(true, Ordering::SeqCst);
-        } else {
+        let expected_items = crate::view::ACCESSIBLE_ITEMS;
+        if title != expected {
             warn!("the QML tree reported a title that does not match the projection");
+            return;
         }
+        if accessible_items != expected_items {
+            warn!(
+                reported = accessible_items,
+                expected = expected_items,
+                "the QML semantic tree does not match the expected accessible items"
+            );
+            return;
+        }
+        QML_READY.store(true, Ordering::SeqCst);
     }
 
     /// Apply one action and refresh the live properties.
