@@ -47,15 +47,15 @@
 - **MSRV 1.85** ≤ 工作区 MSRV 1.89，兼容 Rust 2024，无摩擦。
 - **集成方式**：`#[cxx_qt::bridge]` + `cxx_qt_build::CxxQtBuilder`（`build.rs`），系统依赖为 C/C++ 编译器 + qmake 可发现（或 `qt_minimal`）；链接发行版 Qt Core/Gui/Qml/Quick/WaylandClient。
 
-### 本地工具链验证（Phase 2 原型前的一次真实检验）
+### 本地工具链验证（Phase 2 原型的一次真实检验）
 
-在本仓库沿用 `rustup` 的 rustc 更晚（Arch 滚动：本地 rustc 1.99.1，晚于工作区 MSRV 1.89）时，做了一次最小 cxx-qt 0.10.0 探针：
+在本仓库的 Linux 宿主（Qt 6.12.0、rustc 1.99.1，晚于工作区 MSRV 1.89）做了一次完整的 cxx-qt 0.10.0 纯 Cargo 探针（复用官方 `cargo_without_cmake` 的集成方式：`CxxQtBuilder::new_qml_module(QmlModule::new(...).qml_file(...))` + `.files(...)` + `cxx`/`cxx-qt-lib` 依赖）：
 
-- `cxx-qt` / `cxx-qt-build` 0.10.0 的**依赖下载与 crate 自身编译通过**，确认供应链可用。
-- 裸 `cxx` 的 `unsafe extern "C++" { include!(...) }` 在 rustc 1.99.1 下**编译通过**。
-- 但 `#[cxx_qt::bridge]` **生成的** Rust 代码（`unsafe extern "C++" { include!(<QtQml/QQmlEngine>); ... }`）在 **rustc 1.99.1** 下报 `non-foreign item macro in foreign item position: include`，把 `#[cxx_qt::bridge]` 错误地点向 `include!`。
+- `cxx-qt` / `cxx-qt-build` / `cxx-qt-lib` 0.10.0 **下载、编译、链接全部通过**；`#[cxx_qt::bridge]` 宏展开并生成 C++ 薄胶水。
+- 链路：`QGuiApplication::new()` + `QQmlApplicationEngine::new()` + `engine.load(QUrl)` 在 `QT_QPA_PLATFORM=offscreen` 下正常进入事件循环（无崩溃、QML 加载成功），二进制通过 `ldd` 确认只链接 `libQt6Core/Gui/Qml/Network/DBus`（均为 LGPL/允许模块）。
+- 结论：**cxx-qt 0.10 兼容当前 stable rustc（包括高于工作区 MSRV 的工具链）**，在本项目目标 Qt 6.12 上可构建、可链接、可离屏运行。早前一次失败的「rustc 1.99 下 bridge 宏报 non-foreign item macro」是探针桥源码缺依赖/写法不完整所致，**并非 cxx-qt 与工具链的兼容性问题**；修正为完整官方写法后在同一 rustc 下通过。
 
-**解读**：同一 `include!`-in-extern 模式在裸 `cxx` 下正常、却在 cxx-qt 生成代码下失败，说明这是 **cxx-qt-gen 0.10.0 的生成器与过新的 rustc（1.99）之间的兼容性问题**，不是 cxx 本身、也不是一般 rustc 回归。它**不构成对 cxx-qt 的否决**，但构成一个**必须写进实施执行约束的事实**：需要给工作区固定一个被 cxx-qt 0.10 官方 CI 验证过的稳定 rustc（工作区 MSRV 1.89 或 `rust-toolchain.toml` 里确认的版本），而不是任随发行版滚动升级。CI 验收（GitHub Actions 按 `rust-toolchain.toml` 解析）是唯一判定，本地 Arch rustc 1.99 只是参考信号。
+本地验证只作为选型参考信号，不构成验收；真正判定仍在 CI。
 
 ---
 
@@ -72,7 +72,7 @@
 ### 实施执行约束（Phase 2 强制执行）
 
 - 统一以 `CxxQtBuilder` + `#[cxx_qt::bridge]` 集成；`build.rs` 通过 `.file(...)`（不是 `.bridge(...)`，0.10 用 `.file`）声明桥源码。
-- **锁定 rustc 版本**：根 `rust-toolchain.toml` 固定/确认一个 cxx-qt 0.10 CI 验证过的 stable（≥ 工作区 MSRV 1.89 且 ≠ Arch 滚动 1.99 的已知冲突版本）；CI 按该 toolchain 构建。
+- **锁定 rustc 版本**：工作区沿用 `rust-toolchain.toml`（stable）+ MSRV 1.89；cxx-qt 0.10 MSRV 1.85、并已在本项目工具链验证过新 stable，无需特殊锁版。
 - **`unsafe` 边界**：cxx-qt/cxx 的 FFI 由 `cxx` 管理；Inox 侧禁用 `unsafe` 的 crate 若必须触碰 Qt 类型，把 FFI 局限在 crate 内受控的最小胶水模块并附 `SAFETY` 注释（遵照根级 §3.2 例外精神，但尽量用 cxx-qt 的安全 API 避免 `unsafe`）。
 - **layer-shell**：在 Qt 宿主层用 `LayerShellQt::Window::get(window)` 包装 QML 窗口；`inox-lock` 的会话锁表面（ADR 0025）与 `inox-greet` 的登录表面必须保留各自的安全/生命周期边界，不以「普通窗口」对待。
 - **设计令牌 / Fluent / a11y 属性（QML `Accessible`）**：随每个组件迁移一并带入 QML，颜色只能在 Rust 或 C++ 侧由令牌显式转 `QColor`，禁止在 QML 里硬编码。
@@ -82,7 +82,7 @@
 
 | 方案 | 收益 | 成本 / 风险 | 选择或否决 |
 |------|------|-------------|------------|
-| **cxx-qt（采用）** | 活跃、Qt 6.12 支持、完整 GUI 模型保住 AT-SPI、`unsafe` 较少、LGPL 安全、适配「逻辑留 Rust」 | 生成代码对过新 rustc（1.99）有兼容问题，需锁版本 | **采用** |
+| **cxx-qt（采用）** | 活跃、Qt 6.12 支持、完整 GUI 模型保住 AT-SPI、`unsafe` 较少、LGPL 安全、适配「逻辑留 Rust」 | 绑定/生成代码随 Qt 与 rustc 演进，需跟随上游 0.10.x 维护 | **采用** |
 | qmetaobject-rs | 老牌、API 简单、MIT | 失维护、Qt 6 场景图不支持、无 layer-shell、`unsafe`/`cpp!` 负担、AT-SPI 虚悬 | **否决**（Qt6 不完整 + 失维护） |
 | 手写 C-ABI + C++ 宿主（open-pet 路线） | 完全自控、无绑定版本 churn、跨平台 ABI 固定 | 需自维护桥、工作量最大、超出本项目单 Qt 宿主需求 | 保留为远景备选，不在此步采用 |
 
