@@ -73,7 +73,7 @@ proposed ──► accepted ──► superseded
 | [0024](./0024-settings-coverage-and-input-method-preferences.md) | 设置覆盖现有配置，并持久化输入法启动偏好 | proposed | 2026-10-17 |
 | [0026](./0026-live-configuration-reload.md) | 运行中配置重载与逐消费方确认 | proposed | 2026-10-17 |
 | [0027](./0027-zbus-6-migration.md) | 迁移 zbus 6 并统一提升 MSRV 至 1.89 | accepted | 2026-10-17 |
-
+| [0035](./0035-cxx-qt-binding.md) | 决定采用 cxx-qt 作为 QML + Qt Quick 的 Rust 绑定 | accepted | 2026-10-23 |
 ## 既有提案的复核与实施阻塞
 
 以下是新标准发现的差距，**不是**修改 accepted 历史正文或批准未决实现。ADR 0011、0013–0015 仍为 proposed；ADR 0012 已于 2026-10-17 获当前开发会话批准；彼此兼容性与下列事项须在人类评审中解决。
@@ -91,7 +91,7 @@ proposed ──► accepted ──► superseded
 | ADR 0012 | 复审条件「引入多 GPU / 多 seat、HDR/VRR、远程输出或新的渲染后端时，另写 ADR」已被触发：多 GPU 与多输出已实现 | 合成器维护者 + 人类审查者 / ADR 0019 评审时 | **已由 ADR 0019、0020（均 `proposed`）承接**：多输出拓扑、按输出帧生命周期、多 GPU 设备模型与分数缩放各有提案。跨 GPU 缓冲复制路径（`MultiRenderer`）明确留待 `linux-dmabuf` 落地前解决；HDR/VRR、多 seat、远程输出仍不在范围内 |
 | M4 工具链 | Iced layer-shell 在本工作区**无法编译**：`iced_layershell` 0.19.1 与 0.19.0 的 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举 `NativeKeyCode` 做穷尽匹配（`error[E0004]`，2026-10-16 实测）。AT-SPI 实际导出与 waydriver/宿主能力仍无证据 | Shell/测试维护者 / M4 实现前 | 本次改走可用的替代路径：**离屏渲染**（`iced_tiny_skia` + `iced_runtime::UserInterface`）在 CI 中覆盖真实控件树的布局、像素与事件，无需合成器与 GPU；layer-shell 表面、AT-SPI 语义导出与 waydriver 仍是阻塞项，见 ADR 0018 |
 | L3 的 layer-shell 宿主 | `inox-compositor` 尚未广告 `zwlr_layer_shell_v1`（绑定已在 `inox-protocols`，合成器未接入），CI 也没有支持该协议的宿主（`weston` 不支持），因此面板、启动器、通知与壁纸在 Inox 会话里无法成为真实表面 | 合成器维护者 + 架构组 / E2/E3 证据之前 | 合成器侧接入 Smithay 的 `wlr_layer`（层排序、独占区、按输出分配）需要更新协议矩阵或另写 ADR；宿主选型（`labwc` / `sway`）需要一个 opt-in 的 E2 job。在此之前 L3 只交付放置策略的建模与测试，不声称放置已生效 |
-| M5 认证与授权 | 真实认证边界、helper 权限、可信连接/能力传递、锁 UI 恢复策略尚需具体设计 | 锁屏维护者 + 安全审查者 / M5 实现前 | ADR 0015；S02–S04，新增依赖/XML 先评审 |
+| M5 认证与授权 | 真实认证边界（PAM、helper 权限、PAM 服务文件、greeter 宿主、锁屏解锁接入） | 锁屏与登录维护者 + 安全审查者 / M5 收尾前 | ADR 0015 的评审项已由 **ADR 0029（`accepted`，2026-10-17）** 记录并实施：`inox-auth` + `auth-v1` + `inox-greet` 口令字段。**仍未完成**：greeter 宿主、锁屏解锁接入本边界、真机登录验收（ADR 0029 §验收 §6） |
 | CI/硬件/性能 | 新门槛尚未接线，缺固定设备、长稳/性能原始数据与 E4 支持清单 | 集成维护者 + 人类验收者 / 对应里程碑 | ADR 0011；B02、P01–P05、H01–H03、L01–L03，报告不预填 pass |
 
 ## 相关文档
