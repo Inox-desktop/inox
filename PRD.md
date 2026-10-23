@@ -166,6 +166,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` |
 | `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` |
+| `inox-qml-prototype` | L3 | `crates/inox-qml-prototype` | QML+Qt Quick 迁移原型（ADR 0033/0035，cxx-qt 证据 crate，零内部依赖） | 证据 crate |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` |
 | `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` |
@@ -245,7 +246,7 @@ inox/
 | 输入后端 | Smithay `backend_libinput` | 输入设备抽象 |
 | 会话管理 | libseat | 无 root 权限设备访问 |
 | XWayland | xwayland-satellite | 无根 XWayland 集成 |
-| GUI 工具包 | Iced | Elm 架构，单向数据流 |
+| GUI 工具包 | QML + Qt Quick (cxx-qt) | 声明式 UI，领域逻辑留 Rust（ADR 0033/0035，自 Iced 迁移进行中） |
 | 配置格式 | TOML + serde | 人类可读，AI 友好 |
 | 日志 | tracing + tracing-subscriber | 结构化日志 |
 | 错误处理 | thiserror + anyhow | 库用 thiserror，应用用 anyhow |

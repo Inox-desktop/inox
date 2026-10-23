@@ -73,7 +73,7 @@
 
 - 统一以 `CxxQtBuilder` + `#[cxx_qt::bridge]` 集成；`build.rs` 通过 `.file(...)`（不是 `.bridge(...)`，0.10 用 `.file`）声明桥源码。
 - **锁定 rustc 版本**：工作区沿用 `rust-toolchain.toml`（stable）+ MSRV 1.89；cxx-qt 0.10 MSRV 1.85、并已在本项目工具链验证过新 stable，无需特殊锁版。
-- **`unsafe` 边界**：cxx-qt/cxx 的 FFI 由 `cxx` 管理；Inox 侧禁用 `unsafe` 的 crate 若必须触碰 Qt 类型，把 FFI 局限在 crate 内受控的最小胶水模块并附 `SAFETY` 注释（遵照根级 §3.2 例外精神，但尽量用 cxx-qt 的安全 API 避免 `unsafe`）。
+- **`unsafe` 边界**：`#[cxx_qt::bridge]` 生成的代码**必然包含 `unsafe extern "C++"`、`unsafe fn` 与 `export_name`**（cxx-qt-gen 的输出不带 `#[allow]` 包裹），因此任何含 cxx-qt bridge 的 crate 在 crate 根必须将 `unsafe_code` 放松为 **`allow`**（在各自 `[lints.rust]` 覆盖工作区的 `forbid`）——这是本绑定下的根级 §3.2 例外。**约束**：例外只到 `allow`，Inox 亲自编写的 Rust 不写显式 `unsafe`（bridge 内的 `unsafe extern "C++"` 块只由宏生成、属 cxx-qt 惯例）；crate 级 `AGENTS.md` 须记录该例外。`inox-lock`/`inox-greet` 等安全边界 crate 迁移时，把 FFI 局限在受控 bridge 模块，安全逻辑仍在安全 Rust 侧。
 - **layer-shell**：在 Qt 宿主层用 `LayerShellQt::Window::get(window)` 包装 QML 窗口；`inox-lock` 的会话锁表面（ADR 0025）与 `inox-greet` 的登录表面必须保留各自的安全/生命周期边界，不以「普通窗口」对待。
 - **设计令牌 / Fluent / a11y 属性（QML `Accessible`）**：随每个组件迁移一并带入 QML，颜色只能在 Rust 或 C++ 侧由令牌显式转 `QColor`，禁止在 QML 里硬编码。
 - **依赖图只允许 LGPL+permissive**：`license-audit` CI job（ADR 0034 落地）继续校验系统 Qt 模块仅链接 LGPL 且无 GPL-only 模块入图。

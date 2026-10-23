@@ -34,7 +34,8 @@ Inox 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + QM
 L1  inox-common, inox-config
 L2  inox-protocols, inox-auth, inox-compositor, inox-xwayland
 L3  inox-shell, inox-panel, inox-launcher, inox-notifications,
-    inox-settings, inox-lock, inox-wallpaper
+    inox-settings, inox-lock, inox-wallpaper,
+    inox-qml-prototype (ADR 0033/0035 的 QML+Qt Quick 迁移原型)
 L4  inox-session, inox-idle, inox-greet
 测试 inox-integration
 ```
