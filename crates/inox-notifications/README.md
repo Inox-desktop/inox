@@ -80,4 +80,4 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。

@@ -21,7 +21,7 @@
 - **标识符、寿命与上限只由 `queue::Queue` 决定**：不得在别处铸造 `NotificationId`、不得在别处判断过期、不得绕过 `QueueConfig::max_pending`。每条通知**恰好一次**终态（expired / dismissed / closed / coalesced / dropped），且每次都要发 `NotificationClosed`——`Counters` 的 `created == live + settled` 是测试断言的不变量。
 - **锁屏脱敏是类型，不是布尔检查**：`policy::PopupContent::Withheld` 没有正文、应用名与图标字段。不要在 `view.rs` 里新增读取原始 `Notification` 的路径；视图只画视图模型。
 - **勿扰不夺焦点**：`placement::KeyboardInteractivity` 永远为 `None`，视图模型的弹窗栈**没有** focus order。这条有测试（角落 × 全部配置），不要靠注释维持。
-- **颜色/尺寸/间距/圆角只来自令牌**（`inox_config::Theme`）：`src/theme.rs` 是唯一把令牌变成颜色与样式的地方，`view.rs` 只调用它。唯一的裸像素是 1px 的 hairline 边框宽度（`BORDER_WIDTH`，令牌集没有边框宽度）与 iced 默认字号乘以 `typography.scale`（令牌集没有绝对字号）。
+- **颜色/尺寸/间距/圆角只来自令牌**（`inox_config::Theme`）：`src/theme.rs` 是唯一把令牌变成颜色与样式的地方，`view.rs` 只调用它。没有**设计色与设计尺寸**的字面量（结构性哨兵如 `Color::TRANSPARENT`、边框宽 `0.0` 除外）；令牌集仍没有绝对字号与边框宽度，因此 hairline 取 `spacing.xs / 2`、字号四角色由 `spacing.lg × typography.scale` 按 1.5 / 1.25 / 1.0 / 0.875 派生，都是 `theme.rs` 里的具名派生（`docs/quality/ui-guidelines.md` §1–§2）。
 - **文案只来自 Fluent**：只能出现消息 id，不得在代码里写用户可见字符串（产品名与组件名除外）。新增 id 必须同时进 `en-US` 与 `zh-CN` 并登记到 `i18n::MESSAGES`；`tests/catalog.rs` 双向断言。应用名、摘要、正文与动作标签是**数据**，不是文案。
 - **摆放策略是数据，不是已生效的行为**：`src/placement.rs` 计算锚点/层级/exclusive zone/键盘交互，但当前没有 layer-shell 宿主可应用它（ADR 0018）。启动时只允许**一条** `warn!` 说明表面是普通窗口，不得声称摆放已生效，也不得引入 `iced_layershell`。
 - **启动必须自检**：没有可用的 Wayland/X11 显示时，以及总线名已被别的守护进程占用时，`main` 必须以可读错误与非零退出码结束（ADR 0018、ADR 0022 决策 5）；锁状态读不到**不**属于这一类，它是 `warn!` 加一个诚实的 `Disabled` 状态。`zwlr_layer_shell_v1` 的存在性查询仍未实现（`src/lock_state.rs` 的连接只用于读锁状态，不查询 layer-shell）。

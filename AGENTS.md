@@ -8,12 +8,12 @@
 
 ## 0. 项目一句话
 
-Inox 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + Iced** 的模块化 Wayland 桌面环境。
+Inox 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + QML/Qt Quick** 的模块化 Wayland 桌面环境。
 采用 **AI-first** 开发：AI 写代码，人类做架构决策、PR 审查与真实硬件验收。**CI（GitHub Actions）是唯一构建与测试验证途径。**
 
 - 组织：https://github.com/Inox-desktop
 - 代码组织：**单一仓库（Cargo workspace）**，组件在 `crates/`，文档在 `docs/`（ADR 0016，取代 ADR 0001 的多仓库策略）
-- 许可证：BSD 3-Clause（仓库根目录有 `LICENSE`）
+- 许可证：LGPL-3.0（仓库根目录有 `LICENSE`；ADR 0034）
 - 产品需求以本仓库的 `PRD.md` 为准。
 - 架构决策以本仓库的 `docs/adr/` 为准。
 
@@ -32,14 +32,16 @@ Inox 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + Ic
 
 ```
 L1  inox-common, inox-config
-L2  inox-protocols, inox-compositor, inox-xwayland
+L2  inox-protocols, inox-auth, inox-compositor, inox-xwayland
 L3  inox-shell, inox-panel, inox-launcher, inox-notifications,
-    inox-settings, inox-lock, inox-wallpaper
+    inox-settings, inox-lock, inox-wallpaper,
+    inox-qml-prototype (ADR 0033/0035 的 QML+Qt Quick 迁移原型)
 L4  inox-session, inox-idle, inox-greet
 测试 inox-integration
 ```
 
 - 全部组件 crate 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（ADR 0016，取代 ADR 0001 的多仓库策略）。用户与开发者文档站点 `inox-docs` 位于 `docs/book/`，无 `Cargo.toml`，不参与依赖图，也不受 Rust 类规则约束。
+- 随发行版安装的**数据文件**（当前只有内置壁纸）位于仓库根 `data/`，不属于任何 crate，也不参与依赖图：壁纸在 `data/wallpapers/`，安装到 `$XDG_DATA_DIRS/inox/wallpapers/`，其标识与署名清单在 L1 的 `inox-config`（ADR 0030）。
 - **层级成员的唯一事实来源**是根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`；本节清单与 PRD §3.1 的组件表都必须与它一致。
 - `inox-common` 不得依赖任何其他 Inox crate。
 - 合成器与 Shell **不通过 Rust 依赖**耦合，只通过 Wayland 协议 / D-Bus / IPC 通信。
@@ -60,7 +62,7 @@ L4  inox-session, inox-idle, inox-greet
    - `main` 顶层可返回 `anyhow::Result`。测试与 `#[cfg(test)]` 除外。
 4. **错误处理**：库 crate 用 `thiserror` 定义错误类型；可执行程序用 `anyhow`。禁止吞掉错误（`let _ = ...` 需有明确理由）。
 5. **日志**：统一使用 `tracing` 宏（`info!`/`debug!`/…）。**禁止 `println!` / `eprintln!`**（测试与示例除外）。默认级别 `info`，禁止高频刷屏。
-6. **依赖许可证白名单**：仅允许 BSD / MIT / Apache-2.0 / ISC / Zlib 等宽松许可证。**禁止 GPL/AGPL/SSPL** 进入核心依赖。由 `cargo-deny` 强制。
+6. **依赖许可证白名单**：允许宽松许可 + LGPL（`deny.toml` 的 `[licenses] allow`）。项目本身为 **LGPL-3.0**（ADR 0034）。**禁止 AGPL / SSPL** 进入核心依赖；GPL-only 的 Qt 模块（Qt Wayland Compositor、Qt Virtual Keyboard、Qt QML Compiler）无论任何形式都禁止引入（ADR 0033）。由 `cargo-deny` 强制检查 Cargo 依赖图；**系统库许可由独立的 `license-audit` CI job 校验**（`cargo-deny` 管不到系统 Qt `.so`）。
 7. **提交信息必须遵循 Conventional Commits**（见 §9）。
 8. **禁止绕过 CI**：不得使用 `--no-verify`、不得直接推送 `main`、不得修改或禁用分支保护与检查。
 9. **禁止引入静默网络行为/遥测**：不得默认开启网络监听、不得上传用户数据。
@@ -73,7 +75,7 @@ L4  inox-session, inox-idle, inox-greet
 - 必须使用 **Smithay** 抽象实现合成器，直接操作 DRM/KMS 之外的底层接口需 ADR 批准。
 - 必须使用 **calloop** 作为主事件循环；禁止自建线程轮询循环处理核心事件。
 - 渲染与输入处理不得阻塞事件循环；耗时任务放入 calloop 的异步/线程机制。
-- Shell 组件基于 **Iced**，遵循 Elm 架构（`Message` → `update` → `view`），单向数据流。
+- Shell 组件基于 **QML + Qt Quick**（ADR 0033，自 Iced 迁移，经 Rust 绑定；迁移进行中）。领域模型与逻辑留在 Rust，UI 交给声明式 QML；合成器始终是 **Smithay**，绝不使用 Qt Wayland Compositor（GPL-only）。
 - 只消费主题令牌（design tokens），**禁止在组件中硬编码颜色/尺寸**（见 PRD §9）。
 - 新增 Wayland 协议前，必须先在 `inox-protocols` 定义/引用，并说明安全与生命周期约束。
 - 需要改变分层、依赖方向、核心依赖或 IPC/配置格式的破坏性变更时，**必须先写 ADR**（PRD §5.4）并获得批准。
@@ -116,7 +118,7 @@ L4  inox-session, inox-idle, inox-greet
 
 ### 7.2 IPC
 
-- 跨组件通信优先使用标准 Wayland 协议或 D-Bus；Inox 私有通信走 `inox-ipc`（定义于 `inox-protocols`）。
+- 跨组件通信优先使用标准 Wayland 协议或 D-Bus；Inox 私有通信走 `inox-ipc`（定义于 `inox-protocols`）。**不依赖 Wayland 连接的私有契约**（如登录认证的 `auth-v1`，它必须早于任何合成器存在）同样在 `inox-protocols/protocol/` 下有规范文本，但类型与实现留在说它的 crate 里（ADR 0026、ADR 0028）。
 - 私有协议为 unstable，破坏性变更需版本化并在 PRD 协议矩阵更新。
 
 ### 7.3 国际化（i18n）
@@ -261,7 +263,7 @@ L4  inox-session, inox-idle, inox-greet
 - ✗ 新增 `unsafe`（除非 §3.2 的例外并加 SAFETY 注释）
 - ✗ `unwrap()` / `expect()` / `panic!()` 于非测试路径
 - ✗ `println!` / `eprintln!` 记录日志
-- ✗ 引入 GPL/AGPL/SSPL 依赖
+- ✗ 引入 AGPL/SSPL 依赖，或引入 GPL-only 的 Qt 模块（Qt Wayland Compositor / Qt Virtual Keyboard / Qt QML Compiler）
 - ✗ 绕过 CI / 修改分支保护 / 直推 `main`
 - ✗ 硬编码用户可见文案或颜色尺寸
 - ✗ 未写 ADR 就做架构/依赖方向/协议破坏性变更

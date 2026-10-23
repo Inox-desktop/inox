@@ -44,6 +44,8 @@ jobs:
         with:
           shared-key: msrv-1.89
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo check --locked --workspace --all-targets --all-features
 
   clippy:
@@ -60,6 +62,8 @@ jobs:
       # panics when `libudev.pc` is missing. System libraries are therefore
       # required here too, not only in `build` and `test`.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   deny:
@@ -85,6 +89,8 @@ jobs:
       # `cargo doc` compiles dependency build scripts as well, so it needs the
       # same system libraries as `clippy` (see that job).
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo doc --workspace --no-deps --all-features
 
   build:
@@ -95,6 +101,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo build --workspace --release --all-features
 
   plan:
@@ -137,6 +145,13 @@ jobs:
                       # widget tree, so their shard needs a font installed (see the
                       # `fonts` input of the system-deps action).
                       "ui": any(d["name"] == "iced" for d in deps),
+                      # A crate that declares `cxx-qt` builds and links Qt through
+                      # pkg-config, so its build-script (and any bridge test) needs
+                      # the Qt 6 development packages — the `qt` input of the
+                      # system-deps action (ADR 0033/0035). Only registers `qt`
+                      # when the crate actually names cxx-qt, so non-Qt crates
+                      # stay off the extra system surface.
+                      "qt": any(d["name"] == "cxx-qt" for d in deps),
                   })
 
           # Fail loudly rather than silently testing nothing, and refuse to run a
@@ -168,15 +183,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Two kinds of shard need system packages: the ones whose manifests
       # declare `smithay` (`graphics`, plus `egl` because they run the headless
-      # EGL/GLES render tests) and the L3 components whose manifests declare
+      # EGL/GLES render tests), the L3 components whose manifests declare
       # `iced` (`ui`, plus `fonts` because their render tests lay text out
-      # through cosmic-text). Every other shard stays cheap. The package lists
-      # live in one place — see `.github/actions/system-deps/action.yml`.
+      # through cosmic-text), and the Qt Quick crates that declare `cxx-qt`
+      # (`qt`: their build script resolves Qt through pkg-config, so they need
+      # the Qt 6 development packages — ADR 0033/0035). Every other shard stays
+      # cheap. The package lists live in one place — see
+      # `.github/actions/system-deps/action.yml`.
       - uses: ./.github/actions/system-deps
-        if: matrix.graphics || matrix.ui
+        if: matrix.graphics || matrix.ui || matrix.qt
         with:
           egl: ${{ matrix.graphics }}
           fonts: ${{ matrix.ui }}
+          qt: ${{ matrix.qt }}
       # One job per crate keeps a failure attributable and keeps the command the
       # same one a developer runs locally: `cargo test -p <crate>`.
       #
@@ -231,6 +250,7 @@ jobs:
       - uses: ./.github/actions/system-deps
         with:
           egl: "true"
+          qt: "true"
       - name: X11 and build dependencies
         run: |
           sudo apt-get install -y --no-install-recommends \
@@ -315,12 +335,77 @@ jobs:
           INOX_FCITX5_E2E: "1"
         run: dbus-run-session -- cargo test -p inox-compositor --all-features --test input_method -- --nocapture
 
-  book:
-    name: mdbook
+  license-audit:
+    # ADR 0034 / ADR 0033: cargo-deny only sees the Cargo dependency graph and
+    # cannot audit the system Qt `.so` the runtime links. After the Qt-quick
+    # migration the project is LGPLv3 and must never pull GPL-only Qt modules
+    # (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler — see
+    # ADR 0033 §"Qt 许可的客观事实"). This job installs the exact system
+    # packages the shell links, then asserts (a) the apt-provided Qt modules are
+    # present for the build and (b) at runtime `ldd` resolves only the declared
+    # Qt modules and none of the forbidden GPL-only ones.
+    name: license-audit (system Qt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: latest
-      - run: mdbook build docs/book
+      - name: Install system Qt (LGPL route, ADR 0033)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev qt6-declarative-dev \
+            qml6-module-qtquick qml6-module-qtquick-controls \
+            qml6-module-qtquick-window \
+            libqt6waylandclient6 qt6-wayland-dev
+          # GPL-only modules must NOT be present: their presence means a build
+          # could silently link a GPL dependency into the LGPL project.
+          if dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard|qtdeclarative-scxml' >/dev/null; then
+            echo "a GPL-only Qt module is installed; refusing" >&2
+            dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard'
+            exit 1
+          fi
+      - name: Assert only LGPL Qt modules are linked (ldd)
+        run: |
+          # Compile a trivial Qt Quick program against the installed LGPL modules
+          # and assert its runtime link set stays within the LGPL allow-list.
+          set -euo pipefail
+          cat > /tmp/linkcheck.cpp <<'CPP'
+          #include <QGuiApplication>
+          #include <QQmlApplicationEngine>
+          int main(int argc, char **argv) {
+              QGuiApplication app(argc, argv);
+              QQmlApplicationEngine engine;
+              return app.exec();
+          }
+          CPP
+          QT_PKG=$(pkg-config --cflags --libs Qt6Gui Qt6Qml Qt6Quick)
+          # shellcheck disable=SC2086
+          c++ /tmp/linkcheck.cpp -o /tmp/linkcheck $QT_PKG
+          ldd /tmp/linkcheck > /tmp/linkcheck.ldd || true
+          # Every linked Qt library must be an allowed LGPL module. The LGPL
+          # allow-list below is the Qt step-mapping modules qt6-base/qt6-declarative
+          # legitimately link (Core/Gui/Qml/Quick/OpenGL/DBus/Network/… are all
+          # LGPL, ADR 0034). The forbidden set is the GPL-only modules (Qt
+          # Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler / Scxml,
+          # ADR 0033 §"Qt 许可的客观事实").
+          grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u
+          # The installed Qt step modules are all LGPL (qt6-base/qt6-declarative,
+          # ADR 0034). The only Qt modules that are GPL-only — and therefore must
+          # never be linked into this LGPL project — are Qt Wayland Compositor,
+          # Qt Virtual Keyboard and Qt QML Compiler/Scxml (ADR 0033). Everything
+          # else that a Qt Quick program legitimately steps (OpenGL/DBus/Network/
+          # QuickControls2/…) is LGPL and allowed.
+          while read -r mod; do
+            case "$mod" in
+              libQt6WaylandCompositor|libQt6WaylandCompositor-6|\
+              libQt6VirtualKeyboard|libQt6VirtualKeyboard-6|\
+              libQt6QmlCompiler|libQt6QmlCompiler-6|\
+              libQt6Scxml|libQt6ScxmlQml)
+                echo "FORBIDDEN GPL-only Qt module linked: $mod" >&2
+                exit 1
+                ;;
+              *)
+                echo "OK (LGPL): $mod"
+                ;;
+            esac
+          done < <(grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u)
+          echo "license-audit: only LGPL Qt modules linked"

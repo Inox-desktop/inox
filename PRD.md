@@ -4,7 +4,7 @@
 **日期**：2026-10-16
 **状态**：草案
 **组织**：https://github.com/Inox-desktop
-**许可证**：BSD 3-Clause
+**许可证**：LGPL-3.0
 
 ---
 
@@ -29,7 +29,7 @@
 - 最大化利用 Rust 生态中成熟的合成器库与 GUI 框架。
 - 通过单一工作区内的单一职责 crate 实现清晰的模块边界，便于局部开发、局部测试与并行代理协作。
 - 建立以 GitHub Actions 为核心的持续集成流水线，作为唯一的构建验证途径。
-- 采用 BSD 3-Clause 许可证，保持开源友好。
+- 采用 LGPL-3.0 许可证（ADR 0034），保持开源友好并与 Qt 生态同族。
 
 ### 1.2 非目标
 
@@ -166,6 +166,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` |
 | `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` |
+| `inox-qml-prototype` | L3 | `crates/inox-qml-prototype` | QML+Qt Quick 迁移原型（ADR 0033/0035，cxx-qt 证据 crate，零内部依赖） | 证据 crate |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` |
 | `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` |
@@ -216,7 +217,7 @@ inox/
 ├── rust-toolchain.toml  # 固定 stable
 ├── AGENTS.md            # 根级 AI 约束（crate 级 AGENTS.md 只能追加/收紧）
 ├── PRD.md
-├── LICENSE              # BSD 3-Clause，全仓库一份
+├── LICENSE              # LGPL-3.0，全仓库一份
 ├── README.md
 ├── docs/
 │   ├── adr/             # 架构决策记录
@@ -245,7 +246,7 @@ inox/
 | 输入后端 | Smithay `backend_libinput` | 输入设备抽象 |
 | 会话管理 | libseat | 无 root 权限设备访问 |
 | XWayland | xwayland-satellite | 无根 XWayland 集成 |
-| GUI 工具包 | Iced | Elm 架构，单向数据流 |
+| GUI 工具包 | QML + Qt Quick (cxx-qt) | 声明式 UI，领域逻辑留 Rust（ADR 0033/0035，自 Iced 迁移进行中） |
 | 配置格式 | TOML + serde | 人类可读，AI 友好 |
 | 日志 | tracing + tracing-subscriber | 结构化日志 |
 | 错误处理 | thiserror + anyhow | 库用 thiserror，应用用 anyhow |
@@ -253,7 +254,7 @@ inox/
 | 性能分析 | Tracy (tracy-client) | 帧分析与输入延迟 |
 | CI/CD | GitHub Actions | 唯一构建验证途径 |
 | 代码质量 | rustfmt, clippy, cargo-deny | 强制检查 |
-| 许可证 | BSD 3-Clause | 仓库根目录一份 LICENSE |
+| 许可证 | LGPL-3.0 | 仓库根目录一份 LICENSE |
 
 ---
 

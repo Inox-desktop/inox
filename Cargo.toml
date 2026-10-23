@@ -30,7 +30,7 @@ edition = "2024"
 # zbus 6 folds the retired zvariant/zbus_names crates into its maintained API
 # and requires Rust 1.89 (ADR 0027). Members inherit this single workspace floor.
 rust-version = "1.89"
-license = "BSD-3-Clause"
+license = "LGPL-3.0"
 repository = "https://github.com/Inox-desktop/inox"
 readme = "README.md"
 keywords = ["wayland", "desktop", "inox"]
@@ -119,6 +119,24 @@ iced_tiny_skia = { version = "0.14", features = ["image"] }
 # buffer type belongs with the state machine that owns it). MIT/Apache-2.0.
 zeroize = "1"
 
+# --- QML + Qt Quick binding (ADR 0033 / ADR 0035) -------------------------
+# The L3 shell migrates from Iced to QML + Qt Quick, bound into Rust through
+# cxx-qt (KDAB, MIT OR Apache-2.0). cxx-qt is the Rust→QML bridge selected in
+# ADR 0035: a `#[cxx_qt::bridge]` module defines a Rust QObject exposed to QML
+# as a normal QObject, with cxx-qt generating the C++ glue. The workspace keeps
+# the LGPL route clean: only LGPL/permissive modules are pulled (never GPL-only
+# Qt Wayland Compositor / Virtual Keyboard / QML Compiler — enforced by the
+# `license-audit` CI job, ADR 0033/0034).
+#
+# `cxx` is the underlying FFI layer cxx-qt builds on, `cxx-qt-lib` wraps the Qt
+# core value types (QString, QColor, …) and owns the `full` feature that pulls
+# the Qt modules cxx-qt-build links. `cxx-qt-build` is the build-script helper
+# that resolves Qt through pkg-config and registers the QML module.
+cxx = "1.0"
+cxx-qt = "0.10.0"
+cxx-qt-lib = { version = "0.10.0", features = ["full"] }
+cxx-qt-build = "0.10.0"
+
 # The notification daemon is the process behind `org.freedesktop.Notifications`,
 # so it needs a real D-Bus client and server (M5, acceptance D06). zbus is the
 # pure-Rust implementation: no `libdbus` system library, no FFI, no `unsafe` of
@@ -183,6 +201,11 @@ l3 = [
     "inox-settings",
     "inox-lock",
     "inox-wallpaper",
+    # ADR 0033/0035: the QML + Qt Quick migration prototype. Zero internal
+    # dependency (its only deps are cxx-qt/cxx-qt-lib and the L1 trivia), placed
+    # at L3 where the future QML host components sit so the layering test and
+    # the CI matrix cover it like any other shard.
+    "inox-qml-prototype",
 ]
 l4 = ["inox-session", "inox-idle", "inox-greet"]
 test = ["inox-integration"]

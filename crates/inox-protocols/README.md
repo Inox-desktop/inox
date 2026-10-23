@@ -11,6 +11,12 @@
 
 协议定义以 [`protocol/inox-ipc.xml`](./protocol/inox-ipc.xml) 为**唯一事实来源（single source of truth）**：需要修改协议时先改 XML，再重新生成绑定，**不要直接改生成的 Rust 代码**。
 
+会话 D-Bus 上的配置应用接口没有 XML：它们以 `protocol/configuration-v1.md`
+（`org.inox.Configuration1.Reload`）与 `protocol/configuration-v2.md`
+（`org.inox.Configuration2` 的 `Trial`/`Confirm`/`Rollback`，显示试用见
+[ADR 0028](../../docs/adr/0028-display-trial-confirm-and-rollback.md)）为规范，
+由各消费方二进制内用 `zbus` 声明。
+
 输入法绑定通过 `standard::wp::{text_input, input_method, virtual_keyboard}` 提供。
 应用端 v3 与输入法端 v2 的管理器在合成器中均广告接口 v1；输入法与虚拟键盘
 只对专用受信连接可见，生命周期与权限规则见 [ADR 0023](../../docs/adr/0023-input-method-support.md)。
@@ -44,4 +50,4 @@ cargo deny check
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。
