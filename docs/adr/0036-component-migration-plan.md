@@ -83,12 +83,14 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 - **第一步先建公共基座**（独立 PR）——这是当前所有 L3 组件能成为真实 layer 表面的前置阻塞项（ADR 0018/README）。需人类批准基座选型（`labwc` / `sway` 二选一，opt-in E2 job）。
 - **第二次序**：`inox-greet` 首迁移确立模式 → layer-shell 组件 panel → wallpaper → launcher → notifications → settings → lock → 收尾移除 Iced。
-- **未决项 / 责任 / 最迟解决阶段**：
-  | 未决项 | 责任角色 | 最迟阶段 |
-  |--------|----------|----------|
-  | layer-shell 宿主选型（`labwc` / `sway`）与 E2 job 接线 | 合成器维护者 + 人类审查 | D02 基座 PR |
-  | waydriver 测试基座实现（仓库当前无该基础设施） | Shell/集成维护者 | D02 基座 PR |
-  | `inox-lock` / `inox-greet` 安全审查通过迁移边界（ADR 0015 前提） | 锁屏/登录维护者 + 安全审查者 | D05 前 |
+
+**未决项 / 责任 / 最迟解决阶段**：
+
+| 未决项 | 责任角色 | 最迟阶段 |
+|--------|----------|----------|
+| layer-shell 宿主选型（`labwc` / `sway`）与 E2 job 接线 | 合成器维护者 + 人类审查 | D02 基座 PR |
+| waydriver 测试基座实现（仓库当前无该基础设施） | Shell/集成维护者 | D02 基座 PR |
+| `inox-lock` / `inox-greet` 安全审查通过迁移边界（ADR 0015 前提） | 锁屏/登录维护者 + 安全审查者 | D05 前 |
 
 ## 后果
 
