@@ -77,18 +77,26 @@ runs:
           # qml6-module-qtquick / -controls / -window are the QtQuick/Controls/
           # Window QML modules needed at runtime to load a `.qml` root.
           #
-          # qml6-module-qtqml-workerscript supplies `QtQml.WorkerScript`, which
-          # `import QtQuick` itself loads: a Qt Quick program that imports
-          # `QtQuick` aborts at load time with `module "QtQml.WorkerScript" is
-          # not installed` when that QML module package is absent, even though
-          # nothing in the application mentions WorkerScript. Verified on a real
-          # Ubuntu 24.04 (noble) container: the package set below without
-          # `qml6-module-qtqml-workerscript` leaves
-          # `/usr/lib/x86_64-linux-gnu/qt6/qml/QtQml/` empty, and
-          # `apt-file search QtQml/WorkerScript/qmldir` attributes it to exactly
-          # this package. Debian-family *distributions* split the QML modules
-          # per-directory, so a Qt Quick app needs the modules its imports
-          # transitively require installed explicitly.
+          # Two of these are *transitive* QML imports that no application file
+          # mentions, and both were missing once, each costing a CI round trip.
+          # Ubuntu splits the Qt QML modules per directory, so importing `QtQuick`
+          # or using `Button` does not pull in what they in turn import:
+          #
+          # * `qml6-module-qtqml-workerscript` supplies `QtQml.WorkerScript`,
+          #   imported by `QtQuick` itself. Without it a Qt Quick program aborts
+          #   with `module "QtQml.WorkerScript" is not installed`.
+          # * `qml6-module-qtquick-templates` supplies `QtQuick.Templates`, which
+          #   every `QtQuick.Controls` style (`Fusion`, `Basic`, …) derives its
+          #   controls from. Without it, `Button` fails with `module
+          #   "QtQuick.Templates" plugin "qtquicktemplates2plugin" not found`.
+          #
+          # Both were verified on a real Ubuntu 24.04 (noble) container: with the
+          # package set below they are absent (`QtQml/` empty;
+          # `/QtQuick/` has no `Templates/`), and `apt-file search` attributes
+          # `QtQml/WorkerScript/qmldir` and `QtQuick/Templates/libqtquicktemplates2plugin.so`
+          # to exactly these two packages. Keep both together: they are the
+          # transitive closure of a `QtQuick.Controls` import, which is what every
+          # QML surface in this workspace uses.
           #
           # qt6-wayland-dev is the Wayland client the L3 layer surfaces attach
           # through.
@@ -115,6 +123,6 @@ runs:
           sudo apt-get install -y --no-install-recommends \
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-window \
-            qml6-module-qtqml-workerscript \
+            qml6-module-qtqml-workerscript qml6-module-qtquick-templates \
             qt6-wayland qt6-wayland-dev
         fi
