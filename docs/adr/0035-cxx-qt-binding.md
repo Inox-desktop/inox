@@ -100,7 +100,7 @@
 
 ## 后续
 
-1. 在 CI `system-deps` action 上铺好 Qt6 dev（Core/Gui/Qml/Quick + LayerShellQt）依赖面。
-2. 提交一个 headless 可验证的 QML + LayerShellQt + AT-SPI 原型，作为「绑定可用」的证据（ADR 0033 复审条件 1 的缺口补上）。
+1. 在 CI `system-deps` action 上铺好 Qt6 dev（Core/Gui/Qml/Quick + WaylandClient/LayerShellQt）依赖面。
+2. **已落地（2026-10-23）**：提交 `crates/inox-qml-prototype`（L3 证据 crate，commit 8ff9706），headless 可验证的 **QML + AT-SPI（`Accessible`）+ cxx-qt 绑定**原型，作为「绑定可用」的证据（ADR 0033 复审条件 1 的缺口补上）。LayerShellQt 需要真实合成器提供 layer-shell 协议，无法 headless 覆盖，故**不**作 headless 原型的一部分；它在真实组件的 Rust/Qt 宿主层用 `LayerShellQt::Window::get(window)` 落地（见「实施执行约束 · layer-shell」），随各组件在 waydriver（真实 Qt 平台）验证。
 3. 按组件逐个迁移（panel/launcher/notifications/settings/lock/wallpaper/greet），每步一个聚焦 PR；保留 inox-lock/greet 的安全边界。
 4. 全量迁移后移除 Iced 依赖与 Iced 测试 harness；更新 PRD §3.1 / §9、crate 级 AGENTS.md、docs/book。
