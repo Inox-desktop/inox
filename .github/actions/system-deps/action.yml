@@ -75,13 +75,46 @@ runs:
           # qt6-base-dev / qt6-declarative-dev provide Qt6Core/Gui/Qml/Quick
           # .pc files and headers (cxx-qt resolves them via pkg-config);
           # qml6-module-qtquick / -controls / -window are the QtQuick/Controls/
-          # Window QML modules needed at runtime to load a `.qml` root offscreen.
-          # libqt6waylandclient6 + qt6-wayland-dev are the Wayland client the L3
-          # layer surfaces attach through. No GPL-only Qt module (Qt Wayland
-          # Compositor etc.) is pulled here — see the license-audit job which
-          # asserts exactly that (ADR 0033/0034).
+          # Window QML modules needed at runtime to load a `.qml` root.
+          #
+          # qml6-module-qtqml-workerscript supplies `QtQml.WorkerScript`, which
+          # `import QtQuick` itself loads: a Qt Quick program that imports
+          # `QtQuick` aborts at load time with `module "QtQml.WorkerScript" is
+          # not installed` when that QML module package is absent, even though
+          # nothing in the application mentions WorkerScript. Verified on a real
+          # Ubuntu 24.04 (noble) container: the package set below without
+          # `qml6-module-qtqml-workerscript` leaves
+          # `/usr/lib/x86_64-linux-gnu/qt6/qml/QtQml/` empty, and
+          # `apt-file search QtQml/WorkerScript/qmldir` attributes it to exactly
+          # this package. Debian-family *distributions* split the QML modules
+          # per-directory, so a Qt Quick app needs the modules its imports
+          # transitively require installed explicitly.
+          #
+          # qt6-wayland-dev is the Wayland client the L3 layer surfaces attach
+          # through.
+          #
+          # `qt6-wayland` is the *runtime* package and the only apt package that
+          # ships the Qt 6 Wayland **platform plugin** (`libqwayland.so` under
+          # `plugins/platforms/`). It is what lets a real Qt client run on
+          # `QT_QPA_PLATFORM=wayland` — the waydriver host job (ADR 0036 decision
+          # 2) needs it; without it the client aborts with "Could not load the Qt
+          # platform plugin". Verified against Ubuntu 24.04 (noble):
+          # `dists/noble/Contents-amd64` attributes
+          # `usr/lib/x86_64-linux-gnu/qt6/plugins/platforms/libqwayland-generic.so`
+          # to `universe/libs/qt6-wayland`.
+          #
+          # Licence note, recorded rather than hidden: `qt6-wayland` Depends on
+          # `libqt6waylandcompositor6`, the GPL-only Qt Wayland **Compositor**
+          # module (ADR 0033). That library was already present on every Qt job
+          # before this line — `qt6-wayland-dev` pulls it too — so installing
+          # `qt6-wayland` adds no new licence exposure. What must stay true is
+          # that nothing *links* it: `license-audit` asserts that for a Qt Quick
+          # program, and the `waydriver-e2e` job asserts it for the Qt client it
+          # runs. Never add `libqt6waylandcompositor6` or a Qt Wayland Compositor
+          # dependency to a crate.
           sudo apt-get install -y --no-install-recommends \
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-window \
-            qt6-wayland-dev
+            qml6-module-qtqml-workerscript \
+            qt6-wayland qt6-wayland-dev
         fi
