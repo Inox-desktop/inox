@@ -68,14 +68,16 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 所有证据以 CI 为准（根级 §3.1）；waydriver 属于真实宿主级证据。复合迁移验收：
 
+本 ADR 的验收 ID 使用 **`M`（migration）前缀**，与 `docs/quality/acceptance.md` 中既有的 `D01–D06`（Shell 与设置的用户任务）**刻意分开**：两者编号体系不同，本文件的 `M02`（waydriver 宿主）与 §6 的 `D02`（`inox-launcher`）是不同项，引用时必须带前缀。
+
 | 验收 ID / 场景 | 责任仓库 | E0–E4 等级 | 测试与失败注入 | 通过条件 / 证据位置 |
 |----------------|----------|------------|----------------|----------------------|
-| D01 合成器 layer-shell（已在位） | `inox-compositor` | E1 | 真实客户端在进程内合成器上覆盖四层像素/独占区/焦点/隔离 | `tests/layer_shell.rs` 通过（已提交、CI 已验证） |
-| D02 基座：waydriver 宿主可启动 L3 Qt 表面 | `inox-*`（宿主 job） | E1/E2 | waydriver 在真实合成器宿主启动 L3 Qt 表面，截图、断言 | opt-in E2 job 截图断言通过 |
-| D03 greet 迁移端到端 | `inox-greet` | E1 | 迁移后 headless 测试（登录预览、键盘导航）通过；非测试路径无显式 `unsafe` | `cargo test -p inox-greet` + `cargo clippy -D warnings` + release build 全绿 |
-| D04 每个 layer-shell 组件迁移 | 对应 crate | E1/E2 | waydriver 截图断言 + 该 crate 单测 | 该 crate CI（test/clippy/doc/build）全绿；放置策略在真实 layer 表面生效 |
-| D05 锁表面边界保持 | `inox-lock` | E1/E2 | 锁表面非普通窗口；认证仍由 `inox-auth`；QML 不暴露敏感态 | lock 单测 + 安全审查（ADR 0015 前提） |
-| D06 收尾移除 Iced | 工作区 | E0 | 依赖图无 Iced；`cargo deny` / `license-audit` 全绿 | 移除后全工作区 CI 全绿，无 `iced*` 依赖 |
+| M01 合成器 layer-shell（已在位） | `inox-compositor` | E1 | 真实客户端在进程内合成器上覆盖四层像素/独占区/焦点/隔离 | `tests/layer_shell.rs` 通过（已提交、CI 已验证） |
+| M02 基座：waydriver 宿主可启动 L3 Qt 表面 | `inox-*`（宿主 job） | E1/E2 | waydriver 在真实合成器宿主启动 L3 Qt 表面，截图、断言 | opt-in E2 job 截图断言通过 |
+| M03 greet 迁移端到端 | `inox-greet` | E1 | 迁移后 headless 测试（登录预览、键盘导航）通过；非测试路径无显式 `unsafe` | `cargo test -p inox-greet` + `cargo clippy -D warnings` + release build 全绿 |
+| M04 每个 layer-shell 组件迁移 | 对应 crate | E1/E2 | waydriver 截图断言 + 该 crate 单测 | 该 crate CI（test/clippy/doc/build）全绿；放置策略在真实 layer 表面生效 |
+| M05 锁表面边界保持 | `inox-lock` | E1/E2 | 锁表面非普通窗口；认证仍由 `inox-auth`；QML 不暴露敏感态 | lock 单测 + 安全审查（ADR 0015 前提） |
+| M06 收尾移除 Iced | 工作区 | E0 | 依赖图无 Iced；`cargo deny` / `license-audit` 全绿 | 移除后全工作区 CI 全绿，无 `iced*` 依赖 |
 
 > 以 ADR 0033/0035 的复审条件与 docs/quality/acceptance.md 为准；上表为新迁移行为补充的验收 ID，随具体 PR 细化。未实现前只列证据计划，不虚构结果。
 
@@ -88,9 +90,9 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 | 未决项 | 责任角色 | 最迟阶段 |
 |--------|----------|----------|
-| waydriver 宿主选型（`labwc` / `sway` / `inox-compositor` 自身）与 E2 job 接线 | 合成器维护者 + 人类审查 | D02 基座 PR |
-| waydriver 测试基座实现（仓库当前无该基础设施） | Shell/集成维护者 | D02 基座 PR |
-| `inox-lock` / `inox-greet` 安全审查通过迁移边界（ADR 0015 前提） | 锁屏/登录维护者 + 安全审查者 | D05 前 |
+| waydriver 宿主选型（`labwc` / `sway` / `inox-compositor` 自身）与 E2 job 接线 | 合成器维护者 + 人类审查 | M02 基座 PR |
+| waydriver 测试基座实现（仓库当前无该基础设施） | Shell/集成维护者 | M02 基座 PR |
+| `inox-lock` / `inox-greet` 安全审查通过迁移边界（ADR 0015 前提） | 锁屏/登录维护者 + 安全审查者 | M05 前 |
 
 ## 后果
 
