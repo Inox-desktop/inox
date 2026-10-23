@@ -1,6 +1,6 @@
 # inox-greet
 
-L4 可选登录组件：登录生命周期模型 + **QML/Qt Quick 预览**（ADR 0036 D03，自 Iced 迁移的首个完整样本）。
+L4 可选登录组件：登录生命周期模型 + **QML/Qt Quick 预览**（ADR 0036 M03，自 Iced 迁移的首个完整样本）。
 
 `inox-greet --preview` 展示一个普通窗口：标题、说明、用户名输入、禁用的登录按钮与清空按钮。所有颜色、间距、圆角与字号来自 `inox_config::Theme` 设计令牌，所有用户可见文案来自 Fluent 目录（`en-US` / `zh-CN`）——QML 内没有硬编码颜色、尺寸或字符串（根级 AGENTS.md §4、§7.3）。令牌与文案在安全 Rust 侧投影（`src/view.rs`），经 cxx-qt bridge（`src/cxxqt_object.rs`）以 `QColor` / `int` / `QString` 属性暴露给 QML。
 

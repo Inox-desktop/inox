@@ -1,4 +1,4 @@
-//! Headless tests of the preview (ADR 0036 D03 evidence).
+//! Headless tests of the preview (ADR 0036 M03 evidence).
 //!
 //! Everything lives inside the binary because cxx-qt 0.10 links the bridge's
 //! generated C++ archive into every target of the package: an integration test

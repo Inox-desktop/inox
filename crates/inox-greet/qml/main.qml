@@ -1,4 +1,4 @@
-// The Inox login preview (ADR 0036 D03).
+// The Inox login preview (ADR 0036 M03).
 //
 // This tree only renders: every colour, size and string comes from the
 // Rust-backed `GreetPreview` element below, which projects the design tokens
