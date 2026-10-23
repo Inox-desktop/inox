@@ -1,9 +1,9 @@
 # ADR 0036: Phase 2d — L3 Shell 组件与 inox-greet 从 Iced 迁移到 QML + Qt Quick 的实施计划
 
-- 状态：proposed
+- 状态：accepted
 - 日期：2026-10-23
 - 决策者：架构组（项目所有者 rownix101）
-- 批准记录：待补（人类评审 PR / 评论与日期；本文件为实施计划，批准后按计划逐个 PR 迁移）
+- 批准记录：2026-10-23 项目所有者在本开发会话明确批准本实施计划（「我已批准 docs/adr/0036-component-migration-plan.md，开始实现，可以并行」），并指示按计划**并行**启动各组件迁移 PR；批准记录随首个实施 PR 链接补全。本记录是架构/实施顺序批准，不表示任何迁移步骤的 CI 验收已通过。
 - 关系：补充 [ADR 0033](./0033-qml-qt-quick-shell-evaluation.md)（Shell GUI 迁移 QML + Qt Quick）与 [ADR 0035](./0035-cxx-qt-binding.md)（采用 cxx-qt 绑定）。ADR 0033/0034/0035 已批准决策方向；本 ADR 记录**实施顺序与每步验收**，不重复已批准的选型结论。
 
 ## 背景
@@ -102,4 +102,4 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 **复审触发**：若迁移中发现某组件与 layer-shell/QML 的接合在真实合成器上无法成立，或某个安全边界在绑定层出现绕行可能，须停下该组件并回退到上一稳定点，向人类报告，再决定是否另写 ADR。
 
-*本 ADR 为 Phase 2d 实施计划（proposed），pending 人类评审；不虚构已验证结果。*
+*本 ADR 为 Phase 2d 实施计划（accepted，2026-10-23 项目所有者批准）。表中 E0–E4 证据在对应 PR 的 CI 运行前保持未验证；不虚构已验证结果。*
