@@ -88,7 +88,7 @@ pub fn decode_ppm(bytes: &[u8]) -> Result<Ppm, PpmDecodeError> {
 
     let pixels = width
         .checked_mul(height)
-        .map_err(|_| PpmDecodeError::TooLarge { width, height })?;
+        .ok_or(PpmDecodeError::TooLarge { width, height })?;
     if width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err(PpmDecodeError::TooLarge { width, height });
     }
