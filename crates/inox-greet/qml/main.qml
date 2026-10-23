@@ -31,9 +31,6 @@ Window {
     // Rust element and that its properties crossed the bridge intact.
     Component.onCompleted: preview.reportReady(preview.title)
 
-    Accessible.role: Accessible.Pane
-    Accessible.name: preview.title
-
     // Escape clears the identity and returns focus to the field, matching the
     // keyboard order of the Iced preview it replaces.
     function clearIdentity() {
@@ -46,6 +43,11 @@ Window {
         id: content
         anchors.fill: parent
         anchors.margins: preview.spacingLg
+
+        // `Accessible` attaches to Items only, so the role lives on the content
+        // surface rather than on the Window itself.
+        Accessible.role: Accessible.Pane
+        Accessible.name: preview.title
 
         Keys.onEscapePressed: root.clearIdentity()
 
