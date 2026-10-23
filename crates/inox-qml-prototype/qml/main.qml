@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import com.inox.prototype
+import com.inox.prototype.qml
 
 Window {
     id: root
@@ -8,6 +8,26 @@ Window {
     height: 320
     visible: true
     title: "Inox QML Prototype"
+
+    // Escape quits the prototype through its *normal* event loop. The waydriver
+    // host test (`crates/inox-integration/tests/waydriver_host.rs`, acceptance
+    // D02 / ADR 0036) injects the key through the Inox compositor's test-only
+    // input channel; the compositor routes it here as a real keyboard event, so
+    // the process ends with `QGuiApplication::exec` returning and a zero exit
+    // status instead of being signalled. `Window` is not an `Item` and cannot
+    // carry `Keys` handlers, hence the focus sink that fills the window.
+    Item {
+        id: focusSink
+        anchors.fill: parent
+        focus: true
+        Component.onCompleted: forceActiveFocus()
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Escape) {
+                Qt.quit()
+                event.accepted = true
+            }
+        }
+    }
 
     // The Rust-backed QObject exposed through cxx-qt. Its `number` and `string`
     // Q_PROPERTYs and the `incrementNumber` invokable live in `MyObjectRust`.

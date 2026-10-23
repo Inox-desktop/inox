@@ -9,7 +9,7 @@
 cxx-qt 0.10 的完整链路 `Rust → C++ → QML → 返回`：
 
 1. `src/cxxqt_object.rs` 用 `#[cxx_qt::bridge]` 声明一个 Rust-backed `QObject`（`MyObject`），含两个 `Q_PROPERTY`（`number`、`string`）和一个 `qinvokable`（`incrementNumber`）。
-2. `build.rs` 用 `CxxQtBuilder::new_qml_module(...)` 声明 QML 模块 `com.inox.prototype.qml`，并把 `qml/main.qml` 打进资源（qrc 根路径 `qrc:/qt/qml/com/inox/prototype/qml/main.qml`）。
+2. `build.rs` 用 `CxxQtBuilder::new_qml_module(...)` 声明 QML 模块 `com.inox.prototype.qml`，并把 `qml/main.qml` 打进资源。cxx-qt 把文件挂在 `qrc:/qt/qml/<模块 URI 转目录>/` 前缀下、**并保留文件自身的相对路径**作为 alias，因此资源 URL 是 `qrc:/qt/qml/com/inox/prototype/qml/qml/main.qml`（比 URI 前缀多一段 `qml`）。该常量定义在 `src/main.rs` 的 `MAIN_QML_URL`。
 3. `qml/main.qml` `import com.inox.prototype`，实例化 `MyObject` 并展示属性 / 触发 `incrementNumber`。
 4. `src/headless_tests.rs`（bin 内的 `#[cfg(test)]` 单元测试）**无需 Wayland 合成器或真实显示**，在 `QT_QPA_PLATFORM=offscreen` 下构造 Rust 后备结构体（验证 `#[qproperty]` 的 Rust 侧胶水），并让 `QQmlApplicationEngine` 加载 `com.inox.prototype` 模块的 `main.qml`（验证 bridge 生成代码 + QML 类型注册编译、链接、运行全链路）。
 
