@@ -137,6 +137,13 @@ jobs:
                       # widget tree, so their shard needs a font installed (see the
                       # `fonts` input of the system-deps action).
                       "ui": any(d["name"] == "iced" for d in deps),
+                      # A crate that declares `cxx-qt` builds and links Qt through
+                      # pkg-config, so its build-script (and any bridge test) needs
+                      # the Qt 6 development packages — the `qt` input of the
+                      # system-deps action (ADR 0033/0035). Only registers `qt`
+                      # when the crate actually names cxx-qt, so non-Qt crates
+                      # stay off the extra system surface.
+                      "qt": any(d["name"] == "cxx-qt" for d in deps),
                   })
 
           # Fail loudly rather than silently testing nothing, and refuse to run a
@@ -168,15 +175,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Two kinds of shard need system packages: the ones whose manifests
       # declare `smithay` (`graphics`, plus `egl` because they run the headless
-      # EGL/GLES render tests) and the L3 components whose manifests declare
+      # EGL/GLES render tests), the L3 components whose manifests declare
       # `iced` (`ui`, plus `fonts` because their render tests lay text out
-      # through cosmic-text). Every other shard stays cheap. The package lists
-      # live in one place — see `.github/actions/system-deps/action.yml`.
+      # through cosmic-text), and the Qt Quick crates that declare `cxx-qt`
+      # (`qt`: their build script resolves Qt through pkg-config, so they need
+      # the Qt 6 development packages — ADR 0033/0035). Every other shard stays
+      # cheap. The package lists live in one place — see
+      # `.github/actions/system-deps/action.yml`.
       - uses: ./.github/actions/system-deps
-        if: matrix.graphics || matrix.ui
+        if: matrix.graphics || matrix.ui || matrix.qt
         with:
           egl: ${{ matrix.graphics }}
           fonts: ${{ matrix.ui }}
+          qt: ${{ matrix.qt }}
       # One job per crate keeps a failure attributable and keeps the command the
       # same one a developer runs locally: `cargo test -p <crate>`.
       #
