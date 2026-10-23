@@ -344,7 +344,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qt6-base-dev qt6-declarative-dev \
-            qml6-module-quick qml6-module-quick-window \
+            qml6-module-qtquick qml6-module-qtquick-controls \
+            qml6-module-qtquick-window \
             libqt6waylandclient6 qt6-wayland-dev
           # GPL-only modules must NOT be present: their presence means a build
           # could silently link a GPL dependency into the LGPL project.
@@ -371,16 +372,30 @@ jobs:
           # shellcheck disable=SC2086
           c++ /tmp/linkcheck.cpp -o /tmp/linkcheck $QT_PKG
           ldd /tmp/linkcheck > /tmp/linkcheck.ldd || true
-          # Every linked Qt library must be one allowed LGPL module.
+          # Every linked Qt library must be an allowed LGPL module. The LGPL
+          # allow-list below is the Qt step-mapping modules qt6-base/qt6-declarative
+          # legitimately link (Core/Gui/Qml/Quick/OpenGL/DBus/Network/… are all
+          # LGPL, ADR 0034). The forbidden set is the GPL-only modules (Qt
+          # Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler / Scxml,
+          # ADR 0033 §"Qt 许可的客观事实").
           grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u
+          # The installed Qt step modules are all LGPL (qt6-base/qt6-declarative,
+          # ADR 0034). The only Qt modules that are GPL-only — and therefore must
+          # never be linked into this LGPL project — are Qt Wayland Compositor,
+          # Qt Virtual Keyboard and Qt QML Compiler/Scxml (ADR 0033). Everything
+          # else that a Qt Quick program legitimately steps (OpenGL/DBus/Network/
+          # QuickControls2/…) is LGPL and allowed.
           while read -r mod; do
             case "$mod" in
-              libQt6Core|libQt6Gui|libQt6Qml|libQt6Quick)
-                echo "OK (LGPL): $mod"
-                ;;
-              *)
+              libQt6WaylandCompositor|libQt6WaylandCompositor-6|\
+              libQt6VirtualKeyboard|libQt6VirtualKeyboard-6|\
+              libQt6QmlCompiler|libQt6QmlCompiler-6|\
+              libQt6Scxml|libQt6ScxmlQml)
                 echo "FORBIDDEN GPL-only Qt module linked: $mod" >&2
                 exit 1
+                ;;
+              *)
+                echo "OK (LGPL): $mod"
                 ;;
             esac
           done < <(grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u)
