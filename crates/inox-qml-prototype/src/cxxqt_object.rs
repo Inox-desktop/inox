@@ -11,7 +11,7 @@ use cxx_qt_lib::QString;
 /// The Rust backing type for the QML element `MyObject`.
 #[derive(Default)]
 pub struct MyObjectRust {
-    /// The number shown in QML; incremented by [`MyObject::increment_number`].
+    /// The number shown in QML; incremented by `incrementNumber`.
     pub number: i32,
     /// A free-form string property demonstrating `QString` plumbing.
     pub string: QString,
