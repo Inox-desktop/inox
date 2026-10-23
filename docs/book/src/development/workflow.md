@@ -11,7 +11,7 @@ Inox 采用 **AI-first** 工作流：AI 编写绝大部分代码、测试与文�
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - 库用 `thiserror`、可执行程序用 `anyhow`；禁止吞掉错误。
-- 依赖许可证白名单：BSD / MIT / Apache-2.0 / ISC / Zlib 等宽松许可；禁止 GPL / AGPL / SSPL 进入核心依赖。
+- 依赖许可证白名单：宽松许可 + LGPL；项目本身 LGPL-3.0；禁止 AGPL / SSPL 与 GPL-only 的 Qt 模块进入核心依赖。
 - 用户可见文案走 Project Fluent，禁止硬编码；组件只消费设计令牌，禁止硬编码颜色与尺寸。
 - 面向用户的文档与 PRD 用中文；代码注释与标识符用英文。
 

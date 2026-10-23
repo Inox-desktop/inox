@@ -22,11 +22,40 @@ yanked = "warn"
 # lays out all text through cosmic-text, so every L3 component depends on it.
 # The advisory's suggested replacement (`skrifa`) is a change upstream has to
 # make first; track it, and drop this entry once iced moves off ttf-parser.
-ignore = ["RUSTSEC-2026-0196", "RUSTSEC-2026-0192"]
+#
+# The three `users` entries are **not** that shape: two of them are real defects
+# in the crate, and they are ignored because no code in this workspace reaches
+# the functions they are about. `users` 0.10 is reachable only through `pam`
+# 0.8, whose one call is `get_user_by_name` to set `HOME`/`SHELL`/`USER` during
+# `pam_open_session`; that path reads `pw_name`/`pw_uid`/`pw_gid`/`pw_dir`/
+# `pw_shell` and touches none of the affected code:
+#
+#   * RUSTSEC-2023-0040 — the crate is unmaintained (`pam` has not moved off it);
+#   * RUSTSEC-2023-0059 — an unsound unaligned read in the `gr_mem` handling of
+#     `struct_to_group`, which only the group-lookup entry points reach;
+#   * RUSTSEC-2025-0040 — `get_user_groups` ignores the count `getgrouplist`
+#     returns and maps a whole fixed 1024-entry buffer, so group listings acquire
+#     gid 0 (root's group). This workspace **used** to call it; `inox-auth` now
+#     gets a session's supplementary groups from `nix::unistd::getgrouplist`,
+#     which respects the count, and filters gid 0 out of the result as well
+#     (`inox_auth::session::session_groups`, with tests).
+#
+# Removing these entries means removing the crate: track `pam`'s dependency on
+# it (ADR 0029 §3 records the same reasoning, and the removal plan).
+ignore = [
+    "RUSTSEC-2026-0196",
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2023-0040",
+    "RUSTSEC-2023-0059",
+    "RUSTSEC-2025-0040",
+]
 
 [licenses]
-# Root AGENTS.md §3.6: permissive licences only; no GPL/AGPL/SSPL in the core
-# dependency graph.
+# Relicensed to LGPL-3.0 (ADR 0034) for the Qt-quick route (ADR 0033): the
+# project aligns with Qt's LGPL and the allow-list now accepts LGPL/GPL
+# libraries while keeping the aggressive copyleft out where we must. GPL-only
+# Qt modules (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler) are
+# still forbidden by policy, not by this list — see ADR 0033 §"Qt 许可".
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -41,6 +70,7 @@ allow = [
     "CC0-1.0",
     "BSL-1.0",
     "MPL-2.0",
+    "LGPL-3.0",
 ]
 
 [bans]

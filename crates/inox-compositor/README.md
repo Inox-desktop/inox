@@ -32,6 +32,32 @@ top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应�
 独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 Iced 客户端宿主，
 L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完整 M4 已验收。
 
+### 毛玻璃（私有 `inox-glass-v1`）
+
+合成器广告私有 `inox_glass_manager_v1` v1：拥有 layer 角色的表面可以创建
+`inox_glass_v1`，指定一个表面局部坐标的区域与一个模糊半径，合成器把该区域**背后已经合成好的
+像素**模糊后覆盖回去，客户端再以自己的半透明像素叠上去。模糊像素不会以任何形式回传给客户端
+（协议里没有 image/`fd`/颜色事件），请求也被裁剪到该表面与所在输出之内。
+
+- 半径上限为 64（`src/glass.rs::MAX_BLUR_RADIUS`，冻结），`capabilities` 事件如实报告：
+  只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」三者同时
+  成立才报 64，否则报 0。普通 `xdg_toplevel` 走平铺路径，不实现毛玻璃，因此报 0；同一表面
+  第二个 `get_glass` 是致命协议错误 `already_created`。
+- 实现是 `src/render.rs` 里两个 region 大小的可分离 pass（横向、纵向各一次 9-tap 高斯，
+  `step = radius / 4`，GLSL ES 1.00 且带 `//_DEFINES_` 标记的自定义纹理 shader），程序与两张
+  scratch 纹理在 `HeadlessRenderer` 上缓存。为了能采样背景，headless 的渲染目标从
+  renderbuffer 换成了 `GlesTexture`；无 pane 时走的仍是原来的「clear + 逐元素绘制」路径。
+- 参数以表面为键，表面 / glass 对象 / 连接任一消失都会清除，死表面不会再被磨砂；锁定期间
+  `scene_elements` 在考虑任何 layer 表面之前就返回，所以锁定场景里不可能出现 pane。
+- **已知限制**：物理（DRM）路径还没有毛玻璃。它的呈现经 `OutputDamageTracker`，而磨砂
+  passthrough 在该路径还没有诚实的 damage 描述，因此 `backend::drm` 在场景里出现 pane 时
+  只 `warn!` 一次并保持画面清晰，同时 `capabilities` 报 0——不广告不会兑现的效果。真机毛玻璃
+  属 E4，尚未执行。
+
+`tests/glass_blur.rs` 是判别性证据：pane 外的锐利竖直边保持锐利（严格居中的列 ≤ 2），pane 内的
+过渡至少 `radius/2` 列，而未创建 glass 对象的同场景对照渲染为 0 列，且 pane 区域与对照渲染有
+明显差异；删掉模糊该测试必然失败。真机（DRM）路径的行为未由此推断。
+
 ### 多输出、多 GPU 与缩放（ADR 0019 / ADR 0020）
 
 `--backend auto`（默认）枚举当前 libseat seat 上的**全部** DRM 设备，主 GPU 优先，
@@ -74,7 +100,14 @@ GPU 都能导入），但**广告 `linux-dmabuf` 之前必须先补上复制路�
   `spacing.lg/xl`、`colors.background/text` 生成；不依赖硬件 cursor plane。
 - 真实会话启动时读取 `InoxConfig` 的输入、平铺、主题及输出 mode；不支持的 mode/scale
   明确拒绝。键盘重复 rate 为 0 关闭 repeat；delay/rate 必须可表示为 Wayland 有符号字段。
-  headless 保持确定性的测试配置。运行中的配置事务与重载回执仍待后续工作。
+  headless 保持确定性的测试配置。
+- 运行中的配置通过会话 D-Bus 应用：`org.inox.Configuration1.Reload` 立即应用并拒绝输出
+  改动（SIGHUP 与 `inoxctl` 没有确认通道）；`org.inox.Configuration2` 的
+  `Trial`/`Confirm`/`Rollback` 让输出模式、缩放与位置**试用**：应用成功后 30 秒内没有
+  `Confirm`，合成器自己恢复试用前的偏好。成功回执只在设备状态被逐 connector 读回核对
+  之后才发出，因此「不支持的 mode」不会被报成成功。试用只存在于物理后端：headless 的
+  输出来自 `--output`，该路径继续拒绝输出改动。见
+  [ADR 0028](../../docs/adr/0028-display-trial-confirm-and-rollback.md)。
 
 本地只执行 fmt/check/clippy。CI 负责纯状态机、属性测试、真实 Wayland 客户端、软件光标像素
 及进程生命周期回归。DRM 翻页、VT、真实输入与热插拔须按
@@ -145,4 +178,4 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime cargo run --features test-input -- \
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。

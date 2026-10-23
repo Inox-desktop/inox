@@ -68,4 +68,4 @@ WAYLAND_DISPLAY=wayland-1 inox-xwayland --display :1 --ready-file /tmp/inox-xway
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。

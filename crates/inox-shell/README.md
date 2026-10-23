@@ -35,4 +35,4 @@ PRD §3.1 把「插件系统」列为本 crate 的职责。ADR 0013 明确把通
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。
