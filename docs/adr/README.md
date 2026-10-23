@@ -76,6 +76,7 @@ proposed ──► accepted ──► superseded
 | [0033](./0033-qml-qt-quick-shell-evaluation.md) | 决定 Shell GUI 由 Iced 迁移到 QML + Qt Quick | accepted | 2026-10-23 |
 | [0034](./0034-lgplv3-relicensing-evaluation.md) | 决定将 Inox 重许可为 LGPLv3 | accepted | 2026-10-23 |
 | [0035](./0035-cxx-qt-binding.md) | 决定采用 cxx-qt 作为 QML + Qt Quick 的 Rust 绑定 | accepted | 2026-10-23 |
+| [0036](./0036-component-migration-plan.md) | Phase 2d 实施计划：L3 组件 + 登录器从 Iced 迁移 QML + Qt Quick | proposed | 2026-10-23 |
 
 ## 既有提案的复核与实施阻塞
 
