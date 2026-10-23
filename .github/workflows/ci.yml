@@ -44,6 +44,8 @@ jobs:
         with:
           shared-key: msrv-1.89
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo check --locked --workspace --all-targets --all-features
 
   clippy:
@@ -60,6 +62,8 @@ jobs:
       # panics when `libudev.pc` is missing. System libraries are therefore
       # required here too, not only in `build` and `test`.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   deny:
@@ -85,6 +89,8 @@ jobs:
       # `cargo doc` compiles dependency build scripts as well, so it needs the
       # same system libraries as `clippy` (see that job).
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo doc --workspace --no-deps --all-features
 
   build:
@@ -95,6 +101,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo build --workspace --release --all-features
 
   plan:
@@ -242,6 +250,7 @@ jobs:
       - uses: ./.github/actions/system-deps
         with:
           egl: "true"
+          qt: "true"
       - name: X11 and build dependencies
         run: |
           sudo apt-get install -y --no-install-recommends \
