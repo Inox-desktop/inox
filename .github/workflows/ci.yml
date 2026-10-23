@@ -420,16 +420,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install system Qt (LGPL route, ADR 0033)
+      # The Qt package list lives in one place (the shared action), so this job
+      # cannot drift from the `test` shards again. It previously kept its own
+      # copy, which is how `qml6-module-qtqml-workerscript` came to be missing
+      # from every Qt job at once while present in none of them.
+      - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
+      - name: Refuse a GPL-only Qt module on the runner
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qt6-base-dev qt6-declarative-dev \
-            qml6-module-qtquick qml6-module-qtquick-controls \
-            qml6-module-qtquick-window \
-            libqt6waylandclient6 qt6-wayland-dev
           # GPL-only modules must NOT be present: their presence means a build
-          # could silently link a GPL dependency into the LGPL project.
+          # could silently link a GPL dependency into the LGPL project. This
+          # job additionally proves nothing *links* one (the `ldd` step below);
+          # this check is the cheaper belt-and-braces half.
           if dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard|qtdeclarative-scxml' >/dev/null; then
             echo "a GPL-only Qt module is installed; refusing" >&2
             dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard'

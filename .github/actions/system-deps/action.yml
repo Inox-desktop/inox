@@ -76,6 +76,20 @@ runs:
           # .pc files and headers (cxx-qt resolves them via pkg-config);
           # qml6-module-qtquick / -controls / -window are the QtQuick/Controls/
           # Window QML modules needed at runtime to load a `.qml` root.
+          #
+          # qml6-module-qtqml-workerscript supplies `QtQml.WorkerScript`, which
+          # `import QtQuick` itself loads: a Qt Quick program that imports
+          # `QtQuick` aborts at load time with `module "QtQml.WorkerScript" is
+          # not installed` when that QML module package is absent, even though
+          # nothing in the application mentions WorkerScript. Verified on a real
+          # Ubuntu 24.04 (noble) container: the package set below without
+          # `qml6-module-qtqml-workerscript` leaves
+          # `/usr/lib/x86_64-linux-gnu/qt6/qml/QtQml/` empty, and
+          # `apt-file search QtQml/WorkerScript/qmldir` attributes it to exactly
+          # this package. Debian-family *distributions* split the QML modules
+          # per-directory, so a Qt Quick app needs the modules its imports
+          # transitively require installed explicitly.
+          #
           # qt6-wayland-dev is the Wayland client the L3 layer surfaces attach
           # through.
           #
@@ -101,5 +115,6 @@ runs:
           sudo apt-get install -y --no-install-recommends \
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript \
             qt6-wayland qt6-wayland-dev
         fi
