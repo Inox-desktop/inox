@@ -11,7 +11,9 @@ cxx-qt 0.10 的完整链路 `Rust → C++ → QML → 返回`：
 1. `src/cxxqt_object.rs` 用 `#[cxx_qt::bridge]` 声明一个 Rust-backed `QObject`（`MyObject`），含两个 `Q_PROPERTY`（`number`、`string`）和一个 `qinvokable`（`incrementNumber`）。
 2. `build.rs` 用 `CxxQtBuilder::new_qml_module(...)` 声明 QML 模块 `com.inox.prototype.qml`，并把 `qml/main.qml` 打进资源（qrc 根路径 `qrc:/qt/qml/com/inox/prototype/qml/main.qml`）。
 3. `qml/main.qml` `import com.inox.prototype`，实例化 `MyObject` 并展示属性 / 触发 `incrementNumber`。
-4. `tests/headless.rs` **无需 Wayland 合成器或真实显示**，在 `QT_QPA_PLATFORM=offscreen` 下构造 Rust 后备结构体（验证 `#[qproperty]` 的 Rust 侧胶水），并让 `QQmlApplicationEngine` 加载 `com.inox.prototype` 模块的 `main.qml`（验证 bridge 生成代码 + QML 类型注册编译、链接、运行全链路）。
+4. `src/headless_tests.rs`（bin 内的 `#[cfg(test)]` 单元测试）**无需 Wayland 合成器或真实显示**，在 `QT_QPA_PLATFORM=offscreen` 下构造 Rust 后备结构体（验证 `#[qproperty]` 的 Rust 侧胶水），并让 `QQmlApplicationEngine` 加载 `com.inox.prototype` 模块的 `main.qml`（验证 bridge 生成代码 + QML 类型注册编译、链接、运行全链路）。
+
+本 crate **bin-only**（无库目标）。cxx-qt 0.10 把 bridge 生成的 `cxx_qt_init_*` 定义嵌入「声明该 bridge 的目标」；若在同一个包里把 bridge 放库、由二进制引用，二进制对象图未引用这些定义，`--gc-sections` 会将其丢弃，导致链接失败 `undefined reference to 'cxx_qt_init_*'`（上游 [KDAB/cxx-qt #770](https://github.com/KDAB/cxx-qt/issues/770)，0.10 未修复）。故 bridge 与 headless 测试都放在 bin 内，形态与上游 `cargo_without_cmake` 例一致。
 
 任何一个环节（bridge 宏展开、C++ 编译、Qt 链接、QML 类型注册）出错，headless 测试都会编译失败或加载/断言失败。
 
@@ -23,11 +25,10 @@ cxx-qt 0.10 的完整链路 `Rust → C++ → QML → 返回`：
 crates/inox-qml-prototype/
   Cargo.toml        # 清单（crate 专属 lints，见 AGENTS.md）
   build.rs          # cxx-qt 构建脚本：声明 QML 模块并编译 bridge
-  src/lib.rs        # 库入口：#pub mod cxxqt_object
-  src/main.rs       # 可执行入口：QGuiApplication + QQmlApplicationEngine
+  src/main.rs       # bin-only 入口：mod cxxqt_object + mod headless_tests；QGuiApplication + QQmlApplicationEngine
   src/cxxqt_object.rs  # #[cxx_qt::bridge] 定义 MyObject
+  src/headless_tests.rs # headless 桥接单元测试（#[cfg(test)]，核心证据）
   qml/main.qml      # com.inox.prototype 模块的界面（带 AT-SPI Accessible）
-  tests/headless.rs # headless 桥接集成测试（核心证据）
   AGENTS.md / README.md
 ```
 
@@ -44,7 +45,7 @@ crates/inox-qml-prototype/
 Headless 桥接测试（**无需显示设备 / Wayland 合成器**）：
 
 ```sh
-QT_QPA_PLATFORM=offscreen cargo test -p inox-qml-prototype --test headless
+QT_QPA_PLATFORM=offscreen cargo test -p inox-qml-prototype --bin inox-qml-prototype
 ```
 
 运行原型窗口：

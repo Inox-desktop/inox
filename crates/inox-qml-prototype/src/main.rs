@@ -2,15 +2,23 @@
 //!
 //! Creates a `QGuiApplication` and a `QQmlApplicationEngine` and loads the
 //! bundled `main.qml`, letting QML drive the Rust-backed `MyObject` bridge
-//! object defined in this crate's library.
+//! object declared in `cxxqt_object`.
+//!
+//! The package is deliberately **bin-only** (there is no library target): cxx-qt
+//! 0.10 embeds the bridge's generated C++ initializer definitions in the target
+//! that declares them, so splitting a bridge between a library and a binary in
+//! the same package leaves the initializer definitions unreferenced and the
+//! binary fails to link with `undefined reference to 'cxx_qt_init_*'` (KDAB
+//! issue #770). Keeping the bridge in the binary, as the upstream
+//! `cargo_without_cmake` example does, makes `cargo build` and `cargo test`
+//! both link.
+
+mod cxxqt_object;
+
+#[cfg(test)]
+mod headless_tests;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
-
-// Cargo always links the library rlib into this binary; this explicit import
-// also makes the intent clear that the generated cxx-qt C++/QML type
-// registration must be pulled in here.
-#[allow(unused_imports)]
-use inox_qml_prototype::cxxqt_object;
 
 /// Entry point: boot Qt and load the QML module's `main.qml`.
 fn main() -> anyhow::Result<()> {

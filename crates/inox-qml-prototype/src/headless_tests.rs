@@ -1,5 +1,5 @@
-//! Headless integration tests proving the cxx-qt 0.10 bridge compiles, links
-//! and runs entirely without a Wayland compositor (ADR 0033/0035 evidence).
+//! Headless unit tests proving the cxx-qt 0.10 bridge compiles, links and runs
+//! entirely without a Wayland compositor (ADR 0033/0035 evidence).
 //!
 //! Qt runs on the offscreen platform, so no display or compositor is needed.
 //! Two concerns are covered:
@@ -11,6 +11,12 @@
 //!     the offscreen platform without crashing, proving the bridge-generated
 //!     QML type registration survives a build+tell without a compositor.
 //!
+//! These live as `#[cfg(test)]` unit tests inside the binary (rather than an
+//! integration test in a separate crate) because — as with the binary itself —
+//! cxx-qt 0.10 requires the target that exercises the bridge to also be the
+//! target that declares it, so that the generated `cxx_qt_init_*` definitions
+//! are referenced and not dropped by the linker (KDAB issue #770).
+//!
 //! cxx-qt deliberately refrains from exposing a public Rust-side factory for a
 //! bare `#[qobject]` (only `#[qml_element]` QML registration and the `createRs`
 //! Rust-struct constructor are generated), so driving the *C++* QObject
@@ -20,7 +26,7 @@
 //! Run with:
 //!
 //! ```sh
-//! QT_QPA_PLATFORM=offscreen cargo test -p inox-qml-prototype --test headless
+//! QT_QPA_PLATFORM=offscreen cargo test -p inox-qml-prototype --bin inox-qml-prototype
 //! ```
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
@@ -36,7 +42,7 @@ fn bridge_rust_struct_defaults() {
     // QML instantiates. Constructing the Rust backing struct here still
     // validates the Default-based default constructor path that the bridge
     // relies on, and that the property defaults are sane.
-    let obj = inox_qml_prototype::cxxqt_object::MyObjectRust::default();
+    let obj = super::cxxqt_object::MyObjectRust::default();
     assert_eq!(obj.number, 0, "number must default to 0");
 }
 
