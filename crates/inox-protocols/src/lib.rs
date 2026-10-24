@@ -8,10 +8,14 @@
 //!   so upstream versions are pinned in one place.
 //! - [`ipc`] provides the bindings for `inox-ipc`, Inox's own wayland protocol
 //!   for control messages between the compositor and the Inox shell.
+//! - [`glass`] provides the bindings for `inox-glass-v1`, Inox's own protocol
+//!   that lets a client ask the compositor to frost the backdrop behind a region
+//!   of its own surface (ADR 0031).
 //!
 //! The crate is owned by the L2 layer; see the repository `AGENTS.md` and the
 //! Inox ADR on protocol strategy for the rationale and the versioning rules.
 
+pub mod glass;
 pub mod ipc;
 pub mod standard;
 
