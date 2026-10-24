@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+zbus.workspace = true
 anyhow.workspace = true
 calloop.workspace = true
 inox-common.workspace = true
@@ -33,6 +34,10 @@ test-input = []
 
 [dev-dependencies]
 proptest.workspace = true
+# The frosted-glass test writes the two frames it measured as PNGs when
+# `INOX_SCREENSHOT_DIR` is set, so "the backdrop under the pane is blurred" is
+# checkable by eye and not only by the counts it prints (`tests/glass_blur.rs`).
+image.workspace = true
 # The inox-ipc and window-management integration tests drive a real Wayland
 # client; Smithay does not re-export `wayland-client`.
 wayland-client.workspace = true

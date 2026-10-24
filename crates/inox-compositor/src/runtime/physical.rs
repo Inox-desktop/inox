@@ -83,6 +83,7 @@ pub(super) struct PhysicalState {
 }
 
 pub(super) struct Prepared {
+    pub(super) configuration: InoxConfig,
     pub(super) outputs: Vec<OutputDescriptor>,
     pub(super) input: InputConfig,
     pub(super) theme: Theme,
@@ -130,6 +131,7 @@ pub(super) fn prepare() -> Result<Prepared, RunError> {
         InputDevices::new(session.clone(), config.compositor.input.clone()).map_err(failure)?;
 
     Ok(Prepared {
+        configuration: config.clone(),
         layout: crate::layout::LayoutConfig {
             master_ratio: config.compositor.layout.master_ratio,
             master_count: config.compositor.layout.master_count as usize,
@@ -408,6 +410,14 @@ fn on_drm_event(
 }
 
 impl PhysicalState {
+    /// The output preferences in force right now.
+    ///
+    /// The trial state machine records these before a display change so that a
+    /// rollback or the deadline can put exactly them back (ADR 0028).
+    pub(super) fn preferences(&self) -> &[OutputConfig] {
+        &self.preferences
+    }
+
     fn drives_any_output(&self) -> bool {
         self.gpus.iter().any(|gpu| gpu.backend.is_driving())
     }
@@ -705,6 +715,59 @@ fn refresh_topology(handle: &Handle, data: &mut CalloopData, physical: &mut Phys
     }
 }
 
+/// Apply output preferences to every device and refresh the topology.
+///
+/// This is the only entry point a display trial uses (ADR 0028). It records the
+/// preferences, rescans every GPU and refreshes the topology through
+/// [`refresh_topology`], so passing the preferences that were in force before a
+/// trial puts the previous modes, scales and positions back.
+///
+/// A successful return means the request is actually in effect, not merely that
+/// [`GpuBackend::rescan`] did not fail: an unsupported mode is silently kept by
+/// rescan, so every device is asked to read its state back and the requested
+/// connector and mode are named in the error when they did not take. The topology
+/// is refreshed before that readback so the compositor always reflects what the
+/// devices drive, even when the check then reports a request that did not take.
+///
+/// # Errors
+/// Returns a reason naming the failing device, the connector and mode that is not
+/// in effect, or the absence of any display device.
+pub(super) fn apply_output_preferences(
+    handle: &Handle,
+    data: &mut CalloopData,
+    physical: &mut PhysicalState,
+    preferences: &[OutputConfig],
+) -> Result<(), String> {
+    // Nothing drives the requested outputs, so there is nothing that could be in
+    // effect and no state to read back.
+    if physical.gpus.is_empty() {
+        return Err("no display device is available for the requested outputs".to_owned());
+    }
+
+    physical.preferences = preferences.to_vec();
+    // Every device is asked to reconcile, and the first failure is the one
+    // reported; the caller restores the previous preferences through this same
+    // function, which reconciles every device again.
+    let mut failure = None;
+    for gpu in &mut physical.gpus {
+        if let Err(error) = gpu.backend.rescan(preferences) {
+            let reason = format!("{}: {error}", gpu.backend.card().display());
+            if failure.is_none() {
+                failure = Some(reason);
+            }
+        }
+    }
+    refresh_topology(handle, data, physical);
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    for gpu in &physical.gpus {
+        gpu.backend.preferences_in_effect(preferences)?;
+    }
+
+    Ok(())
+}
+
 /// Stop driving one output, keeping every other display and the session alive.
 ///
 /// The exception is the first frame: a compositor that was asked for a physical
@@ -903,5 +966,15 @@ pub(super) fn shutdown(handle: &Handle, data: &mut CalloopData) {
         if let Some(token) = session_token {
             handle.remove(token);
         }
+    }
+}
+
+pub(super) fn apply_input(
+    data: &mut CalloopData,
+    config: inox_config::InputConfig,
+) -> Result<(), String> {
+    match data.physical.as_mut() {
+        Some(physical) => physical.input.reconfigure(config),
+        None => Ok(()),
     }
 }

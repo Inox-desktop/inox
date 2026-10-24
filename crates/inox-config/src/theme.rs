@@ -1,9 +1,10 @@
 //! Design tokens and the built-in themes (PRD §9.2).
 //!
-//! A theme is a flat set of tokens — colours, typography, spacing, radii and
-//! motion durations — which is what makes it usable as the single source of
-//! truth for the components: root AGENTS.md §4 forbids hard-coding colours or
-//! sizes in a component, so every component consumes these tokens instead.
+//! A theme is a flat set of tokens — colours, the glass material, typography,
+//! spacing, radii and motion durations — which is what makes it usable as the
+//! single source of truth for the components: root AGENTS.md §4 forbids
+//! hard-coding colours or sizes in a component, so every component consumes
+//! these tokens instead.
 //!
 //! Two themes ship with Inox, [`BUILTIN_LIGHT`] and [`BUILTIN_DARK`]; the dark
 //! one is also the [`Default`] of [`Theme`], so a theme file only has to describe
@@ -13,7 +14,7 @@
 //!
 //! [`resolve`]: crate::root::ThemeSelection::resolve
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::error::{ConfigError, parse, read_text};
@@ -27,7 +28,7 @@ pub const BUILTIN_LIGHT: &str = "inox-light";
 pub const BUILTIN_DARK: &str = "inox-dark";
 
 /// An sRGB colour with an alpha channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "String")]
 pub struct Rgba {
     /// Red channel.
@@ -109,7 +110,7 @@ fn hex_pair(digits: &str, index: usize) -> Option<u8> {
 }
 
 /// Colour tokens of a theme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Colors {
     /// Colour behind the content of a window.
@@ -142,8 +143,39 @@ impl Default for Colors {
     }
 }
 
+/// The glass material of a frosted pane.
+///
+/// A frosted pane is a *translucent tint* laid over whatever is behind it, with
+/// a light hairline along its top edge and a dark one along its bottom edge,
+/// which is what makes a flat translucent rectangle read as a sheet of glass
+/// (`docs/quality/ui-guidelines.md` §12). The [`Glass::blur`] radius is asked of
+/// the compositor: the backdrop blur itself is drawn by the compositor, not by
+/// the component, so a session without backdrop blur still shows the
+/// translucency, the highlight and the shade — just without the softening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Glass {
+    /// Tint laid over the blurred backdrop: the frosted pane itself.
+    pub tint: Rgba,
+    /// The stronger tint for an emphasised pane (e.g. a pressed dock).
+    pub tint_strong: Rgba,
+    /// Highlight drawn along the pane's top edge — what reads as "glass".
+    pub highlight: Rgba,
+    /// Darkening drawn along the pane's bottom edge.
+    pub shade: Rgba,
+    /// Blur radius in logical pixels asked of the compositor; 0 means "no
+    /// backdrop blur", i.e. plain translucency.
+    pub blur: u16,
+}
+
+impl Default for Glass {
+    fn default() -> Self {
+        DARK_GLASS
+    }
+}
+
 /// Typography tokens of a theme.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Typography {
     /// Font family for prose.
@@ -165,7 +197,7 @@ impl Default for Typography {
 }
 
 /// Spacing tokens, in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Spacing {
     /// Extra small step, for the gap inside a control.
@@ -193,7 +225,7 @@ impl Default for Spacing {
 }
 
 /// Corner-radius tokens, in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Radii {
     /// Small radius, for controls.
@@ -215,7 +247,7 @@ impl Default for Radii {
 }
 
 /// Motion-duration tokens, in milliseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Motion {
     /// Duration of a small state change, such as a hover.
@@ -242,7 +274,7 @@ impl Default for Motion {
 /// and appearance included. [`ThemeSelection::resolve`] is the presence-aware
 /// loader used by the configuration: it keeps the selection's name and
 /// appearance when the theme file does not declare its own.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Theme {
     /// Name of the theme.
@@ -251,6 +283,8 @@ pub struct Theme {
     pub appearance: Appearance,
     /// Colour tokens.
     pub colors: Colors,
+    /// The glass material the panel's menu bar and dock are drawn with.
+    pub glass: Glass,
     /// Typography tokens.
     pub typography: Typography,
     /// Spacing tokens.
@@ -275,6 +309,7 @@ impl Theme {
             name: BUILTIN_LIGHT.to_owned(),
             appearance: Appearance::Light,
             colors: LIGHT_COLORS,
+            glass: LIGHT_GLASS,
             ..Self::builtin_dark()
         }
     }
@@ -285,6 +320,7 @@ impl Theme {
             name: BUILTIN_DARK.to_owned(),
             appearance: Appearance::Dark,
             colors: DARK_COLORS,
+            glass: DARK_GLASS,
             typography: Typography::default(),
             spacing: Spacing::default(),
             radii: Radii::default(),
@@ -317,7 +353,7 @@ impl Theme {
 /// `[theme] appearance` in `config.toml`, `system` is not a value a theme file
 /// can hold. Rejecting it here keeps [`Theme::appearance`] meaningful for the
 /// components that read it to decide between light and dark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum ThemeAppearance {
     /// Light colours.
@@ -341,12 +377,13 @@ impl From<ThemeAppearance> for Appearance {
 /// file which does not declare a name or an appearance inherits the ones from
 /// the selection instead of the dark defaults, and the appearance is restricted
 /// to the two a theme can actually describe (see [`ThemeAppearance`]).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 struct ThemeFile {
     name: Option<String>,
     appearance: Option<ThemeAppearance>,
     colors: Colors,
+    glass: Glass,
     typography: Typography,
     spacing: Spacing,
     radii: Radii,
@@ -361,6 +398,7 @@ impl Default for ThemeFile {
             name: None,
             appearance: None,
             colors: dark.colors,
+            glass: dark.glass,
             typography: dark.typography,
             spacing: dark.spacing,
             radii: dark.radii,
@@ -376,6 +414,7 @@ impl ThemeFile {
             name: self.name.unwrap_or_else(|| name.to_owned()),
             appearance: self.appearance.map_or(appearance, Appearance::from),
             colors: self.colors,
+            glass: self.glass,
             typography: self.typography,
             spacing: self.spacing,
             radii: self.radii,
@@ -453,6 +492,11 @@ const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
     Rgba { r, g, b, a: 0xff }
 }
 
+/// Build a colour with an explicit alpha.
+const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba {
+    Rgba { r, g, b, a }
+}
+
 /// The default (dark) palette.
 const DARK_COLORS: Colors = Colors {
     background: rgb(0x1b, 0x1d, 0x23),
@@ -481,6 +525,25 @@ const LIGHT_COLORS: Colors = Colors {
     danger: rgb(0xc9, 0x40, 0x3a),
     warning: rgb(0xb7, 0x79, 0x1f),
     success: rgb(0x2f, 0x85, 0x5a),
+};
+
+/// The default (dark) glass: a cool, near-black pane, translucent enough that
+/// the wallpaper below is still visible through it.
+const DARK_GLASS: Glass = Glass {
+    tint: rgba(0x14, 0x18, 0x22, 0xcc),
+    tint_strong: rgba(0x0d, 0x10, 0x18, 0xe6),
+    highlight: rgba(0xff, 0xff, 0xff, 0x40),
+    shade: rgba(0x00, 0x00, 0x00, 0x59),
+    blur: 128,
+};
+
+/// The light glass: a warm white pane, translucent in the same way.
+const LIGHT_GLASS: Glass = Glass {
+    tint: rgba(0xff, 0xfb, 0xf5, 0xd9),
+    tint_strong: rgba(0xff, 0xfd, 0xf9, 0xf2),
+    highlight: rgba(0xff, 0xff, 0xff, 0xcc),
+    shade: rgba(0x00, 0x00, 0x00, 0x1f),
+    blur: 128,
 };
 
 #[cfg(test)]
@@ -686,7 +749,7 @@ mod tests {
 
     #[test]
     fn a_colour_token_is_deserialized_through_its_hexadecimal_form() {
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, Serialize)]
         struct Token {
             accent: Rgba,
         }
@@ -699,6 +762,86 @@ mod tests {
             .expect_err("not hexadecimal");
 
         assert!(error.to_string().contains("#zzz"), "{error}");
+    }
+
+    #[test]
+    fn both_built_in_themes_carry_a_glass_material_that_asks_for_a_blur() {
+        let light = Theme::builtin_light();
+        let dark = Theme::builtin_dark();
+
+        assert_eq!(dark.glass, DARK_GLASS);
+        assert_eq!(light.glass, LIGHT_GLASS);
+        assert_eq!(Glass::default(), DARK_GLASS);
+        assert_ne!(
+            light.glass, dark.glass,
+            "the light pane is warm white and the dark one is near-black"
+        );
+
+        for theme in [&light, &dark] {
+            assert!(
+                theme.glass.blur > 0,
+                "a built-in glass asks the compositor for a blurred backdrop"
+            );
+            assert!(
+                theme.glass.tint.a < 0xff,
+                "the pane is translucent, not an opaque surface"
+            );
+            assert!(
+                theme.glass.highlight.a > 0 && theme.glass.shade.a > 0,
+                "the pane has both a highlight and a shade to read as glass"
+            );
+        }
+    }
+
+    #[test]
+    fn a_theme_document_without_a_glass_section_still_loads() {
+        // `[glass]` is `#[serde(default)]`, so every `theme.toml` written before
+        // the material existed keeps parsing and inherits the dark glass.
+        for document in ["", "colors = { accent = \"#ff0000\" }\n"] {
+            let file = parse_theme_file(document).expect("a document without `[glass]`");
+
+            assert_eq!(file.glass, DARK_GLASS, "document `{document:?}`");
+        }
+
+        let theme: Theme = parse(Path::new("theme.toml"), "colors = { text = \"#ffffff\" }\n")
+            .expect("a theme document without `[glass]`");
+
+        assert_eq!(theme.glass, DARK_GLASS);
+    }
+
+    #[test]
+    fn a_theme_file_may_override_the_glass_tokens() {
+        let file = parse_theme_file(
+            "glass = { tint = \"#10203040\", tint_strong = \"#10101080\", \
+             highlight = \"#ffffff20\", shade = \"#00000010\", blur = 8 }\n",
+        )
+        .expect("a glass section");
+
+        assert_eq!(file.glass.tint, hex("#10203040"));
+        assert_eq!(file.glass.tint_strong, hex("#10101080"));
+        assert_eq!(file.glass.highlight, hex("#ffffff20"));
+        assert_eq!(file.glass.shade, hex("#00000010"));
+        assert_eq!(file.glass.blur, 8);
+
+        let partial = parse_theme_file("glass = { blur = 0 }\n").expect("a partial glass section");
+        assert_eq!(partial.glass.blur, 0, "0 is the explicit `no blur` value");
+        assert_eq!(
+            partial.glass.tint, DARK_GLASS.tint,
+            "the fields the file leaves out stay at the dark defaults"
+        );
+    }
+
+    #[test]
+    fn an_unknown_glass_token_is_rejected_with_its_field_path() {
+        let error = parse_theme_file("glass = { taint = \"#00000000\" }\n").expect_err("typo");
+
+        match error {
+            ConfigError::Parse { field, line, .. } => {
+                assert_eq!(field.as_deref(), Some("glass.taint"));
+                assert_eq!(line, Some(1));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
     }
 
     #[test]

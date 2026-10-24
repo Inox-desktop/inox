@@ -43,6 +43,34 @@ pub struct InoxConfig {
 }
 
 impl InoxConfig {
+    /// A deterministic semantic snapshot for confirming a live reload.
+    ///
+    /// Includes resolved tokens and locale, so saving a filename alone cannot
+    /// confirm a different theme or a consumer with a different locale.
+    ///
+    /// # Errors
+    /// Returns a serialization error if the snapshot cannot be encoded.
+    pub fn snapshot(&self) -> Result<String, ConfigError> {
+        #[derive(serde::Serialize)]
+        struct Snapshot<'a> {
+            root: &'a RootConfig,
+            compositor: &'a CompositorConfig,
+            shell: &'a ShellConfig,
+            notifications: &'a NotificationsConfig,
+            theme: &'a Theme,
+            locale: &'a str,
+        }
+        toml::to_string(&Snapshot {
+            root: &self.root,
+            compositor: &self.compositor,
+            shell: &self.shell,
+            notifications: &self.notifications,
+            theme: &self.theme,
+            locale: &self.locale.tag(),
+        })
+        .map_err(ConfigError::Snapshot)
+    }
+
     /// Load `config.toml` and everything it points at: the theme, the locale
     /// and the three component files (`compositor.toml`, `shell.toml`,
     /// `notifications.toml`).
@@ -214,6 +242,28 @@ mod tests {
 
     fn hex(value: &str) -> Rgba {
         Rgba::from_hex(value).expect("valid hexadecimal colour")
+    }
+
+    #[test]
+    fn semantic_snapshot_is_deterministic_and_includes_resolved_theme_and_preferences() {
+        let dir = tempfile::tempdir().expect("directory");
+        let paths = ConfigPaths::new(dir.path());
+        let config = InoxConfig::load(&paths, Appearance::System).expect("defaults");
+        let before = config.snapshot().expect("snapshot");
+        assert!(toml::from_str::<toml::Value>(&before).is_ok());
+        write(
+            &dir,
+            "shell.toml",
+            "# only formatting changes\n[panel]\nheight = 32\n",
+        );
+        let same = InoxConfig::load(&paths, Appearance::System).expect("equivalent config");
+        assert_eq!(same.snapshot().expect("snapshot"), before);
+        let mut changed = same.clone();
+        changed.shell.panel.height = 48;
+        assert_ne!(changed.snapshot().expect("snapshot"), before);
+        changed = same;
+        changed.theme = Theme::builtin_light();
+        assert_ne!(changed.snapshot().expect("snapshot"), before);
     }
 
     #[test]

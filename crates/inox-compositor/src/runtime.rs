@@ -12,6 +12,7 @@ use std::{ffi::OsString, io, sync::Arc, time::Duration};
 
 mod input_method;
 mod physical;
+pub(crate) mod reload;
 
 use calloop::{
     EventLoop, Interest, Mode, PostAction,
@@ -103,6 +104,10 @@ pub enum RunError {
 
 /// State shared with every calloop event source.
 struct CalloopData {
+    reload: Option<reload::Controller>,
+    active_configuration: Option<inox_config::InoxConfig>,
+    /// The armed display trial and its deadline source (ADR 0028).
+    trial: reload::TrialState,
     input_method: Option<input_method::InputMethodProcess>,
     state: InoxState,
     display_handle: DisplayHandle,
@@ -167,7 +172,11 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         None => InoxState::new(&display_handle, &config, loop_signal)?,
     };
 
+    let active_configuration = prepared.as_ref().map(|p| p.configuration.clone());
     let mut data = CalloopData {
+        reload: None,
+        active_configuration,
+        trial: reload::TrialState::new(),
         input_method: None,
         state,
         display_handle,
@@ -181,6 +190,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
     // Registered before the listening socket is bound, so that a compositor which has
     // already bound its socket is guaranteed to handle termination signals.
     register_signal_source(&loop_handle)?;
+    reload::register(&loop_handle, &mut data)?;
 
     let listening_socket = match config.socket_name.as_deref() {
         Some(name) => ListeningSocketSource::with_name(name)?,
@@ -223,6 +233,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
         }
     });
     physical::shutdown(&loop_handle, &mut data);
+    reload::shutdown(&loop_handle, &mut data);
     drop(data.input_method.take());
     result?;
     if let Some(error) = data.fatal.take() {
@@ -315,10 +326,16 @@ fn service_clients(
 fn register_signal_source(
     loop_handle: &calloop::LoopHandle<'static, CalloopData>,
 ) -> Result<(), RunError> {
-    let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
+    let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP])?;
 
     loop_handle
         .insert_source(signals, |event, _, data: &mut CalloopData| {
+            if event.signal() == Signal::SIGHUP {
+                if let Some(reload) = &data.reload {
+                    reload.signal();
+                }
+                return;
+            }
             info!(signal = ?event.signal(), "shutdown requested");
             data.state.request_exit();
         })

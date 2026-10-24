@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 /// configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// A live configuration snapshot could not be serialized.
+    #[error("cannot serialize the configuration snapshot: {0}")]
+    Snapshot(#[source] toml::ser::Error),
+
     /// The Inox configuration directory could not be determined from the
     /// environment, because no home directory is available (PRD §9.1).
     #[error("cannot determine the Inox configuration directory: {source}")]

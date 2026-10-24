@@ -5,21 +5,29 @@
 //! here: it is selected once in `config.toml` and resolved by [`crate::theme`],
 //! so the components read one theme rather than three.
 //!
+//! The panel is one of three surfaces — the taskbar, the menu bar and the dock —
+//! and `panel.surface` says which one an instance draws ([`PanelSurface`]). The
+//! menu bar and the dock have their own sections ([`MenubarConfig`],
+//! [`DockConfig`]) because they are different surfaces with different sizes and
+//! different groups, while the task, tray and clock data behind them is the
+//! same.
+//!
 //! Unlike `compositor.toml`, these defaults have no earlier implementation to
 //! agree with: they are the user-facing defaults the L3 components start from,
 //! and what backs them is the schema itself. Each range is enforced while the
 //! file is parsed, so a value outside it is a parse error naming the field
 //! rather than a silent clamp (ADR 0009, decision 4).
 //!
-//! `panel.clock_format` is the one field with a grammar of its own: the format
-//! is the explicitly supported subset in [`CLOCK_DIRECTIVES`], not a `strftime`
-//! string, so a directive the panel cannot render is rejected at load time
-//! instead of reaching the panel as literal `%Q` text.
+//! `panel.clock_format` and `menubar.clock_format` are the one fields with a
+//! grammar of their own: the format is the explicitly supported subset in
+//! [`CLOCK_DIRECTIVES`], not a `strftime` string, so a directive the panel cannot
+//! render is rejected at load time instead of reaching the panel as literal `%Q`
+//! text.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Default height of the panel, in logical pixels.
 const DEFAULT_PANEL_HEIGHT: u16 = 32;
@@ -59,6 +67,42 @@ const PANEL_ICON_SIZE_MAX: u16 = 128;
 
 /// Default clock format: hours and minutes on a 24-hour clock.
 const DEFAULT_CLOCK_FORMAT: &str = "%H:%M";
+
+/// Default height of the menu bar, in logical pixels.
+const DEFAULT_MENUBAR_HEIGHT: u16 = 28;
+
+/// Smallest accepted menu bar height, in logical pixels.
+const MENUBAR_HEIGHT_MIN: u16 = 8;
+
+/// Largest accepted menu bar height, in logical pixels.
+const MENUBAR_HEIGHT_MAX: u16 = 256;
+
+/// Default distance between the menu bar and the top edge, in logical pixels.
+const DEFAULT_MENUBAR_MARGIN: u16 = 0;
+
+/// Smallest accepted menu bar margin, in logical pixels.
+const MENUBAR_MARGIN_MIN: u16 = 0;
+
+/// Largest accepted menu bar margin, in logical pixels.
+const MENUBAR_MARGIN_MAX: u16 = 64;
+
+/// Default size of a dock tile, in logical pixels.
+const DEFAULT_DOCK_ICON_SIZE: u16 = 48;
+
+/// Smallest accepted dock tile size, in logical pixels.
+const DOCK_ICON_SIZE_MIN: u16 = 8;
+
+/// Largest accepted dock tile size, in logical pixels.
+const DOCK_ICON_SIZE_MAX: u16 = 128;
+
+/// Default distance between the dock and the bottom edge, in logical pixels.
+const DEFAULT_DOCK_MARGIN: u16 = 8;
+
+/// Smallest accepted dock margin, in logical pixels.
+const DOCK_MARGIN_MIN: u16 = 0;
+
+/// Largest accepted dock margin, in logical pixels.
+const DOCK_MARGIN_MAX: u16 = 64;
 
 /// Default number of launcher results shown at once.
 const DEFAULT_LAUNCHER_MAX_RESULTS: u8 = 8;
@@ -101,11 +145,17 @@ pub const CLOCK_DIRECTIVES: [char; 15] = [
 /// The default of a section is the default of each of its fields, so this type
 /// derives it: an empty `shell.toml` is the same configuration as no
 /// `shell.toml` at all.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ShellConfig {
     /// The panel: a strip on one edge of every output.
     pub panel: PanelConfig,
+    /// The menu bar: the panel drawn as a full-width bar along the top edge.
+    #[serde(default)]
+    pub menubar: MenubarConfig,
+    /// The dock: the panel drawn as a floating pane above the bottom edge.
+    #[serde(default)]
+    pub dock: DockConfig,
     /// The launcher: the application search overlay.
     pub launcher: LauncherConfig,
     /// The wallpaper: what is drawn below the windows.
@@ -113,9 +163,12 @@ pub struct ShellConfig {
 }
 
 /// The panel, a strip along one edge of every output.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PanelConfig {
+    /// Which surface this panel instance draws: the taskbar, the menu bar or the
+    /// dock. All three present the same tasks, tray items and clock.
+    pub surface: PanelSurface,
     /// Edge the panel sits on.
     pub position: PanelPosition,
     /// Height of the panel, between 8 and 256 logical pixels.
@@ -147,6 +200,7 @@ pub struct PanelConfig {
 impl Default for PanelConfig {
     fn default() -> Self {
         Self {
+            surface: PanelSurface::Taskbar,
             position: PanelPosition::Bottom,
             height: DEFAULT_PANEL_HEIGHT,
             margin: DEFAULT_PANEL_MARGIN,
@@ -160,8 +214,103 @@ impl Default for PanelConfig {
     }
 }
 
+/// Which surface a panel instance draws.
+///
+/// The three surfaces are three *presentations of the same data*: the tasks the
+/// compositor reports, the status notifier items and the clock. Which one a
+/// process draws is part of its configuration rather than something it can
+/// change while it runs, because a different surface is a different window with
+/// a different size and a different placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelSurface {
+    /// A strip along one edge: the buttons the user clicks to switch windows.
+    #[default]
+    Taskbar,
+    /// A full-width bar along the top edge: the focused application's name, the
+    /// status notifier items and the clock.
+    Menubar,
+    /// A floating pane above the bottom edge: one tile per running application.
+    Dock,
+}
+
+/// The menu bar: the panel drawn as a full-width bar along the top edge.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MenubarConfig {
+    /// Height of the bar, between 8 and 256 logical pixels.
+    #[serde(deserialize_with = "validate_menubar_height")]
+    pub height: u16,
+    /// Distance between the bar and the top edge, between 0 and 64 logical
+    /// pixels.
+    #[serde(deserialize_with = "validate_menubar_margin")]
+    pub margin: u16,
+    /// Whether the bar reserves its strip: the work area stops below the bar
+    /// instead of running underneath it.
+    pub exclusive: bool,
+    /// Whether the bar shows the focused application's name at its left end.
+    ///
+    /// Inox has no application-menu protocol, so the name is all the bar shows
+    /// there: it never invents menu titles such as "File" or "Edit".
+    pub show_app_name: bool,
+    /// Whether the bar shows the clock.
+    pub show_clock: bool,
+    /// Format of the clock, written with the directives of
+    /// [`CLOCK_DIRECTIVES`].
+    #[serde(deserialize_with = "validate_menubar_clock_format")]
+    pub clock_format: String,
+    /// Whether the bar shows the status notifier items.
+    pub show_tray: bool,
+}
+
+impl Default for MenubarConfig {
+    fn default() -> Self {
+        Self {
+            height: DEFAULT_MENUBAR_HEIGHT,
+            margin: DEFAULT_MENUBAR_MARGIN,
+            exclusive: true,
+            show_app_name: true,
+            show_clock: true,
+            clock_format: DEFAULT_CLOCK_FORMAT.to_owned(),
+            show_tray: true,
+        }
+    }
+}
+
+/// The dock: the panel drawn as a floating pane above the bottom edge.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DockConfig {
+    /// Size of one tile, between 8 and 128 logical pixels.
+    #[serde(deserialize_with = "validate_dock_icon_size")]
+    pub icon_size: u16,
+    /// Distance between the pane and the bottom edge, between 0 and 64 logical
+    /// pixels.
+    #[serde(deserialize_with = "validate_dock_margin")]
+    pub margin: u16,
+    /// Whether the dock reserves its strip. A dock floats *over* windows, so
+    /// this is off by default.
+    pub exclusive: bool,
+    /// Whether the dock hides itself until the pointer reaches the bottom edge.
+    pub autohide: bool,
+    /// Whether the dock shows the status notifier items beside its tiles.
+    pub show_tray: bool,
+}
+
+impl Default for DockConfig {
+    fn default() -> Self {
+        Self {
+            icon_size: DEFAULT_DOCK_ICON_SIZE,
+            margin: DEFAULT_DOCK_MARGIN,
+            exclusive: false,
+            autohide: false,
+            show_tray: true,
+        }
+    }
+}
+
 /// The edge a [`PanelConfig`] sits on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PanelPosition {
     /// Along the top edge.
@@ -172,7 +321,7 @@ pub enum PanelPosition {
 }
 
 /// The launcher: the application search overlay.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LauncherConfig {
     /// Number of results shown at once, between 1 and 64.
@@ -214,7 +363,7 @@ impl Default for LauncherConfig {
 ///
 /// Every field's default is its type's default — [`WallpaperMode::Fill`], no
 /// image and no per-output entry — so this type derives [`Default`].
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WallpaperConfig {
     /// How [`WallpaperConfig::image`] is fitted to an output.
@@ -229,7 +378,7 @@ pub struct WallpaperConfig {
 }
 
 /// How a wallpaper image is fitted to an output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WallpaperMode {
     /// Scale the image to cover the output, cropping the overflow.
@@ -310,6 +459,70 @@ where
     Ok(size)
 }
 
+/// Reject a menu bar height outside its accepted range.
+fn validate_menubar_height<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let height = u16::deserialize(deserializer)?;
+
+    if !(MENUBAR_HEIGHT_MIN..=MENUBAR_HEIGHT_MAX).contains(&height) {
+        return Err(serde::de::Error::custom(format!(
+            "menubar.height must be between {MENUBAR_HEIGHT_MIN} and {MENUBAR_HEIGHT_MAX} logical pixels, found {height}"
+        )));
+    }
+
+    Ok(height)
+}
+
+/// Reject a menu bar margin outside its accepted range.
+fn validate_menubar_margin<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let margin = u16::deserialize(deserializer)?;
+
+    if !(MENUBAR_MARGIN_MIN..=MENUBAR_MARGIN_MAX).contains(&margin) {
+        return Err(serde::de::Error::custom(format!(
+            "menubar.margin must be between {MENUBAR_MARGIN_MIN} and {MENUBAR_MARGIN_MAX} logical pixels, found {margin}"
+        )));
+    }
+
+    Ok(margin)
+}
+
+/// Reject a dock tile size outside its accepted range.
+fn validate_dock_icon_size<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let size = u16::deserialize(deserializer)?;
+
+    if !(DOCK_ICON_SIZE_MIN..=DOCK_ICON_SIZE_MAX).contains(&size) {
+        return Err(serde::de::Error::custom(format!(
+            "dock.icon_size must be between {DOCK_ICON_SIZE_MIN} and {DOCK_ICON_SIZE_MAX} logical pixels, found {size}"
+        )));
+    }
+
+    Ok(size)
+}
+
+/// Reject a dock margin outside its accepted range.
+fn validate_dock_margin<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let margin = u16::deserialize(deserializer)?;
+
+    if !(DOCK_MARGIN_MIN..=DOCK_MARGIN_MAX).contains(&margin) {
+        return Err(serde::de::Error::custom(format!(
+            "dock.margin must be between {DOCK_MARGIN_MIN} and {DOCK_MARGIN_MAX} logical pixels, found {margin}"
+        )));
+    }
+
+    Ok(margin)
+}
+
 /// Reject a result count outside its accepted range.
 fn validate_max_results<'de, D>(deserializer: D) -> Result<u8, D::Error>
 where
@@ -365,7 +578,19 @@ where
 {
     let format = String::deserialize(deserializer)?;
 
-    check_clock_format(&format).map_err(serde::de::Error::custom)?;
+    check_clock_format(&format, "panel.clock_format").map_err(serde::de::Error::custom)?;
+
+    Ok(format)
+}
+
+/// Reject a menu bar clock format that uses a directive the panel cannot render.
+fn validate_menubar_clock_format<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let format = String::deserialize(deserializer)?;
+
+    check_clock_format(&format, "menubar.clock_format").map_err(serde::de::Error::custom)?;
 
     Ok(format)
 }
@@ -374,8 +599,10 @@ where
 ///
 /// `%` introduces a directive and `%%` is a literal percent sign; every other
 /// `%x`, and a `%` that ends the format, is rejected with the offending
-/// directive in the message.
-fn check_clock_format(format: &str) -> Result<(), String> {
+/// directive in the message. `field` is the dotted field the format came from,
+/// so the message names `menubar.clock_format` and not `panel.clock_format`
+/// when it was the menu bar that was misconfigured.
+fn check_clock_format(format: &str, field: &str) -> Result<(), String> {
     let mut characters = format.chars();
 
     while let Some(character) = characters.next() {
@@ -385,7 +612,7 @@ fn check_clock_format(format: &str) -> Result<(), String> {
 
         let Some(directive) = characters.next() else {
             return Err(format!(
-                "panel.clock_format must not end with a lone `%`; supported directives are {}",
+                "{field} must not end with a lone `%`; supported directives are {}",
                 supported_directives()
             ));
         };
@@ -427,6 +654,7 @@ mod tests {
     fn an_empty_document_uses_every_default() {
         let config = parse_shell("").expect("empty document");
 
+        assert_eq!(config.panel.surface, PanelSurface::Taskbar);
         assert_eq!(config.panel.position, PanelPosition::Bottom);
         assert_eq!(config.panel.height, 32);
         assert_eq!(config.panel.margin, 0);
@@ -436,6 +664,18 @@ mod tests {
         assert_eq!(config.panel.clock_format, "%H:%M");
         assert_eq!(config.panel.max_task_buttons, 12);
         assert_eq!(config.panel.icon_size, 16);
+        assert_eq!(config.menubar.height, 28);
+        assert_eq!(config.menubar.margin, 0);
+        assert!(config.menubar.exclusive);
+        assert!(config.menubar.show_app_name);
+        assert!(config.menubar.show_clock);
+        assert_eq!(config.menubar.clock_format, "%H:%M");
+        assert!(config.menubar.show_tray);
+        assert_eq!(config.dock.icon_size, 48);
+        assert_eq!(config.dock.margin, 8);
+        assert!(!config.dock.exclusive);
+        assert!(!config.dock.autohide);
+        assert!(config.dock.show_tray);
         assert_eq!(config.launcher.max_results, 8);
         assert_eq!(config.launcher.icon_size, 48);
         assert!(config.launcher.terminal.is_empty());
@@ -453,14 +693,145 @@ mod tests {
             parse_shell("").expect("empty document")
         );
         assert_eq!(PanelConfig::default().clock_format, DEFAULT_CLOCK_FORMAT);
+        assert_eq!(MenubarConfig::default(), ShellConfig::default().menubar);
+        assert_eq!(DockConfig::default(), ShellConfig::default().dock);
+        assert_eq!(
+            MenubarConfig::default().clock_format,
+            DEFAULT_CLOCK_FORMAT,
+            "the menu bar reuses the one documented clock default"
+        );
         assert_eq!(LauncherConfig::default(), ShellConfig::default().launcher);
         assert_eq!(WallpaperConfig::default(), ShellConfig::default().wallpaper);
+    }
+
+    #[test]
+    fn the_menu_bar_and_the_dock_are_parsed() {
+        let config = parse_shell(
+            "[menubar]\n\
+             height = 40\n\
+             margin = 4\n\
+             exclusive = false\n\
+             show_app_name = false\n\
+             show_clock = false\n\
+             clock_format = \"%Y-%m-%d %H:%M\"\n\
+             show_tray = false\n\
+             \n\
+             [dock]\n\
+             icon_size = 64\n\
+             margin = 16\n\
+             exclusive = true\n\
+             autohide = true\n\
+             show_tray = false\n",
+        )
+        .expect("document");
+
+        assert_eq!(config.menubar.height, 40);
+        assert_eq!(config.menubar.margin, 4);
+        assert!(!config.menubar.exclusive);
+        assert!(!config.menubar.show_app_name);
+        assert!(!config.menubar.show_clock);
+        assert_eq!(config.menubar.clock_format, "%Y-%m-%d %H:%M");
+        assert!(!config.menubar.show_tray);
+        assert_eq!(config.dock.icon_size, 64);
+        assert_eq!(config.dock.margin, 16);
+        assert!(config.dock.exclusive);
+        assert!(config.dock.autohide);
+        assert!(!config.dock.show_tray);
+    }
+
+    #[test]
+    fn a_partial_menubar_and_dock_keep_the_defaults_of_the_fields_they_leave_out() {
+        let config =
+            parse_shell("[menubar]\nheight = 36\n\n[dock]\nicon_size = 32\n").expect("document");
+
+        assert_eq!(config.menubar.height, 36);
+        assert_eq!(
+            config.menubar,
+            MenubarConfig {
+                height: 36,
+                ..MenubarConfig::default()
+            }
+        );
+        assert_eq!(
+            config.dock,
+            DockConfig {
+                icon_size: 32,
+                ..DockConfig::default()
+            }
+        );
+    }
+
+    #[test]
+    fn every_panel_surface_spelling_is_parsed() {
+        for (text, expected) in [
+            ("taskbar", PanelSurface::Taskbar),
+            ("menubar", PanelSurface::Menubar),
+            ("dock", PanelSurface::Dock),
+        ] {
+            let config =
+                parse_shell(&format!("[panel]\nsurface = \"{text}\"\n")).expect("document");
+
+            assert_eq!(config.panel.surface, expected);
+        }
+    }
+
+    #[test]
+    fn a_bare_panel_surface_line_parses_and_leaves_the_rest_at_their_defaults() {
+        let config = parse_shell("[panel]\nsurface = \"dock\"\n").expect("document");
+
+        assert_eq!(config.panel.surface, PanelSurface::Dock);
+        assert_eq!(
+            config,
+            ShellConfig {
+                panel: PanelConfig {
+                    surface: PanelSurface::Dock,
+                    ..PanelConfig::default()
+                },
+                ..ShellConfig::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_misspelled_panel_surface_is_rejected() {
+        let error = parse_shell("[panel]\nsurface = \"task\"\n").expect_err("unknown variant");
+
+        match error {
+            ConfigError::Parse { field, line, .. } => {
+                assert_eq!(field.as_deref(), Some("panel.surface"));
+                assert_eq!(line, Some(2));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_keys_in_the_new_sections_are_rejected_with_their_field_paths() {
+        for (document, field) in [
+            ("[menubar]\nheigth = 40\n", "menubar.heigth"),
+            ("[dock]\nicon = 48\n", "dock.icon"),
+        ] {
+            let error = parse_shell(document).expect_err("unknown key");
+
+            match error {
+                ConfigError::Parse {
+                    field: reported,
+                    line,
+                    ..
+                } => {
+                    assert_eq!(reported.as_deref(), Some(field), "document `{document:?}`");
+                    assert_eq!(line, Some(2));
+                }
+                other => panic!("expected a parse error, got {other:?}"),
+            }
+        }
     }
 
     #[test]
     fn panel_launcher_and_wallpaper_are_parsed() {
         let config = parse_shell(
             "[panel]\n\
+             surface = \"menubar\"\n\
              position = \"top\"\n\
              height = 40\n\
              margin = 4\n\
@@ -488,6 +859,7 @@ mod tests {
         )
         .expect("document");
 
+        assert_eq!(config.panel.surface, PanelSurface::Menubar);
         assert_eq!(config.panel.position, PanelPosition::Top);
         assert_eq!(config.panel.height, 40);
         assert_eq!(config.panel.margin, 4);
@@ -652,6 +1024,42 @@ mod tests {
                 "0",
                 "between 1 and 512",
             ),
+            (
+                "[menubar]\nheight = 4\n",
+                "menubar.height",
+                "4",
+                "between 8 and 256",
+            ),
+            (
+                "[menubar]\nheight = 257\n",
+                "menubar.height",
+                "257",
+                "between 8 and 256",
+            ),
+            (
+                "[menubar]\nmargin = 65\n",
+                "menubar.margin",
+                "65",
+                "between 0 and 64",
+            ),
+            (
+                "[dock]\nicon_size = 4\n",
+                "dock.icon_size",
+                "4",
+                "between 8 and 128",
+            ),
+            (
+                "[dock]\nicon_size = 129\n",
+                "dock.icon_size",
+                "129",
+                "between 8 and 128",
+            ),
+            (
+                "[dock]\nmargin = 65\n",
+                "dock.margin",
+                "65",
+                "between 0 and 64",
+            ),
         ] {
             let outcome = parse_shell(document);
             assert!(
@@ -698,6 +1106,14 @@ mod tests {
              max_task_buttons = 1\n\
              icon_size = 8\n\
              \n\
+             [menubar]\n\
+             height = 8\n\
+             margin = 0\n\
+             \n\
+             [dock]\n\
+             icon_size = 8\n\
+             margin = 0\n\
+             \n\
              [launcher]\n\
              max_results = 1\n\
              icon_size = 8\n\
@@ -714,6 +1130,8 @@ mod tests {
             ),
             (8, 0, 1, 8)
         );
+        assert_eq!((lowest.menubar.height, lowest.menubar.margin), (8, 0));
+        assert_eq!((lowest.dock.icon_size, lowest.dock.margin), (8, 0));
         assert_eq!(
             (
                 lowest.launcher.max_results,
@@ -729,6 +1147,14 @@ mod tests {
              margin = 64\n\
              max_task_buttons = 64\n\
              icon_size = 128\n\
+             \n\
+             [menubar]\n\
+             height = 256\n\
+             margin = 64\n\
+             \n\
+             [dock]\n\
+             icon_size = 128\n\
+             margin = 64\n\
              \n\
              [launcher]\n\
              max_results = 64\n\
@@ -746,6 +1172,8 @@ mod tests {
             ),
             (256, 64, 64, 128)
         );
+        assert_eq!((highest.menubar.height, highest.menubar.margin), (256, 64));
+        assert_eq!((highest.dock.icon_size, highest.dock.margin), (128, 64));
         assert_eq!(
             (
                 highest.launcher.max_results,
@@ -758,11 +1186,52 @@ mod tests {
 
     #[test]
     fn every_default_survives_the_range_checks() {
-        for document in ["", "[panel]\n", "[launcher]\n", "[wallpaper]\n"] {
+        for document in [
+            "",
+            "[panel]\n",
+            "[menubar]\n",
+            "[dock]\n",
+            "[launcher]\n",
+            "[wallpaper]\n",
+        ] {
             let config = parse_shell(document).expect("defaults");
 
             assert_eq!(config, ShellConfig::default(), "document `{document:?}`");
         }
+    }
+
+    #[test]
+    fn the_menu_bar_clock_format_is_checked_like_the_panels() {
+        for directive in CLOCK_DIRECTIVES {
+            let config = parse_shell(&format!("[menubar]\nclock_format = \"%{directive}\"\n"))
+                .unwrap_or_else(|error| panic!("`%{directive}` was rejected: {error}"));
+
+            assert_eq!(config.menubar.clock_format, format!("%{directive}"));
+        }
+
+        let document = "[menubar]\nclock_format = \"%Q\"\n";
+        let error = parse_shell(document).expect_err("`%Q` is not a directive the panel renders");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("(field `menubar.clock_format`)"),
+            "rendered `{rendered}`"
+        );
+        assert!(rendered.contains("%Q"), "rendered `{rendered}`");
+
+        let document = "[menubar]\nclock_format = \"%H:%M %\"\n";
+        let error = parse_shell(document).expect_err("a format cannot end with a lone `%`");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("menubar.clock_format"),
+            "the message names the field it came from: `{rendered}`"
+        );
+        assert!(rendered.contains("lone `%`"), "rendered `{rendered}`");
+        assert!(
+            !rendered.contains("panel.clock_format"),
+            "the menu bar's error must not name the panel's field: `{rendered}`"
+        );
     }
 
     #[test]
@@ -883,11 +1352,13 @@ mod tests {
 
     #[test]
     fn an_unknown_section_is_rejected() {
-        let error = parse_shell("[dock]\nheight = 40\n").expect_err("unknown section");
+        // `[menubar]` and `[dock]` are sections of this schema now; anything
+        // else is still a typo rather than a silently ignored table.
+        let error = parse_shell("[taskbar]\nheight = 40\n").expect_err("unknown section");
 
         match error {
             ConfigError::Parse { field, line, .. } => {
-                assert_eq!(field.as_deref(), Some("dock"));
+                assert_eq!(field.as_deref(), Some("taskbar"));
                 assert_eq!(line, Some(1));
             }
             other => panic!("expected a parse error, got {other:?}"),

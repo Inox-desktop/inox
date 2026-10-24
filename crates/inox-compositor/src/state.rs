@@ -34,6 +34,12 @@
 //!   visible only to the compositor-launched input method connection (ADR 0023).
 //! - `inox_ipc` — the private control protocol from `inox-protocols`, at the version
 //!   its own interface declares.
+//! - `inox_glass_manager_v1` (1) — [`InoxGlassManagerV1`], the private frosted-glass
+//!   protocol: a layer surface may ask the compositor to blur the already
+//!   composited pixels *behind* one of its regions and blend over the result
+//!   (see [`crate::glass`]). Only a surface that already has a layer role is
+//!   offered the effect, the parameters are keyed by the surface, and the locked
+//!   scene frosts nothing because it never reaches the layer path.
 //!
 //! Client toplevels become managed windows: they are registered in a
 //! [`Workspace`], tiled by [`LayoutConfig`] and mapped into a Smithay desktop
@@ -110,6 +116,12 @@ use std::{
 
 use calloop::LoopSignal;
 use inox_protocols::{
+    glass::inox_glass::server::{
+        inox_glass_manager_v1::{
+            Error as GlassError, InoxGlassManagerV1, Request as GlassManagerRequest,
+        },
+        inox_glass_v1::{InoxGlassV1, Request as GlassRequest},
+    },
     ipc::inox_ipc::server::inox_ipc::{
         InoxIpc, LockState as IpcLockState, ReloadResult, Request as InoxIpcRequest,
     },
@@ -201,9 +213,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     config::CompositorConfig,
+    glass::{self, Frost, PaneInput},
     input::{Action, SwallowedPresses, action_for_key},
     layout::LayoutConfig,
-    render::{HeadlessRenderer, RenderError, SceneElement},
+    render::{HeadlessRenderer, RenderError, Scene, SceneElement},
     session_lock::{Claim, LockCoverage, claim},
     topology::{self, OutputId, Placement},
     workspace::{WindowId, Workspace},
@@ -358,6 +371,8 @@ pub struct InoxState {
     lock_claim_refusals: u64,
     /// Lock requests refused, for the same reason.
     lock_refusals: u64,
+    pub(crate) reload_requests:
+        Option<std::sync::mpsc::SyncSender<crate::runtime::reload::Trigger>>,
     input_config: inox_config::InputConfig,
     cursor_image: CursorImageStatus,
     cursor_visible: bool,
@@ -377,6 +392,17 @@ pub struct InoxState {
     layer_focus: Option<WlSurface>,
     popups: PopupManager,
     shm_state: ShmState,
+
+    /// Frosting parameters per surface, keyed by the surface they were set for.
+    ///
+    /// Keyed by the `WlSurface` rather than by the `inox_glass_v1` object because
+    /// the surface is the identity both halves of the feature are built around:
+    /// the protocol allows one glass object per surface, the object carries its
+    /// surface as user data, and the renderer walks layer surfaces (which hold
+    /// one). It also makes the lookup in `scene_elements` a single hash probe per
+    /// layer surface, and lets a surface's parameters be dropped in the same
+    /// place its layer entry is.
+    frost: HashMap<WlSurface, Frost>,
 
     /// The desktop space that owns the managed windows and their positions.
     space: Space<Window>,
@@ -491,6 +517,41 @@ struct LayerEntry {
 const LAYER_ORDER: [Layer; 4] = [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background];
 
 impl InoxState {
+    /// Applies live keyboard, layout and theme preferences, preserving clients and focus.
+    ///
+    /// # Errors
+    /// An invalid keymap or repeat setting leaves the previous preferences in force.
+    pub fn apply_configuration(
+        &mut self,
+        config: &inox_config::InoxConfig,
+    ) -> Result<(), StateError> {
+        let input = &config.compositor.input;
+        let delay = i32::try_from(input.keyboard_repeat_delay_ms).map_err(|_| {
+            StateError::InputConfig("input.keyboard_repeat_delay_ms exceeds i32::MAX".into())
+        })?;
+        let rate = i32::try_from(input.keyboard_repeat_rate_hz).map_err(|_| {
+            StateError::InputConfig("input.keyboard_repeat_rate_hz exceeds i32::MAX".into())
+        })?;
+        let keyboard = self.keyboard.clone();
+        if input.keyboard_layout != self.input_config.keyboard_layout
+            || input.keyboard_variant != self.input_config.keyboard_variant
+        {
+            keyboard.set_xkb_config(self, keyboard_config(input))?;
+        }
+        keyboard.change_repeat_info(rate, delay);
+        self.input_config = input.clone();
+        self.layout = LayoutConfig {
+            master_ratio: config.compositor.layout.master_ratio,
+            master_count: config.compositor.layout.master_count as usize,
+            gap: config.compositor.layout.gap,
+        };
+        self.cursor_buffer = crate::cursor::fallback(&config.theme);
+        self.background = rgba_floats(config.theme.colors.background);
+        self.arrange_windows();
+        self.repaint = true;
+        Ok(())
+    }
+
     /// Build the state, the headless outputs, the seat and the render target.
     ///
     /// # Errors
@@ -583,8 +644,28 @@ impl InoxState {
             "advertised inox_ipc global"
         );
 
+        // The private frosted-glass protocol. Advertised to everyone like
+        // `inox_ipc`: whether a surface may be frosted is a decision about a
+        // *request* — the surface's role, and the state of the session — and the
+        // protocol has a first-class way to answer no (`capabilities` with 0), so
+        // hiding the global would only make clients guess.
+
         // XWayland clients scale their buffers through `wp_viewporter`, so a satellite
         // never gets far without it (ADR 0007).
+        // The private frosted-glass protocol. Advertised to everyone like
+        // `inox_ipc`: whether a surface may be frosted is a decision about a
+        // *request* — the surface's role, and the state of the session — and the
+        // protocol has a first-class way to answer no (`capabilities` with 0), so
+        // hiding the global would only make clients guess.
+        let glass_version = inox_glass_version();
+        let glass_global =
+            display_handle.create_global::<Self, InoxGlassManagerV1, ()>(glass_version, ());
+        debug!(
+            ?glass_global,
+            version = glass_version,
+            "advertised inox_glass_manager_v1 global"
+        );
+
         let viewporter_state = ViewporterState::new::<Self>(display_handle);
         let data_device_state = DataDeviceState::new::<Self>(display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
@@ -619,6 +700,7 @@ impl InoxState {
             ipc_clients: Vec::new(),
             lock_claim_refusals: 0,
             lock_refusals: 0,
+            reload_requests: None,
             input_config: input,
             cursor_image: CursorImageStatus::default_named(),
             cursor_visible: false,
@@ -640,6 +722,7 @@ impl InoxState {
             layer_focus: None,
             popups: PopupManager::default(),
             shm_state,
+            frost: HashMap::new(),
             space,
             workspace: Workspace::new(),
             windows: HashMap::new(),
@@ -874,6 +957,9 @@ impl InoxState {
             if self.layer_focus.as_ref() == Some(entry.surface.wl_surface()) {
                 self.layer_focus = None;
             }
+            // The surface is closed and will be recreated elsewhere, so its
+            // frosting parameters go with the placement that gave them meaning.
+            self.frost.remove(entry.surface.wl_surface());
         }
     }
 
@@ -1008,33 +1094,47 @@ impl InoxState {
             .collect();
 
         for (name, size, scale, output) in outputs {
-            let elements = self
+            let scene = self
                 .scene_elements(renderer.renderer_mut(), &output)
                 .map_err(RenderError::from)?;
-            renderer.render_elements(&name, size, scale, &elements)?;
+            renderer.render_elements(
+                &name,
+                size,
+                scale,
+                self.background,
+                &scene.elements,
+                &scene.glass,
+            )?;
         }
 
         Ok(())
     }
 
-    /// The render elements that make up `output`, front to back.
+    /// The render elements that make up `output`, front to back, plus the glass
+    /// panes that frost part of that scene.
     ///
     /// Every position is expressed in that output's physical pixels, relative to
     /// its own top-left corner, which is what `OutputDamageTracker` and the
     /// headless target both expect. The scale is the output's, so a window on a
     /// 150 % display is composited from logical geometry into a 1.5x larger
     /// buffer instead of being stretched afterwards (ADR 0020).
+    ///
+    /// The panes come from [`crate::glass::collect_panes`]: one per mapped,
+    /// committed layer surface on this output whose client asked for a radius and
+    /// a region, with the region mapped from surface-local logical coordinates
+    /// into this output's pixels and clipped to the surface and to the output.
     pub(crate) fn scene_elements(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
-    ) -> Result<Vec<SceneElement>, GlesError> {
+    ) -> Result<Scene, GlesError> {
         self.space.refresh();
         self.popups.cleanup();
         self.ime_update_popups();
+        self.prune_frost();
 
         let Some(entry) = self.outputs.iter().find(|entry| &entry.output == output) else {
-            return Ok(Vec::new());
+            return Ok(Scene::default());
         };
         let geometry = entry.area;
         let id = entry.id;
@@ -1088,17 +1188,34 @@ impl InoxState {
         // output is also what marks it covered for `LockCoverage`, which is what
         // the `locked` event waits for: from here on, no frame this output shows
         // can contain an ordinary client's pixels.
+        //
+        // Frosting has no effect on the locked scene, and this return is why: it
+        // happens before any layer surface is considered, so the pane list is
+        // empty by construction. `glass::collect_panes(.., locked = true, ..)`
+        // pins the same rule as a unit test for the case where the order is ever
+        // rearranged.
         if self.lock.accepted() {
             self.note_lock_owner_loss();
             self.lock_render_elements(renderer, id, geometry, scale, &mut elements);
             self.lock.coverage.presented(id);
 
-            return Ok(elements);
+            return Ok(Scene {
+                elements,
+                glass: Vec::new(),
+            });
         }
 
         self.ime_render_elements(renderer, geometry, scale, &mut elements);
+        let mut panes = Vec::new();
         for layer in [Layer::Overlay, Layer::Top] {
-            self.layer_render_elements(layer, id, geometry, scale, renderer, &mut elements);
+            panes.extend(self.layer_render_elements(
+                layer,
+                id,
+                geometry,
+                scale,
+                renderer,
+                &mut elements,
+            ));
         }
         elements.extend(
             self.space
@@ -1107,12 +1224,34 @@ impl InoxState {
                 .map(SceneElement::Surface),
         );
         for layer in [Layer::Bottom, Layer::Background] {
-            self.layer_render_elements(layer, id, geometry, scale, renderer, &mut elements);
+            panes.extend(self.layer_render_elements(
+                layer,
+                id,
+                geometry,
+                scale,
+                renderer,
+                &mut elements,
+            ));
         }
 
-        Ok(elements)
+        // The panes are clipped to the output's own pixels, which are the target
+        // the renderer draws them into.
+        let mode = output
+            .current_mode()
+            .map(|mode| mode.size)
+            .unwrap_or_default();
+        let bounds = Rectangle::from_size(Size::from((mode.w, mode.h)));
+        let glass = glass::collect_panes(self.lock.accepted(), geometry.loc, bounds, scale, &panes);
+
+        Ok(Scene { elements, glass })
     }
 
+    /// Push one layer's render elements and report the frosted panes among them.
+    ///
+    /// The returned [`PaneInput`]s carry the index each surface's **back-most**
+    /// element landed at: a surface's elements are contiguous and come out front
+    /// to back, so the last one pushed is what everything behind the surface is
+    /// behind, and that is the index the renderer frosts from.
     fn layer_render_elements(
         &self,
         layer: Layer,
@@ -1121,17 +1260,73 @@ impl InoxState {
         scale: f64,
         renderer: &mut GlesRenderer,
         elements: &mut Vec<SceneElement>,
-    ) {
+    ) -> Vec<PaneInput> {
+        let mut panes = Vec::new();
         for entry in self.layers.iter().rev().filter(|entry| {
             entry.mapped && entry.output == output && entry.surface.layer() == layer
         }) {
+            let index = elements.len();
             elements.extend(entry.surface.render_elements::<SceneElement>(
                 renderer,
                 (entry.geometry.loc - region.loc).to_physical_precise_round(scale),
                 scale.into(),
                 1.0,
             ));
+            if elements.len() == index {
+                continue;
+            }
+            let Some(frost) = self.frost.get(entry.surface.wl_surface()).copied() else {
+                continue;
+            };
+            if !entry.committed || !frost.is_effective() {
+                continue;
+            }
+            panes.push(PaneInput {
+                at: elements.len() - 1,
+                geometry: entry.geometry,
+                frost,
+            });
         }
+        panes
+    }
+
+    /// Drop frosting parameters whose surface is gone.
+    ///
+    /// `CompositorHandler::destroyed`, the glass object's `Dispatch::destroyed`
+    /// (which covers `destroy` and a client disconnect) and
+    /// [`InoxState::detach_layers_of`] already remove entries as they happen, so
+    /// this is a backstop for a surface that died without any of them running:
+    /// a parameter must not be able to outlive the surface it was set for and be
+    /// applied to a recycled object id.
+    fn prune_frost(&mut self) {
+        if self.frost.is_empty() {
+            return;
+        }
+        self.frost.retain(|surface, _| surface.is_alive());
+    }
+
+    /// The `capabilities` event's `max_radius` for `surface`.
+    ///
+    /// The honest answer needs three things to hold; see [`crate::glass`] for why
+    /// each one is part of it.
+    fn glass_capability(&self, surface: &WlSurface) -> u32 {
+        let layer_role = self
+            .layers
+            .iter()
+            .any(|entry| entry.surface.wl_surface() == surface);
+        glass::capabilities(layer_role, self.lock.accepted(), self.frosting_supported())
+    }
+
+    /// Whether this compositor draws frosting at all.
+    ///
+    /// Only the headless compositing path does. The physical path presents
+    /// through `OutputDamageTracker`, which derives the damage it queues from the
+    /// render elements' own damage snapshots; a frosted passthrough has no honest
+    /// damage description on that path yet, so `backend::drm` leaves the scene
+    /// sharp. The protocol forbids advertising a blur that will not be drawn, so
+    /// that path reports `max_radius = 0` instead — a limitation, not a claim.
+    fn frosting_supported(&self) -> bool {
+        self.renderer.is_some()
     }
 
     /// Whether the session is locked.
@@ -2398,6 +2593,10 @@ impl CompositorHandler for InoxState {
 
     fn destroyed(&mut self, surface: &WlSurface) {
         self.ime_surface_destroyed(surface);
+        // A surface's frosting parameters belong to the surface, so they end with
+        // it: a dead surface must never be frosted again, and never pass its
+        // parameters on to whatever object reuses its id.
+        self.frost.remove(surface);
         self.remove_layer(surface);
     }
 }
@@ -2621,11 +2820,8 @@ fn inox_ipc_version() -> u32 {
 
 /// Service the private `inox-ipc` control protocol.
 ///
-/// M1 only has to prove the compositor genuinely consumes `inox-protocols`, so the
-/// handler is deliberately small: `get_version` reports the protocol version, and
-/// `reload_config` is answered with [`ReloadResult::Unsupported`] because
-/// configuration reloading arrives in a later milestone. Answering explicitly lets
-/// the shell tell "not implemented yet" apart from a transport failure.
+/// Reload preparation runs off the event loop; the runtime answers only after
+/// applying the candidate, or rejecting it with the previous state intact.
 impl Dispatch<InoxIpc, ()> for InoxState {
     fn request(
         state: &mut Self,
@@ -2641,7 +2837,16 @@ impl Dispatch<InoxIpc, ()> for InoxState {
             // request has been dispatched, so there is nothing to clean up here.
             InoxIpcRequest::Destroy => {}
             InoxIpcRequest::GetVersion => resource.version(inox_ipc_version()),
-            InoxIpcRequest::ReloadConfig => resource.config_reloaded(ReloadResult::Unsupported),
+            InoxIpcRequest::ReloadConfig => {
+                let result = state.reload_requests.as_ref().map(|sender| {
+                    sender.try_send(crate::runtime::reload::Trigger::wayland(resource.clone()))
+                });
+                match result {
+                    Some(Ok(())) => {}
+                    Some(Err(_)) => resource.config_reloaded(ReloadResult::Rejected),
+                    None => resource.config_reloaded(ReloadResult::Unsupported),
+                }
+            }
             // The first privileged request the compositor accepts (acceptance S04,
             // ADR 0015's privilege table). The token is a capability the session
             // delivered; what the client says about itself is not consulted, and a
@@ -2691,6 +2896,145 @@ impl GlobalDispatch<InoxIpc, ()> for InoxState {
         // Held so `session_lock_state` can reach every observer on a change. A
         // destroyed object is dropped by the next broadcast.
         state.ipc_clients.push(ipc);
+    }
+}
+
+/// The `inox_glass_manager_v1` protocol version the compositor advertises.
+///
+/// Read from the interface generated in `inox-protocols`, exactly like
+/// [`inox_ipc_version`], so the reported version can never drift from the
+/// protocol definition.
+fn inox_glass_version() -> u32 {
+    <InoxGlassManagerV1 as Resource>::interface().version
+}
+
+/// Service the private `inox-glass-v1` frosted-glass protocol.
+///
+/// `get_glass` is the only request that decides anything. A surface may have at
+/// most one glass object, so a second `get_glass` for a surface that already has
+/// one is a **fatal** protocol error (`already_created`) rather than a silent
+/// replacement: two controllers would describe the same pane with conflicting
+/// parameters, and the client has no way to tell which one won.
+///
+/// The new object is created with its surface as user data. That is what lets its
+/// own dispatch find the parameters, and it is what makes the one-object rule
+/// enforceable by looking at the parameter table alone — no second table, and no
+/// way for an object and its surface to disagree.
+impl Dispatch<InoxGlassManagerV1, ()> for InoxState {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &InoxGlassManagerV1,
+        request: GlassManagerRequest,
+        _data: &(),
+        _display_handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        match request {
+            // The manager is only a factory: the glass objects it created belong
+            // to their surfaces and survive it.
+            GlassManagerRequest::Destroy => {}
+            GlassManagerRequest::GetGlass { id, surface } => {
+                if state.frost.contains_key(&surface) {
+                    resource.post_error(
+                        GlassError::AlreadyCreated,
+                        "the surface already has an inox_glass_v1 object",
+                    );
+                    return;
+                }
+                let glass = data_init.init(id, surface.clone());
+                // Sent once, right after creation and before any request on the
+                // object is answered. The client picks its fallback from this
+                // number, so it must never promise more than the compositor will
+                // honour for *this* surface (see `glass_capability`).
+                let max_radius = state.glass_capability(&surface);
+                glass.capabilities(max_radius);
+                debug!(max_radius, "created an inox_glass_v1 object for a surface");
+                state.frost.insert(surface, Frost::default());
+            }
+            // `Request` is `#[non_exhaustive]`: a later protocol revision may add
+            // requests, which this milestone ignores rather than second-guessing.
+            _ => {}
+        }
+    }
+}
+
+impl GlobalDispatch<InoxGlassManagerV1, ()> for InoxState {
+    fn bind(
+        _state: &mut Self,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: New<InoxGlassManagerV1>,
+        _global_data: &(),
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+/// Frosting parameters for one surface.
+///
+/// Every request replaces the previous value and takes effect from the next
+/// committed frame, which is why each one asks for a repaint. The parameters live
+/// in `InoxState::frost`, keyed by the surface the object was created for rather
+/// than by the object itself: the render path walks surfaces, and the surface is
+/// the identity the protocol's one-object-per-surface rule is about. The object's
+/// only job is to stay alive so its surface's requests keep arriving.
+impl Dispatch<InoxGlassV1, WlSurface> for InoxState {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        _resource: &InoxGlassV1,
+        request: GlassRequest,
+        surface: &WlSurface,
+        _display_handle: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        match request {
+            GlassRequest::SetRadius { radius } => {
+                let Some(frost) = state.frost.get_mut(surface) else {
+                    return;
+                };
+                frost.set_radius(radius);
+            }
+            GlassRequest::SetRegion {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let Some(frost) = state.frost.get_mut(surface) else {
+                    return;
+                };
+                frost.set_region(x, y, width, height);
+            }
+            // The destructor: wayland-server removes the object after dispatch,
+            // and `destroyed` below clears the parameters for every other path.
+            GlassRequest::Destroy => {
+                state.frost.remove(surface);
+            }
+            // `Request` is `#[non_exhaustive]`.
+            _ => return,
+        }
+        state.repaint = true;
+    }
+
+    /// Called for every way a glass object can end, `destroy` and a client
+    /// disconnect included.
+    ///
+    /// The parameters must not outlive the surface they were set for — a dead
+    /// surface must never be frosted again — so they are dropped here as well as
+    /// in `InoxState::destroyed` and `InoxState::prune_frost`; the three cover
+    /// the object, the surface and the client, whichever goes first.
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        _resource: &InoxGlassV1,
+        surface: &WlSurface,
+    ) {
+        if state.frost.remove(surface).is_some() {
+            state.repaint = true;
+        }
     }
 }
 

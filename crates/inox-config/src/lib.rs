@@ -13,7 +13,7 @@
 //! ├── notifications.toml   # display, timeouts, queue, policy
 //! └── themes/
 //!     └── <name>/
-//!         ├── theme.toml   # colours, typography, spacing, radii, motion
+//!         ├── theme.toml   # colours, glass, typography, spacing, radii, motion
 //!         └── assets/
 //! ```
 //!
@@ -44,6 +44,7 @@ pub mod root;
 pub mod shell;
 pub mod store;
 pub mod theme;
+pub mod wallpapers;
 
 pub use crate::compositor::{CompositorConfig, InputConfig, LayoutConfig, OutputConfig, Position};
 pub use crate::error::ConfigError;
@@ -54,14 +55,15 @@ pub use crate::notifications::{
 pub use crate::paths::ConfigPaths;
 pub use crate::root::{Appearance, ComponentFiles, LocaleConfig, RootConfig, ThemeSelection};
 pub use crate::shell::{
-    CLOCK_DIRECTIVES, LauncherConfig, PanelConfig, PanelPosition, ShellConfig, WallpaperConfig,
-    WallpaperMode,
+    CLOCK_DIRECTIVES, DockConfig, LauncherConfig, MenubarConfig, PanelConfig, PanelPosition,
+    PanelSurface, ShellConfig, WallpaperConfig, WallpaperMode,
 };
 pub use crate::store::{ConfigStore, InoxConfig};
 pub use crate::theme::{
-    BUILTIN_DARK, BUILTIN_LIGHT, ColorError, Colors, Motion, Radii, Rgba, Spacing, Theme,
+    BUILTIN_DARK, BUILTIN_LIGHT, ColorError, Colors, Glass, Motion, Radii, Rgba, Spacing, Theme,
     Typography,
 };
+pub use crate::wallpapers::{BACKGROUND_ID, BUNDLED, BundledWallpaper, DEFAULT_ID};
 
 /// The crate version as reported by Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

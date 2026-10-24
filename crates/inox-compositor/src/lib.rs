@@ -16,6 +16,9 @@
 //!
 //! - [`backend`] — DRM/GBM, libinput and shared frame lifecycle (ADR 0012).
 //! - [`config`] — command line parsing into plain configuration data.
+//! - [`glass`] — the pure half of the private `inox-glass-v1` frosted-glass
+//!   protocol: parameters, capability decisions and the pane list the renderer
+//!   frosts.
 //! - [`input`] — key presses mapped to compositor actions.
 //! - [`layout`] — the pure master/stack tiling geometry.
 //! - [`workspace`] — the pure window bookkeeping and layout order.
@@ -26,10 +29,13 @@
 //! - [`session_lock`] — the pure half of the session lock: who may lock, and
 //!   when every output has been covered (ADR 0015, ADR 0022).
 //! - [`state`] — Smithay compositor state and its protocol handlers.
+//! - [`trial`] — the pure display trial state machine: generation, deadline and
+//!   rollback decisions (ADR 0028).
 
 pub mod backend;
 pub mod config;
 mod cursor;
+pub mod glass;
 pub mod input;
 mod layers;
 pub mod layout;
@@ -40,6 +46,7 @@ pub mod state;
 #[cfg(feature = "test-input")]
 pub mod test_input;
 pub mod topology;
+pub mod trial;
 pub mod workspace;
 
 pub use backend::{BackendError, GpuBackend};
