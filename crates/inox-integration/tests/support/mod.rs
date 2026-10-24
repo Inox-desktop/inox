@@ -23,6 +23,7 @@
 
 #![allow(dead_code)] // every test binary includes the whole harness
 
+pub mod waydriver;
 pub mod wayland_client;
 pub mod x11_client;
 
@@ -344,17 +345,26 @@ pub struct RuntimeDir {
 impl RuntimeDir {
     /// Create a private directory set with a free X display number.
     pub fn new(label: &str) -> Self {
-        let runtime = private_dir(&format!("inox-m3-{label}-run"));
-        let config = private_dir(&format!("inox-m3-{label}-cfg"));
-        let data = private_dir(&format!("inox-m3-{label}-data"));
-        let cache = private_dir(&format!("inox-m3-{label}-cache"));
+        Self::with_kind("m3", label)
+    }
+
+    /// Create a private directory set whose files are named for `kind`.
+    ///
+    /// The kind only names the temporary directories and the Wayland socket, so a
+    /// run's leftovers say which harness produced them. It does not affect any
+    /// behaviour.
+    pub fn with_kind(kind: &str, label: &str) -> Self {
+        let runtime = private_dir(&format!("inox-{kind}-{label}-run"));
+        let config = private_dir(&format!("inox-{kind}-{label}-cfg"));
+        let data = private_dir(&format!("inox-{kind}-{label}-data"));
+        let cache = private_dir(&format!("inox-{kind}-{label}-cache"));
 
         Self {
             runtime,
             config,
             data,
             cache,
-            wayland_socket: format!("inox-m3-{label}"),
+            wayland_socket: format!("inox-{kind}-{label}"),
             display: free_display_number(),
         }
     }

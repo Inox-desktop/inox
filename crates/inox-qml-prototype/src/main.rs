@@ -20,13 +20,25 @@ mod headless_tests;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
+/// Resource URL of the module's root QML file.
+///
+/// cxx-qt mounts every `QmlModule::qml_file` under `qrc:/qt/qml/<uri as dirs>/`
+/// **with the file's own relative path kept as the alias** (see the generated
+/// `.qrc` in `OUT_DIR`: `<file alias="qml/main.qml">`). The module URI is
+/// `com.inox.prototype.qml`, so the bundled resource is
+/// `qrc:/qt/qml/com/inox/prototype/qml/qml/main.qml` — one `qml` segment more
+/// than the URI prefix alone. Loading the shorter URL silently leaves the
+/// engine without a root object, which is why this constant is named and
+/// shared with the headless test instead of being repeated as a literal.
+pub const MAIN_QML_URL: &str = "qrc:/qt/qml/com/inox/prototype/qml/qml/main.qml";
+
 /// Entry point: boot Qt and load the QML module's `main.qml`.
 fn main() -> anyhow::Result<()> {
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 
     if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from("qrc:/qt/qml/com/inox/prototype/qml/main.qml"));
+        engine.load(&QUrl::from(MAIN_QML_URL));
     }
     if let Some(app) = app.as_mut() {
         app.exec();
