@@ -10,3 +10,6 @@ target/
 /docs/book/book/
 
 .commandcode/
+
+# Local probe artifacts from headless compositor experiments (runtime output, not source).
+/.probe-run*/
