@@ -65,6 +65,20 @@ settings-status-component-rejected = { $component } 拒绝了该改动
 settings-status-reload-failed = 无法重新读取文件
 settings-status-unreachable = 无法请求{ $component }应用该改动
 
+# 显示设置的试用与确认（ADR 0028）。模式、缩放或位置会立即生效，因此窗口必须先问一句：
+# 只有确认过，合成器才保留这次改动；倒计时结束就恢复原来的显示设置。仅显示页如此。
+settings-status-display-trial = 显示设置已应用，等待确认
+settings-display-trial-title = 保留这些显示设置吗？
+settings-display-trial-message = 显示设置已经生效。若不确认，{ $seconds } 秒后将自动恢复原来的设置。
+settings-display-trial-confirm = 确认修改
+settings-display-trial-revert = 恢复原设置
+settings-display-trial-active = 显示设置正在等待确认
+settings-display-trial-answering = 正在提交这次回答
+settings-display-trial-notice-confirmed = 已确认这次的显示设置
+settings-display-trial-notice-reverted = 已恢复原来的显示设置
+settings-display-trial-notice-unreachable = 已在文件中恢复原来的显示设置，但无法通知合成器：{ $reason }
+settings-display-trial-notice-failed = 无法恢复原来的显示设置：{ $reason }
+
 settings-detail-component-state = { $component }：{ $state }
 settings-detail-conflict-digest = 文件当前内容为 { $current }
 settings-detail-save-failed = { $file }：{ $reason }
@@ -92,7 +106,7 @@ settings-field-launcher-max-results = 结果数量上限
 settings-field-launcher-icon-size = 结果图标大小
 settings-field-launcher-include-hidden = 显示隐藏应用
 settings-field-launcher-max-query-chars = 搜索字数上限
-settings-field-wallpaper-image = 图片路径（留空使用主题背景）
+settings-field-wallpaper-image = 背景图片
 settings-field-wallpaper-mode = 图片布局
 settings-field-keyboard-layout = 键盘布局
 settings-field-keyboard-variant = 键盘变体
@@ -122,6 +136,14 @@ settings-choice-center = 居中
 settings-choice-tile = 平铺
 settings-choice-drop-oldest = 丢弃最早通知
 settings-choice-coalesce-by-app = 按应用合并
+settings-choice-wallpaper-default = 默认壁纸
+settings-choice-wallpaper-nebula = 星云
+settings-choice-wallpaper-fuji = 富士山
+settings-choice-wallpaper-bricks = 砖石地面
+settings-choice-wallpaper-lake = 山湖倒影
+settings-choice-wallpaper-rainbow = 彩虹公路
+settings-choice-wallpaper-monument = 华盛顿纪念碑
+settings-choice-wallpaper-background = 主题背景
 settings-unit-count = 项
 settings-unit-hz = Hz
 settings-unit-percent = %
@@ -141,12 +163,12 @@ settings-output-scale = 缩放（0.25–8）
 settings-output-x = 水平位置（留空自动排列）
 settings-output-y = 垂直位置（留空自动排列）
 settings-terminal-argument = 可执行程序或一个参数
-settings-wallpaper-path = 图片路径
+settings-wallpaper-path = 壁纸
 settings-list-add = 添加条目
 settings-list-remove = 移除条目
-settings-outputs-help = 保存的偏好将在下次会话启动时读取，此处不会实时切换显示模式。空列表使用后端默认值；两个位置均留空时自动排列，仅一项留空时该坐标为 0。
+settings-outputs-help = 修改后会立即切换模式、缩放与位置，并请你确认：未确认时 30 秒后自动恢复原来的设置。空列表使用后端默认值；两个位置均留空时自动排列，仅一项留空时该坐标为 0。
 settings-terminal-help = 第一项填写可执行程序，之后每项填写一个参数。参数直接传递，不经 Shell 解释。空列表使用启动器默认值。
-settings-wallpapers-help = 每项填写显示接口名称和图片路径，* 表示其他显示器。空列表使用主壁纸。
+settings-wallpapers-help = 每项填写显示接口名称和壁纸（内置名称、none 或图片路径），* 表示其他显示器。空列表使用主壁纸。
 settings-error-collection = 请检查第 { $row } 项：尺寸 1–16384，刷新率 1–1000，缩放 0.25–8，位置在 ±4194304 内。
 
 settings-page-input-method = 输入法
@@ -155,3 +177,55 @@ settings-input-method-help = 第一项填写 fcitx5 或兼容的可执行程序�
 
 settings-error-input-method-command = 请检查第 { $row } 项：首项必须为可执行程序，参数不能含有空字符。
 settings-error-wallpaper-entry = 请检查第 { $row } 项：显示器名称不能重复。
+
+settings-ctl-help = 用法：inoxctl reload（重载运行中的组件）或 inoxctl --help
+settings-ctl-applied = { $component }：已生效
+settings-ctl-absent = { $component }：未运行
+settings-ctl-failed = { $component }：未确认重载成功
+settings-ctl-incomplete = 配置未能全部重载成功。
+
+# 每个页面是做什么的。一屏只有一个标题（页面名），标题下是这个说明句，
+# 用 caption 角色绘制（UI 规范 §2）。
+settings-page-appearance-description = 会话使用哪套主题。
+settings-page-panel-description = 面板条在显示器边缘的位置，以及它显示什么。
+settings-page-notifications-description = 弹出通知出现的位置、停留时间，以及会话启动时是否静音。
+settings-page-locale-description = 会话使用的语言。
+settings-page-input-description = 键盘与指针的行为。
+settings-page-layout-description = 平铺窗口的排列方式。
+settings-page-launcher-description = 启动器运行什么，以及显示多少。
+settings-page-wallpaper-description = 每个窗口背后的画面。
+settings-page-displays-description = 为下次启动合成器保存的显示器偏好。
+settings-page-input-method-description = 会话自动启动的输入法。
+
+# 页面内的卡片分组（UI 规范 §4）。一张卡片是一个主题的标题与字段，
+# 卡片之间使用大号间距。
+settings-group-appearance-theme = 主题
+settings-group-panel-strip = 面板条
+settings-group-panel-behaviour = 行为
+settings-group-panel-clock = 时钟
+settings-group-panel-tasks = 任务按钮
+settings-group-notifications-display = 弹窗
+settings-group-notifications-timeouts = 停留时间
+settings-group-notifications-queue = 队列满时
+settings-group-notifications-policy = 策略
+settings-group-locale-language = 语言
+settings-group-input-keyboard = 键盘
+settings-group-input-repeat = 按键重复
+settings-group-input-pointer = 指针
+settings-group-layout-tiling = 平铺
+settings-group-launcher-command = 命令
+settings-group-launcher-results = 结果
+settings-group-wallpaper-image = 背景图片
+settings-group-wallpaper-outputs = 各显示器图片
+settings-group-displays-outputs = 显示器
+settings-group-input-method-command = 引擎
+
+# 列表为空时要说的话。空态是用户必须能读到的状态，而不是一片空白（UI 规范 §6）。
+settings-empty-outputs = 尚无显示器偏好，将使用后端默认值。
+settings-empty-input-method = 没有引擎命令，自动启动已关闭。
+settings-empty-launcher-terminal = 没有终端命令，将使用启动器默认值。
+settings-empty-wallpaper-per-output = 没有各显示器图片，所有显示器都使用主壁纸。
+
+# 被组件拒绝或无法请求的改动并没有卡住：这种情况正是「应用」再次可用的原因，
+# 这一行把这件事说出来。
+settings-status-retry-hint = 按「应用」可再次把这次改动发送给各组件。

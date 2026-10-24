@@ -115,5 +115,5 @@ pub use crate::queue::{
 };
 pub use crate::view::StackGeometry;
 pub use crate::view_model::{
-    ActionButton, OverflowNotice, Popup, PopupStack, StackInput, StackStatus,
+    ActionButton, ActionEmphasis, OverflowNotice, Popup, PopupStack, StackInput, StackStatus,
 };

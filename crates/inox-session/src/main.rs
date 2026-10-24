@@ -99,20 +99,44 @@ fn main() -> Result<()> {
     compositor.arguments.extend(input_method);
 
     let mut services: Vec<ServiceSpec> = [
-        ("shell", true, true),
-        ("wallpaper", false, false),
-        ("panel", true, false),
-        ("notifications", false, false),
-        ("idle", false, false),
+        // One process per surface: a `wlr-layer-shell` surface belongs to one
+        // client connection, so the desktop home — a menu bar along the top edge
+        // and a dock along the bottom one — is two panel instances. `--surface`
+        // says which one each instance is; a bare `inox-panel` keeps using the
+        // configured default (`[panel] surface`), which is what a developer runs
+        // by hand.
+        ("shell", "inox-shell", &[][..], true, true),
+        ("wallpaper", "inox-wallpaper", &[][..], false, false),
+        (
+            "panel-menubar",
+            "inox-panel",
+            &["--surface", "menubar"][..],
+            true,
+            false,
+        ),
+        (
+            "panel-dock",
+            "inox-panel",
+            &["--surface", "dock"][..],
+            true,
+            false,
+        ),
+        ("notifications", "inox-notifications", &[][..], false, false),
+        ("idle", "inox-idle", &[][..], false, false),
     ]
     .into_iter()
-    .map(|(name, required, oneshot)| ServiceSpec {
-        name: name.into(),
-        command: CommandSpec::new(bin_dir.join(format!("inox-{name}"))),
-        required,
-        oneshot,
-        environment: BTreeMap::new(),
-    })
+    .map(
+        |(name, program, arguments, required, oneshot)| ServiceSpec {
+            name: name.into(),
+            command: CommandSpec {
+                program: bin_dir.join(program).into(),
+                arguments: arguments.iter().map(OsString::from).collect(),
+            },
+            required,
+            oneshot,
+            environment: BTreeMap::new(),
+        },
+    )
     .collect();
 
     // The trusted lock client is started only when the session is asked for it.

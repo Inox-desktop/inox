@@ -42,6 +42,12 @@ pub const MESSAGES: &[&str] = &[
     "notifications-close",
     "notifications-action-disabled-policy",
     "notifications-overflow",
+    "notifications-urgency-low",
+    "notifications-urgency-critical",
+    "notifications-age-just-now",
+    "notifications-age-minutes",
+    "notifications-age-hours",
+    "notifications-age-days",
     "notifications-image-placeholder",
 ];
 

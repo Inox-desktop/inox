@@ -2,9 +2,12 @@
 //!
 //! [`Selection`] answers "what did the user ask for";
 //! this module answers "is it there". The two are separate because the answers
-//! are reported differently: nothing configured is the theme background and
+//! are reported differently: nothing to draw is the theme background and
 //! deserves no complaint, while something configured and missing is a defect the
-//! user has to be told about (ADR 0014, acceptance D05).
+//! user has to be told about (ADR 0014, acceptance D05). The case in between is
+//! the shipped default a user never chose: it degrades with a warning rather
+//! than an error, because nobody can act on a wallpaper they did not pick
+//! (ADR 0030).
 //!
 //! The check is deliberately shallow — exists, is a file, opens — so that the
 //! diagnosis arrives before a decode commits any memory. Whatever happens
@@ -22,7 +25,9 @@ use crate::model::{PathKind, Selection, Unusable};
 pub enum OutputSource {
     /// An image the user selected, which is there and can be opened.
     Image(PathBuf),
-    /// The theme background, because nothing was configured. Not a failure.
+    /// The theme background: no image is drawn. Reached by the explicit "no
+    /// image" value, and — with a warning — by a bundled default that is not
+    /// installed. Not a failure either way.
     ThemeBackground,
     /// The user selected an image that cannot be used. Degrades to the theme
     /// background, carrying the path and the reason the interface names.
@@ -60,18 +65,73 @@ impl OutputSource {
 /// The selected path is checked, not the file's contents: this is the step that
 /// can say "there is nothing at that path" while a decode would only be able to
 /// say "those bytes are not an image".
+///
+/// A bundled wallpaper is looked up, in `dirs` order, as `dir/<file>`; the first
+/// readable one wins. The search is what lets the same configuration work
+/// whether Inox is installed system-wide or run from a source checkout.
 #[must_use]
-pub fn resolve(selection: &Selection) -> OutputSource {
-    let Selection::Image(path) = selection else {
-        return OutputSource::ThemeBackground;
-    };
-
-    match unusable(path) {
-        None => OutputSource::Image(path.clone()),
-        Some(reason) => OutputSource::Unavailable {
-            path: path.clone(),
-            reason,
+pub fn resolve(selection: &Selection, dirs: &[PathBuf]) -> OutputSource {
+    match selection {
+        Selection::ThemeBackground => OutputSource::ThemeBackground,
+        Selection::Image(path) => match unusable(path) {
+            None => OutputSource::Image(path.clone()),
+            Some(reason) => OutputSource::Unavailable {
+                path: path.clone(),
+                reason,
+            },
         },
+        Selection::Bundled {
+            wallpaper,
+            explicit,
+        } => resolve_bundled(wallpaper, *explicit, dirs),
+    }
+}
+
+/// Resolves a bundled wallpaper against the search directories.
+///
+/// An explicitly chosen wallpaper that is nowhere to be found is a
+/// [`OutputSource::Unavailable`] like any other selected-and-missing resource
+/// (ADR 0014); the default the user never asked for falls back to the theme
+/// background with only a warning, because a user cannot be expected to act on
+/// a wallpaper they did not choose.
+fn resolve_bundled(
+    wallpaper: &'static inox_config::BundledWallpaper,
+    explicit: bool,
+    dirs: &[PathBuf],
+) -> OutputSource {
+    for dir in dirs {
+        let candidate = dir.join(wallpaper.file);
+
+        if unusable(&candidate).is_none() {
+            return OutputSource::Image(candidate);
+        }
+    }
+
+    if explicit {
+        return OutputSource::Unavailable {
+            path: expected_path(wallpaper, dirs),
+            reason: Unusable::Missing,
+        };
+    }
+
+    tracing::warn!(
+        wallpaper = wallpaper.id,
+        file = wallpaper.file,
+        "the bundled default wallpaper is not installed; drawing the theme background"
+    );
+
+    OutputSource::ThemeBackground
+}
+
+/// The path a bundled wallpaper would have been read from, for a diagnosis.
+///
+/// The user is told the name of the file that was looked for; the first search
+/// directory is where it would be installed, so naming it points a packager at
+/// the right place.
+fn expected_path(wallpaper: &'static inox_config::BundledWallpaper, dirs: &[PathBuf]) -> PathBuf {
+    match dirs.first() {
+        Some(dir) => dir.join(wallpaper.file),
+        None => PathBuf::from(wallpaper.file),
     }
 }
 
@@ -120,6 +180,12 @@ fn kind_of(metadata: &fs::Metadata) -> PathKind {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// `resolve` with no search directories, which is all a path selection ever
+    /// needs: only a bundled wallpaper is searched for.
+    fn resolve(selection: &Selection) -> OutputSource {
+        super::resolve(selection, &[])
+    }
 
     fn selection_at(path: impl Into<PathBuf>) -> Selection {
         Selection::Image(path.into())
@@ -270,5 +336,82 @@ mod tests {
             }
         );
         assert!(Path::new("/").exists());
+    }
+
+    #[test]
+    fn a_bundled_wallpaper_is_found_in_the_first_directory_that_has_it() {
+        let wallpaper = inox_config::wallpapers::bundled("fuji").expect("shipped");
+        let empty = tempfile::tempdir().expect("a temporary directory");
+        let installed = tempfile::tempdir().expect("a temporary directory");
+        let file = installed.path().join(wallpaper.file);
+        fs::write(&file, b"the image").expect("the fixture is written");
+
+        let source = super::resolve(
+            &Selection::Bundled {
+                wallpaper,
+                explicit: true,
+            },
+            &[empty.path().to_path_buf(), installed.path().to_path_buf()],
+        );
+
+        assert_eq!(source, OutputSource::Image(file));
+    }
+
+    #[test]
+    fn an_explicitly_chosen_wallpaper_that_is_not_installed_is_reported() {
+        let wallpaper = inox_config::wallpapers::bundled("fuji").expect("shipped");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+
+        let source = super::resolve(
+            &Selection::Bundled {
+                wallpaper,
+                explicit: true,
+            },
+            &[dir.path().to_path_buf()],
+        );
+
+        assert_eq!(
+            source,
+            OutputSource::Unavailable {
+                path: dir.path().join(wallpaper.file),
+                reason: Unusable::Missing,
+            }
+        );
+    }
+
+    #[test]
+    fn the_default_wallpaper_missing_degrades_quietly_to_the_theme_background() {
+        let wallpaper = inox_config::wallpapers::default_bundled().expect("shipped");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+
+        let source = super::resolve(
+            &Selection::Bundled {
+                wallpaper,
+                explicit: false,
+            },
+            &[dir.path().to_path_buf()],
+        );
+
+        assert_eq!(source, OutputSource::ThemeBackground);
+        assert_eq!(source.reason(), None, "the user did not ask for it");
+    }
+
+    #[test]
+    fn a_bundled_wallpaper_with_no_search_directories_is_not_installed() {
+        let wallpaper = inox_config::wallpapers::bundled("lake").expect("shipped");
+
+        assert_eq!(
+            super::resolve(
+                &Selection::Bundled {
+                    wallpaper,
+                    explicit: true,
+                },
+                &[],
+            ),
+            OutputSource::Unavailable {
+                path: PathBuf::from(wallpaper.file),
+                reason: Unusable::Missing,
+            }
+        );
     }
 }

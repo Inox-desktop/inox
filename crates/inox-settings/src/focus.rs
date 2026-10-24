@@ -18,6 +18,7 @@ pub(crate) fn target_id(target: FocusTarget) -> String {
         FocusTarget::Reset(field) => format!("{}-reset", crate::view::input_id(field)),
         FocusTarget::Page(page) => format!("settings-page-{page:?}"),
         FocusTarget::Action(action) => format!("settings-action-{action:?}"),
+        FocusTarget::Trial(choice) => format!("settings-display-trial-{choice:?}"),
     }
 }
 

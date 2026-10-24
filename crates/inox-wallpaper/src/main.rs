@@ -16,6 +16,7 @@
 //! warning saying so, and claims nothing about placement. The placement policy
 //! itself ([`inox_wallpaper::placement`]) is computed and tested regardless.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -30,17 +31,56 @@ use inox_wallpaper::{app, i18n, theme, view};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod reload;
+
+#[derive(Debug, Clone)]
+enum RuntimeMessage {
+    App(app::Message),
+    Reload(Box<reload::Request>),
+}
+type ReloadResource = (Preview, inox_wallpaper::apply::Preparation);
+fn prepare_reload(
+    config: &InoxConfig,
+    paths: &ConfigPaths,
+    wallpaper_dirs: &[PathBuf],
+) -> Result<ReloadResource, String> {
+    let preview = Preview::from_config(
+        &config.shell.wallpaper,
+        paths.root(),
+        PREVIEW_SIZE,
+        Arc::from(wallpaper_dirs.to_vec()),
+    );
+    let preparation = inox_wallpaper::apply::prepare(
+        preview.output.clone(),
+        &preview.selection,
+        preview.mode,
+        preview.size,
+        wallpaper_dirs,
+    );
+    if let inox_wallpaper::apply::Preparation::Degraded { reason, .. } = &preparation {
+        return Err(format!("wallpaper.image: {reason:?}"));
+    }
+    Ok((preview, preparation))
+}
+
 fn main() -> Result<()> {
     init_logging();
 
     let paths = ConfigPaths::discover().context("locating the Inox configuration directory")?;
     let (config, problem) = read_configuration(&paths);
+    let wallpaper_dirs: Vec<PathBuf> = inox_common::paths::inox_wallpaper_dirs();
+    let reload_host = reload::Host::start(paths.clone(), wallpaper_dirs.clone())?;
 
     let localizer = Rc::new(
         i18n::localizer(config.locale.clone())
             .context("loading the wallpaper's message catalogs")?,
     );
-    let preview = Preview::from_config(&config.shell.wallpaper, paths.root(), PREVIEW_SIZE);
+    let preview = Preview::from_config(
+        &config.shell.wallpaper,
+        paths.root(),
+        PREVIEW_SIZE,
+        Arc::from(wallpaper_dirs),
+    );
 
     warn!(
         "running as an ordinary window: this compositor does not advertise \
@@ -52,6 +92,7 @@ fn main() -> Result<()> {
         output = %preview.output,
         size = %preview.size,
         mode = ?preview.mode,
+        wallpaper = ?preview.selection.bundled().map(|wallpaper| wallpaper.id),
         image = ?preview.selection.path(),
         "previewing the wallpaper"
     );
@@ -63,10 +104,13 @@ fn main() -> Result<()> {
             let mut state = state.clone();
             let task = app::boot(&mut state);
 
-            (state, task)
+            (
+                state,
+                iced::Task::batch([task.map(RuntimeMessage::App), reload_host.task()]),
+            )
         },
-        app::update,
-        view::view,
+        update_runtime,
+        view_runtime,
     )
     .title(view::title)
     .theme(|state: &State| theme::iced_theme(state.theme()))
@@ -114,7 +158,8 @@ fn read_configuration(paths: &ConfigPaths) -> (InoxConfig, Option<Unusable>) {
 /// Spelled out rather than borrowed from a store, because this is the one place
 /// that has to answer "what does the wallpaper do when it knows nothing", and the
 /// answer has to be readable here: nothing is configured, so every output draws
-/// the theme background.
+/// the bundled default wallpaper — and, if even that is not installed, the theme
+/// background.
 fn fallback_configuration() -> InoxConfig {
     InoxConfig {
         root: RootConfig::default(),
@@ -126,4 +171,34 @@ fn fallback_configuration() -> InoxConfig {
         notifications: NotificationsConfig::default(),
         locale: LocaleConfig::default().resolve(),
     }
+}
+
+fn update_runtime(state: &mut State, message: RuntimeMessage) -> iced::Task<RuntimeMessage> {
+    match message {
+        RuntimeMessage::App(message) => app::update(state, message).map(RuntimeMessage::App),
+        RuntimeMessage::Reload(request) => {
+            let result = (|| {
+                if !request.is_current() {
+                    return Err("configuration reload expired".to_owned());
+                }
+                let localizer = Rc::new(
+                    i18n::localizer(request.config.locale.clone()).map_err(|e| e.to_string())?,
+                );
+                state
+                    .apply_configuration(
+                        Arc::new(request.config.theme.clone()),
+                        localizer,
+                        request.resource.0.clone(),
+                        request.resource.1.clone(),
+                    )
+                    .map_err(|e| format!("{e:?}"))
+            })();
+            request.finish(result);
+            iced::Task::none()
+        }
+    }
+}
+
+fn view_runtime(state: &State) -> iced::Element<'_, RuntimeMessage> {
+    view::view(state).map(RuntimeMessage::App)
 }

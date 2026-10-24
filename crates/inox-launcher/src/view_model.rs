@@ -51,14 +51,48 @@ pub struct Row {
 /// The message that takes the result list's place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Banner {
+    /// Which of the states this banner is, so the view can draw them apart: an
+    /// index that is still being read, an index with nothing in it, a query
+    /// that matched nothing, and unreadable index are four different screens,
+    /// not one screen with four sentences.
+    pub kind: BannerKind,
     /// The headline.
     pub title: String,
     /// The explanation, when there is one.
     pub body: Option<String>,
     /// A suggestion, when there is one.
     pub hint: Option<String>,
-    /// The label of the retry action, when the state can be retried.
-    pub retry: Option<String>,
+    /// The label of the banner's one action, when the state can be acted on.
+    pub action: Option<String>,
+}
+
+/// Which empty, in-progress or failed state a [`Banner`] draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BannerKind {
+    /// The index is being read; nothing can be listed yet.
+    Loading,
+    /// The index was read and holds no usable entry.
+    Empty,
+    /// The index has entries, and the query matched none of them.
+    NoMatch,
+    /// The index could not be read at all.
+    Unavailable,
+}
+
+impl BannerKind {
+    /// The message the banner's action sends, or `None` for a state with no
+    /// action to offer.
+    ///
+    /// A banner only ever offers an action it can carry out: an unreadable or
+    /// empty index is re-read, and a query that matched nothing is cleared. The
+    /// mapping lives next to the kind so a new kind has to answer the question.
+    pub fn action_message(&self) -> Option<crate::app::Message> {
+        match self {
+            Self::Unavailable | Self::Empty => Some(crate::app::Message::IndexRetried),
+            Self::NoMatch => Some(crate::app::Message::QueryCleared),
+            Self::Loading => None,
+        }
+    }
 }
 
 /// The line under the list: what the launcher is doing, and why not.
@@ -74,12 +108,13 @@ pub struct Status {
 
 /// Everything the view draws, already localized.
 ///
-/// The focus order is the order of [`ViewModel::rows`]: the search field is
-/// focused while the launcher is open, Up and Down move the selection through
-/// the rows, and the retry actions are reachable with the pointer. That is
-/// acceptance Q01's "unique, visible focus, no keyboard trap" as far as this
-/// component can state it; the semantic tree a screen reader needs is not
-/// exported yet (see the crate README).
+/// The focus order is the order of [`ViewModel::rows`]: the search field holds
+/// the keyboard focus — and therefore the launcher's one focus ring — while the
+/// launcher is open, Up and Down move the selection through the rows, and the
+/// one action a banner offers is reachable with the pointer. That is acceptance
+/// Q01's "unique, visible focus, no keyboard trap" as far as this component can
+/// state it; the semantic tree a screen reader needs is not exported yet (see
+/// the crate README).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewModel {
     /// The window title.
@@ -88,6 +123,13 @@ pub struct ViewModel {
     pub placeholder: String,
     /// The text in the search field.
     pub query: String,
+    /// What the list says while the query is empty.
+    ///
+    /// This is the launcher's *resting* state, and it is not a failure: the
+    /// index is readable and the rows below are the whole list. A query that
+    /// matches nothing is a different screen — see [`ViewModel::banner`] — and
+    /// the two must never be worded the same way.
+    pub prompt: Option<String>,
     /// The key hints under the list.
     pub hint: String,
     /// The result rows.
@@ -112,10 +154,15 @@ impl ViewModel {
     }
 
     /// Whether the view should offer to read the index again.
+    ///
+    /// True for the two states a re-read can fix: an index that could not be
+    /// read, and one that came back empty. A query that matched nothing is not
+    /// one of them — it is cleared, not re-read.
     pub fn can_retry_index(&self) -> bool {
-        self.banner
-            .as_ref()
-            .is_some_and(|banner| banner.retry.is_some())
+        self.banner.as_ref().is_some_and(|banner| {
+            matches!(banner.kind, BannerKind::Unavailable | BannerKind::Empty)
+                && banner.action.is_some()
+        })
     }
 
     /// Whether the view should offer to launch again.
@@ -176,18 +223,43 @@ pub fn project(projection: &Projection<'_>) -> ViewModel {
         })
         .unwrap_or_default();
 
+    // The list's own line only belongs on the screen while the list is: a
+    // banner takes the list's place, so it takes this line's place too.
+    let banner = banner(projection);
+    let prompt = if banner.is_none() {
+        prompt(projection, &rows)
+    } else {
+        None
+    };
+
     ViewModel {
         title: localizer.message("launcher-window-title"),
         placeholder: localizer.message("launcher-search-placeholder"),
         query: projection.query.to_owned(),
+        prompt,
         hint: localizer.message("launcher-search-hint"),
         rows,
-        banner: banner(projection),
+        banner,
         notice: notice(projection),
         status: projection
             .activation
             .map(|activation| status(activation, localizer)),
     }
+}
+
+/// What the list says while the query is empty.
+///
+/// The launcher opens showing every application it indexed and a line telling
+/// the user that typing narrows it. That is the screen an empty query is,
+/// and it is deliberately not the same screen as a query that matched nothing
+/// (a [`BannerKind::NoMatch`] banner): one lists applications, the other says
+/// there are none and offers to clear the query.
+fn prompt(projection: &Projection<'_>, rows: &[Row]) -> Option<String> {
+    if !projection.query.trim().is_empty() || rows.is_empty() {
+        return None;
+    }
+
+    Some(projection.localizer.message("launcher-list-prompt"))
 }
 
 /// The message that stands in for the rows.
@@ -196,16 +268,18 @@ fn banner(projection: &Projection<'_>) -> Option<Banner> {
 
     match projection.service {
         ServiceState::Loading { .. } => Some(Banner {
+            kind: BannerKind::Loading,
             title: localizer.message("launcher-state-loading"),
             body: None,
             hint: None,
-            retry: None,
+            action: None,
         }),
         ServiceState::Unavailable { failure, .. } => Some(Banner {
+            kind: BannerKind::Unavailable,
             title: localizer.message("launcher-state-unavailable-title"),
             body: Some(failure_message(failure, localizer)),
             hint: None,
-            retry: Some(localizer.message("launcher-state-action-retry")),
+            action: Some(localizer.message("launcher-state-action-retry")),
         }),
         ServiceState::Ready {
             entries,
@@ -214,13 +288,17 @@ fn banner(projection: &Projection<'_>) -> Option<Banner> {
         } => {
             if *entries == 0 {
                 return Some(Banner {
+                    kind: BannerKind::Empty,
                     title: localizer.message("launcher-state-empty-title"),
                     body: Some(localizer.message_with(
                         "launcher-state-empty-body",
                         &[("dirs", Arg::from(join_directories(directories)))],
                     )),
                     hint: Some(localizer.message("launcher-state-empty-hint")),
-                    retry: None,
+                    // An empty index is often a stale environment rather than a
+                    // permanent fact, so it can be read again after the user has
+                    // fixed what the hint points at.
+                    action: Some(localizer.message("launcher-state-action-retry")),
                 });
             }
 
@@ -228,13 +306,14 @@ fn banner(projection: &Projection<'_>) -> Option<Banner> {
             match projection.result {
                 Some(result) if result.hits.is_empty() && !result.query.trim().is_empty() => {
                     Some(Banner {
+                        kind: BannerKind::NoMatch,
                         title: localizer.message("launcher-state-nomatch-title"),
                         body: Some(localizer.message_with(
                             "launcher-state-nomatch-body",
                             &[("query", Arg::from(result.query.as_str()))],
                         )),
                         hint: None,
-                        retry: None,
+                        action: Some(localizer.message("launcher-state-action-clear")),
                     })
                 }
                 _ => None,
@@ -666,11 +745,12 @@ mod tests {
         let model = fixture.project();
 
         let banner = model.banner.as_ref().expect("a banner");
+        assert_eq!(banner.kind, BannerKind::Loading);
         assert_eq!(
             banner.title,
             fixture.localizer.message("launcher-state-loading")
         );
-        assert!(banner.retry.is_none());
+        assert!(banner.action.is_none());
         assert!(!model.can_retry_index());
     }
 
@@ -687,6 +767,7 @@ mod tests {
         let model = fixture.project();
 
         let banner = model.banner.as_ref().expect("a banner");
+        assert_eq!(banner.kind, BannerKind::Empty);
         assert_eq!(
             banner.title,
             fixture.localizer.message("launcher-state-empty-title")
@@ -701,6 +782,11 @@ mod tests {
             banner.body
         );
         assert!(banner.hint.is_some());
+        assert!(
+            banner.action.is_some(),
+            "an empty state the user can fix has to offer the re-read",
+        );
+        assert!(model.can_retry_index());
     }
 
     #[test]
@@ -710,6 +796,7 @@ mod tests {
         let model = fixture.project();
 
         let banner = model.banner.as_ref().expect("a banner");
+        assert_eq!(banner.kind, BannerKind::NoMatch);
         assert_eq!(
             banner.title,
             fixture.localizer.message("launcher-state-nomatch-title")
@@ -718,6 +805,81 @@ mod tests {
             banner.body.as_deref().unwrap_or_default().contains("zzzz"),
             "{:?}",
             banner.body
+        );
+        assert_eq!(
+            banner.action.as_deref(),
+            Some(
+                fixture
+                    .localizer
+                    .message("launcher-state-action-clear")
+                    .as_str()
+            ),
+            "a query that matched nothing is cleared, not re-read",
+        );
+        assert!(
+            !model.can_retry_index(),
+            "re-reading an index that just answered would change nothing",
+        );
+    }
+
+    #[test]
+    fn the_resting_state_and_the_no_match_state_are_two_different_screens() {
+        let mut fixture = fixture();
+        fixture.search("");
+        let resting = fixture.project();
+        fixture.search("zzzz");
+        let no_match = fixture.project();
+
+        let prompt = resting.prompt.as_deref().expect("the resting prompt");
+        assert_eq!(prompt, fixture.localizer.message("launcher-list-prompt"));
+        assert_eq!(
+            resting.rows.len(),
+            2,
+            "the resting state lists what was indexed",
+        );
+        assert!(resting.banner.is_none());
+
+        assert!(no_match.rows.is_empty());
+        assert!(no_match.prompt.is_none());
+        let banner = no_match.banner.as_ref().expect("a banner");
+        assert_eq!(banner.kind, BannerKind::NoMatch);
+        assert_ne!(
+            banner.title, prompt,
+            "the one line must not be the other line",
+        );
+    }
+
+    #[test]
+    fn a_query_of_nothing_but_spaces_is_still_the_resting_state() {
+        let mut fixture = fixture();
+        fixture.search("   ");
+        let model = fixture.project();
+
+        assert!(
+            model.prompt.is_some(),
+            "a query that only holds spaces narrows nothing",
+        );
+        assert!(model.banner.is_none());
+    }
+
+    #[test]
+    fn every_banner_kind_offers_an_action_it_can_carry_out() {
+        assert_eq!(
+            BannerKind::Loading.action_message(),
+            None,
+            "there is nothing to do while the index is being read",
+        );
+        assert_eq!(
+            BannerKind::Empty.action_message(),
+            Some(crate::app::Message::IndexRetried)
+        );
+        assert_eq!(
+            BannerKind::Unavailable.action_message(),
+            Some(crate::app::Message::IndexRetried)
+        );
+        assert_eq!(
+            BannerKind::NoMatch.action_message(),
+            Some(crate::app::Message::QueryCleared)
         );
     }
 
@@ -733,6 +895,7 @@ mod tests {
         let model = fixture.project();
 
         let banner = model.banner.as_ref().expect("a banner");
+        assert_eq!(banner.kind, BannerKind::Unavailable);
         assert_eq!(
             banner.title,
             fixture
@@ -747,13 +910,17 @@ mod tests {
                 .contains("no HOME")
         );
         assert_eq!(
-            banner.retry.as_deref(),
+            banner.action.as_deref(),
             Some(
                 fixture
                     .localizer
                     .message("launcher-state-action-retry")
                     .as_str()
             )
+        );
+        assert_eq!(
+            banner.kind.action_message(),
+            Some(crate::app::Message::IndexRetried)
         );
         assert!(model.can_retry_index());
     }

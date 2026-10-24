@@ -20,16 +20,27 @@
 //! | [`OutgoingCommand::Save`] | [`crate::persist::save`] | [`Message::SaveSettled`] |
 //! | [`OutgoingCommand::Apply`] | ask the component to apply the generation | [`Message::ComponentApplied`] and friends |
 //! | [`OutgoingCommand::Reload`] | read the files and the configuration again | [`Message::Reloaded`] |
+//! | [`OutgoingCommand::ConfirmDisplay`] | tell the compositor to keep a display trial | [`Message::DisplayConfirmed`] |
+//! | [`OutgoingCommand::RollbackDisplay`] | ask the compositor to put the previous display settings back | [`Message::DisplayReverted`] |
 //!
 //! Nothing in this milestone can carry an [`OutgoingCommand::Apply`]: there is
 //! no transport between the settings application and the components (ADR 0018),
 //! so the runtime answers [`Message::ComponentUnreachable`] and the window
 //! reports that the change is saved but not in effect — which is exactly the
 //! distinction ADR 0014 asks it to show.
+//!
+//! **A display change is a question** (ADR 0028). Mode, scale and position are
+//! applied live but only for as long as the user does not answer: the compositor
+//! keeps a trial for [`DISPLAY_TRIAL_SECONDS`] and reverts it itself, and this
+//! window counts the same seconds down, asks in a dialog, and restores the
+//! `outputs` key through the ordinary save path when the answer is "no" or
+//! nobody answers. Every other page is unaffected: only a change that carries
+//! [`Field::Outputs`] opens a trial.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use iced::{Element, Subscription};
 use inox_common::i18n::Localizer;
@@ -43,7 +54,22 @@ use crate::pages::PageId;
 use crate::persist::{Guard, SaveOutcome};
 use crate::validate::{is_valid, validate};
 use crate::view;
-use crate::view_model::{Action, FocusTarget, SettingsInput, SettingsViewModel};
+use crate::view_model::{
+    Action, DisplayTrialNotice, FocusTarget, SettingsInput, SettingsViewModel, TrialChoice,
+    TrialInput,
+};
+
+/// How long a display change stays provisional.
+///
+/// The compositor holds the same interval and reverts on its own when it runs
+/// out (ADR 0028), so a window that disappears mid-countdown cannot leave the
+/// display on a mode nobody confirmed. The two counters are deliberately the
+/// same number: the sentence the user reads is this countdown, and the safety net
+/// behind it is the compositor's.
+pub const DISPLAY_TRIAL_SECONDS: u32 = 30;
+
+/// How often the countdown above is decremented, as a duration.
+const TRIAL_TICK: Duration = Duration::from_secs(1);
 
 /// A write the runtime has been asked to perform.
 ///
@@ -72,12 +98,33 @@ pub struct SaveRequest {
 pub enum OutgoingCommand {
     /// Write a file atomically, unless it changed since it was read.
     Save(Box<SaveRequest>),
+    /// Put the values a display trial ended with back into their file.
+    ///
+    /// A separate command from [`OutgoingCommand::Save`] because it answers the
+    /// trial rather than the user: the compositor has already reverted, so this
+    /// only has to make the file agree with it, and it must be able to do so even
+    /// while another consumer is still answering the request the trial came in
+    /// with (ADR 0028).
+    Restore(Box<SaveRequest>),
     /// Ask one component to apply a generation and report what it finds.
     Apply {
         /// The request.
         generation: Generation,
         /// The component to ask.
         component: Component,
+        /// Whether the change carries a display trial, which the compositor
+        /// applies provisionally and reverts unless it is confirmed (ADR 0028).
+        trial: bool,
+    },
+    /// Tell the compositor to keep the display change it is holding provisionally.
+    ConfirmDisplay {
+        /// The trial to keep.
+        generation: Generation,
+    },
+    /// Ask the compositor to put the previous display settings back.
+    RollbackDisplay {
+        /// The trial to take back.
+        generation: Generation,
     },
     /// Read the configuration files again.
     Reload,
@@ -88,6 +135,52 @@ pub enum OutgoingCommand {
 struct PendingWrite {
     generation: Generation,
     content: String,
+}
+
+/// The file write a display trial ends with, kept until it settles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingRestore {
+    /// The trial this restore answers.
+    generation: Generation,
+    /// The file being put back.
+    file: SettingFile,
+    /// What is being written.
+    content: String,
+}
+
+/// A display change that is being applied provisionally.
+///
+/// It starts when the request is known to carry [`Field::Outputs`] and is
+/// promoted to [`State::trial`] once the compositor confirms it has the values
+/// in effect. Until then there is no countdown to draw and nothing to confirm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingTrial {
+    /// The request that carries the display change.
+    generation: Generation,
+    /// What the display fields held before the change.
+    previous: Box<Settings>,
+}
+
+/// A display change that is in effect but not confirmed yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplayTrial {
+    /// The request whose change is on trial.
+    generation: Generation,
+    /// Seconds left before the previous settings come back.
+    remaining: u32,
+    /// What the display fields held before the change.
+    previous: Box<Settings>,
+    /// Why the last attempt to confirm failed, if one did.
+    error: Option<String>,
+    /// Whether an answer is already on its way to the compositor.
+    answering: bool,
+}
+
+impl DisplayTrial {
+    /// Whether the trial is past its last second.
+    fn is_expired(&self) -> bool {
+        self.remaining == 0
+    }
 }
 
 /// Everything the settings window knows.
@@ -107,6 +200,15 @@ pub struct State {
     focused: Option<FocusTarget>,
     pending: BTreeMap<SettingFile, PendingWrite>,
     notified: Option<Generation>,
+    /// The display change the next [`OutgoingCommand::Apply`] must ask for as a
+    /// trial, from the moment the files are written until the compositor answers.
+    pending_trial: Option<PendingTrial>,
+    /// The display change the compositor is holding provisionally.
+    trial: Option<DisplayTrial>,
+    /// The write a trial's rollback ends with, while it is in flight.
+    restore: Option<PendingRestore>,
+    /// What happened to the last display trial, for the status line.
+    notice: Option<DisplayTrialNotice>,
     outgoing: VecDeque<OutgoingCommand>,
 }
 
@@ -128,6 +230,10 @@ impl State {
             focused: None,
             pending: BTreeMap::new(),
             notified: None,
+            pending_trial: None,
+            trial: None,
+            restore: None,
+            notice: None,
             outgoing: VecDeque::new(),
         }
     }
@@ -196,9 +302,27 @@ impl State {
             application: &self.application,
             errors: &errors,
             focused: self.focused,
+            trial: self.trial.as_ref().map(|trial| TrialInput {
+                generation: trial.generation,
+                remaining_seconds: trial.remaining,
+                error: trial.error.clone(),
+                answering: trial.answering,
+            }),
+            notice: self.notice.as_ref(),
         }
         .project(&self.localizer);
-        if !self.pending.is_empty() && !self.application.state().is_busy() {
+        if self.trial.is_some() {
+            // A trial is a question: nothing but its own two answers is drawn as
+            // usable, and the walk is exactly the two answers (ADR 0028).
+            model.focused = model
+                .focused
+                .filter(|target| model.focus_order.contains(target));
+
+            return model;
+        }
+        if (!self.pending.is_empty() || self.restore.is_some())
+            && !self.application.state().is_busy()
+        {
             let reason = self.localizer.message("settings-disabled-in-flight");
             for field in &mut model.fields {
                 field.enabled = false;
@@ -222,7 +346,10 @@ impl State {
     }
 
     fn is_busy(&self) -> bool {
-        !self.pending.is_empty() || self.application.state().is_busy()
+        !self.pending.is_empty()
+            || self.restore.is_some()
+            || self.application.state().is_busy()
+            || self.trial.is_some()
     }
 
     /// The values the files hold, as the window last read them.
@@ -309,6 +436,8 @@ impl State {
             FocusTarget::Action(Action::Cancel) => self.cancel(),
             FocusTarget::Action(Action::ResetAll) => self.draft.reset_all(),
             FocusTarget::Action(Action::Reload) => self.reload(),
+            FocusTarget::Trial(TrialChoice::Confirm) => self.confirm_display(),
+            FocusTarget::Trial(TrialChoice::Revert) => self.revert_display(),
         }
     }
 
@@ -369,6 +498,10 @@ impl State {
     }
 
     /// Writes the changed fields and asks the components to apply them.
+    ///
+    /// The restore a display trial ends with does **not** come through here: it
+    /// answers a question rather than making a request, and it has to be able to
+    /// run while another consumer is still answering this one (ADR 0028).
     fn apply(&mut self) {
         if self.is_busy() {
             return;
@@ -378,6 +511,19 @@ impl State {
             return;
         }
 
+        if !self.draft.is_modified()
+            && let Some(generation) = self.application.retry_apply()
+        {
+            // A retry is the same request asked again: a display change that was
+            // refused or unreachable is still a display change, so the trial
+            // intent follows the new generation (ADR 0028).
+            if let Some(pending) = self.pending_trial.as_mut() {
+                pending.generation = generation;
+            }
+            self.notify(generation);
+
+            return;
+        }
         let edits = match self.draft.edits() {
             Ok(edits) => edits,
             Err(error) => {
@@ -390,6 +536,10 @@ impl State {
             debug!("nothing has been changed, so there is nothing to write");
             return;
         }
+
+        // Only a change that carries the display page's own field is provisional;
+        // every other page applies the way it always has (ADR 0028).
+        let display = edits.iter().any(|edit| edit.field() == Field::Outputs);
 
         let files = self.draft.files();
         let targets = Component::for_files(&files);
@@ -431,6 +581,13 @@ impl State {
                 fields: for_file.iter().map(Edit::field).collect(),
             });
         }
+        // The values the display fields hold now, before the write lands, are
+        // what a reverted trial puts back.
+        self.pending_trial = display.then(|| PendingTrial {
+            generation,
+            previous: Box::new(self.draft.base().clone()),
+        });
+        self.notice = None;
         for request in requests {
             self.pending.insert(
                 request.file,
@@ -464,26 +621,297 @@ impl State {
         }
 
         self.notified = Some(generation);
+        // The intent, not the generation: a retry asks for the same trial under a
+        // new generation, and only a fresh save can change what is being asked for.
+        let trial = self.pending_trial.is_some();
 
         for component in self.application.outstanding() {
             debug!(
                 component = component.label_id(),
                 generation = generation.get(),
+                trial,
                 "asking a component to apply the new configuration"
             );
             self.outgoing.push_back(OutgoingCommand::Apply {
                 generation,
                 component,
+                // Only the compositor consumes a display change, and only the
+                // request that carries one asks it for a trial (ADR 0028).
+                trial: trial && component == Component::Compositor,
             });
+        }
+    }
+
+    /// Kicks off the countdown for a display change the compositor has taken.
+    ///
+    /// Called from [`Message::DisplayTrialArmed`], which is the compositor's own
+    /// confirmation that the values are in effect — the countdown never starts
+    /// from a write or from a click.
+    fn arm_display_trial(&mut self, generation: Generation) {
+        let Some(pending) = self.pending_trial.take() else {
+            return;
+        };
+        if pending.generation != generation {
+            // A newer request superseded this one before the compositor answered.
+            return;
+        }
+
+        debug!(
+            generation = generation.get(),
+            seconds = DISPLAY_TRIAL_SECONDS,
+            "the display change is on trial"
+        );
+        self.trial = Some(DisplayTrial {
+            generation,
+            remaining: DISPLAY_TRIAL_SECONDS,
+            previous: pending.previous,
+            error: None,
+            answering: false,
+        });
+        self.notice = None;
+        // The question is the only thing the keyboard can answer, so the focus
+        // starts on the answer that keeps the change (Q01).
+        self.focused = Some(FocusTarget::Trial(TrialChoice::Confirm));
+    }
+
+    /// Confirms the display change the compositor is holding.
+    fn confirm_display(&mut self) {
+        let Some(trial) = self.trial.as_mut() else {
+            return;
+        };
+        if trial.answering {
+            debug!("an answer is already on its way; the second one was dropped");
+            return;
+        }
+
+        trial.answering = true;
+        trial.error = None;
+        self.outgoing.push_back(OutgoingCommand::ConfirmDisplay {
+            generation: trial.generation,
+        });
+    }
+
+    /// Asks for the previous display settings back, now.
+    ///
+    /// The same request the countdown makes when it runs out: whether the user
+    /// gives up or time gives up, the compositor is asked for the same rollback
+    /// and the files are restored the same way (ADR 0028).
+    fn revert_display(&mut self) {
+        let Some(trial) = self.trial.as_mut() else {
+            return;
+        };
+        if trial.answering {
+            debug!("an answer is already on its way; the second one was dropped");
+            return;
+        }
+
+        trial.answering = true;
+        self.outgoing.push_back(OutgoingCommand::RollbackDisplay {
+            generation: trial.generation,
+        });
+    }
+
+    /// One second of the display trial's countdown.
+    ///
+    /// The last second asks for the rollback: the window does not wait for the
+    /// compositor's own deadline to pass, because the user is watching this
+    /// number and the two must not disagree.
+    fn tick_display_trial(&mut self) {
+        let Some(trial) = self.trial.as_mut() else {
+            return;
+        };
+        if trial.answering {
+            return;
+        }
+        if trial.remaining > 0 {
+            trial.remaining -= 1;
+        }
+        if trial.is_expired() {
+            debug!("the display trial ran out of time; asking for the previous settings");
+            trial.answering = true;
+            let generation = trial.generation;
+            self.outgoing
+                .push_back(OutgoingCommand::RollbackDisplay { generation });
+        }
+    }
+
+    /// The compositor kept the display change.
+    fn display_confirmed(&mut self, generation: Generation) {
+        if !self
+            .trial
+            .as_ref()
+            .is_some_and(|trial| trial.generation == generation)
+        {
+            debug!(
+                generation = generation.get(),
+                "a confirmation for a trial this window no longer holds"
+            );
+            return;
+        }
+
+        self.trial = None;
+        self.notice = Some(DisplayTrialNotice::Confirmed);
+    }
+
+    /// The compositor reports a confirmation it refused.
+    ///
+    /// The trial stays open and keeps counting: a window that cannot confirm must
+    /// not pretend it did, and the compositor reverts on its own when the time
+    /// runs out.
+    fn display_not_confirmed(&mut self, generation: Generation, reason: String) {
+        let Some(trial) = self.trial.as_mut() else {
+            return;
+        };
+        if trial.generation != generation {
+            return;
+        }
+
+        trial.answering = false;
+        trial.error = Some(reason);
+    }
+
+    /// The compositor put the previous display settings back (or could not).
+    ///
+    /// Either way the files are restored to the values the display fields held
+    /// before the trial: the next session must not read a mode the user never
+    /// confirmed. The restore is its own write — not a new application request —
+    /// because the compositor has already reverted, and because a consumer that
+    /// is still answering the original request must not be able to hold the files
+    /// on a mode the user did not confirm (ADR 0028).
+    fn display_reverted(&mut self, generation: Generation, failure: Option<String>) {
+        let Some(trial) = self.trial.take() else {
+            debug!(
+                generation = generation.get(),
+                "a rollback for a trial this window no longer holds"
+            );
+            return;
+        };
+        if trial.generation != generation {
+            self.trial = Some(trial);
+            return;
+        }
+
+        self.pending_trial = None;
+        let previous = Field::Outputs.value(&trial.previous);
+        if let Err(error) = self.draft.set(Field::Outputs, previous) {
+            debug!(%error, "the previous display settings could not be restored");
+            self.notice = Some(self.restore_failed(&error.to_string(), None));
+
+            return;
+        }
+
+        let file = Field::Outputs.file();
+        match self.restore_request(generation, file) {
+            Ok(request) => {
+                self.notice = Some(match failure {
+                    Some(reason) => DisplayTrialNotice::RevertUnreachable { reason },
+                    None => DisplayTrialNotice::Reverted,
+                });
+                self.restore = Some(PendingRestore {
+                    generation,
+                    file,
+                    content: request.content.clone(),
+                });
+                debug!("restoring the previous display settings in the files");
+                self.outgoing
+                    .push_back(OutgoingCommand::Restore(Box::new(request)));
+            }
+            Err(error) => {
+                debug!(%error, "the previous display settings could not be restored");
+                self.notice = Some(self.restore_failed(&error, Some(file)));
+            }
+        }
+    }
+
+    /// The write that puts the display fields back the way the files held them.
+    ///
+    /// Only that one key is rewritten, through the same document patch and the
+    /// same validator every other save uses (ADR 0014: 只写用户改过的键).
+    fn restore_request(
+        &self,
+        generation: Generation,
+        file: SettingFile,
+    ) -> Result<SaveRequest, String> {
+        let document = self
+            .documents
+            .get(file)
+            .ok_or_else(|| format!("{}: document was not loaded", file.name()))?;
+        let edits: Vec<Edit> = self
+            .draft
+            .edits()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|edit| edit.field() == Field::Outputs)
+            .collect();
+
+        if edits.is_empty() {
+            return Err("the display settings are already back".to_owned());
+        }
+
+        let content = document.patch(&edits);
+        crate::validate::document(file, &content, &edits)?;
+
+        Ok(SaveRequest {
+            generation,
+            file,
+            path: document.path().to_path_buf(),
+            content,
+            guard: document.guard(),
+            fields: edits.iter().map(Edit::field).collect(),
+        })
+    }
+
+    /// The sentence for a restore that did not happen.
+    fn restore_failed(&self, reason: &str, file: Option<SettingFile>) -> DisplayTrialNotice {
+        DisplayTrialNotice::Failed {
+            reason: match file {
+                Some(file) => self.localizer.message_with(
+                    "settings-detail-save-failed",
+                    &[("file", file.name().into()), ("reason", reason.into())],
+                ),
+                None => reason.to_owned(),
+            },
+        }
+    }
+
+    /// Records what the write a rollback ended with left behind.
+    fn settle_restore(&mut self, generation: Generation, file: SettingFile, outcome: SaveOutcome) {
+        if !self
+            .restore
+            .as_ref()
+            .is_some_and(|restore| restore.generation == generation && restore.file == file)
+        {
+            return;
+        }
+        let Some(restore) = self.restore.take() else {
+            return;
+        };
+
+        match outcome {
+            SaveOutcome::Saved => {
+                self.documents.install(file, restore.content);
+                // The restored values are what the files hold now, so the window
+                // shows them as nothing left to save.
+                self.commit(file);
+            }
+            SaveOutcome::Conflicted { current_digest } => {
+                let reason = self.localizer.message_with(
+                    "settings-detail-conflict-digest",
+                    &[
+                        ("file", file.name().into()),
+                        ("current", current_digest.to_string().into()),
+                    ],
+                );
+                self.notice = Some(self.restore_failed(&reason, None));
+            }
+            SaveOutcome::Failed { reason } => {
+                self.notice = Some(self.restore_failed(&reason, Some(file)));
+            }
         }
     }
 
     /// Takes the loaded values as the new baseline for the fields whose file
     /// was just written.
-    ///
-    /// Only those fields: a file the request failed on still differs from what
-    /// the window shows, and its fields stay changes so that a later Apply
-    /// carries them (ADR 0014, decision 4: 每组件结果呈现，不承诺全局原子性).
     fn commit(&mut self, file: SettingFile) {
         let mut base = self.draft.base().clone();
 
@@ -555,6 +983,66 @@ fn next_choice(control: &Control, current: &str) -> Option<Value> {
 /// Everything the settings window reacts to.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The current save's live application settled, including this window's appearance.
+    LiveConfigured {
+        /// The application request this appearance belongs to.
+        generation: Generation,
+        /// The consumer that confirmed application.
+        component: Component,
+        /// The exact configuration the consumer confirmed.
+        config: Box<InoxConfig>,
+    },
+
+    /// The compositor has a display change in effect provisionally (ADR 0028).
+    ///
+    /// This is the compositor's own words, not the write's: the countdown starts
+    /// only here.
+    DisplayTrialArmed {
+        /// The request whose display change is on trial.
+        generation: Generation,
+        /// The configuration the compositor reported in effect.
+        config: Box<InoxConfig>,
+    },
+    /// The compositor kept the display change.
+    DisplayConfirmed {
+        /// The request whose change was kept.
+        generation: Generation,
+    },
+    /// The compositor refused to keep the display change.
+    DisplayConfirmFailed {
+        /// The request whose change was refused.
+        generation: Generation,
+        /// Its own words.
+        reason: String,
+    },
+    /// The compositor put the previous display settings back.
+    DisplayReverted {
+        /// The request whose change was taken back.
+        generation: Generation,
+    },
+    /// The compositor could not be asked to put them back.
+    DisplayRevertFailed {
+        /// The request whose change was to be taken back.
+        generation: Generation,
+        /// Why not.
+        reason: String,
+    },
+    /// The values a display trial ended with are back in their file.
+    DisplayRestored {
+        /// The trial this write answers.
+        generation: Generation,
+        /// The file that was put back.
+        file: SettingFile,
+        /// What the write left behind.
+        outcome: SaveOutcome,
+    },
+    /// One second of a display trial's countdown.
+    TrialTick,
+    /// The user pressed the dialog's confirm answer.
+    TrialConfirm,
+    /// The user pressed the dialog's restore answer.
+    TrialRevert,
+
     /// Add an entry to a structured list.
     RowAdded(Field),
     /// Remove one structured entry.
@@ -732,7 +1220,12 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
         }
         Message::PageSelected(page) => {
             state.page = page;
-            state.focused = None;
+            // A display trial keeps the keyboard where it is: the question is
+            // still the thing to answer, and looking at another page must not
+            // move the focus off it (ADR 0028).
+            if state.trial.is_none() {
+                state.focused = None;
+            }
         }
         Message::FieldSet { field, value } => {
             if field.control().kind == ValueKind::Text {
@@ -777,12 +1270,64 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             file,
             outcome,
         } => state.settle_save(generation, file, outcome),
+        Message::LiveConfigured {
+            generation,
+            component,
+            config,
+        } => {
+            if state.application.generation() == generation
+                && state.application.outstanding().contains(&component)
+            {
+                match crate::i18n::load(&config.locale) {
+                    Ok(localizer) => {
+                        state.localizer = Rc::new(localizer);
+                        state.tokens = config.theme.clone();
+                    }
+                    Err(error) => debug!(%error, "cannot refresh settings catalogs"),
+                }
+                state.application.component_applied(component, generation);
+            }
+        }
         Message::ComponentApplied {
             component,
             generation,
         } => {
             state.application.component_applied(component, generation);
         }
+        Message::DisplayTrialArmed { generation, config } => {
+            if state.application.generation() == generation
+                && state
+                    .application
+                    .outstanding()
+                    .contains(&Component::Compositor)
+            {
+                match crate::i18n::load(&config.locale) {
+                    Ok(localizer) => state.localizer = Rc::new(localizer),
+                    Err(error) => debug!(%error, "cannot refresh settings catalogs"),
+                }
+                state.tokens = config.theme.clone();
+                state
+                    .application
+                    .component_applied(Component::Compositor, generation);
+                state.arm_display_trial(generation);
+            }
+        }
+        Message::DisplayConfirmed { generation } => state.display_confirmed(generation),
+        Message::DisplayConfirmFailed { generation, reason } => {
+            state.display_not_confirmed(generation, reason)
+        }
+        Message::DisplayReverted { generation } => state.display_reverted(generation, None),
+        Message::DisplayRevertFailed { generation, reason } => {
+            state.display_reverted(generation, Some(reason))
+        }
+        Message::DisplayRestored {
+            generation,
+            file,
+            outcome,
+        } => state.settle_restore(generation, file, outcome),
+        Message::TrialTick => state.tick_display_trial(),
+        Message::TrialConfirm => state.confirm_display(),
+        Message::TrialRevert => state.revert_display(),
         Message::ComponentRejected {
             component,
             generation,
@@ -818,6 +1363,9 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             state.application.reset();
             state.pending.clear();
             state.notified = None;
+            state.pending_trial = None;
+            state.trial = None;
+            state.notice = None;
             debug!(
                 modified = state.draft.is_modified(),
                 "the configuration was read again"
@@ -836,7 +1384,13 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             // Esc unwinds one level of the window: from a control back to the
             // page list, and from the page list to no focus at all. There is no
             // level above this one — closing an ordinary window is the
-            // compositor's decision, not the window's (ADR 0013).
+            // compositor's decision, not the window's (ADR 0013). A display trial
+            // is the bottom level while it is open: Esc does not answer it, so a
+            // stray key cannot take a working mode away (ADR 0028).
+            if state.trial.is_some() {
+                debug!("a display trial is open; Esc answers nothing");
+                return iced::Task::none();
+            }
             state.focused = match state.focused {
                 Some(FocusTarget::Page(_)) | None => None,
                 Some(_) => Some(FocusTarget::Page(state.page)),
@@ -869,12 +1423,45 @@ pub fn title(state: &State) -> String {
     state.localizer.message("settings-window-title")
 }
 
-/// The window's subscription: the keyboard, and nothing else.
+/// The window's subscription: the keyboard, and the display trial's clock.
 ///
-/// The window performs no I/O of its own, so there is no subscription for a
-/// service: what [`update`] queues is performed by the runtime in `main.rs`.
-pub fn subscription(_state: &State) -> Subscription<Message> {
-    iced::keyboard::listen().filter_map(key_message)
+/// The window performs no other I/O of its own, so there is no subscription for
+/// a service: what [`update`] queues is performed by the runtime in `main.rs`.
+/// The one timer is the countdown the user is reading — it exists only while a
+/// display trial is open, so an idle window wakes up for nothing (ADR 0028).
+pub fn subscription(state: &State) -> Subscription<Message> {
+    let keyboard = iced::keyboard::listen().filter_map(key_message);
+    if state.trial.is_none() {
+        return keyboard;
+    }
+
+    Subscription::batch([keyboard, Subscription::run(trial_ticks)])
+}
+
+/// A stream that produces one [`Message::TrialTick`] a second, for as long as a
+/// display trial is open.
+///
+/// The thread ends when the runtime drops the receiver — which happens the
+/// moment the trial is answered or the window exits (the same shape the panel's
+/// clock uses, because iced's `thread-pool` executor ships no timer of its own).
+fn trial_ticks() -> iced::futures::channel::mpsc::Receiver<Message> {
+    let (mut sender, receiver) = iced::futures::channel::mpsc::channel(1);
+
+    std::thread::spawn(move || {
+        loop {
+            match sender.try_send(Message::TrialTick) {
+                Ok(()) => {}
+                // The window has not read the last second yet; skipping this one
+                // is better than blocking the clock.
+                Err(error) if error.is_full() => {}
+                Err(_) => break,
+            }
+
+            std::thread::sleep(TRIAL_TICK);
+        }
+    });
+
+    receiver
 }
 
 /// The message a key press means, if any.
@@ -988,6 +1575,84 @@ mod tests {
         }
 
         generation
+    }
+
+    #[test]
+    fn retrying_saved_preferences_requests_application_without_rewriting_files() {
+        let (_directory, mut state) = changed();
+        let commands = applied(&mut state);
+        let old = write(&mut state, &commands);
+        state.take_outgoing();
+        send(
+            &mut state,
+            Message::ComponentUnreachable {
+                generation: old,
+                component: Component::Shell,
+                reason: "not running".into(),
+            },
+        );
+        let model = state.model();
+        assert!(model.action(Action::Apply).expect("apply").enabled);
+        assert!(
+            model
+                .focus_order
+                .contains(&FocusTarget::Action(Action::Apply))
+        );
+        send(&mut state, Message::Apply);
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(commands.as_slice(), [OutgoingCommand::Apply { component: Component::Shell, generation, .. }] if *generation > old)
+        );
+    }
+
+    #[test]
+    fn live_appearance_changes_only_for_the_current_outstanding_request() {
+        let (directory, mut state) = changed();
+        let commands = applied(&mut state);
+        let generation = write(&mut state, &commands);
+        state.take_outgoing();
+        let mut config = InoxConfig::load(&ConfigPaths::new(directory.path()), Appearance::System)
+            .expect("config");
+        config.theme = Tokens::builtin_light();
+        config.locale = inox_common::i18n::Locale::parse("zh-CN").expect("locale");
+        let old_tokens = state.tokens().clone();
+        send(
+            &mut state,
+            Message::LiveConfigured {
+                generation: generation.next(),
+                component: Component::Shell,
+                config: Box::new(config.clone()),
+            },
+        );
+        assert_eq!(state.tokens(), &old_tokens);
+        send(
+            &mut state,
+            Message::LiveConfigured {
+                generation,
+                component: Component::Shell,
+                config: Box::new(config.clone()),
+            },
+        );
+        assert_eq!(state.tokens(), &config.theme);
+        assert_eq!(state.localizer.locale(), &config.locale);
+        assert_eq!(
+            state.application().state(),
+            &ApplyState::Applied { generation }
+        );
+        config.theme = old_tokens;
+        send(
+            &mut state,
+            Message::LiveConfigured {
+                generation,
+                component: Component::Shell,
+                config: Box::new(config),
+            },
+        );
+        assert_eq!(
+            state.tokens(),
+            &Tokens::builtin_light(),
+            "a duplicate settled reply cannot replace appearance"
+        );
     }
 
     #[test]
@@ -1770,5 +2435,412 @@ mod tests {
             compare_catalogs(crate::i18n::EN_US, crate::i18n::ZH_CN).expect("both catalogs parse");
 
         assert!(difference.is_clean(), "{difference:?}");
+    }
+
+    /// A window with one change to the display page.
+    ///
+    /// The row is added and then named, which is what a user does with the
+    /// structured editor: `RowAdded` fills it from the schema defaults and the
+    /// name is the part that makes it a display of their own.
+    fn display_changed() -> (tempfile::TempDir, State) {
+        let (directory, mut state) = state();
+        send(&mut state, Message::PageSelected(PageId::Displays));
+        send(&mut state, Message::RowAdded(Field::Outputs));
+        send(
+            &mut state,
+            Message::CellEdited {
+                field: Field::Outputs,
+                row: 0,
+                column: 0,
+                text: "DP-1".to_owned(),
+            },
+        );
+
+        (directory, state)
+    }
+
+    /// The configuration the files hold, for the answers the runtime sends back.
+    fn config_of(directory: &tempfile::TempDir) -> InoxConfig {
+        InoxConfig::load(&ConfigPaths::new(directory.path()), Appearance::System)
+            .expect("the files load")
+    }
+
+    /// The outputs the file holds, read back through the real parser.
+    fn outputs_of(directory: &tempfile::TempDir) -> Vec<inox_config::OutputConfig> {
+        config_of(directory).compositor.outputs
+    }
+
+    /// Writes a display change, and returns the generation and the requests the
+    /// runtime would carry out: exactly what `main.rs` does with what `apply`
+    /// queues.
+    fn request_display_change(state: &mut State) -> (Generation, Vec<OutgoingCommand>) {
+        let commands = applied(state);
+        let generation = write(state, &commands);
+
+        (generation, state.take_outgoing())
+    }
+
+    /// The compositor's own answer that the display values are in effect.
+    fn arm(state: &mut State, directory: &tempfile::TempDir, generation: Generation) {
+        send(
+            state,
+            Message::DisplayTrialArmed {
+                generation,
+                config: Box::new(config_of(directory)),
+            },
+        );
+    }
+
+    /// Performs a restore the way `main.rs` does, and settles it.
+    fn perform_restore(state: &mut State, request: &SaveRequest) {
+        let outcome = crate::persist::save(
+            &request.path,
+            request.content.as_bytes(),
+            Some(&request.guard),
+        );
+        send(
+            state,
+            Message::DisplayRestored {
+                generation: request.generation,
+                file: request.file,
+                outcome,
+            },
+        );
+    }
+
+    #[test]
+    fn only_a_change_to_the_display_page_is_asked_for_as_a_trial() {
+        let (_directory, mut panel) = changed();
+        let commands = applied(&mut panel);
+        write(&mut panel, &commands);
+        let asked = panel.take_outgoing();
+        assert!(
+            matches!(
+                asked.as_slice(),
+                [OutgoingCommand::Apply {
+                    component: Component::Shell,
+                    trial: false,
+                    ..
+                }]
+            ),
+            "a panel change is not provisional: {asked:?}"
+        );
+
+        let (_directory, mut display) = display_changed();
+        let (_generation, asked) = request_display_change(&mut display);
+        assert!(
+            matches!(
+                asked.as_slice(),
+                [OutgoingCommand::Apply {
+                    component: Component::Compositor,
+                    trial: true,
+                    ..
+                }]
+            ),
+            "a display change is asked for as a trial: {asked:?}"
+        );
+    }
+
+    #[test]
+    fn the_countdown_starts_with_the_compositors_answer_not_the_write() {
+        let (directory, mut state) = display_changed();
+        let (generation, commands) = request_display_change(&mut state);
+
+        assert!(
+            matches!(
+                commands.as_slice(),
+                [OutgoingCommand::Apply { trial: true, .. }]
+            ),
+            "{commands:?}"
+        );
+        assert!(
+            state.model().trial.is_none(),
+            "the file being written is not the display being changed"
+        );
+        assert_eq!(
+            state.model().status.kind,
+            crate::view_model::StatusKind::Pending,
+            "the request is not settled yet"
+        );
+
+        arm(&mut state, &directory, generation);
+
+        assert_eq!(
+            state.application().state(),
+            &ApplyState::Applied { generation }
+        );
+        let model = state.model();
+        assert_eq!(
+            model.status.kind,
+            crate::view_model::StatusKind::Provisional,
+            "an unanswered trial is never reported as settled"
+        );
+        let trial = model.trial.expect("the dialog is drawn");
+        assert_eq!(trial.remaining_seconds, DISPLAY_TRIAL_SECONDS);
+        assert!(trial.message.contains("30"), "sentence `{}`", trial.message);
+        assert_eq!(
+            model.focused,
+            Some(FocusTarget::Trial(TrialChoice::Confirm)),
+            "the question is what the keyboard is on"
+        );
+    }
+
+    #[test]
+    fn a_trial_that_runs_out_puts_the_previous_display_settings_back() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+        assert_eq!(outputs_of(&directory).len(), 1, "the file holds the change");
+
+        for _ in 0..DISPLAY_TRIAL_SECONDS {
+            send(&mut state, Message::TrialTick);
+        }
+
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(commands.as_slice(), [OutgoingCommand::RollbackDisplay { generation: asked }] if *asked == generation),
+            "{commands:?}"
+        );
+
+        // The compositor reports the rollback, and the file is put back.
+        send(&mut state, Message::DisplayReverted { generation });
+        let restore = match state.take_outgoing().as_slice() {
+            [OutgoingCommand::Restore(request)] => request.clone(),
+            other => panic!("expected exactly one restore, got {other:?}"),
+        };
+        assert_eq!(restore.file, SettingFile::Compositor);
+        assert_eq!(restore.fields, vec![Field::Outputs]);
+        perform_restore(&mut state, &restore);
+
+        assert!(
+            outputs_of(&directory).is_empty(),
+            "the file no longer holds a mode nobody confirmed"
+        );
+        assert!(!state.draft().is_modified(), "nothing is left to save");
+        assert!(state.model().trial.is_none(), "the question is answered");
+        assert!(
+            state
+                .model()
+                .status
+                .details
+                .iter()
+                .any(|detail| detail.contains("were restored")),
+            "the status line says what happened to the display"
+        );
+    }
+
+    #[test]
+    fn a_restore_that_cannot_be_written_says_so_instead_of_claiming_success() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+        send(&mut state, Message::DisplayReverted { generation });
+        let restore = match state.take_outgoing().as_slice() {
+            [OutgoingCommand::Restore(request)] => request.clone(),
+            other => panic!("expected exactly one restore, got {other:?}"),
+        };
+
+        // Somebody edits the file while the restore is on its way.
+        std::fs::write(
+            directory.path().join("compositor.toml"),
+            "[[outputs]]\nname = \"HDMI-A-1\"\n",
+        )
+        .expect("an external edit");
+        let outcome = crate::persist::save(
+            &restore.path,
+            restore.content.as_bytes(),
+            Some(&restore.guard),
+        );
+        send(
+            &mut state,
+            Message::DisplayRestored {
+                generation,
+                file: restore.file,
+                outcome,
+            },
+        );
+
+        let model = state.model();
+        assert!(model.trial.is_none());
+        assert!(
+            model
+                .status
+                .details
+                .iter()
+                .any(|detail| detail.contains("could not be restored")),
+            "the window must not claim a restore it did not make: {:?}",
+            model.status.details
+        );
+    }
+
+    #[test]
+    fn a_confirmed_trial_keeps_the_change_and_the_file() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+
+        send(&mut state, Message::TrialConfirm);
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(commands.as_slice(), [OutgoingCommand::ConfirmDisplay { generation: asked }] if *asked == generation),
+            "{commands:?}"
+        );
+
+        send(&mut state, Message::DisplayConfirmed { generation });
+
+        let model = state.model();
+        assert!(model.trial.is_none());
+        assert!(
+            model
+                .status
+                .details
+                .iter()
+                .any(|detail| detail.contains("were confirmed")),
+            "{:?}",
+            model.status.details
+        );
+        assert_eq!(
+            state.application().state(),
+            &ApplyState::Applied { generation }
+        );
+        assert!(
+            outputs_of(&directory)
+                .iter()
+                .any(|output| output.name.as_deref() == Some("DP-1")),
+            "the file keeps the change the user confirmed"
+        );
+    }
+
+    #[test]
+    fn a_confirmation_the_compositor_refused_leaves_the_trial_counting() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+        send(&mut state, Message::TrialConfirm);
+        state.take_outgoing();
+
+        send(
+            &mut state,
+            Message::DisplayConfirmFailed {
+                generation,
+                reason: "a display trial is already pending".to_owned(),
+            },
+        );
+
+        let trial = state.model().trial.expect("the question is still open");
+        assert_eq!(
+            trial.error.as_deref(),
+            Some("a display trial is already pending")
+        );
+
+        // The window may ask again, and the countdown still runs out.
+        send(&mut state, Message::TrialConfirm);
+        assert!(matches!(
+            state.take_outgoing().as_slice(),
+            [OutgoingCommand::ConfirmDisplay { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_stale_confirmation_does_not_close_the_trial_the_window_holds() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+
+        send(
+            &mut state,
+            Message::DisplayConfirmed {
+                generation: generation.next(),
+            },
+        );
+
+        assert!(
+            state.model().trial.is_some(),
+            "an answer about another request is not an answer to this one"
+        );
+    }
+
+    #[test]
+    fn a_display_change_the_compositor_refused_is_retried_as_a_trial() {
+        let (_directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        send(
+            &mut state,
+            Message::ComponentRejected {
+                component: Component::Compositor,
+                generation,
+                reason: "outputs: DP-1 has no such mode".to_owned(),
+                fields: vec![Field::Outputs],
+            },
+        );
+        assert!(state.model().trial.is_none(), "nothing was armed");
+
+        // Apply now retries the request the compositor refused, and it is still a
+        // display change, so it is still asked for as a trial.
+        send(&mut state, Message::Apply);
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(
+                commands.as_slice(),
+                [OutgoingCommand::Apply { trial: true, .. }]
+            ),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn another_page_does_not_move_the_keyboard_off_the_trial() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+
+        send(&mut state, Message::PageSelected(PageId::Panel));
+
+        assert_eq!(
+            state.model().focused,
+            Some(FocusTarget::Trial(TrialChoice::Confirm)),
+            "the question is still the entry the keyboard is on"
+        );
+        assert_eq!(state.page(), PageId::Panel, "the page itself did switch");
+    }
+
+    #[test]
+    fn esc_does_not_answer_a_display_trial() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+
+        send(&mut state, Message::Back);
+
+        assert!(
+            state.model().trial.is_some(),
+            "a stray key must not take a working mode away"
+        );
+        assert!(
+            state.take_outgoing().is_empty(),
+            "and it must not ask the compositor for anything"
+        );
+    }
+
+    #[test]
+    fn a_trial_that_runs_out_asks_for_the_previous_settings_once() {
+        let (directory, mut state) = display_changed();
+        let (generation, _commands) = request_display_change(&mut state);
+        arm(&mut state, &directory, generation);
+
+        for _ in 0..(DISPLAY_TRIAL_SECONDS + 3) {
+            send(&mut state, Message::TrialTick);
+        }
+
+        let commands = state.take_outgoing();
+        assert_eq!(
+            commands.len(),
+            1,
+            "the countdown asks once, however long it is left running: {commands:?}"
+        );
+        assert!(matches!(
+            commands.as_slice(),
+            [OutgoingCommand::RollbackDisplay { .. }]
+        ));
     }
 }

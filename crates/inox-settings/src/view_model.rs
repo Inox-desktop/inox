@@ -24,7 +24,7 @@
 
 use inox_common::i18n::{Arg, Localizer};
 
-use crate::apply::{Application, ApplyState, Component, ComponentState, Rejection};
+use crate::apply::{Application, ApplyState, Component, ComponentState, Generation, Rejection};
 use crate::draft::{Draft, Field, Value, ValueKind};
 use crate::pages::PageId;
 use crate::validate::FieldError;
@@ -56,6 +56,34 @@ pub enum FocusTarget {
     Reset(Field),
     /// One of the actions at the foot of the window.
     Action(Action),
+    /// One of the two answers a display trial is waiting for.
+    ///
+    /// A trial is a question the window asks before a display change becomes
+    /// permanent, so while one is open these are the only entries the keyboard
+    /// can reach (ADR 0028).
+    Trial(TrialChoice),
+}
+
+/// What the user can answer to a display trial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TrialChoice {
+    /// Keep the change: the compositor stops counting down.
+    Confirm,
+    /// Put the previous display settings back now.
+    Revert,
+}
+
+impl TrialChoice {
+    /// Every answer, in the order the dialog draws them.
+    pub const ALL: [Self; 2] = [Self::Confirm, Self::Revert];
+
+    /// The message id of the answer's label.
+    pub const fn label_id(self) -> &'static str {
+        match self {
+            Self::Confirm => "settings-display-trial-confirm",
+            Self::Revert => "settings-display-trial-revert",
+        }
+    }
 }
 
 /// An action the window offers.
@@ -100,6 +128,12 @@ pub enum StatusKind {
     SavedOnly,
     /// The change did not take effect.
     Rejected,
+    /// The change is in effect but a display trial has not been answered yet.
+    ///
+    /// Kept apart from [`StatusKind::Applied`] because ADR 0028 refuses to call a
+    /// mode change settled before the user confirms it: it is drawn in the
+    /// warning colour, next to the dialog that can still take it back.
+    Provisional,
 }
 
 /// The status line, and the lines under it.
@@ -113,17 +147,30 @@ pub struct StatusView {
     pub details: Vec<String>,
 }
 
-/// One entry of the navigation list.
+/// One entry of the navigation list, and the page it opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageView {
     /// The page.
     pub page: PageId,
-    /// The page's name.
+    /// The page's name, drawn as the screen's one title.
     pub label: String,
+    /// What the page is for, drawn as a caption under the title.
+    pub description: String,
+    /// The cards the page's fields are drawn in, in order.
+    pub groups: Vec<GroupView>,
     /// Whether this page is the open one.
     pub selected: bool,
     /// Whether the keyboard is on it.
     pub focused: bool,
+}
+
+/// One card of a page: a heading and the fields under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupView {
+    /// The card's heading.
+    pub title: String,
+    /// The fields it holds, in the order it draws them.
+    pub fields: Vec<Field>,
 }
 
 /// One option of a choice control.
@@ -154,6 +201,9 @@ pub enum ControlView {
         remove: String,
         /// Explanation of how saved values will be used.
         help: String,
+        /// What an empty list means: the state the window is in, said in words
+        /// rather than left as a blank space (ui-guidelines §6).
+        empty: String,
         /// The active keyboard target within this collection.
         focused: Option<FocusTarget>,
     },
@@ -252,6 +302,82 @@ pub struct SettingsViewModel {
     pub focused: Option<FocusTarget>,
     /// Whether a change is waiting to be written.
     pub modified: bool,
+    /// The display trial the window is asking about, if one is open (ADR 0028).
+    pub trial: Option<TrialView>,
+}
+
+/// The dialog a display trial is drawn in.
+///
+/// The window asks a question it can answer for the user if nobody does: the
+/// change is already in effect, and when [`TrialView::remaining_seconds`] reaches
+/// zero the previous display settings come back. The sentence says so, because a
+/// countdown the user cannot read is a race they cannot win.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialView {
+    /// The request whose display change is on trial.
+    pub generation: u64,
+    /// The dialog's heading.
+    pub title: String,
+    /// What is being asked, with the time left in it.
+    pub message: String,
+    /// How many seconds are left before the previous setting comes back.
+    pub remaining_seconds: u32,
+    /// The answers, in the order the dialog draws them.
+    pub choices: Vec<TrialChoiceView>,
+    /// Why the last attempt to confirm failed, when one did.
+    pub error: Option<String>,
+}
+
+/// One answer of the display trial dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialChoiceView {
+    /// The answer.
+    pub choice: TrialChoice,
+    /// Its label.
+    pub label: String,
+    /// Whether the keyboard is on it.
+    pub focused: bool,
+    /// Whether it can be taken.
+    pub enabled: bool,
+    /// Why it cannot be, when it cannot.
+    pub disabled_reason: Option<String>,
+}
+
+/// What the window last did about a display trial.
+///
+/// Kept as a value so the status line can say what happened to the display
+/// without inventing a claim about the request's own state: a trial that was
+/// confirmed leaves the request [`StatusKind::Applied`], and one that was
+/// reverted goes through the ordinary save-and-apply path again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DisplayTrialNotice {
+    /// The user confirmed the change; the compositor kept it.
+    Confirmed,
+    /// The previous display settings were asked for and put back.
+    Reverted,
+    /// The previous settings were put back in the files, but the compositor
+    /// could not be told — the reason is the message it failed with.
+    RevertUnreachable {
+        /// Why the compositor could not be asked.
+        reason: String,
+    },
+    /// The previous settings could not even be put back in the files.
+    Failed {
+        /// What went wrong.
+        reason: String,
+    },
+}
+
+impl DisplayTrialNotice {
+    /// The message id of the sentence.
+    pub const fn message_id(&self) -> &'static str {
+        match self {
+            Self::Confirmed => "settings-display-trial-notice-confirmed",
+            Self::Reverted => "settings-display-trial-notice-reverted",
+            Self::RevertUnreachable { .. } => "settings-display-trial-notice-unreachable",
+            Self::Failed { .. } => "settings-display-trial-notice-failed",
+        }
+    }
 }
 
 impl SettingsViewModel {
@@ -264,6 +390,25 @@ impl SettingsViewModel {
     pub fn action(&self, action: Action) -> Option<&ActionView> {
         self.actions.iter().find(|view| view.action == action)
     }
+}
+
+/// What decides whether a control can be used.
+///
+/// Kept as one value because four questions are asked of every control — is a
+/// write in flight, is a display trial waiting for an answer, does the draft
+/// break the schema, is there anything to apply — and passing them as one keeps
+/// the two answers (what the button draws, and whether the keyboard may land on
+/// it) impossible to give inconsistently.
+#[derive(Debug, Clone, Copy)]
+struct Usability {
+    /// A write is in flight.
+    busy: bool,
+    /// A display trial is open (ADR 0028).
+    trial: bool,
+    /// The schema refuses something in the draft.
+    invalid: bool,
+    /// The draft holds a change.
+    modified: bool,
 }
 
 /// The state the projection reads.
@@ -281,21 +426,45 @@ pub struct SettingsInput<'a> {
     pub errors: &'a [FieldError],
     /// The entry the keyboard is on.
     pub focused: Option<FocusTarget>,
+    /// The display trial waiting for an answer, if one is (ADR 0028).
+    pub trial: Option<TrialInput>,
+    /// What the window last did about a display trial.
+    pub notice: Option<&'a DisplayTrialNotice>,
+}
+
+/// The display trial the projection reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialInput {
+    /// The request whose display change is on trial.
+    pub generation: Generation,
+    /// Seconds left before the previous setting comes back.
+    pub remaining_seconds: u32,
+    /// Why the last attempt to confirm failed, when one did.
+    pub error: Option<String>,
+    /// Whether an answer is already on its way to the compositor.
+    pub answering: bool,
 }
 
 impl SettingsInput<'_> {
     /// Projects the input into what the window draws.
     pub fn project(&self, localizer: &Localizer) -> SettingsViewModel {
         let state = self.application.state();
-        let busy = state.is_busy();
-        let invalid = !self.errors.is_empty();
-        let modified = self.draft.is_modified();
+        let usability = Usability {
+            busy: state.is_busy(),
+            trial: self.trial.is_some(),
+            invalid: !self.errors.is_empty(),
+            modified: self.draft.is_modified(),
+        };
+        let trial = self.trial_view(localizer);
 
         // What the keyboard may be on does not depend on where it is, so the
         // walk is built first and the focus is then read against it: one place
         // answers where the focus is, and the walk and the controls cannot
         // disagree about it.
-        let focus_order = self.focus_order(busy, invalid, modified);
+        let focus_order = match &trial {
+            Some(trial) => trial_focus_order(trial),
+            None => self.focus_order(usability),
+        };
         let focused = self.focused.filter(|target| focus_order.contains(target));
 
         let pages: Vec<PageView> = PageId::ALL
@@ -303,6 +472,15 @@ impl SettingsInput<'_> {
             .map(|page| PageView {
                 page: *page,
                 label: localizer.message(page.label_id()),
+                description: localizer.message(page.description_id()),
+                groups: page
+                    .groups()
+                    .iter()
+                    .map(|group| GroupView {
+                        title: localizer.message(group.title_id),
+                        fields: group.fields.to_vec(),
+                    })
+                    .collect(),
                 selected: *page == self.page,
                 focused: focused == Some(FocusTarget::Page(*page)),
             })
@@ -312,13 +490,13 @@ impl SettingsInput<'_> {
             .page
             .fields()
             .iter()
-            .map(|field| self.field_view(*field, localizer, busy, focused))
+            .map(|field| self.field_view(*field, localizer, usability, focused))
             .collect();
 
         let actions: Vec<ActionView> = self
             .action_order()
             .into_iter()
-            .map(|action| self.action_view(action, localizer, busy, modified, invalid, focused))
+            .map(|action| self.action_view(action, localizer, usability, focused))
             .collect();
 
         SettingsViewModel {
@@ -331,7 +509,8 @@ impl SettingsInput<'_> {
             status: self.status_view(localizer),
             focused,
             focus_order,
-            modified,
+            modified: usability.modified,
+            trial,
         }
     }
 
@@ -352,13 +531,13 @@ impl SettingsInput<'_> {
     /// ring until the save lands. What the keyboard was on is still there — the
     /// focus is read against the walk again on the next frame, so it comes back
     /// to the same control rather than somewhere else.
-    fn focus_order(&self, busy: bool, invalid: bool, modified: bool) -> Vec<FocusTarget> {
+    fn focus_order(&self, usability: Usability) -> Vec<FocusTarget> {
         let mut order: Vec<FocusTarget> = PageId::ALL
             .iter()
             .map(|page| FocusTarget::Page(*page))
             .collect();
 
-        if !busy {
+        if !usability.busy {
             for field in self.page.fields() {
                 if let Value::Collection(rows) = self.draft.field(*field) {
                     for (row, cells) in rows.iter().enumerate() {
@@ -379,7 +558,16 @@ impl SettingsInput<'_> {
         order.extend(
             self.action_order()
                 .into_iter()
-                .filter(|action| action_reason(*action, busy, modified, invalid).is_none())
+                .filter(|action| {
+                    action_reason(
+                        *action,
+                        usability.busy,
+                        usability.modified
+                            || (*action == Action::Apply && self.application.can_retry_apply()),
+                        usability.invalid,
+                    )
+                    .is_none()
+                })
                 .map(FocusTarget::Action),
         );
 
@@ -408,10 +596,10 @@ impl SettingsInput<'_> {
         &self,
         field: Field,
         localizer: &Localizer,
-        busy: bool,
+        usability: Usability,
         focused: Option<FocusTarget>,
     ) -> FieldView {
-        let enabled = !busy;
+        let enabled = !usability.busy && !usability.trial;
         let value = self.draft.field(field);
         let origin = self.draft.origin(field);
 
@@ -445,7 +633,15 @@ impl SettingsInput<'_> {
                     )
                 }),
             enabled,
-            disabled_reason: (!enabled).then(|| localizer.message("settings-disabled-in-flight")),
+            disabled_reason: (!enabled).then(|| {
+                let id = if usability.trial {
+                    "settings-display-trial-active"
+                } else {
+                    "settings-disabled-in-flight"
+                };
+
+                localizer.message(id)
+            }),
         }
     }
 
@@ -454,12 +650,23 @@ impl SettingsInput<'_> {
         &self,
         action: Action,
         localizer: &Localizer,
-        busy: bool,
-        modified: bool,
-        invalid: bool,
+        usability: Usability,
         focused: Option<FocusTarget>,
     ) -> ActionView {
-        let reason = action_reason(action, busy, modified, invalid);
+        // A display trial is a question the window is waiting on: every other
+        // action would either act behind the question or write a second change
+        // the user has not answered for yet (ADR 0028).
+        let reason = if usability.trial {
+            Some("settings-display-trial-active")
+        } else {
+            action_reason(
+                action,
+                usability.busy,
+                usability.modified
+                    || (action == Action::Apply && self.application.can_retry_apply()),
+                usability.invalid,
+            )
+        };
 
         ActionView {
             action,
@@ -468,6 +675,43 @@ impl SettingsInput<'_> {
             enabled: reason.is_none(),
             disabled_reason: reason.map(|id| localizer.message(id)),
         }
+    }
+
+    /// The display trial dialog, when one is open.
+    ///
+    /// The countdown is drawn as a number of seconds rather than as a progress
+    /// bar: the value the state machine decrements is exactly the value the user
+    /// has to be able to read (ADR 0028).
+    fn trial_view(&self, localizer: &Localizer) -> Option<TrialView> {
+        let trial = self.trial.as_ref()?;
+        let choices = TrialChoice::ALL
+            .iter()
+            .map(|choice| {
+                let enabled = !trial.answering;
+                let focused = enabled && self.focused == Some(FocusTarget::Trial(*choice));
+
+                TrialChoiceView {
+                    choice: *choice,
+                    label: localizer.message(choice.label_id()),
+                    focused,
+                    enabled,
+                    disabled_reason: (!enabled)
+                        .then(|| localizer.message("settings-display-trial-answering")),
+                }
+            })
+            .collect();
+
+        Some(TrialView {
+            generation: trial.generation.get(),
+            title: localizer.message("settings-display-trial-title"),
+            message: localizer.message_with(
+                "settings-display-trial-message",
+                &[("seconds", trial.remaining_seconds.to_string().into())],
+            ),
+            remaining_seconds: trial.remaining_seconds,
+            choices,
+            error: trial.error.clone(),
+        })
     }
 
     /// The status line.
@@ -491,7 +735,7 @@ impl SettingsInput<'_> {
             })
             .collect();
 
-        match state {
+        let mut status = match state {
             ApplyState::Draft if self.draft.is_modified() => StatusView {
                 kind: StatusKind::Modified,
                 message: localizer.message("settings-status-modified"),
@@ -624,8 +868,55 @@ impl SettingsInput<'_> {
                     )],
                 },
             },
+        };
+
+        // A change a consumer refused or could not be asked about is not stuck:
+        // Apply is offered again for exactly that state, and the status line says
+        // so rather than leaving the user to guess what a button would do
+        // (ui-guidelines §6: 错误要可重试).
+        if (status.kind == StatusKind::Rejected || status.kind == StatusKind::SavedOnly)
+            && self.application.can_retry_apply()
+        {
+            status
+                .details
+                .push(localizer.message("settings-status-retry-hint"));
         }
+
+        // What happened to the last display trial is a line of its own: it is a
+        // fact about the display, not a claim about the request's own state, so
+        // it is added beside the sentence rather than replacing it.
+        if let Some(notice) = self.notice {
+            status.details.push(match notice {
+                DisplayTrialNotice::RevertUnreachable { reason }
+                | DisplayTrialNotice::Failed { reason } => localizer
+                    .message_with(notice.message_id(), &[("reason", reason.as_str().into())]),
+                notice => localizer.message(notice.message_id()),
+            });
+        }
+
+        // An unanswered trial is never reported as settled: the sentence says the
+        // display is on trial, in the colour that says "still waiting" (ADR 0028).
+        if self.trial.is_some() {
+            status.kind = StatusKind::Provisional;
+            status.message = localizer.message("settings-status-display-trial");
+        }
+
+        status
     }
+}
+
+/// The entries the keyboard can reach while a display trial is open.
+///
+/// Only the two answers: the trial is a question, and a field or another action
+/// would let the user act behind it — the same reason those controls are drawn
+/// disabled (ADR 0028).
+fn trial_focus_order(trial: &TrialView) -> Vec<FocusTarget> {
+    trial
+        .choices
+        .iter()
+        .filter(|choice| choice.enabled)
+        .map(|choice| FocusTarget::Trial(choice.choice))
+        .collect()
 }
 
 /// Why an action cannot be taken, when it cannot.
@@ -655,7 +946,10 @@ fn action_reason(
 }
 
 /// How a field is drawn, from its control and its value.
-fn control_view(
+///
+/// Reachable from [`crate::view`]'s own tests, which draw every field of every
+/// page rather than trusting that each kind of control has a drawing.
+pub(crate) fn control_view(
     field: Field,
     value: &Value,
     focused: Option<FocusTarget>,
@@ -682,6 +976,7 @@ fn control_view(
                 Field::LauncherTerminal => "settings-terminal-help",
                 _ => "settings-wallpapers-help",
             }),
+            empty: localizer.message(empty_state_id(field)),
         },
         ValueKind::Text => ControlView::Text(match value {
             Value::Text(text) => text.clone(),
@@ -754,6 +1049,19 @@ fn control_view(
 
             ControlView::Choices(options)
         }
+    }
+}
+
+/// What an empty list says it will do, as a message id.
+///
+/// Kept beside the projection because it is a sentence a user reads, not a
+/// drawing decision: [`crate::view`] only draws the string it is given.
+fn empty_state_id(field: Field) -> &'static str {
+    match field {
+        Field::Outputs => "settings-empty-outputs",
+        Field::InputMethodCommand => "settings-empty-input-method",
+        Field::LauncherTerminal => "settings-empty-launcher-terminal",
+        _ => "settings-empty-wallpaper-per-output",
     }
 }
 
@@ -840,6 +1148,7 @@ pub fn message_ids() -> Vec<&'static str> {
         "settings-status-reload-failed",
         "settings-status-component-rejected",
         "settings-status-unreachable",
+        "settings-status-retry-hint",
         "settings-detail-component-state",
         "settings-detail-conflict-digest",
         "settings-detail-save-failed",
@@ -869,9 +1178,24 @@ pub fn message_ids() -> Vec<&'static str> {
         "settings-outputs-help",
         "settings-terminal-help",
         "settings-wallpapers-help",
+        "settings-empty-outputs",
+        "settings-empty-input-method",
+        "settings-empty-launcher-terminal",
+        "settings-empty-wallpaper-per-output",
         "settings-error-integer",
         "settings-error-number-range",
         "settings-error-clock-format",
+        "settings-status-display-trial",
+        "settings-display-trial-title",
+        "settings-display-trial-message",
+        "settings-display-trial-confirm",
+        "settings-display-trial-revert",
+        "settings-display-trial-active",
+        "settings-display-trial-answering",
+        "settings-display-trial-notice-confirmed",
+        "settings-display-trial-notice-reverted",
+        "settings-display-trial-notice-unreachable",
+        "settings-display-trial-notice-failed",
     ];
 
     for page in PageId::ALL {
@@ -889,6 +1213,10 @@ pub fn message_ids() -> Vec<&'static str> {
         Action::Reload,
     ] {
         ids.push(action.label_id());
+    }
+
+    for choice in TrialChoice::ALL {
+        ids.push(choice.label_id());
     }
 
     ids
@@ -925,6 +1253,36 @@ mod tests {
             application,
             errors: &errors,
             focused,
+            trial: None,
+            notice: None,
+        }
+        .project(&localizer())
+    }
+
+    /// The same projection, with a display trial waiting for an answer.
+    fn project_trial(
+        page: PageId,
+        draft: &Draft,
+        application: &Application,
+        focused: Option<FocusTarget>,
+        remaining_seconds: u32,
+        answering: bool,
+    ) -> SettingsViewModel {
+        let errors = crate::validate::validate(draft.settings());
+
+        SettingsInput {
+            page,
+            draft,
+            application,
+            errors: &errors,
+            focused,
+            trial: Some(TrialInput {
+                generation: Generation::new(7),
+                remaining_seconds,
+                error: None,
+                answering,
+            }),
+            notice: None,
         }
         .project(&localizer())
     }
@@ -1118,6 +1476,68 @@ mod tests {
     }
 
     #[test]
+    fn the_wallpaper_chooser_offers_the_catalogue_and_selects_the_default() {
+        let model = project(PageId::Wallpaper, &draft(), &Application::new(), None);
+
+        let Some(ControlView::Choices(options)) = model
+            .field(Field::WallpaperImage)
+            .map(|field| &field.control)
+        else {
+            panic!("the wallpaper is a choice");
+        };
+
+        let ids: Vec<&str> = options.iter().map(|option| option.id.as_str()).collect();
+        let mut expected: Vec<&str> = vec![""];
+        expected.extend(
+            inox_config::wallpapers::BUNDLED
+                .iter()
+                .map(|wallpaper| wallpaper.id),
+        );
+        expected.push(inox_config::BACKGROUND_ID);
+
+        assert_eq!(ids, expected, "the chooser is the catalogue in its order");
+        let selected: Vec<&str> = options
+            .iter()
+            .filter(|option| option.selected)
+            .map(|option| option.id.as_str())
+            .collect();
+        assert_eq!(
+            selected,
+            vec![""],
+            "a configuration that names nothing shows the default option"
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_path_written_by_hand_is_shown_as_it_stands() {
+        let mut settings = Settings::defaults();
+        settings.wallpaper_image = "/images/主壁纸.png".to_owned();
+
+        let model = project(
+            PageId::Wallpaper,
+            &Draft::new(settings),
+            &Application::new(),
+            None,
+        );
+        let Some(ControlView::Choices(options)) = model
+            .field(Field::WallpaperImage)
+            .map(|field| &field.control)
+        else {
+            panic!("the wallpaper is a choice");
+        };
+
+        let last = options.last().expect("the appended option");
+        assert_eq!(last.id, "/images/主壁纸.png");
+        assert_eq!(last.label, "/images/主壁纸.png", "a path is data, not copy");
+        assert!(last.selected);
+        assert_eq!(
+            options.iter().filter(|option| option.selected).count(),
+            1,
+            "exactly one option is the current one"
+        );
+    }
+
+    #[test]
     fn a_switch_control_says_which_way_it_is() {
         let mut draft = draft();
         draft
@@ -1256,6 +1676,16 @@ mod tests {
                     FocusTarget::Action(action) => assert!(
                         model.action(*action).expect("an action on offer").enabled,
                         "{state}: the walk holds {action:?}, which is disabled"
+                    ),
+                    FocusTarget::Trial(choice) => assert!(
+                        model
+                            .trial
+                            .as_ref()
+                            .expect("a trial dialog")
+                            .choices
+                            .iter()
+                            .any(|view| view.choice == *choice && view.enabled),
+                        "{state}: the walk holds {choice:?}, which is disabled"
                     ),
                 }
             }
@@ -1663,5 +2093,150 @@ mod tests {
                 action.action
             );
         }
+    }
+
+    #[test]
+    fn a_display_trial_offers_its_two_answers_and_counts_the_seconds_down() {
+        let draft = draft();
+        let model = project_trial(
+            PageId::Displays,
+            &draft,
+            &Application::new(),
+            Some(FocusTarget::Trial(TrialChoice::Confirm)),
+            30,
+            false,
+        );
+
+        let trial = model.trial.expect("the trial is drawn");
+        assert_eq!(trial.remaining_seconds, 30);
+        assert!(trial.message.contains("30"), "sentence `{}`", trial.message);
+        assert_eq!(
+            trial
+                .choices
+                .iter()
+                .map(|choice| choice.choice)
+                .collect::<Vec<TrialChoice>>(),
+            TrialChoice::ALL
+        );
+
+        let shorter = project_trial(
+            PageId::Displays,
+            &draft,
+            &Application::new(),
+            None,
+            4,
+            false,
+        );
+        let trial = shorter.trial.expect("the trial is drawn");
+        assert_eq!(trial.remaining_seconds, 4);
+        assert!(trial.message.contains('4'), "sentence `{}`", trial.message);
+    }
+
+    #[test]
+    fn while_a_trial_is_open_only_its_answers_are_reachable() {
+        let draft = draft();
+        let model = project_trial(
+            PageId::Displays,
+            &draft,
+            &Application::new(),
+            Some(FocusTarget::Trial(TrialChoice::Revert)),
+            12,
+            false,
+        );
+
+        assert_eq!(
+            model.focus_order,
+            vec![
+                FocusTarget::Trial(TrialChoice::Confirm),
+                FocusTarget::Trial(TrialChoice::Revert)
+            ]
+        );
+        assert_eq!(
+            model.focused,
+            Some(FocusTarget::Trial(TrialChoice::Revert)),
+            "the focus stays on the answer it was on"
+        );
+        assert!(
+            model
+                .trial
+                .as_ref()
+                .expect("the trial is drawn")
+                .choices
+                .iter()
+                .any(|choice| choice.choice == TrialChoice::Revert && choice.focused)
+        );
+    }
+
+    #[test]
+    fn while_a_trial_is_open_every_other_control_names_it_as_the_reason() {
+        let model = project_trial(
+            PageId::Displays,
+            &draft(),
+            &Application::new(),
+            None,
+            9,
+            false,
+        );
+
+        for field in &model.fields {
+            assert!(!field.enabled, "`{}`", field.field);
+            assert_eq!(
+                field.disabled_reason.as_deref(),
+                Some("The display settings are waiting for an answer"),
+                "`{}`",
+                field.field
+            );
+        }
+
+        for action in &model.actions {
+            assert!(!action.enabled, "{:?}", action.action);
+            assert_eq!(
+                action.disabled_reason.as_deref(),
+                Some("The display settings are waiting for an answer"),
+                "{:?}",
+                action.action
+            );
+        }
+    }
+
+    #[test]
+    fn an_unanswered_trial_is_not_reported_as_settled() {
+        let model = project_trial(
+            PageId::Displays,
+            &draft(),
+            &Application::new(),
+            None,
+            30,
+            false,
+        );
+
+        assert_eq!(model.status.kind, StatusKind::Provisional);
+        assert_eq!(
+            model.status.message,
+            "The display settings are applied, waiting for confirmation"
+        );
+    }
+
+    #[test]
+    fn an_answer_on_its_way_disables_both_choices_with_a_reason() {
+        let model = project_trial(
+            PageId::Displays,
+            &draft(),
+            &Application::new(),
+            Some(FocusTarget::Trial(TrialChoice::Confirm)),
+            2,
+            true,
+        );
+
+        let trial = model.trial.expect("the trial is drawn");
+        for choice in &trial.choices {
+            assert!(!choice.enabled, "{:?}", choice.choice);
+            assert!(choice.disabled_reason.is_some(), "{:?}", choice.choice);
+        }
+        assert!(
+            model.focus_order.is_empty(),
+            "there is nothing left to answer while the answer travels"
+        );
+        assert_eq!(model.focused, None);
     }
 }

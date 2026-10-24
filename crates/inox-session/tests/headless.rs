@@ -40,7 +40,11 @@ fn actual_headless_session_reaches_compositor_ready_and_logs_out() {
         let log = std::fs::read_to_string(&log_path).expect("live session log");
         if stopping.is_none()
             && log.contains("compositor protocol ready")
-            && log.contains("started session process component=panel")
+            // The desktop home is two panel instances — one layer surface per
+            // process — so readiness means both surfaces are up, not just the
+            // first one.
+            && log.contains("started session process component=panel-menubar")
+            && log.contains("started session process component=panel-dock")
         {
             kill_process(
                 Pid::from_raw(pid as i32).expect("session PID"),
@@ -67,10 +71,12 @@ fn actual_headless_session_reaches_compositor_ready_and_logs_out() {
         "session exited before readiness-triggered logout: {log}"
     );
     assert!(log.contains("compositor protocol ready"), "{log}");
-    assert!(
-        log.contains("started session process component=panel"),
-        "{log}"
-    );
+    for component in ["panel-menubar", "panel-dock"] {
+        assert!(
+            log.contains(&format!("started session process component={component}")),
+            "the session must start {component}: {log}"
+        );
+    }
     assert!(
         !root.path().join(format!("inox-session-{pid}")).exists(),
         "private runtime leaked: {log}"

@@ -11,9 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+calloop.workspace = true
 anyhow.workspace = true
 # The D-Bus service itself (M5, acceptance D06). ADR 0022 §5 records the choice,
-# the licence (MIT) and why only the blocking API is used.
+# the licence (MIT); ADR 0027 migrates to the async API driven by block_on.
 zbus.workspace = true
 # The session lock state the daemon needs to withhold notification bodies while
 # the session is locked: the compositor is the authority and publishes it over

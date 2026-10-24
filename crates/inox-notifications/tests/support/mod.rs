@@ -140,15 +140,63 @@ impl Daemon {
     /// itself disabled, and a test about an enabled button would be comparing
     /// two disabled ones.
     pub fn render(&self) -> Vec<u8> {
+        self.render_at(self.size)
+    }
+
+    /// The same, at a surface size of the caller's choosing.
+    ///
+    /// The daemon's own window is sized from the display configuration and the
+    /// tokens while there is no layer-shell host to size it (ADR 0018), so a
+    /// scenario at 200 % font scale is drawn on a surface big enough for what the
+    /// scale asks for rather than being cut off by a fixed one.
+    pub fn render_at(&self, size: Size<f32>) -> Vec<u8> {
+        self.draw(size, &[], Point::ORIGIN)
+    }
+
+    /// Draws the stack with the pointer resting on `point`, which is what puts the
+    /// widget under it into its hovered state.
+    pub fn render_hovered(&self, point: Point) -> Vec<u8> {
+        self.draw(
+            self.size,
+            &[Event::Mouse(mouse::Event::CursorMoved { position: point })],
+            point,
+        )
+    }
+
+    /// Draws the stack with the left button held down over `point`.
+    ///
+    /// Nothing is released, which is the point: ui-guidelines §5 asks for the
+    /// feedback to happen when the button goes down, not when it comes back up.
+    pub fn render_pressed(&self, point: Point) -> Vec<u8> {
+        self.draw(
+            self.size,
+            &[
+                Event::Mouse(mouse::Event::CursorMoved { position: point }),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            ],
+            point,
+        )
+    }
+
+    /// Lays the stack out at `size`, feeds it `events`, and draws it.
+    ///
+    /// One redraw request is always appended: iced resolves a widget's status
+    /// inside `update`, and only a redraw request makes a button keep it. A
+    /// widget that has never been through one draws itself disabled, and a test
+    /// about an enabled button would be comparing two disabled ones.
+    fn draw(&self, size: Size<f32>, events: &[Event], cursor: Point) -> Vec<u8> {
         let mut renderer = renderer();
-        let mut ui = self.interface(&mut renderer);
+        let mut ui = self.interface_at(size, &mut renderer);
         let mut messages = Vec::new();
+        let mut all: Vec<Event> = events.to_vec();
+
+        all.push(Event::Window(iced_core::window::Event::RedrawRequested(
+            std::time::Instant::now(),
+        )));
 
         ui.update(
-            &[Event::Window(iced_core::window::Event::RedrawRequested(
-                std::time::Instant::now(),
-            ))],
-            mouse::Cursor::Available(Point::ORIGIN),
+            &all,
+            mouse::Cursor::Available(cursor),
             &mut renderer,
             &mut clipboard::Null,
             &mut messages,
@@ -158,12 +206,12 @@ impl Daemon {
             &mut renderer,
             &self.theme(),
             &Style::default(),
-            mouse::Cursor::Available(Point::ORIGIN),
+            mouse::Cursor::Available(cursor),
         );
 
         Headless::screenshot(
             &mut renderer,
-            Size::new(self.size.width as u32, self.size.height as u32),
+            Size::new(size.width as u32, size.height as u32),
             1.0,
             Color::WHITE,
         )
@@ -205,12 +253,15 @@ impl Daemon {
         &'a self,
         renderer: &mut iced_tiny_skia::Renderer,
     ) -> UserInterface<'a, Message, iced::Theme, iced_tiny_skia::Renderer> {
-        UserInterface::build(
-            app::view(&self.state),
-            self.size,
-            Cache::default(),
-            renderer,
-        )
+        self.interface_at(self.size, renderer)
+    }
+
+    fn interface_at<'a>(
+        &'a self,
+        size: Size<f32>,
+        renderer: &mut iced_tiny_skia::Renderer,
+    ) -> UserInterface<'a, Message, iced::Theme, iced_tiny_skia::Renderer> {
+        UserInterface::build(app::view(&self.state), size, Cache::default(), renderer)
     }
 }
 
@@ -278,6 +329,41 @@ pub fn has_ink(
     background: [u8; 4],
 ) -> bool {
     (from.1..to.1).any(|y| (from.0..to.0).any(|x| pixel(pixels, width, x, y) != background))
+}
+
+/// The lowest row of a rendered buffer that carries anything but `background`.
+///
+/// This is how a test asks "how tall did the stack get?" without depending on
+/// which glyphs the platform's fonts provide: it is the bottom of the lowest
+/// thing drawn, whatever it happens to be.
+pub fn lowest_drawn_row(pixels: &[u8], size: Size<f32>, background: [u8; 4]) -> Option<u32> {
+    let width = size.width as u32;
+
+    (0..size.height as u32)
+        .rev()
+        .find(|y| (0..width).any(|x| pixel(pixels, width, x, *y) != background))
+}
+
+/// The vertical runs of `colour` in one column, as `(first_row, last_row)` pairs.
+///
+/// Used to measure the space between two cards: a column inside a card's padding
+/// is pure surface for the card's height, so the gaps between the runs are the
+/// gaps between the cards.
+pub fn runs_in_column(pixels: &[u8], size: Size<f32>, x: u32, colour: [u8; 4]) -> Vec<(u32, u32)> {
+    let width = size.width as u32;
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+
+    for y in 0..size.height as u32 {
+        let matches = pixel(pixels, width, x, y) == colour;
+
+        match (matches, runs.last_mut()) {
+            (true, Some(run)) if run.1 + 1 == y => run.1 = y,
+            (true, _) => runs.push((y, y)),
+            (false, _) => {}
+        }
+    }
+
+    runs
 }
 
 /// The middle of the highest run of `colour` inside a rectangle.

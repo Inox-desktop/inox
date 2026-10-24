@@ -305,6 +305,46 @@ pub fn count_of(pixels: &[u8], colour: Rgba) -> usize {
         .count()
 }
 
+/// How many pixels of `colour` are drawn strictly inside `area`.
+///
+/// The `inset` is what turns "is there a field in this card?" into a question about
+/// the card's *interior*: the card's own outline and its rounded corners are drawn
+/// in the colours around it, within a corner radius of its edge, and counting them
+/// would answer yes whatever the card held. Inset by the corner radius and the
+/// only thing left is what the card actually contains.
+pub fn ink_inside(
+    pixels: &[u8],
+    size: Size<f32>,
+    area: Rectangle,
+    colour: Rgba,
+    inset: u32,
+) -> usize {
+    let want = token_pixel(colour);
+    let width = size.width as u32;
+    let height = size.height as u32;
+
+    let from_x = ((area.x.max(0.0) as u32) + inset).min(width);
+    let from_y = ((area.y.max(0.0) as u32) + inset).min(height);
+    let to_x = ((area.x + area.width) as u32)
+        .min(width)
+        .saturating_sub(inset);
+    let to_y = ((area.y + area.height) as u32)
+        .min(height)
+        .saturating_sub(inset);
+
+    let mut count = 0;
+
+    for y in from_y..to_y {
+        for x in from_x..to_x {
+            if pixel(pixels, width, x, y) == want {
+                count += 1;
+            }
+        }
+    }
+
+    count
+}
+
 /// Whether anything was drawn over `background` in the columns `from..to`.
 ///
 /// This is how a test asks "is there anything where the mask is?" without

@@ -23,5 +23,19 @@ notifications-action-disabled-policy = 动作已在 notifications.toml 中关闭
 # 持有的通知多于弹窗能显示的数量（D05，验收 D06）。
 notifications-overflow = 还有 { $count } 条在等待
 
+# 通知自称的紧急程度（非普通情形才显示）。
+#
+# ui-guidelines §5/§6：紧急度 = 一种颜色 + 一句话。句子是分不清颜色的用户读到的内容，
+# 也是紧急通知不只「变红」而已的原因。
+notifications-urgency-low = 低优先级
+notifications-urgency-critical = 紧急
+
+# 通知到达至今的时间（ui-guidelines §3：卡片状态行用 caption）。刻意粗糙：只说到
+# 「刚刚」而不数秒，这样相隔片刻绘制的两帧说的是同一句话。
+notifications-age-just-now = 刚刚
+notifications-age-minutes = { $count } 分钟前
+notifications-age-hours = { $count } 小时前
+notifications-age-days = { $count } 天前
+
 # 本守护进程不解码正文图片，改用 alt 文本；图片没有 alt 时显示这一条。
 notifications-image-placeholder = 图片

@@ -19,24 +19,27 @@ use crate::app::Message;
 use crate::draft::Field;
 use crate::view_model::{FieldView, PageView};
 
-/// The fields this page edits.
+/// The fields this page edits, in the order the page draws them: where a popup
+/// appears and how big it is, how long each urgency stays, what the queue does
+/// when it is full, and the policy the daemon starts with. The cards of
+/// [`crate::pages::PageId::groups`] follow that order.
 pub const FIELDS: &[Field] = &[
     Field::NotificationsPosition,
-    Field::NotificationsDoNotDisturb,
-    Field::NotificationsLowTimeout,
-    Field::NotificationsNormalTimeout,
-    Field::NotificationsCriticalTimeout,
-    Field::NotificationsMaxVisible,
     Field::NotificationsWidth,
     Field::NotificationsMargin,
     Field::NotificationsIconSize,
+    Field::NotificationsMaxVisible,
+    Field::NotificationsLowTimeout,
+    Field::NotificationsNormalTimeout,
+    Field::NotificationsCriticalTimeout,
     Field::NotificationsMaxPending,
     Field::NotificationsQueuePolicy,
+    Field::NotificationsDoNotDisturb,
     Field::NotificationsShowActions,
     Field::NotificationsHideBodyWhenLocked,
 ];
 
-/// Draws the page: its heading and the fields listed above, in that order.
+/// Draws the page: its title, its cards and the fields listed above, in order.
 pub fn view<'a>(page: &PageView, fields: &[FieldView], tokens: &'a Tokens) -> Element<'a, Message> {
     crate::view::page_section(page, fields, tokens)
 }

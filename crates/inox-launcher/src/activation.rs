@@ -358,13 +358,31 @@ impl Activator {
 /// period ended. It does not mean a window exists; see the module
 /// documentation.
 pub fn spawn_and_probe(argv: &[String], grace: Duration) -> Observation {
+    spawn_and_probe_with_helper(argv, grace, None)
+}
+
+/// Starts an application through a helper that restores the child's signal mask.
+/// The helper must implement the launcher's private `--exec-application` entry point.
+pub fn spawn_and_probe_with_helper(
+    argv: &[String],
+    grace: Duration,
+    helper: Option<&std::path::Path>,
+) -> Observation {
     let Some((program, arguments)) = argv.split_first() else {
         return Observation::SpawnFailed {
             detail: "no program to start".to_owned(),
         };
     };
 
-    let child = Command::new(program)
+    let mut command = match helper {
+        Some(helper) => {
+            let mut command = Command::new(helper);
+            command.arg("--exec-application").arg(program);
+            command
+        }
+        None => Command::new(program),
+    };
+    let child = command
         .args(arguments)
         // The application must not inherit the launcher's streams: a GUI
         // process holding the launcher's standard output would keep a pipe

@@ -8,9 +8,8 @@
 # Weekday and month names are numbered the way `chrono` numbers them:
 # 1 = Monday .. 7 = Sunday, 1 = January .. 12 = December.
 
-# Title of the panel's own window: the panel is a layer surface on a real
-# session and an ordinary window only while no layer-shell host exists
-# (ADR 0018).
+# Title of the panel's own surface: every surface the panel draws is a
+# wlr-layer-shell surface (ADR 0018).
 panel-window-title = Inox Panel
 
 # Panel-level states (acceptance D05).
@@ -25,6 +24,11 @@ panel-task-disabled-service = The window service is not available
 panel-task-tooltip = { $app }: { $title }
 panel-task-tooltip-empty = { $app }
 panel-task-title-with-count = { $title } ({ $count })
+
+# Dock tiles: the panel has no icon theme decoder, so a tile is a badge with the
+# application's first character, and an application with no name gets this
+# placeholder instead. It is short because it is drawn inside a square tile.
+panel-dock-icon-placeholder = ?
 
 # Tray items (acceptance D03).
 panel-tray-unknown-item = Status item

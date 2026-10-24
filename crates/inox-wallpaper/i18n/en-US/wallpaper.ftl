@@ -15,10 +15,40 @@ wallpaper-windowed-notice =
     wallpaper placement is computed and tested, and not applied (ADR 0018).
 
 ## What one output is drawing.
+# The status card is read top to bottom: which output, what is on it, where that
+# came from, how it was fitted, and what the component is doing about it. The
+# path is a line of its own (`caption` + `text_muted`) rather than a clause in
+# the sentence above it, because a path is metadata and has to stay readable
+# when it is long (UI spec §4).
 wallpaper-output-heading = Output { $output }
-wallpaper-output-image = { $width }×{ $height } image from { $path }
+wallpaper-output-image = { $width }×{ $height } image
+wallpaper-output-source = from { $path }
 wallpaper-output-background = The theme background
 wallpaper-status-loading = Loading the wallpaper…
+# How the image was fitted to the output. The mode is always on screen: it is
+# the one part of the geometry the user can act on (`wallpaper.mode`).
+wallpaper-scaling = Scaling: { $mode }
+# The values `wallpaper.mode` accepts, as the user writes them.
+wallpaper-mode-fill = fill
+wallpaper-mode-fit = fit
+wallpaper-mode-stretch = stretch
+wallpaper-mode-center = center
+wallpaper-mode-tile = tile
+# The phase the component is in, one line under the facts above. "Applied" is
+# what the state contract confirms — the frame is committed for this output; it
+# does not claim that a layer-shell host exists (ADR 0018).
+wallpaper-phase-loading = Loading…
+wallpaper-phase-ready = Applied
+wallpaper-phase-degraded = Not applied
+wallpaper-phase-idle = No image
+# The empty state is a state of its own rather than the absence of one: it says
+# what is on screen and what would change that (UI spec §6). It is reached by
+# `wallpaper.image = "none"` and by nothing else — an *absent* key is the
+# bundled default, not this state (ADR 0030) — so the remedy can name the value
+# that produced it.
+wallpaper-empty-remedy =
+    wallpaper.image is set to none, so the theme background is drawn. Name a
+    bundled wallpaper — or a path of your own — to show an image.
 
 ## A request that could not be honoured.
 wallpaper-problem-heading = The selected wallpaper could not be used

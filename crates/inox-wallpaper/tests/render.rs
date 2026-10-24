@@ -6,8 +6,11 @@
 //! out. Nothing here reads the source of a view function or trusts a comment.
 //!
 //! The assertions are chosen so that they do not depend on font metrics: what is
-//! asserted about a control is its background, not its glyphs, so a machine with
-//! no fonts installed still tests the same decisions.
+//! asserted about a control is its background, not its glyphs, and what is
+//! asserted about a card is the rectangle its token colour covers, not the text
+//! inside it. That is also what makes the 200% font-scale scenario meaningful —
+//! the card either grows and stays inside the window, or the scenario fails, on a
+//! machine with no fonts installed as much as on one with them.
 
 mod support;
 
@@ -19,13 +22,13 @@ use iced_core::mouse;
 use iced_core::{Event, Point};
 
 use inox_common::i18n::{Locale, Localizer};
-use inox_config::{Theme, WallpaperMode};
+use inox_config::{Appearance, Theme, WallpaperMode};
 use inox_wallpaper::app::{Message, PREVIEW_SIZE, Preview, State, update};
 use inox_wallpaper::model::{OutputName, Selection, Size as OutputSize, Unusable};
 use inox_wallpaper::view_model;
 use inox_wallpaper::{apply, i18n, theme, view};
 
-use support::{Pixel, SIZE};
+use support::{Bounds, Pixel, SIZE};
 
 /// The colour of every fixture image.
 ///
@@ -36,19 +39,30 @@ const IMAGE: [u8; 4] = [1, 2, 3, 255];
 /// The output the preview stands in for.
 const OUTPUT: &str = "HDMI-A-1";
 
-fn tokens(appearance: inox_config::Appearance) -> Arc<Theme> {
+fn tokens(appearance: Appearance) -> Arc<Theme> {
     Arc::new(match appearance {
-        inox_config::Appearance::Light => Theme::builtin_light(),
+        Appearance::Light => Theme::builtin_light(),
         _ => Theme::builtin_dark(),
     })
 }
 
 fn tokens_light() -> Arc<Theme> {
-    tokens(inox_config::Appearance::Light)
+    tokens(Appearance::Light)
 }
 
 fn tokens_dark() -> Arc<Theme> {
-    tokens(inox_config::Appearance::Dark)
+    tokens(Appearance::Dark)
+}
+
+/// The same tokens at a font-scale preference, which is what 200% means here.
+fn tokens_at_scale(appearance: Appearance, scale: f32) -> Arc<Theme> {
+    let mut tokens = match appearance {
+        Appearance::Light => Theme::builtin_light(),
+        _ => Theme::builtin_dark(),
+    };
+    tokens.typography.scale = scale;
+
+    Arc::new(tokens)
 }
 
 fn localizer() -> Rc<Localizer> {
@@ -80,6 +94,7 @@ fn boot(
             size: OutputSize::new(PREVIEW_SIZE.width, PREVIEW_SIZE.height),
             mode,
             selection,
+            wallpaper_dirs: Arc::from(Vec::<PathBuf>::new()),
         },
         reason,
     )
@@ -96,6 +111,7 @@ fn requested(tokens: Arc<Theme>, selection: Selection, mode: WallpaperMode) -> S
         &request.selection,
         mode,
         OutputSize::new(PREVIEW_SIZE.width, PREVIEW_SIZE.height),
+        &[],
     );
 
     let _ = update(
@@ -125,6 +141,47 @@ fn colour(rgba: inox_config::Rgba) -> Pixel {
     Pixel::from(theme::color(rgba))
 }
 
+/// The window inset the tokens ask for, in whole pixels.
+fn inset(tokens: &Theme) -> u32 {
+    theme::window_padding(tokens).round() as u32
+}
+
+/// The card outline the tokens ask for, in whole pixels.
+fn outline(tokens: &Theme) -> u32 {
+    theme::hairline(tokens).ceil() as u32
+}
+
+/// The bands of card surface in a drawing: the top-left column of cards, then the
+/// footer strip.
+fn cards(pixels: &[u8], tokens: &Theme) -> Vec<Bounds> {
+    support::regions(pixels, SIZE, colour(tokens.colors.surface))
+}
+
+/// The one card band of a drawing that has exactly one card column.
+fn top_card(pixels: &[u8], tokens: &Theme) -> Bounds {
+    let regions = cards(pixels, tokens);
+    *regions.first().expect("the status card is always drawn")
+}
+
+/// Clicks the middle of `bounds` and returns the messages that produced.
+fn click(state: &State, bounds: Bounds) -> Vec<Message> {
+    let centre = Point::new(
+        f32::midpoint(bounds.min_x as f32, bounds.max_x as f32),
+        f32::midpoint(bounds.min_y as f32, bounds.max_y as f32),
+    );
+
+    support::drive(
+        element(state),
+        &[
+            Event::Mouse(mouse::Event::CursorMoved { position: centre }),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ],
+        centre,
+        SIZE,
+    )
+}
+
 #[test]
 fn a_light_scenario_draws_the_wallpaper_that_was_configured() {
     let dir = tempfile::tempdir().expect("a temporary directory");
@@ -147,13 +204,12 @@ fn a_light_scenario_draws_the_wallpaper_that_was_configured() {
         },
         "a fill covers the output with the image"
     );
-    // The footer is a caption drawn straight onto the wallpaper with no
-    // background of its own, so the font-independent way to say "there is
-    // something to read it against" is the drawing underneath it: the fill
-    // covers the whole output, overlays and all. Asserting the glyphs themselves
-    // would depend on font rasterization, which crate AGENTS.md forbids — a
-    // machine with no fonts installed has to pass this test too. That the footer
-    // line is produced at all is asserted in `view_model`, where it is a string.
+    // The cards are drawn over the wallpaper, so the font-independent way to say
+    // "the preview is still the preview" is the drawing underneath them: the fill
+    // covers the whole output. Asserting the glyphs themselves would depend on
+    // font rasterization, which crate AGENTS.md forbids — a machine with no fonts
+    // installed has to pass this test too. That the card lines are produced at all
+    // is asserted in `view_model`, where they are strings.
     assert_eq!(
         support::most_common(&pixels),
         Pixel {
@@ -162,7 +218,7 @@ fn a_light_scenario_draws_the_wallpaper_that_was_configured() {
             blue: IMAGE[2],
             alpha: 255,
         },
-        "a fill covers the output with the image, with the footer drawn over it"
+        "a fill covers the output with the image, with the cards drawn over it"
     );
 }
 
@@ -201,9 +257,15 @@ fn a_dark_scenario_draws_the_same_wallpaper_in_its_own_colours() {
 }
 
 #[test]
-fn an_empty_scenario_draws_the_theme_background_and_no_panel() {
+fn an_empty_scenario_draws_the_theme_background_and_an_explicit_empty_card() {
+    // This used to assert that nothing at all was drawn, because the projection
+    // produced no notice for a configuration that names no image. The UI spec §6
+    // requires the empty state to be covered like every other state — "what
+    // happened, and what the user can do" — so the theme background is still the
+    // whole drawing, and the card that states the empty state is the change.
+    let tokens = tokens_light();
     let state = boot(
-        tokens_light(),
+        Arc::clone(&tokens),
         Selection::ThemeBackground,
         WallpaperMode::Fill,
         None,
@@ -213,17 +275,22 @@ fn an_empty_scenario_draws_the_theme_background_and_no_panel() {
     for (x, y) in [(4, 4), (640, 360), (1270, 710)] {
         assert_eq!(
             support::pixel(&pixels, SIZE, x, y),
-            colour(tokens_light().colors.background),
-            "nothing configured means the theme background, everywhere"
+            colour(tokens.colors.background),
+            "nothing configured means the theme background"
         );
     }
     assert!(
-        !support::contains(&pixels, colour(tokens_light().colors.surface)),
-        "there is nothing to report, so there is no panel"
+        support::contains(&pixels, colour(tokens.colors.surface)),
+        "the empty state is stated on screen"
     );
     assert!(
-        !support::contains(&pixels, colour(tokens_light().colors.accent)),
-        "and nothing to press"
+        !support::contains(&pixels, colour(tokens.colors.accent)),
+        "the empty state offers nothing to press"
+    );
+    let model = view_model::project(&state);
+    assert!(
+        model.card.hint.is_some(),
+        "and the card says what would change it"
     );
 }
 
@@ -245,7 +312,7 @@ fn an_error_scenario_degrades_to_the_theme_background_and_says_so() {
     );
     assert!(
         support::contains(&pixels, colour(tokens_dark().colors.surface)),
-        "the diagnosis is drawn in a panel"
+        "the diagnosis is drawn in a card"
     );
     assert!(
         support::contains(&pixels, colour(tokens_dark().colors.accent)),
@@ -353,6 +420,52 @@ fn a_click_on_the_wallpaper_produces_no_message_at_all() {
 }
 
 #[test]
+fn a_click_on_the_retry_control_produces_the_reload_message() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let light = tokens_light();
+    let state = requested(
+        Arc::clone(&light),
+        Selection::Image(dir.path().join("gone.png")),
+        WallpaperMode::Fill,
+    );
+    let pixels = draw(&state, "retry-enabled");
+    // The accent fill is the primary control's, and it is found rather than
+    // assumed, so this does not depend on how tall the text above it rendered.
+    let target = support::bounds(&pixels, SIZE, colour(light.colors.accent))
+        .expect("the enabled control is drawn in the accent token");
+
+    let messages = click(&state, target);
+
+    assert!(
+        matches!(messages.as_slice(), [Message::Reload]),
+        "the one action offers the one message: got {messages:?}"
+    );
+}
+
+#[test]
+fn a_click_on_the_disabled_control_produces_nothing() {
+    let light = tokens_light();
+    let state = boot(
+        Arc::clone(&light),
+        Selection::ThemeBackground,
+        WallpaperMode::Fill,
+        Some(Unusable::Unreadable {
+            detail: "permission denied".to_owned(),
+        }),
+    );
+    let pixels = draw(&state, "retry-disabled");
+    let target = support::bounds(&pixels, SIZE, colour(light.colors.surface_variant))
+        .expect("the disabled control is drawn in the surface-variant token");
+
+    let messages = click(&state, target);
+
+    assert!(
+        messages.is_empty(),
+        "a disabled control is not reachable by pointer: got {messages:?}"
+    );
+}
+
+#[test]
 fn the_loading_scenario_draws_something_operable_rather_than_a_blank_surface() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let state = boot(
@@ -370,6 +483,48 @@ fn the_loading_scenario_draws_something_operable_rather_than_a_blank_surface() {
     assert!(
         support::contains(&pixels, colour(tokens_dark().colors.surface)),
         "the load in progress is reported on screen"
+    );
+}
+
+#[test]
+fn the_cards_are_inset_by_the_window_padding_and_stay_inside_the_window() {
+    // UI spec §3 and §7: one window inset, and nothing that runs off the edge at
+    // 1280 × 720. Bounds rather than glyphs, so this holds without fonts.
+    let tokens = tokens_dark();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = fixture(dir.path(), 640, 480);
+    let state = requested(
+        Arc::clone(&tokens),
+        Selection::Image(path),
+        WallpaperMode::Fill,
+    );
+    let pixels = draw(&state, "layout");
+    let regions = cards(&pixels, &tokens);
+
+    assert!(regions.len() >= 2, "a status card and a footer strip");
+    for region in &regions {
+        assert!(
+            region.min_x >= inset(&tokens) && region.min_x <= inset(&tokens) + outline(&tokens),
+            "a card starts at the window inset: {region:?}"
+        );
+        assert!(
+            region.max_x <= SIZE.width as u32 - inset(&tokens),
+            "a card ends inside the window: {region:?}"
+        );
+        assert!(
+            region.max_y <= SIZE.height as u32 - inset(&tokens),
+            "a card ends inside the window: {region:?}"
+        );
+    }
+    assert_eq!(
+        support::pixel(&pixels, SIZE, 4, 4),
+        Pixel {
+            red: IMAGE[0],
+            green: IMAGE[1],
+            blue: IMAGE[2],
+            alpha: 255,
+        },
+        "the window inset is the wallpaper, not a card painted over it"
     );
 }
 
@@ -401,8 +556,96 @@ fn every_scenario_is_projected_from_a_state_the_application_can_reach() {
 
         assert!(!model.title.is_empty(), "{name}");
         assert!(model.footer.is_some(), "{name}");
+        assert!(!model.card.heading.is_empty(), "{name}");
+        assert!(!model.card.scaling.is_empty(), "{name}");
+        assert!(model.card.phase.is_some(), "{name}");
         if name == "loaded" {
             assert!(model.wallpaper.is_some(), "{name}");
         }
     }
+}
+
+#[test]
+fn the_status_card_and_the_footer_strip_share_the_left_edge() {
+    // UI spec §3, §4: the same class of element sits in the same place with the
+    // same inset — the card column and the strip line up on one edge.
+    let tokens = tokens_dark();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = fixture(dir.path(), 640, 480);
+    let state = requested(
+        Arc::clone(&tokens),
+        Selection::Image(path),
+        WallpaperMode::Fill,
+    );
+    let pixels = draw(&state, "edges");
+    let regions = cards(&pixels, &tokens);
+
+    let card = regions.first().expect("a status card");
+    let strip = regions.last().expect("a footer strip");
+
+    assert_eq!(card.min_x, strip.min_x, "both start on the same edge");
+    assert!(
+        strip.width() > card.width(),
+        "the strip takes the width it is given, the card is bounded"
+    );
+    let gap = SIZE.width as u32 - (strip.max_x + 1);
+    assert!(
+        gap >= inset(&tokens) && gap <= inset(&tokens) + outline(&tokens),
+        "the strip reaches the window inset: {strip:?} leaves {gap}"
+    );
+    assert!(
+        card.max_y < strip.min_y,
+        "the card and the strip do not overlap: {card:?} {strip:?}"
+    );
+}
+
+#[test]
+fn a_two_hundred_percent_font_scale_grows_the_cards_instead_of_clipping_them() {
+    // Acceptance Q02 as a pixel assertion: at 200% the card is taller than at
+    // 100%, still starts at the window inset, still stays inside the window, and
+    // does not overlap the strip above which it would otherwise run.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = fixture(dir.path(), 640, 480);
+    let dark = tokens_dark();
+    let normal = requested(
+        Arc::clone(&dark),
+        Selection::Image(path.clone()),
+        WallpaperMode::Fill,
+    );
+    let large = requested(
+        tokens_at_scale(Appearance::Dark, 2.0),
+        Selection::Image(path),
+        WallpaperMode::Fill,
+    );
+
+    let normal_pixels = draw(&normal, "scale-100");
+    let large_pixels = draw(&large, "scale-200");
+
+    let card_100 = top_card(&normal_pixels, &dark);
+    let regions_200 = cards(&large_pixels, &dark);
+    let card_200 = *regions_200.first().expect("a status card at 200%");
+    let strip_200 = *regions_200.last().expect("a footer strip at 200%");
+
+    assert!(
+        card_200.height() > card_100.height(),
+        "the card grows with the font: {} then {}",
+        card_100.height(),
+        card_200.height()
+    );
+    assert_eq!(
+        card_200.min_x, card_100.min_x,
+        "and stays where it was horizontally"
+    );
+    assert!(
+        regions_200.len() >= 2,
+        "the card and the strip are still two bands, so they do not overlap"
+    );
+    assert!(
+        card_200.max_y < strip_200.min_y,
+        "no overlap at 200%: {card_200:?} {strip_200:?}"
+    );
+    assert!(
+        strip_200.max_y <= SIZE.height as u32 - inset(&dark),
+        "and nothing runs off the bottom: {strip_200:?}"
+    );
 }

@@ -11,26 +11,50 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# The panel's event loop, its signal sources and its clock (root AGENTS.md §4).
+calloop.workspace = true
+zbus.workspace = true
 anyhow.workspace = true
 # Civil time in the session's timezone for the panel clock (ADR 0018).
 chrono.workspace = true
 # ADR 0003 fixes Iced for every shell component; the workspace entry selects
-# the tiny-skia renderer, which is what the headless render tests draw through.
+# the tiny-skia renderer, which is what both the headless render tests and the
+# panel's own `src/layer.rs` draw through.
 iced.workspace = true
+# The panel's own renderer (ADR 0018, ADR 0031). A layer surface is not a window,
+# so `iced`'s Wayland support — which creates `xdg-shell` surfaces — cannot draw
+# on one; what it does expose is the pair `src/layer.rs` uses: `UserInterface`
+# lays the widget tree out and routes events to it, and the tiny-skia renderer
+# turns it into the pixels `wl_shm` wants. `iced` re-exports neither, which is
+# why the three are named directly, and they are *dependencies* rather than
+# dev-dependencies because the binary draws with them.
+iced_core.workspace = true
+iced_runtime.workspace = true
+iced_tiny_skia.workspace = true
 # L1: the shared Fluent loader and the design tokens. L3 components take no
 # same-layer dependency and no dependency on the compositor (ADR 0013, 0018).
 inox-common.workspace = true
 inox-config.workspace = true
+# A legal downward L3 -> L2 edge: the protocol bindings are owned by L2 and
+# `inox-protocols` is the single source of truth for them (ADR 0006), so the
+# panel does not name `wayland-protocols` or `wayland-protocols-wlr` itself.
+inox-protocols.workspace = true
+# Reading the compositor's events, creating the layer surface, taking pointer
+# input and asking for frosted glass.
+wayland-client.workspace = true
+# A frame is a shared-memory buffer; `memfd_create` is the safe way to get an
+# anonymous one.
+rustix = { workspace = true, features = ["fs"] }
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-# The headless render harness: `iced` re-exports neither `UserInterface` nor the
-# tiny-skia renderer, so the three crates are named directly (ADR 0018).
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
+# `tests/protocol.rs` plays the compositor side of `wlr-layer-shell-unstable-v1`,
+# `wl_shm`, `wl_seat` and `inox-glass-v1` on a real socket pair and drives the
+# built binary as a subprocess, the pattern `inox-lock/tests/protocol.rs`
+# established.
+wayland-server.workspace = true
 # `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02).
 image.workspace = true
 proptest.workspace = true

@@ -38,6 +38,14 @@ use inox_notifications::app::{self, Inbox, State};
 use inox_notifications::view::StackGeometry;
 use inox_notifications::{bus, i18n, lock_state, theme};
 
+mod reload;
+
+#[derive(Debug, Clone)]
+enum RuntimeMessage {
+    App(app::Message),
+    Reload(Box<reload::Request>),
+}
+
 fn main() -> Result<()> {
     initialise_logging()?;
 
@@ -56,6 +64,7 @@ fn main() -> Result<()> {
     let paths = ConfigPaths::discover().context("locating the Inox configuration directory")?;
     let config =
         InoxConfig::load(&paths, Appearance::System).context("loading the Inox configuration")?;
+    let reload_host = reload::Host::start(paths.clone())?;
 
     let localizer =
         Rc::new(i18n::load(&config.locale).context("loading the notification message catalogs")?);
@@ -106,19 +115,29 @@ fn main() -> Result<()> {
     let boot = move || {
         (
             State::new(notifications.clone(), tokens.clone(), Rc::clone(&localizer)),
-            iced::Task::none(),
+            reload_host.task(),
         )
     };
 
     iced::application(
         boot,
-        move |state: &mut State, message: app::Message| runtime.update(state, message),
-        app::view,
+        move |state: &mut State, message: RuntimeMessage| match message {
+            RuntimeMessage::App(message) => runtime.update(state, message).map(RuntimeMessage::App),
+            other => {
+                let task = update_runtime(state, other);
+                for outgoing in state.take_outgoing() {
+                    runtime.service.deliver(outgoing);
+                }
+                task
+            }
+        },
+        view_runtime,
     )
     .title(app::title)
     .theme(|state: &State| theme::iced_theme(state.tokens()))
     .subscription(move |state: &State| {
         Subscription::batch([app::subscription(state), inbox.subscription()])
+            .map(RuntimeMessage::App)
     })
     .window_size((width, height))
     .run()
@@ -225,6 +244,54 @@ impl DisplayEnv {
 
         candidate.exists().then_some(candidate)
     }
+}
+
+fn update_runtime(state: &mut State, message: RuntimeMessage) -> iced::Task<RuntimeMessage> {
+    match message {
+        RuntimeMessage::App(message) => app::update(state, message).map(RuntimeMessage::App),
+        RuntimeMessage::Reload(request) => {
+            let result = (|| {
+                if !request.is_current() {
+                    return Err("configuration reload expired".to_owned());
+                }
+                if state.config().display.position != request.config.notifications.display.position
+                {
+                    return Err(
+                        "display.position: live desktop placement requires a layer-shell host"
+                            .into(),
+                    );
+                }
+                let localizer =
+                    Rc::new(i18n::load(&request.config.locale).map_err(|e| e.to_string())?);
+                state.apply_configuration(
+                    request.config.notifications.clone(),
+                    request.config.theme.clone(),
+                    localizer,
+                );
+                Ok(())
+            })();
+            let applied = result.is_ok();
+            request.finish(result);
+            if applied {
+                let size = {
+                    let (width, height) =
+                        StackGeometry::new(state.tokens(), &state.config().display)
+                            .window_size(&state.config().display);
+                    iced::Size::new(width, height)
+                };
+                iced::window::oldest().then(move |id| match id {
+                    Some(id) => iced::window::resize(id, size),
+                    None => iced::Task::none(),
+                })
+            } else {
+                iced::Task::none()
+            }
+        }
+    }
+}
+
+fn view_runtime(state: &State) -> iced::Element<'_, RuntimeMessage> {
+    app::view(state).map(RuntimeMessage::App)
 }
 
 #[cfg(test)]

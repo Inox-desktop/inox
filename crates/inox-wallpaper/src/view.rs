@@ -6,6 +6,25 @@
 //! [`crate::theme`]. What is left is the one thing a view is for — building the
 //! tree.
 //!
+//! # The shape of the window
+//!
+//! One column at the top-left holds the status card, and the problem card under
+//! it when there is one; the windowed-preview notice is a strip at the foot. Both
+//! are inset by the same `xl` window padding, so the cards and the strip line up
+//! on one edge, and both are drawn with the same card style, radius and inset —
+//! a second class of element in the same place with different geometry is what
+//! makes a surface look assembled rather than designed (`docs/quality/ui-guidelines.md`
+//! §3, §4).
+//!
+//! # Using the tokens without growing a second design system
+//!
+//! Every literal a widget would otherwise take — a size, a colour, a radius, a
+//! padding, an interactive height — is asked of [`crate::theme`], which asks the
+//! token set. The one deliberate exception is geometry that the wallpaper's own
+//! placement decided ([`crate::scaling`]): a copy of the image is as large as its
+//! rectangle says, because that rectangle *is* the answer the component exists to
+//! compute.
+//!
 //! # How the image is positioned without a custom widget
 //!
 //! A copy of the image is drawn one rectangle at a time ([`crate::scaling`]),
@@ -17,15 +36,18 @@
 //! image rather than crop it, and the surface clips whatever runs over its edge.
 
 use iced::alignment::{Horizontal, Vertical};
+use iced::widget::text::Wrapping;
 use iced::widget::{Column, Row, Space, Stack, button, container, image, text};
-use iced::{ContentFit, Element, Length, Padding};
+use iced::{Color, ContentFit, Element, Length, Padding};
 use inox_config::Theme;
 use std::sync::Arc;
 
 use crate::app::{Message, State};
 use crate::scaling::Rect;
 use crate::theme;
-use crate::view_model::{self, Action, Notice, Wallpaper, WallpaperViewModel};
+use crate::view_model::{
+    self, Action, Notice, NoticeKind, Phase, PhaseKind, StatusCard, Wallpaper, WallpaperViewModel,
+};
 
 /// The title of the preview window, in the session's language.
 #[must_use]
@@ -57,27 +79,18 @@ pub fn view<'a>(state: &'a State) -> Element<'a, Message> {
 pub fn render(model: &WallpaperViewModel, tokens: Arc<Theme>) -> Element<'static, Message> {
     let mut layers: Vec<Element<'static, Message>> = vec![surface(model, &tokens)];
 
-    if let Some(notice) = &model.notice {
-        layers.push(overlay(
-            panel(notice, &tokens),
-            Arc::clone(&tokens),
-            Horizontal::Left,
-            Vertical::Top,
-        ));
-    }
-    if let Some(status) = &model.status {
-        layers.push(overlay(
-            caption(status, &tokens),
-            Arc::clone(&tokens),
-            Horizontal::Right,
-            Vertical::Top,
-        ));
-    }
+    layers.push(overlay(
+        cards(model, &tokens),
+        Arc::clone(&tokens),
+        Horizontal::Left,
+        Vertical::Top,
+    ));
+
     if let Some(footer) = &model.footer {
         layers.push(overlay(
-            caption(footer, &tokens),
+            strip(footer, &tokens),
             Arc::clone(&tokens),
-            Horizontal::Right,
+            Horizontal::Left,
             Vertical::Bottom,
         ));
     }
@@ -101,6 +114,191 @@ fn surface(model: &WallpaperViewModel, tokens: &Arc<Theme>) -> Element<'static, 
                 .style(move |_theme| theme::background(&tokens))
                 .into()
         }
+    }
+}
+
+/// The column of cards: what the output is drawing, then whatever has to be read.
+fn cards(model: &WallpaperViewModel, tokens: &Arc<Theme>) -> Element<'static, Message> {
+    let mut column = Column::new()
+        .spacing(theme::section_gap(tokens))
+        .push(status_card(&model.card, tokens));
+
+    if let Some(notice) = &model.notice {
+        column = column.push(notice_card(notice, tokens));
+    }
+
+    column.into()
+}
+
+/// The card that describes the previewed output.
+///
+/// The order is fixed by the view model — output, what is on it, where that came
+/// from, how it was fitted, the phase, and what would change an empty state — so
+/// this function is a transcription of that order and nothing else.
+fn status_card(card: &StatusCard, tokens: &Arc<Theme>) -> Element<'static, Message> {
+    let mut content = Column::new().spacing(theme::gap(tokens)).push(line(
+        &card.heading,
+        theme::title_size(tokens),
+        theme::bold(tokens),
+        theme::text(tokens),
+    ));
+
+    if let Some(summary) = &card.summary {
+        content = content.push(line(
+            summary,
+            theme::body_size(tokens),
+            theme::font(tokens),
+            theme::text(tokens),
+        ));
+    }
+    if let Some(source) = &card.source {
+        content = content.push(caption(source, tokens));
+    }
+
+    content = content.push(caption(&card.scaling, tokens));
+
+    if let Some(phase) = &card.phase {
+        content = content.push(line(
+            &phase.text,
+            theme::caption_size(tokens),
+            theme::font(tokens),
+            phase_color(phase, tokens),
+        ));
+    }
+    if let Some(hint) = &card.hint {
+        content = content.push(caption(hint, tokens));
+    }
+
+    shell(content, tokens)
+}
+
+/// The card a notice is drawn in: what happened, why, and the control that
+/// answers it.
+fn notice_card(notice: &Notice, tokens: &Arc<Theme>) -> Element<'static, Message> {
+    let heading_color = match notice.kind {
+        NoticeKind::Problem => theme::warning(tokens),
+        NoticeKind::Loading => theme::text(tokens),
+    };
+
+    let mut story = Column::new().spacing(theme::gap(tokens)).push(line(
+        &notice.heading,
+        theme::heading_size(tokens),
+        theme::bold(tokens),
+        heading_color,
+    ));
+
+    if let Some(subject) = &notice.subject {
+        story = story.push(caption(subject, tokens));
+    }
+    if let Some(reason) = &notice.reason {
+        story = story.push(line(
+            reason,
+            theme::body_size(tokens),
+            theme::font(tokens),
+            theme::text(tokens),
+        ));
+    }
+    if let Some(remedy) = &notice.remedy {
+        story = story.push(caption(remedy, tokens));
+    }
+
+    let mut controls = Column::new()
+        .spacing(theme::gap(tokens))
+        .push(control(&notice.action, tokens));
+
+    if let Some(reason) = &notice.action.reason {
+        controls = controls.push(caption(reason, tokens));
+    }
+
+    shell(
+        Column::new()
+            .spacing(theme::section_gap(tokens))
+            .push(story)
+            .push(controls),
+        tokens,
+    )
+}
+
+/// The one control a notice offers, and why it cannot be pressed when it cannot.
+///
+/// It is the surface's primary action, so it is drawn with the accent fill the
+/// UI spec reserves for the one action a screen is for (§5); the reason a
+/// disabled control cannot be pressed is the caption under it, never the colour
+/// alone.
+fn control(action: &Action, tokens: &Arc<Theme>) -> Element<'static, Message> {
+    let themed = Arc::clone(tokens);
+
+    button(
+        text(action.label.clone())
+            .size(theme::body_size(tokens))
+            .font(theme::font(tokens)),
+    )
+    .height(Length::Fixed(theme::control_height(tokens)))
+    .padding(theme::control_padding(tokens))
+    .style(move |_theme, status| theme::button_style(&themed, theme::ButtonRole::Primary, status))
+    .on_press_maybe(action.enabled.then_some(Message::Reload))
+    .into()
+}
+
+/// The strip at the foot of the preview: what kind of surface this is.
+///
+/// It takes the width it is given because it is an explanatory sentence rather
+/// than a field (UI spec §4), and a caption colour because it is context the user
+/// reads once, not a value they act on (§7).
+fn strip(value: &str, tokens: &Arc<Theme>) -> Element<'static, Message> {
+    let themed = Arc::clone(tokens);
+
+    container(caption(value, tokens))
+        .width(Length::Fill)
+        .padding(theme::strip_padding(tokens))
+        .style(move |_theme| theme::card(&themed))
+        .into()
+}
+
+/// A card: `surface`, a hairline outline, an `md` radius, `lg` padding, and the
+/// width the UI spec bounds a path-bearing body to.
+fn shell(
+    content: impl Into<Element<'static, Message>>,
+    tokens: &Arc<Theme>,
+) -> Element<'static, Message> {
+    let themed = Arc::clone(tokens);
+
+    container(content)
+        .width(Length::Fixed(theme::card_width(tokens)))
+        .padding(theme::card_padding(tokens))
+        .style(move |_theme| theme::card(&themed))
+        .into()
+}
+
+/// Ordinary text.
+fn line(value: &str, size: f32, font: iced::Font, color: Color) -> iced::widget::Text<'static> {
+    text(value.to_owned())
+        .size(size)
+        .font(font)
+        .color(color)
+        .wrapping(Wrapping::WordOrGlyph)
+}
+
+/// Secondary text: a path, a mode, a state sentence, an explanation.
+fn caption(value: &str, tokens: &Theme) -> Element<'static, Message> {
+    line(
+        value,
+        theme::caption_size(tokens),
+        theme::font(tokens),
+        theme::muted(tokens),
+    )
+    .into()
+}
+
+/// The colour of a phase sentence.
+///
+/// The sentence is the state; the colour only agrees with it (UI spec §6: colour
+/// is never the only thing that carries the state).
+fn phase_color(phase: &Phase, tokens: &Theme) -> Color {
+    match phase.kind {
+        PhaseKind::Loading | PhaseKind::Idle => theme::text(tokens),
+        PhaseKind::Ready => theme::success(tokens),
+        PhaseKind::Degraded => theme::warning(tokens),
     }
 }
 
@@ -169,71 +367,8 @@ fn tiled(wallpaper: &Wallpaper) -> Element<'static, Message> {
     rows.into()
 }
 
-/// The panel a notice is drawn in.
-fn panel(notice: &Notice, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let mut content = Column::new().spacing(theme::gap(tokens)).push(
-        text(notice.heading.clone())
-            .size(theme::heading_size(tokens))
-            .font(theme::font(tokens))
-            .color(theme::warning(tokens)),
-    );
-
-    if let Some(subject) = &notice.subject {
-        content = content.push(caption(subject, tokens));
-    }
-    if let Some(reason) = &notice.reason {
-        content = content.push(
-            text(reason.clone())
-                .size(theme::body_size(tokens))
-                .font(theme::font(tokens))
-                .color(theme::text(tokens)),
-        );
-    }
-    if let Some(remedy) = &notice.remedy {
-        content = content.push(caption(remedy, tokens));
-    }
-
-    content = content.push(control(&notice.action, tokens));
-
-    let themed = Arc::clone(tokens);
-
-    container(content)
-        .padding(theme::padding(tokens))
-        .style(move |_theme| theme::panel(&themed))
-        .into()
-}
-
-/// The one control a notice offers, and why it cannot be pressed when it cannot.
-fn control(action: &Action, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let themed = Arc::clone(tokens);
-    let mut content = Column::new().spacing(theme::gap(tokens)).push(
-        button(
-            text(action.label.clone())
-                .size(theme::body_size(tokens))
-                .font(theme::font(tokens)),
-        )
-        .padding(theme::padding(tokens))
-        .style(move |_theme, status| theme::button_style(&themed, status))
-        .on_press_maybe(action.enabled.then_some(Message::Reload)),
-    );
-
-    if let Some(reason) = &action.reason {
-        content = content.push(caption(reason, tokens));
-    }
-
-    content.into()
-}
-
-/// Secondary text, in the theme's muted colour.
-fn caption(value: &str, tokens: &Theme) -> Element<'static, Message> {
-    text(value.to_owned())
-        .size(theme::caption_size(tokens))
-        .font(theme::font(tokens))
-        .color(theme::muted(tokens))
-        .into()
-}
-
-/// Places a layer in one corner of the surface, inset by the theme's margin.
+/// Places a layer in one corner of the surface, inset by the window padding the
+/// tokens ask for.
 fn overlay(
     content: Element<'static, Message>,
     tokens: Arc<Theme>,
@@ -243,7 +378,7 @@ fn overlay(
     container(content)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(theme::margin(&tokens))
+        .padding(theme::window_padding(&tokens))
         .align_x(horizontal)
         .align_y(vertical)
         .into()

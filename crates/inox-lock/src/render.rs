@@ -67,7 +67,11 @@ pub const SCALE_FACTOR: f32 = 1.0;
 /// where "draw it anyway" would allocate whatever two integers asked for.
 pub const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 
-/// The text size the renderer starts from, matching [`crate::theme::text_size`].
+/// The text size the renderer starts from, before any widget asks for its own.
+///
+/// Every text this crate draws takes its size from [`crate::theme`]'s type scale;
+/// this is only what iced falls back to for a widget that names none, which the
+/// lock screen's tree does not contain.
 fn default_text_size() -> Pixels {
     iced::Settings::default().default_text_size
 }

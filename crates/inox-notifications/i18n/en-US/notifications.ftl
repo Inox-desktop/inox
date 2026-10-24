@@ -33,6 +33,22 @@ notifications-action-disabled-policy = Actions are turned off in notifications.t
 # More notifications are held than the stack can show (D05, acceptance D06).
 notifications-overflow = { $count } more waiting
 
+# How urgent a notification says it is, when it is not the ordinary case.
+#
+# ui-guidelines §5 and §6: urgency is one colour *and* one sentence. The sentence
+# is what a reader who cannot tell the two colours apart reads, and it is what
+# makes a critical notification legible rather than merely red.
+notifications-urgency-low = Low priority
+notifications-urgency-critical = Critical
+
+# How long ago a notification arrived (ui-guidelines §3: a caption on the card's
+# status line). Deliberately coarse: a popup says "just now" rather than counting
+# seconds, so that two frames drawn a moment apart say the same thing.
+notifications-age-just-now = Just now
+notifications-age-minutes = { $count } min ago
+notifications-age-hours = { $count } h ago
+notifications-age-days = { $count } d ago
+
 # A body image this daemon does not decode; its alt text is shown instead, and
 # this is what is shown when the image carries no alt text at all.
 notifications-image-placeholder = Image

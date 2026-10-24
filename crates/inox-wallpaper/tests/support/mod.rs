@@ -187,6 +187,118 @@ pub fn contains(pixels: &[u8], colour: Pixel) -> bool {
     })
 }
 
+/// The rectangle a run of rows of one colour covers, in pixels.
+///
+/// Rows and columns are absolute, counted from the top-left of the buffer, which
+/// is what makes a layout assertion possible without knowing anything about the
+/// fonts on the machine: a rectangle's edges are geometry, its glyphs are not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    /// Leftmost column that holds the colour.
+    pub min_x: u32,
+    /// Topmost row that holds the colour.
+    pub min_y: u32,
+    /// Rightmost column that holds the colour.
+    pub max_x: u32,
+    /// Bottommost row that holds the colour.
+    pub max_y: u32,
+}
+
+impl Bounds {
+    /// The width of the rectangle, in pixels.
+    #[must_use]
+    pub const fn width(self) -> u32 {
+        self.max_x - self.min_x + 1
+    }
+
+    /// The height of the rectangle, in pixels.
+    #[must_use]
+    pub const fn height(self) -> u32 {
+        self.max_y - self.min_y + 1
+    }
+}
+
+/// Whether the pixel at (`x`, `y`) is exactly `colour`.
+fn is_colour(pixels: &[u8], width: usize, x: u32, y: u32, colour: Pixel) -> bool {
+    let index = (y as usize * width + x as usize) * 4;
+
+    pixels[index] == colour.red
+        && pixels[index + 1] == colour.green
+        && pixels[index + 2] == colour.blue
+        && pixels[index + 3] == colour.alpha
+}
+
+/// The smallest rectangle covering every pixel of `colour`, if there is one.
+#[must_use]
+pub fn bounds(pixels: &[u8], size: Size<f32>, colour: Pixel) -> Option<Bounds> {
+    let width = size.width as u32;
+    let height = size.height as u32;
+    let mut found: Option<Bounds> = None;
+
+    for y in 0..height {
+        for x in 0..width {
+            if !is_colour(pixels, width as usize, x, y, colour) {
+                continue;
+            }
+
+            found = Some(match found {
+                None => Bounds {
+                    min_x: x,
+                    min_y: y,
+                    max_x: x,
+                    max_y: y,
+                },
+                Some(bounds) => Bounds {
+                    min_x: bounds.min_x.min(x),
+                    min_y: bounds.min_y.min(y),
+                    max_x: bounds.max_x.max(x),
+                    max_y: bounds.max_y.max(y),
+                },
+            });
+        }
+    }
+
+    found
+}
+
+/// The horizontal bands of `colour`: one rectangle per run of adjacent rows.
+///
+/// A surface that draws two cards, one above the other, produces two bands — and
+/// two cards that overlap produce one, which is how "nothing overlaps" is
+/// asserted without measuring text.
+#[must_use]
+pub fn regions(pixels: &[u8], size: Size<f32>, colour: Pixel) -> Vec<Bounds> {
+    let width = size.width as u32;
+    let height = size.height as u32;
+    let mut regions: Vec<Bounds> = Vec::new();
+
+    for y in 0..height {
+        let columns: Vec<u32> = (0..width)
+            .filter(|x| is_colour(pixels, width as usize, *x, y, colour))
+            .collect();
+
+        let (Some(min_x), Some(max_x)) = (columns.first(), columns.last()) else {
+            continue;
+        };
+
+        match regions.last_mut() {
+            Some(last) if last.max_y + 1 == y => {
+                last.min_x = last.min_x.min(*min_x);
+                last.max_x = last.max_x.max(*max_x);
+                last.max_y = y;
+            }
+            _ => regions.push(Bounds {
+                min_x: *min_x,
+                min_y: y,
+                max_x: *max_x,
+                max_y: y,
+            }),
+        }
+    }
+
+    regions
+}
+
 /// Writes a scenario's pixels as a PNG when `INOX_SCREENSHOT_DIR` is set.
 ///
 /// Acceptance Q02 wants the screenshots kept as CI artifacts; the directory is

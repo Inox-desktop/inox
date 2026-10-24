@@ -1,4 +1,8 @@
-/target
+# Build output and test artifacts. `target/` (not `/target`) also covers a build
+# or a screenshot run started from inside a crate directory, which is how
+# `cargo test -p <crate>` with a relative `INOX_SCREENSHOT_DIR` used to leave
+# `crates/<crate>/target/` behind.
+target/
 
 # mdBook output for the documentation site (`docs/book/book/`). The site used to
 # carry its own .gitignore for this; ADR 0016 removed per-component ignore files,

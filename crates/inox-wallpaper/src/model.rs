@@ -108,11 +108,30 @@ impl fmt::Display for Size {
 /// component: "nothing was selected, so the theme background is correct" and
 /// "something was selected and is missing, so the user must be told" are not
 /// the same state and are not rendered the same way.
+///
+/// An *absent* `wallpaper.image` is not "nothing selected" any more: a session
+/// that names no image shows the wallpaper Inox ships ([`inox_config::DEFAULT_ID`]),
+/// which is [`Selection::Bundled`]. The theme background is now reached by the
+/// explicit [`inox_config::BACKGROUND_ID`] value, so the two remain distinct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
     /// An image the user named, resolved against the configuration directory.
     Image(PathBuf),
-    /// Nothing was named: the output shows the theme background.
+    /// A wallpaper Inox ships, named by its catalogue identifier and resolved to
+    /// a path by [`crate::source`] against the wallpaper search directories.
+    ///
+    /// `explicit` is whether the configuration named this wallpaper, or whether
+    /// it is the default the session fell back to because nothing was
+    /// configured. The difference is the one ADR 0014 draws: an explicitly
+    /// chosen wallpaper that is not installed is *reported*, while the default
+    /// the user never asked for merely degrades to the theme background.
+    Bundled {
+        /// The catalogue entry.
+        wallpaper: &'static inox_config::BundledWallpaper,
+        /// Whether the configuration named it rather than defaulting to it.
+        explicit: bool,
+    },
+    /// No image at all: the theme background.
     ThemeBackground,
 }
 
@@ -120,7 +139,7 @@ impl Selection {
     /// Resolves the configuration for one output.
     ///
     /// The order is exact output → [`WILDCARD`] → [`WallpaperConfig::image`] →
-    /// the theme background, and it is total: every output of every
+    /// the bundled default wallpaper, and it is total: every output of every
     /// configuration gets an answer, and two runs of the same configuration
     /// give every output the same one.
     ///
@@ -131,6 +150,10 @@ impl Selection {
     /// `[components]` paths ADR 0009 decision 11 constrains, a wallpaper path
     /// is not a file the session will *write*, and refusing `../wallpaper.png`
     /// would break configurations that work with every other desktop.
+    ///
+    /// A configured value that is neither [`inox_config::BACKGROUND_ID`] nor a
+    /// bundled identifier is a path, exactly as before, so a configuration
+    /// written against the previous versions keeps working.
     #[must_use]
     pub fn from_config(config: &WallpaperConfig, output: &OutputName, config_dir: &Path) -> Self {
         let named = config
@@ -140,18 +163,93 @@ impl Selection {
             .or(config.image.as_ref());
 
         match named {
-            Some(path) => Self::Image(absolute(config_dir, path)),
+            Some(value) => Self::from_value(config_dir, value),
+            None => Self::bundled_default(),
+        }
+    }
+
+    /// The selection one configured value names.
+    fn from_value(config_dir: &Path, value: &Path) -> Self {
+        // An empty value names nothing, which is the same request as an absent
+        // key: the default wallpaper. It is deliberately *not* the theme
+        // background — that has its own explicit spelling
+        // ([`inox_config::BACKGROUND_ID`]), and the settings window's "default"
+        // option stores exactly this (no key at all).
+        if value.as_os_str().is_empty() {
+            return Self::bundled_default();
+        }
+
+        if let Some(text) = value.to_str() {
+            if text == inox_config::BACKGROUND_ID {
+                return Self::ThemeBackground;
+            }
+            if let Some(wallpaper) = inox_config::wallpapers::bundled(text) {
+                return Self::Bundled {
+                    wallpaper,
+                    explicit: true,
+                };
+            }
+        }
+
+        Self::Image(absolute(config_dir, value))
+    }
+
+    /// The wallpaper a session shows when the configuration names none.
+    fn bundled_default() -> Self {
+        match inox_config::wallpapers::default_bundled() {
+            Some(wallpaper) => Self::Bundled {
+                wallpaper,
+                explicit: false,
+            },
+            // Only if the catalogue is empty, which it is not; degrading to the
+            // theme background is still better than failing to draw anything.
             None => Self::ThemeBackground,
         }
     }
 
-    /// The image this selection names, if it names one.
+    /// The image this selection names, if it names a file.
+    ///
+    /// A bundled wallpaper has no path until [`crate::source`] resolves it
+    /// against the search directories, so this returns `None` for it; ask
+    /// [`Selection::wants_image`] whether anything is to be drawn.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
             Self::Image(path) => Some(path),
-            Self::ThemeBackground => None,
+            Self::Bundled { .. } | Self::ThemeBackground => None,
         }
+    }
+
+    /// The bundled wallpaper this selection names, if it names one.
+    #[must_use]
+    pub fn bundled(&self) -> Option<&'static inox_config::BundledWallpaper> {
+        match self {
+            Self::Bundled { wallpaper, .. } => Some(wallpaper),
+            Self::Image(_) | Self::ThemeBackground => None,
+        }
+    }
+
+    /// Whether the configuration named this selection rather than the session
+    /// defaulting to it.
+    ///
+    /// Always true for a path and for the explicit background: those only ever
+    /// come from a value in the configuration. It is false only for the bundled
+    /// default.
+    #[must_use]
+    pub const fn is_explicit(&self) -> bool {
+        match self {
+            Self::Bundled { explicit, .. } => *explicit,
+            Self::Image(_) | Self::ThemeBackground => true,
+        }
+    }
+
+    /// Whether drawing this selection needs an image to be loaded.
+    ///
+    /// The theme background is the only selection that draws without reading
+    /// anything; a bundled wallpaper is as much an image to load as a path is.
+    #[must_use]
+    pub const fn wants_image(&self) -> bool {
+        !matches!(self, Self::ThemeBackground)
     }
 }
 
@@ -304,12 +402,91 @@ mod tests {
     }
 
     #[test]
-    fn an_output_with_no_entry_anywhere_draws_the_theme_background() {
+    fn an_output_with_no_entry_anywhere_draws_the_bundled_default() {
+        let default = inox_config::wallpapers::default_bundled().expect("a default is shipped");
+        let expected = Selection::Bundled {
+            wallpaper: default,
+            explicit: false,
+        };
+
+        assert_eq!(selection(&config(None, &[]), "HDMI-A-1"), expected);
+        assert_eq!(selection(&config(None, &[]), "HDMI-A-1").path(), None);
         assert_eq!(
-            selection(&config(None, &[]), "HDMI-A-1"),
+            selection(&config(None, &[]), "HDMI-A-1").bundled(),
+            Some(default)
+        );
+        assert!(!selection(&config(None, &[]), "HDMI-A-1").is_explicit());
+        assert!(selection(&config(None, &[]), "HDMI-A-1").wants_image());
+    }
+
+    #[test]
+    fn the_background_id_asks_for_the_theme_background_explicitly() {
+        let background = inox_config::BACKGROUND_ID;
+
+        assert_eq!(
+            selection(&config(Some(background), &[]), "HDMI-A-1"),
             Selection::ThemeBackground
         );
-        assert_eq!(selection(&config(None, &[]), "HDMI-A-1").path(), None);
+        assert!(!selection(&config(Some(background), &[]), "HDMI-A-1").wants_image());
+        assert!(selection(&config(Some(background), &[]), "HDMI-A-1").is_explicit());
+
+        // The explicit background wins at every level of the lookup.
+        let per_output = config(Some("wall.png"), &[("*", background)]);
+        assert_eq!(selection(&per_output, "DP-2"), Selection::ThemeBackground);
+    }
+
+    #[test]
+    fn an_empty_value_names_nothing_and_so_draws_the_bundled_default() {
+        // The settings window's "default" option stores no key at all, but a
+        // hand-written `image = ""` has to mean the same thing rather than the
+        // theme background: "not the background" has one spelling, and it is
+        // the background id.
+        let default = inox_config::wallpapers::default_bundled().expect("a default is shipped");
+
+        let empty = selection(&config(Some(""), &[]), "HDMI-A-1");
+
+        assert_eq!(
+            empty,
+            Selection::Bundled {
+                wallpaper: default,
+                explicit: false,
+            }
+        );
+        assert!(empty.wants_image());
+    }
+
+    #[test]
+    fn a_bundled_identifier_names_the_shipped_wallpaper_explicitly() {
+        let nebula = inox_config::wallpapers::bundled("nebula").expect("shipped");
+        let expected = Selection::Bundled {
+            wallpaper: nebula,
+            explicit: true,
+        };
+
+        assert_eq!(
+            selection(&config(Some("nebula"), &[]), "HDMI-A-1"),
+            expected
+        );
+        assert_eq!(
+            selection(&config(Some("nebula"), &[]), "HDMI-A-1").bundled(),
+            Some(nebula)
+        );
+        assert!(selection(&config(Some("nebula"), &[]), "HDMI-A-1").is_explicit());
+    }
+
+    #[test]
+    fn a_value_that_is_not_an_identifier_is_still_a_path() {
+        // The one shape that changes meaning: a relative file that happens to
+        // spell an identifier can no longer be chosen by bare name. Every other
+        // relative and absolute path keeps working.
+        assert_eq!(
+            selection(&config(Some("my-own.jpg"), &[]), "HDMI-A-1"),
+            Selection::Image(PathBuf::from(DIR).join("my-own.jpg"))
+        );
+        assert_eq!(
+            selection(&config(Some("/walls/nebula"), &[]), "HDMI-A-1"),
+            Selection::Image(PathBuf::from("/walls/nebula"))
+        );
     }
 
     #[test]

@@ -144,29 +144,25 @@ impl Placement {
     /// name, or `None` when the launcher should follow the compositor's focused
     /// output.
     ///
-    /// The height covers the search field, `max_results` rows and the hint
-    /// line, and is clamped to the output so that a small screen shows fewer
-    /// rows rather than a surface taller than the screen.
+    /// The height covers the three groups the view draws — the search field, the
+    /// result card with `max_results` rows and the status bar — and is clamped to
+    /// the output, so that a small screen shows fewer rows rather than a surface
+    /// taller than the screen.
     pub fn overlay(
         config: &LauncherConfig,
         theme: &Theme,
         output: LogicalSize,
         output_name: Option<&str>,
     ) -> Self {
+        let metrics = crate::theme::Metrics::from_tokens(theme);
         let gutter = u32::from(theme.spacing.xl);
-        let gap = u32::from(theme.spacing.sm);
         let icon = u32::from(config.icon_size);
 
         let width = (output.width * WIDTH_SHARE_NUMERATOR / WIDTH_SHARE_DENOMINATOR)
             .max(gutter * 2 + icon * MINIMUM_ICON_COLUMNS);
         let width = width.min(output.width.max(1));
 
-        // One row is as tall as the icon the row shows; the search field is one
-        // row, the hint line half of one.
-        let row = icon.max(u32::from(theme.spacing.xl)) + gap;
-        let chrome = row + row / 2 + gutter * 2;
-        let rows = u32::from(config.max_results);
-        let height = (chrome + rows * row).min(output.height.max(1));
+        let height = (chrome(metrics, theme, config).ceil() as u32).min(output.height.max(1));
 
         Self {
             layer: Layer::Overlay,
@@ -178,7 +174,7 @@ impl Placement {
             margin: gutter,
             size: LogicalSize::new(width, height),
             output: output_name.map(str::to_owned),
-            label_chars: label_budget(width, gutter, icon, theme),
+            label_chars: label_budget(width, icon, theme),
         }
     }
 
@@ -204,20 +200,52 @@ impl Placement {
     }
 }
 
+/// How tall the launcher's content is, in logical pixels.
+///
+/// The three groups of `view.rs` in order — the search field, the result card
+/// and the status bar — separated by `spacing.lg` inside a window padded with
+/// `spacing.xl`. Every term is a token or the configured `icon_size`; the text
+/// heights come from the theme's roles through `crate::theme::line_height`, so a
+/// 200 % font scale grows the surface instead of clipping it.
+fn chrome(metrics: crate::theme::Metrics, theme: &Theme, config: &LauncherConfig) -> f32 {
+    let heading = crate::theme::line_height(theme, crate::theme::TextRole::Heading);
+    let caption = crate::theme::line_height(theme, crate::theme::TextRole::Caption);
+    let field = crate::theme::line_height(theme, crate::theme::TextRole::Title)
+        + metrics.space_sm * 2.0
+        + metrics.hairline * 2.0;
+
+    // One row is as tall as the icon it shows; the label beside it is shorter.
+    let row = (f32::from(config.icon_size)).max(metrics.space_xl) + metrics.space_sm * 2.0;
+    let rows = f32::from(config.max_results);
+    let gaps = (rows - 1.0).max(0.0) * metrics.space_sm;
+    let list = metrics.space_lg * 2.0 + heading + metrics.space_md + rows * row + gaps;
+
+    let status = metrics.space_lg * 2.0 + caption;
+
+    metrics.space_xl * 2.0 + field + metrics.space_lg + list + metrics.space_lg + status
+}
+
 /// How many characters fit into a result row's label column.
 ///
-/// One step of the theme's small spacing at the theme's font scale is taken as
-/// the width of one character: an approximation, and one that follows both the
-/// font scale (so a 200 % scale, which acceptance Q02 asks about, truncates
-/// earlier) and the theme.
-fn label_budget(width: u32, gutter: u32, icon: u32, theme: &Theme) -> usize {
-    let gap = u32::from(theme.spacing.sm);
-    let available = width
-        .saturating_sub(gutter * 2)
-        .saturating_sub(icon + gap + gap);
+/// The insets are the ones the view actually draws: the window's padding, the
+/// result card's padding, the row's own control padding, the icon tile and the
+/// gap after it. Keeping the estimate in step with the widget tree is what makes
+/// "a truncated label is exactly as wide as the row's column" true rather than
+/// hopeful. The character width is [`crate::theme::average_advance`], so the
+/// estimate follows the font scale: at 200 % text a name has room for half as
+/// many characters, rather than overflowing the row (acceptance Q02).
+fn label_budget(width: u32, icon: u32, theme: &Theme) -> usize {
+    let metrics = crate::theme::Metrics::from_tokens(theme);
+    let chrome = metrics.space_xl * 2.0
+        + metrics.space_lg * 2.0
+        + metrics.space_md * 2.0
+        + icon as f32
+        + metrics.space_sm;
+    let available = (width as f32 - chrome).max(0.0);
+
     // At least one character: a row with no room for even an ellipsis would be
     // a row the user cannot identify.
-    ((available as f32 / crate::theme::average_advance(theme)) as usize).max(1)
+    ((available / crate::theme::average_advance(theme)) as usize).max(1)
 }
 
 #[cfg(test)]

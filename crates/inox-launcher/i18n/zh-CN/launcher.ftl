@@ -6,6 +6,7 @@
 launcher-window-title = 应用程序
 launcher-search-placeholder = 搜索应用程序
 launcher-search-hint = 上下键选择 · 回车启动 · Esc 关闭
+launcher-list-prompt = 输入以搜索，或从下面的列表中选择。
 
 launcher-state-loading = 正在读取应用程序索引…
 launcher-state-empty-title = 没有找到应用程序
@@ -15,6 +16,7 @@ launcher-state-nomatch-title = 没有匹配项
 launcher-state-nomatch-body = 没有应用程序匹配“{ $query }”。
 launcher-state-unavailable-title = 无法使用应用程序索引
 launcher-state-action-retry = 重试
+launcher-state-action-clear = 清除搜索
 launcher-state-truncated = 只搜索前 { $limit } 个字符。
 
 launcher-row-icon-placeholder = ？
