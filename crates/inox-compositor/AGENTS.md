@@ -87,6 +87,7 @@
 - **毛玻璃**（`tests/glass_blur.rs`）：进程内、真实客户端——背景层表面画一条锐利的黑白竖直边，半透明的 top 层「pane」覆盖它并创建真实 `inox_glass_manager_v1` 对象设置区域与半径。判别性断言：pane 外的边保持锐利（严格处于两端色之间的列 ≤ 2），pane 内的过渡至少 `radius/2` 列（同一场景、同一客户端、**未创建** glass 对象的对照渲染为 0 列），且 pane 区域与对照渲染有明显像素差异（≥ radius 列），因此「删掉模糊」必然使测试失败。另断言 layer 表面 capabilities == `MAX_BLUR_RADIUS`、普通 `xdg_toplevel` 为 0，以及同一表面第二个 `get_glass` 收到 `already_created` 致命协议错误。纯逻辑（clamp 幂等/单调、区域归一化上界、锁定无 pane、pane 排序与 clip）在 `src/glass.rs` 用单元测试与 proptest 固定。
 - 单线程驱动 + 截止时间：合成器与全部客户端在同一线程交替「收发」与「服务 display」，客户端套接字设为非阻塞，因此**不需要 sleep 排序、也不会有死锁线程**；每个等待都有超时。
 - `test-input` 的解析器与 PPM 编码器是纯函数，必须有单元测试（合法/非法/未知动词/越界数字/尾随空白/CRLF）。
+- **waydriver 宿主**（`tests/waydriver_host.rs` + `tests/support/mod.rs`，ADR 0036 D02 基座）：进程级组合子——用私有 `XDG_RUNTIME_DIR` 拉起 `inox-compositor --headless --socket <name> --test-input <ctl>`，轮询控制 socket 就绪后接上控制客户端，`dump-frame <path>` 取回一帧并断言其像素。判别的场景是「零客户端的 headless 输出清屏为 `render::CLEAR_COLOR_RGBA8`（`[17,34,51,255]`，state.rs `build` 对非物理后端赋 `CLEAR_COLOR`）」，逐像素 ±1 断言整帧等于该底色，因此「删掉清屏/背景」必然使断言失败；要求复用既有确定性 state，**不得为此改 `src/`**。PPM 解码（`tests/support/mod.rs` 的 `decode_ppm`）与像素比对须是纯函数并带单元测试，与子进程驱动分离。子进程必须自备私有 `XDG_RUNTIME_DIR`、给读/等待设超时、`kill -TERM` 优雅停机并等待退出；两个测试各自拉起独立子进程（各含自己的 EGL display，故不违反「每测试二进制一个 EGL」约束）。宿主按新约束收敛：`test-input` feature 禁用时测试以 `#[cfg_attr(not(feature = "test-input"), ignore)]` 跳过；ADR 0036 D02 后续 L3 组件的 waydriver 测试以本文件为可复用基座。
 
 ## 目录结构
 
@@ -125,6 +126,8 @@ tests/
   clipboard.rs           进程内真实客户端：只有焦点客户端能读到剪贴板
   drag_and_drop.rs       进程内真实客户端：拖放传输、取消、目标中途销毁
   glass_blur.rs          进程内真实客户端：毛玻璃的判别性像素证据（pane 内模糊、pane 外锐利、与无 glass 对象的对照渲染不同）＋ capabilities 角色前置条件与重复 get_glass 的致命错误
+  waydriver_host.rs      进程级 waydriver 宿主：拉起合成器子进程、dump-frame、PPM 解码与清屏像素断言（ADR 0036 D02 基座）
+  support/mod.rs         waydriver 宿主的纯 PPM 解码与像素比对辅助（带单元测试）
 ```
 
 工作区级文件（`Cargo.toml`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`LICENSE`、CI 工作流）在仓库根目录，**各 crate 不再各自保留一份**。
