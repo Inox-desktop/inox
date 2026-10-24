@@ -25,11 +25,16 @@ inputs:
     description: >-
       Also install the Qt 6 development packages the QML/Qt Quick host needs
       (ADR 0033 / ADR 0035). cxx-qt builds rust-side QObject bridges and its
-      build script resolves Qt through `pkg-config` (Qt6Core/Qt6Gui/Qt6Qml/
-      Qt6Quick/Qt6QmlModels), so every job that runs a build script that touches
-      a QML crate needs the dev packages — even when a job only type-checks.
+      build script resolves Qt through `qmake`/`pkg-config` (Qt6Core/Qt6Gui/
+      Qt6Qml/Qt6Quick/Qt6QmlModels), so every job that runs a build script that
+      touches a QML crate needs the dev packages — even when a job only
+      type-checks, because `cxx-qt`'s *own* build script panics with "Could not
+      find Qt installation" otherwise. That is why the whole-workspace jobs
+      (`msrv`, `clippy`, `doc`, `build`) pass `qt: "true"`: they build
+      `inox-qml-prototype` as a workspace member regardless of the shard.
       qt6-wayland-dev pulls the Wayland client the L3 layer surfaces attach
-      with. Only the crates that declare `cxx-qt` need it.
+      with, and `lld` is the linker `qt-build-utils` selects (see the note in
+      the run step).
     required: false
     default: "false"
 
@@ -92,9 +97,21 @@ runs:
           # L3 layer surfaces attach through. No GPL-only Qt module (Qt Wayland
           # Compositor etc.) is pulled here — see the license-audit job which
           # asserts exactly that (ADR 0033/0034).
+          #
+          # `lld`: `qt-build-utils` picks a linker for the Qt crates' link step
+          # (`qt_build_utils::QtPlatformLinker::init`, called from
+          # `cxx-qt-build`). It only overrides the system default when `ld` is
+          # GNU ld.bfd, and then prefers `-fuse-ld=lld`, falling back to
+          # `-fuse-ld=gold`. lld and gold differ in how they resolve the
+          # `cxx_qt_init_*` initializer symbols that cxx-qt puts in
+          # `--whole-archive` static libs: with gold every one of them is an
+          # "undefined reference" and the link fails. Installing `lld` keeps the
+          # first choice, which links. (Verified locally: the same crate links
+          # with lld and fails with `-fuse-ld=gold` invoking the identical
+          # object set.)
           sudo apt-get install -y --no-install-recommends \
             qt6-base-dev qt6-declarative-dev \
             qml6-module-qtquick qml6-module-qtquick-window \
             qml6-module-qtquick-templates qml6-module-qtquick-controls \
-            qt6-wayland-dev
+            qt6-wayland-dev lld
         fi

@@ -43,7 +43,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: msrv-1.89
+      # `qt: "true"` because this is a *whole-workspace* command: it builds
+      # every member, `inox-qml-prototype` included, and `cxx-qt`'s build script
+      # panics with "Could not find Qt installation" when the Qt 6 dev packages
+      # are absent. The same reason applies to `clippy`, `doc` and `build`
+      # below — none of them is a per-crate shard.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo check --locked --workspace --all-targets --all-features
 
   clippy:
@@ -59,7 +66,13 @@ jobs:
       # scripts, and some of those need pkg-config entries: `libudev-sys`
       # panics when `libudev.pc` is missing. System libraries are therefore
       # required here too, not only in `build` and `test`.
+      #
+      # `qt: "true"` for the same whole-workspace reason as `msrv`: `cxx-qt`'s
+      # build script (which `inox-qml-prototype` depends on) runs under clippy
+      # too and aborts without a Qt installation.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   deny:
@@ -83,8 +96,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # `cargo doc` compiles dependency build scripts as well, so it needs the
-      # same system libraries as `clippy` (see that job).
+      # same system libraries as `clippy` (see that job) — Qt included, for the
+      # same whole-workspace reason.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo doc --workspace --no-deps --all-features
 
   build:
@@ -94,7 +110,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The release build links the Qt crates for real, and it is a
+      # whole-workspace build, so it needs both the Qt 6 packages and the `lld`
+      # linker they select (see the `qt` input of the system-deps action).
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo build --workspace --release --all-features
 
   plan:
@@ -247,9 +268,14 @@ jobs:
       # plus the X11 side: `xwayland` (spawned by xwayland-satellite),
       # `x11-apps` for `xeyes` and `x11-utils` for `xwininfo`, and the xcb
       # packages `clang` needs to build xwayland-satellite from source.
+      #
+      # `qt: "true"` because "Build the binaries under test" runs
+      # `cargo build --workspace`, which builds `inox-qml-prototype` and so
+      # needs a Qt installation for `cxx-qt`'s build script.
       - uses: ./.github/actions/system-deps
         with:
           egl: "true"
+          qt: "true"
       - name: X11 and build dependencies
         run: |
           sudo apt-get install -y --no-install-recommends \
