@@ -1820,16 +1820,13 @@ name = "inox-greet"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "iced",
- "iced_core",
- "iced_runtime",
- "iced_tiny_skia",
- "image 0.25.10",
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
  "inox-common",
  "inox-config",
- "tempfile",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

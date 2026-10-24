@@ -13,17 +13,24 @@ categories.workspace = true
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
-iced.workspace = true
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
 inox-common.workspace = true
 inox-config.workspace = true
 
-[dev-dependencies]
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
-image.workspace = true
-tempfile.workspace = true
+[build-dependencies]
+cxx-qt-build.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe` (root AGENTS.md §3.2), but the
+# `#[cxx_qt::bridge]` macro (see `src/cxxqt_object.rs`) emits
+# `unsafe extern "C++"` blocks without an `#[allow]` wrapper, so the generated
+# FFI glue cannot compile under `forbid`. Override it to `allow` here (ADR 0035
+# exception, recorded in this crate's `AGENTS.md`); Inox-authored code stays
+# unsafe-free.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

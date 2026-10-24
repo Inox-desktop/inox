@@ -1,4 +1,5 @@
-usage = inox-greet --preview
+usage = inox-greet --preview [--self-check]
+self-check = --self-check loads the preview headlessly and exits; it is a diagnostic, not a login mode.
 blocked = Login is unavailable until the system authentication boundary passes security review.
 title = Inox login preview
 user = Username

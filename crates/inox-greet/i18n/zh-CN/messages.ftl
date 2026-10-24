@@ -1,4 +1,5 @@
-usage = inox-greet --preview
+usage = inox-greet --preview [--self-check]
+self-check = --self-check 以无头方式加载预览后退出；它是诊断开关，不是登录模式。
 blocked = 系统认证边界通过安全审查前，登录功能不可用。
 title = Inox 登录预览
 user = 用户名
