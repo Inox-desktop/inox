@@ -17,6 +17,11 @@ tracing-subscriber.workspace = true
 iced.workspace = true
 inox-common.workspace = true
 inox-config.workspace = true
+# The `auth-v1` contract and its framing, and nothing else: this crate takes
+# `inox-auth` with the workspace's `default-features = false`, so the login
+# *screen* does not link `libpam` and does not contain the code that can start a
+# session (ADR 0029).
+inox-auth.workspace = true
 
 [dev-dependencies]
 iced_core.workspace = true

@@ -4,15 +4,16 @@
 //! manager, and [ADR 0021] is its specification. Three things about it are
 //! constraints rather than features, and they shape every module here.
 //!
-//! - **It does not authenticate anyone yet.** PAM or any other mechanism, the
-//!   helper's privileges and the handling of a credential are items ADR 0015
-//!   requires a human to sign off before they land, and a test stub does not
-//!   count as authentication. The binary therefore refuses a real login and exits
-//!   non-zero; `--preview` opens the interface, which is what this crate's
-//!   interface work can be verified against.
-//! - **The model never holds a password.** [`state::Greeter`] has no field for
-//!   one, and the boundary's vocabulary ([`state::AuthReply`]) is the shape an
-//!   answer will arrive in, not a place a credential passes through.
+//! - **It authenticates nobody itself.** The boundary is `inox-auth` (ADR 0029):
+//!   this crate speaks its `auth-v1` contract and carries a credential one way, and
+//!   it links no PAM, starts no session and can invent no answer. What it *can* say
+//!   is that there is no boundary to talk to, which is what the default invocation
+//!   refuses to open a window over.
+//! - **The credential exists here only while it is being typed.** It is a
+//!   [`inox_common::secret::Secret`] — zeroed on clear and on drop, unprintable —
+//!   and [`state::Event::Submit`] moves it into the command that carries it to the
+//!   boundary. Nothing keeps a copy for a retry, and the projection that the view
+//!   and the tests print is handed a *count* of characters, never the value.
 //! - **A preview is not a secure login surface.** It is an ordinary window. The
 //!   greeter host, the AT-SPI bridge and the waydriver evidence ADR 0021 lists as
 //!   unverified are still unverified, and nothing here claims them.
@@ -22,7 +23,9 @@
 //! | module | what lives there |
 //! |---|---|
 //! | [`state`] | the login lifecycle and its correlation rules — pure, fully tested |
+//! | [`accounts`] | the accounts the system offers, and the one to offer first |
 //! | [`view_model`] | the projection from state to what the interface shows |
+//! | [`boundary`] | the `auth-v1` client: one connection, one request, one answer |
 //! | [`app`] | `State`, `Message`, `update` (Elm), `view`, `subscription` |
 //! | [`view`] | iced widgets, built from the view model and the tokens |
 //! | [`theme`] | design tokens turned into iced's theme and styles |
@@ -32,13 +35,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod accounts;
 pub mod app;
+pub mod boundary;
 pub mod i18n;
 pub mod state;
 pub mod theme;
 pub mod view;
 pub mod view_model;
 
+pub use crate::accounts::{Account, Accounts};
 pub use crate::app::{Message, State};
 pub use crate::state::{AttemptId, AuthReply, Command, Event, Greeter, Phase};
-pub use crate::view_model::{Action, Face, FocusTarget, GreeterViewModel, Identity};
+pub use crate::view_model::{AccountView, Action, Face, FocusTarget, GreeterViewModel};
