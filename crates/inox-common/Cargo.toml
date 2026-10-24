@@ -24,5 +24,12 @@ fluent-syntax.workspace = true
 unic-langid.workspace = true
 tracing-subscriber.workspace = true
 
+# ADR 0029: `secret` is the one reviewed implementation of the credential
+# buffer's invariants (zeroed on clear and on drop, unprintable, a single
+# accessor). `zeroize` is the crate the workspace already relies on for the same
+# job in `inox-lock`; it is a leaf, pure-data dependency (MIT OR Apache-2.0), so
+# it does not bring a UI toolkit, an event loop or a device API into L1.
+zeroize.workspace = true
+
 [lints]
 workspace = true

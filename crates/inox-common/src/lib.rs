@@ -6,6 +6,7 @@
 pub mod i18n;
 pub mod logging;
 pub mod paths;
+pub mod secret;
 
 /// The crate version as reported by Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
