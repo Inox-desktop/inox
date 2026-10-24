@@ -1,0 +1,29 @@
+[package]
+name = "inox-host"
+description = "The Inox greeter host: starts the compositor and the login screen on the greeter's VT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# The event loop: one timer for the supervision tick and one signal source for
+# SIGTERM/SIGINT (ADR 0037 §决策 3.4).
+calloop.workspace = true
+# Waiting for, and signalling, the two children the host owns.
+rustix.workspace = true
+# Logging setup and the Fluent catalogs every message in the journal comes from.
+inox-common.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

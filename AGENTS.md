@@ -36,7 +36,7 @@ L2  inox-protocols, inox-auth, inox-compositor, inox-xwayland
 L3  inox-shell, inox-panel, inox-launcher, inox-notifications,
     inox-settings, inox-lock, inox-wallpaper,
     inox-qml-prototype (ADR 0033/0035 的 QML+Qt Quick 迁移原型)
-L4  inox-session, inox-idle, inox-greet
+L4  inox-session, inox-idle, inox-greet, inox-host
 测试 inox-integration
 ```
 

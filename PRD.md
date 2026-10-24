@@ -19,6 +19,7 @@
 | 1.4 | 2026-10-17 | 按 [ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md) 记录锁屏界面已绘制到会话锁表面、登录界面已补全：§2.3 的 `ext-session-lock-v1` 行、§10 的锁屏条目与 §13 的 M5 交付出处随之修正。真实认证仍是 ADR 0015 的人类安全评审项，本修订不改变该边界 |
 | 1.5 | 2026-10-17 | ADR 0015 的人类安全评审项获得批准并按 [ADR 0029](docs/adr/0029-inox-authentication-boundary.md) 实施：新增 L2 组件 `inox-auth`（系统 PAM、`auth-v1` 私有契约、以账号身份启动会话），`inox-greet` 的默认路径成为真实登录路径，§2.3 增加认证契约行、§3.1 增加组件行、§13 的 M5 交付与未交付清单随之修正 |
 | 1.6 | 2026-10-17 | 按 [ADR 0031](docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`）登记私有协议 `inox-glass-v1`（桌面玻璃材质/背景模糊）：§2.3 增加该协议行、§9.2 增加 `[glass]` 材质令牌组与「组件不得硬编码 tint」的规则。合成器只在 headless 路径实现模糊，物理（DRM）路径报 0 并保持场景锐利；离屏像素证据已取得（`crates/inox-compositor/tests/glass_blur.rs`，pane 内 24 列过渡 vs 无玻璃对照 0 列），真机效果仍未取得（真机上菜单栏/dock 为纯半透明） |
+| 1.7 | 2026-10-23 | 按 [ADR 0037](docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 新增 L4 组件 `inox-host`（greeter 宿主、VT/seat 交接、开机登录链），§3.1 增加组件行；`inox-auth` 以会话负责人进程建立用户 logind 会话并把画面在注销后交回登录界面；`inox-greet` 在会话启动后驻留复位 |
 
 ---
 
@@ -175,6 +176,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` |
 | `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` |
+| `inox-host` | L4 | `crates/inox-host` | greeter 宿主：在裸 VT 上拉起登录界面的合成器与界面，监督并在退出时清理（ADR 0037） | 二进制 `inox-host` |
 | `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 |
 
 工作区之外还有两处非 crate 位置：

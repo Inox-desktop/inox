@@ -232,7 +232,7 @@ l3 = [
     # the CI matrix cover it like any other shard.
     "inox-qml-prototype",
 ]
-l4 = ["inox-session", "inox-idle", "inox-greet"]
+l4 = ["inox-session", "inox-idle", "inox-greet", "inox-host"]
 test = ["inox-integration"]
 
 [workspace.metadata.inox.rules]
