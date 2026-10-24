@@ -212,7 +212,19 @@ fn actual_supervisor_signal_shutdown_is_graceful_and_cleans_its_runtime() {
         .expect("compositor boundary");
     std::fs::set_permissions(&compositor, std::fs::Permissions::from_mode(0o700))
         .expect("executable");
-    let ready = root.path().join("panel-started");
+    let ready = root.path().join("services-started");
+    // The components that reach the marker: every non-oneshot service in
+    // `src/main.rs`. The desktop home is *two* panel instances (one
+    // `wlr-layer-shell` surface per client connection), so the single
+    // `inox-panel` binary is started twice and appends two markers. `shell` is
+    // a oneshot that exits immediately and must stay out of this list.
+    let starters = [
+        "panel-menubar",
+        "panel-dock",
+        "wallpaper",
+        "notifications",
+        "idle",
+    ];
     for component in ["shell", "panel", "wallpaper", "notifications", "idle"] {
         let path = binaries.path().join(format!("inox-{component}"));
         let script = if component == "shell" {
@@ -239,11 +251,15 @@ fn actual_supervisor_signal_shutdown_is_graceful_and_cleans_its_runtime() {
         .expect("supervisor");
     let pid = child.id();
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !std::fs::read(&ready).is_ok_and(|bytes| bytes.len() == 4) {
+    while !std::fs::read(&ready).is_ok_and(|bytes| bytes.len() == starters.len()) {
         if Instant::now() >= deadline {
             child.kill().expect("stop failed test");
             child.wait().expect("reap failed test");
-            panic!("services did not start before deadline");
+            panic!(
+                "services did not start before deadline: {} of {} markers ({starters:?})",
+                std::fs::read(&ready).unwrap_or_default().len(),
+                starters.len()
+            );
         }
         std::thread::sleep(Duration::from_millis(10));
     }

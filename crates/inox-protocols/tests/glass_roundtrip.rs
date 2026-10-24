@@ -121,11 +121,8 @@ impl Dispatch<client::inox_glass_v1::InoxGlassV1, ()> for App {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            client::inox_glass_v1::Event::Capabilities { max_radius } => {
-                state.max_radius = Some(max_radius);
-            }
-            _ => {}
+        if let client::inox_glass_v1::Event::Capabilities { max_radius } = event {
+            state.max_radius = Some(max_radius);
         }
     }
 }

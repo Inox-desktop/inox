@@ -35,11 +35,13 @@
 ## 决策驱动因素与备选
 
 驱动力：
+
 1. 若走 Qt 路线，Inox 本身采用 LGPLv3 与 Qt 主体同族，避免「BSD 项目 + LGPL Qt」跨许可族的不一致。
 2. 现状 `deny.toml` 连 LGPL/GPL 都不允许——即便只引一个 LGPL 库都过不了 cargo-deny。改 LGPLv3 需要先决定整个依赖白名单方向。
 3. 保持开源友好 + 允许下游链接（KDE/GNOME 的「库 LGPL」智慧）。
 
 不变量：
+
 - 合成器仍 Smithay（根级 §4）；Qt 只可能影响 Shell/L3 主体或未来 GPL-only 模块，且合成器绝不碰 Qt Wayland Compositor（GPL，见 ADR 0033）。
 - 分层、`layering.rs`、i18n 走 Fluent、设计令牌唯一来源，一律不变。
 
@@ -117,6 +119,7 @@
 **影响面**：`LICENSE`、根级 `AGENTS.md` §0/§3.6、`PRD.md` §15、`README.md` §7、`deny.toml`、全部 crate `AGENTS.md`、文档站、CI（新增许可审计 job）、（若走 Qt）cxx-qt/qmetaobject 绑定依赖。
 
 **复审 / 取代触发条件**：
+
 1. 引入 Qt GPL-only 模块（Virtual Keyboard / QML Compiler）→ 需额外评估 GPL 或商用许可，LGPL 不够。
 2. 引入任何非作者贡献者 → 先确认其 DCO/CLA 允许重许可。
 3. 产品希望保持「全 permissive 可再许可」→ 推翻重许可决策。

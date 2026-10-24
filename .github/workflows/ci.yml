@@ -144,6 +144,14 @@ jobs:
                       # when the crate actually names cxx-qt, so non-Qt crates
                       # stay off the extra system surface.
                       "qt": any(d["name"] == "cxx-qt" for d in deps),
+                      # A crate that declares `pam` (through `inox-auth`'s
+                      # `server` feature) runs `pam-sys`'s build script, and
+                      # that one generates bindings with bindgen, which needs
+                      # libclang. Only inox-auth itself declares it —
+                      # `inox-greet` takes inox-auth with default features off
+                      # and never links libpam — so only that shard pays for
+                      # the extra package. See `.github/actions/system-deps`.
+                      "pam": any(d["name"] == "pam" for d in deps),
                   })
 
           # Fail loudly rather than silently testing nothing, and refuse to run a
@@ -183,7 +191,7 @@ jobs:
       # cheap. The package lists live in one place — see
       # `.github/actions/system-deps/action.yml`.
       - uses: ./.github/actions/system-deps
-        if: matrix.graphics || matrix.ui || matrix.qt
+        if: matrix.graphics || matrix.ui || matrix.qt || matrix.pam
         with:
           egl: ${{ matrix.graphics }}
           fonts: ${{ matrix.ui }}
@@ -342,9 +350,14 @@ jobs:
       - name: Install system Qt (LGPL route, ADR 0033)
         run: |
           sudo apt-get update
+          # Same QML module names as `.github/actions/system-deps`: Ubuntu
+          # ships `qml6-module-qtquick*` in noble, and `qml6-module-quick` /
+          # `qml6-module-quick-window` do not exist there (an install of a
+          # nonexistent name aborts apt with exit 100).
           sudo apt-get install -y --no-install-recommends \
             qt6-base-dev qt6-declarative-dev \
-            qml6-module-quick qml6-module-quick-window \
+            qml6-module-qtquick qml6-module-qtquick-window \
+            qml6-module-qtquick-templates qml6-module-qtquick-controls \
             libqt6waylandclient6 qt6-wayland-dev
           # GPL-only modules must NOT be present: their presence means a build
           # could silently link a GPL dependency into the LGPL project.
@@ -371,11 +384,34 @@ jobs:
           # shellcheck disable=SC2086
           c++ /tmp/linkcheck.cpp -o /tmp/linkcheck $QT_PKG
           ldd /tmp/linkcheck > /tmp/linkcheck.ldd || true
-          # Every linked Qt library must be one allowed LGPL module.
-          grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u
+          # Every linked Qt library must be one allowed LGPL module. The list is
+          # an allow-list, not a deny-list: a module nobody has vetted fails, so
+          # a GPL-only module cannot slip in just by being new. The entries are
+          # the LGPLv3 Qt 6 modules that a `QGuiApplication` +
+          # `QQmlApplicationEngine` program pulls in — the core four plus the
+          # transitively-linked Qml runtime, network, D-Bus and OpenGL helpers.
+          # `Qt6QmlCompiler` is deliberately absent: Qt's QML compiler is
+          # GPL-only (ADR 0033 §Qt 许可的客观事实), so linking it must fail here.
+          #
+          # `sed` strips the `.so` suffix so the case labels below are module
+          # names; keeping the suffix in one place is what let the previous
+          # revision compare `libQt6Core.so` against a `libQt6Core` label and
+          # reject every module, including the allowed ones.
+          grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd \
+            | sed -E 's/\.so$//' | sort -u > /tmp/linkcheck.modules
+          cat /tmp/linkcheck.modules
+          # An empty list would make the loop below pass vacuously, which is the
+          # one way this job could report success without auditing anything.
+          if [ ! -s /tmp/linkcheck.modules ]; then
+            echo "no Qt modules found in ldd output; the link check is not auditing anything" >&2
+            exit 1
+          fi
           while read -r mod; do
             case "$mod" in
-              libQt6Core|libQt6Gui|libQt6Qml|libQt6Quick)
+              libQt6Core|libQt6Gui|libQt6Qml|libQt6Quick|\
+              libQt6DBus|libQt6Network|libQt6OpenGL|\
+              libQt6QmlMeta|libQt6QmlModels|libQt6QmlWorkerScript|\
+              libQt6QmlIntegration|libQt6WaylandClient)
                 echo "OK (LGPL): $mod"
                 ;;
               *)
@@ -383,5 +419,5 @@ jobs:
                 exit 1
                 ;;
             esac
-          done < <(grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd | sort -u)
+          done < /tmp/linkcheck.modules
           echo "license-audit: only LGPL Qt modules linked"

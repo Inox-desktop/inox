@@ -33,12 +33,14 @@ Qt Quick 在这方面有成熟生态：Plasma/KWin 系确实使用 QML 构建 sh
 ## 决策驱动因素与备选
 
 驱动力（为何要重新评估）：
+
 1. **layer-shell 表面缺失**——Iced 客户端至今拿不到 layer-shell 表面（`iced_layershell` 编不过），这是最实际的痛点。
 2. **AT-SPI / 无障碍桥缺失**——Q01 阻塞至今。
 3. **waydriver 宿主证据缺失**——GUI 自动化链路没有打通。
 4. 单向数据流 / 隐藏复杂度——Iced 的 Elm 架构在巨型设置应用上被 ADR 0003 自认「需要靠模块拆分控制」。
 
 制约（不变量）：
+
 - 合成器仍需 **Smithay**（根级 §4、ADR 0003）；calloop 必须保留作主事件循环（根级 §4）。本 ADR 只评估 **Shell/L3 的 GUI 工具包**，不涉及合成器侧（合成器绝无可能改用 Qt Wayland Compositor，见许可分析）。
 - 分层 L1–L4 与「依赖只能向下」的机械断言（`layering.rs`，验收 B04）不改变。
 - 设计令牌 `inox_config::Theme`（ADR 0009，accepted）必须继续是 L1 的颜色/尺寸唯一来源；组件禁止硬编码。我强调这一点，因为 QML 默认鼓励代码注入样式，需要明确到底由谁把令牌变成 `QColor`（在 Rust 或 C++ 侧）。
@@ -162,6 +164,7 @@ Qt Wayland Compositor 仅 GPLv3。如果 Inox 因为「换 QML」而顺手把合
 **影响面**：根级 `AGENTS.md` §4、PRD §4/§11/§13、`deny.toml`、`docs/book`、七个 L3 crate + `inox-greet` 的 `Cargo.toml`/`AGENTS.md`、CI 工作流。**本 ADR 只批准决策方向，不实施代码迁移**；具体迁移单独 PR 序列。
 
 **复审/取代触发条件**：
+
 1. cxx-qt 或 qmetaobject-rs 稳定支持 Qt 6 且对 layer-shell/语义有证据 → 作为实施阶段选型的依据。
 2. 需用 Qt GPL-only 模块（Virtual Keyboard、QML Compiler）→ 单独裁决 GPL 或 Qt 商业许可。
 3. 产品要求「全 permissive 不再分发依赖 LGPL」→ 推翻 Qt 决策。

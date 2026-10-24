@@ -19,6 +19,7 @@
   ```
 
   仅放行宏**生成**的 `unsafe`；**Inox 手写的代码仍保持不含 `unsafe`**（本仓库任何手写文件不出现 `unsafe` 关键字，`src/lib.rs` 也不写 `#![...unsafe_code]`）。根级其余硬性规则一律不变。
+
 - bridge 宏内部的条目（`unsafe extern "C++"` / `extern "RustQt"` 里的类型、函数）**不能写 `///` 文档注释**：cxx 解析器会报 `error[cxx]: unsupported attribute`。文档注释集中在 `MyObjectRust` 结构体、`impl qobject::MyObject` 块与 `pub mod qobject` 之上。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()`；headless 测试用 `assert!` / `assert_eq!`。测试中设置的 `QT_QPA_PLATFORM` 属测试专用 `unsafe` 环境写，属允许范围。
 - 日志统一 `tracing`（`debug!`），禁止 `println!`（测试除外）。
