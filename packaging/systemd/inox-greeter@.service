@@ -1,0 +1,76 @@
+[Unit]
+Description=Inox login screen on /dev/tty%i
+Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
+# The instance is the VT number (ADR 0037 §决策 2): inox-greeter@1 is the boot
+# chain's login screen, inox-greeter@4 is the trial one. TTYPath below therefore
+# reads /dev/tty1 or /dev/tty4 — never /dev/ttytty1.
+#
+# Wants= is what makes a trial one command: `systemctl start inox-greeter@4` brings
+# the boundary up too. After= keeps the boundary ahead of the screen that needs it.
+After=inox-auth.service systemd-user-sessions.service
+Wants=inox-auth.service
+# One login screen per VT, and never on top of a getty on the same VT.
+Conflicts=getty@tty%i.service
+# A start that refuses costs nothing and shows nothing: inox-host connects to the
+# boundary socket before it creates a compositor, and exits when there is nothing
+# to talk to. That is exactly what happens in the first second of a boot, while
+# inox-auth is still binding /run/inox/auth.sock, so a couple of refusals before
+# the first successful start are normal.
+#
+# The defaults would not survive that: five starts in ten seconds is the default
+# limit and RestartSec=2 reaches it in eight, which would leave the machine at a
+# black VT with the unit marked failed. Sixty seconds and twenty attempts keep the
+# retry honest (a machine whose compositor cannot start still stops retrying and
+# shows up in systemctl --failed) while covering any boot-order race.
+StartLimitIntervalSec=60
+StartLimitBurst=20
+# What happens when the budget is spent: systemd marks this instance failed after a
+# full minute of failing to start, and inox-login-fallback.service starts greetd so
+# that the machine is still usable. That is the difference between "the boot chain
+# is broken" and "the boot chain is broken, but you can log in and fix it".
+#
+# It is the restart budget above that makes this a *last* resort: a single lost
+# boot-order race never reaches it, twenty failed starts do.
+OnFailure=inox-login-fallback.service
+
+[Service]
+Type=simple
+# The greeter has its own system account and no way to authenticate anybody: the
+# login screen binary links inox-auth with `default-features = false`, so it does
+# not even contain the code that starts a session.
+User=greeter
+# Gives the unit a logind session (XDG_SESSION_ID, /run/user/<uid>, a cgroup and
+# the VT), which is what libseat's logind backend needs to hand the compositor the DRM
+# device and the input devices. Without PAMName there is no session, no seat and no
+# display in Inox (ADR 0037 §决策 1).
+PAMName=inox-greeter
+TTYPath=/dev/tty%i
+StandardInput=tty
+TTYReset=yes
+TTYVHangup=yes
+StandardOutput=journal
+StandardError=journal
+# XDG_VTNR is load-bearing: systemd does not derive it for a tty unit (on Arch,
+# `systemctl show getty@tty3.service -p Environment` is empty) and pam_systemd only
+# reads the VT from the process environment. Set it here from the instance name and
+# the greeter's logind session lands on the right VT.
+# XDG_STATE_HOME points inox-greet's "last used account" record at
+# StateDirectory=, i.e. /var/lib/inox-greeter (see crates/inox-greet/src/accounts.rs).
+Environment=XDG_VTNR=%i XDG_STATE_HOME=/var/lib/inox-greeter
+StateDirectory=inox-greeter
+StateDirectoryMode=0700
+# inox-host is the whole greeter stage: it checks the boundary socket, starts
+# inox-compositor and then inox-greet, restarts the screen on a bounded budget and
+# stops its children in reverse order. This unit must not start the compositor or
+# the login screen itself — two places that know the child order is one place too
+# many.
+ExecStart=/usr/bin/inox-host
+Restart=always
+RestartSec=2
+
+[Install]
+# A template cannot carry Alias=display-manager.service. The boot chain is switched
+# by packaging/install.sh, which symlinks
+# /etc/systemd/system/display-manager.service -> inox-greeter@1.service; this
+# WantedBy= only exists so the unit can be enabled and disabled like any other.
+WantedBy=graphical.target

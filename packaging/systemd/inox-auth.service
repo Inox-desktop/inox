@@ -1,0 +1,67 @@
+[Unit]
+Description=Inox authentication boundary
+Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
+# The single authentication boundary (ADR 0029, ADR 0037 §决策 1). Nothing else
+# on this machine verifies a password or starts a session as somebody else.
+#
+# Ordering is on the socket side, not on a dependency: the greeter only needs
+# /run/inox/auth.sock to be connectable, and inox-host refuses to start (before it
+# opens a window) when it is not. Wants= lives in inox-greeter@.service so a trial
+# run on a spare VT brings the boundary up with it.
+#
+# Before= names the template, as ADR 0037 §决策 6 asks. Be aware of what systemd
+# does with that: a dependency on a template unit name is not expanded to its
+# instances, so the effective ordering is the greeter unit's own After= line. This
+# one stays because it is the documented intent and because it is correct for the
+# template itself; it is not what makes the greeter wait.
+After=systemd-user-sessions.service dbus.socket
+Before=inox-greeter@.service
+
+[Service]
+Type=simple
+User=root
+# /run/inox is where the socket lives (DEFAULT_SOCKET = /run/inox/auth.sock in
+# crates/inox-auth/src/wire.rs). systemd creates the directory for the unit and
+# removes it on stop; inox-auth chowns the socket itself (root:greeter 0660), so no
+# ExecStartPre permission juggling is needed here — and the greeter's group is
+# resolved from the account database, not from a second copy of the uid in this
+# file.
+RuntimeDirectory=inox
+RuntimeDirectoryMode=0755
+# --exit-after-session: ADR 0037 §决策 5 moved pam_open_session into a one-shot
+# session leader, so this switch is no longer the mitigation for PAM writing into a
+# long-lived helper's environment; it is kept on in the deployment as a state reset
+# (a fresh boundary process after every session).
+#
+# --service inox-auth: the PAM stack a password is checked on, from
+# packaging/pam.d/inox-auth. The binary's default is the same name
+# (server::DEFAULT_PAM_SERVICE); it is passed anyway so that the file that ships and
+# the file that is loaded cannot drift apart without someone editing this line. A
+# missing stack is a hard failure (pam_start fails), not a silent fallback.
+#
+# --session-service inox-auth-session: the *second* stack, the one the session
+# leader opens the user's session through, from packaging/pam.d/inox-auth-session.
+# It is deliberately not --service: the leader holds no credential, so its auth line
+# has to permit, and a permit line on the password stack would be a passwordless
+# login for every account (ADR 0037 §决策 5). Same reasoning as above for naming it
+# although it matches server::DEFAULT_SESSION_SERVICE — symmetry with --service, and
+# a packaging mistake then shows up here instead of inside PAM.
+#
+# --session-program /usr/bin/inox-session: the default (`inox-session`) is resolved
+# with a plain metadata() call, i.e. against the service's working directory, which
+# for a system unit is `/`. The deployment therefore names the absolute path; a
+# missing session program is reported to the person at the login screen instead of
+# leaving a blank display.
+#
+# The session VT range stays at its defaults (2..=6, never the greeter's VT). Add
+# `--session-vt-min 2 --session-vt-max 6` only to pin a value deliberately.
+ExecStart=/usr/bin/inox-auth --exit-after-session --service inox-auth --session-service inox-auth-session --session-program /usr/bin/inox-session
+Restart=always
+RestartSec=1
+# No capability or sandbox hardening here on purpose: this process must be able to
+# use PAM, fork/exec as other users and set their groups, and ask logind to activate
+# a session. Tightening it is a separate ADR (ADR 0037 §决策 6), not a copy-paste of
+# a hardening block nobody verified against the login path.
+
+[Install]
+WantedBy=multi-user.target
