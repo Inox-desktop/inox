@@ -15,6 +15,7 @@
 
 - **锁屏令牌是能力，不是身份。** 会话为每个会话生成一次性令牌，传给合成器（`--lock-token`）并**只**放进可信锁屏客户端的环境（`INOX_LOCK_TOKEN`）。不得把它加进会话级环境：那会把取锁权限发给 shell 与它启动的一切。令牌不得进日志、不得落盘。`ServiceSpec::environment` 就是为此存在的逐组件环境。
 - **锁屏客户端只在 `INOX_SESSION_TAKE_LOCK=1` 时启动。** `inox-lock --take-lock` 没有解锁路径，无条件启动会锁住一个没人要求锁住的会话。手动锁定与空闲触发的锁定仍未接线（ADR 0022 未决项），这条开关是在那之前唯一的启动途径。
+- **桌面首页是两个面板实例，不是一个。** 会话按 `--surface menubar` 与 `--surface dock` 各启动一个 `inox-panel`：一个 `wlr-layer-shell` 表面属于一条客户端连接，菜单栏（顶边）与 Dock（底边）因此必须分别是进程。两者都是必需服务，任一耗尽重启预算都会结束会话（与原先单个面板实例的严格程度一致）。`[panel] surface` 只是单独运行 `inox-panel` 时的默认值，**不**决定会话拉起哪几个表面；改这条前先确认 `component=panel-menubar` / `component=panel-dock` 的日志断言（`tests/headless.rs`）仍是准确的证据。
 
 ## 主要依赖
 

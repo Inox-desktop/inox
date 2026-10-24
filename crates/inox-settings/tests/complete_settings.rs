@@ -172,7 +172,7 @@ fn wallpaper_overrides_terminal_and_input_method_arguments_roundtrip_literally()
         set(
             &mut window,
             Field::WallpaperImage,
-            Value::Text("/images/主壁纸.png".into()),
+            Value::Choice("/images/主壁纸.png".into()),
         );
         set(
             &mut window,

@@ -1,10 +1,10 @@
 //! The settings pages: one per area of the configuration.
 //!
 //! A page is a **pure description** — the fields it edits, the label of its
-//! entry in the navigation list, and the message ids it needs — plus the
-//! builder that draws it (`view`). Nothing on a page holds state: the values
-//! come from [`crate::draft`], what the page shows comes from
-//! [`crate::view_model`], and the widgets come from [`crate::view`].
+//! entry in the navigation list, the sentence under its title, and the cards its
+//! fields are grouped into — plus the builder that draws it (`view`). Nothing on
+//! a page holds state: the values come from [`crate::draft`], what the page shows
+//! comes from [`crate::view_model`], and the widgets come from [`crate::view`].
 //!
 //! The settings pages are the areas of PRD §9 the settings application owns:
 //!
@@ -15,10 +15,16 @@
 //! | [`notifications`] | `notifications.toml` | do-not-disturb, position, timeouts |
 //! | [`locale`] | `config.toml` | the language the session runs in |
 //!
-//! Every field belongs to exactly one page, which `tests/workflow.rs` asserts
-//! against [`Field::ALL`]: a field nobody draws would be editable only by
-//! editing the file by hand, and a field drawn twice would be a second control
+//! Every field belongs to exactly one page and to exactly one card of it, which
+//! `tests/workflow.rs` asserts against [`Field::ALL`] and the unit tests here
+//! assert against [`PageId::fields`]: a field nobody draws would be editable only
+//! by editing the file by hand, and a field drawn twice would be a second control
 //! for one key.
+//!
+//! **Grouping is part of the page, not of the drawing.** Which fields sit in one
+//! card is what the guidelines mean by "相关字段同卡片" (ui-guidelines §4), and it
+//! is decided here so the drawing code cannot invent a second grouping — or drop
+//! a field between two of them.
 
 pub mod appearance;
 pub mod locale;
@@ -31,6 +37,19 @@ use inox_config::Theme as Tokens;
 use crate::app::Message;
 use crate::draft::Field;
 use crate::view_model::{FieldView, PageView, SettingsViewModel};
+
+/// One card of a page: a heading and the fields under it.
+///
+/// A field appears in exactly one group of its page, and the groups of a page
+/// are in the order they are drawn — which is also the order the keyboard walks
+/// them (acceptance Q01: 键盘顺序与视觉顺序一致).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Group {
+    /// The message id of the card's heading.
+    pub title_id: &'static str,
+    /// The fields the card holds, in the order they are drawn.
+    pub fields: &'static [Field],
+}
 
 /// One page of the settings window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,7 +92,7 @@ impl PageId {
         Self::InputMethod,
     ];
 
-    /// The fields the page edits.
+    /// The fields the page edits, in the order the page draws them.
     pub fn fields(self) -> &'static [Field] {
         match self {
             Self::InputMethod => &[Field::InputMethodCommand],
@@ -110,6 +129,137 @@ impl PageId {
         }
     }
 
+    /// The cards the page's fields are drawn in, in order.
+    ///
+    /// The fields of every group, read in order, are exactly [`Self::fields`] —
+    /// that is what keeps the keyboard's walk, the drawing and the file's keys
+    /// in one order, and the unit tests below assert it for every page.
+    pub fn groups(self) -> &'static [Group] {
+        match self {
+            Self::Appearance => &[Group {
+                title_id: "settings-group-appearance-theme",
+                fields: appearance::FIELDS,
+            }],
+            Self::Panel => &[
+                Group {
+                    title_id: "settings-group-panel-strip",
+                    fields: &[
+                        Field::PanelPosition,
+                        Field::PanelHeight,
+                        Field::PanelMargin,
+                        Field::PanelExclusive,
+                    ],
+                },
+                Group {
+                    title_id: "settings-group-panel-behaviour",
+                    fields: &[Field::PanelAutohide],
+                },
+                Group {
+                    title_id: "settings-group-panel-clock",
+                    fields: &[Field::PanelShowClock, Field::PanelClockFormat],
+                },
+                Group {
+                    title_id: "settings-group-panel-tasks",
+                    fields: &[Field::PanelMaxTaskButtons, Field::PanelIconSize],
+                },
+            ],
+            Self::Notifications => &[
+                Group {
+                    title_id: "settings-group-notifications-display",
+                    fields: &[
+                        Field::NotificationsPosition,
+                        Field::NotificationsWidth,
+                        Field::NotificationsMargin,
+                        Field::NotificationsIconSize,
+                        Field::NotificationsMaxVisible,
+                    ],
+                },
+                Group {
+                    title_id: "settings-group-notifications-timeouts",
+                    fields: &[
+                        Field::NotificationsLowTimeout,
+                        Field::NotificationsNormalTimeout,
+                        Field::NotificationsCriticalTimeout,
+                    ],
+                },
+                Group {
+                    title_id: "settings-group-notifications-queue",
+                    fields: &[
+                        Field::NotificationsMaxPending,
+                        Field::NotificationsQueuePolicy,
+                    ],
+                },
+                Group {
+                    title_id: "settings-group-notifications-policy",
+                    fields: &[
+                        Field::NotificationsDoNotDisturb,
+                        Field::NotificationsShowActions,
+                        Field::NotificationsHideBodyWhenLocked,
+                    ],
+                },
+            ],
+            Self::Locale => &[Group {
+                title_id: "settings-group-locale-language",
+                fields: locale::FIELDS,
+            }],
+            Self::Input => &[
+                Group {
+                    title_id: "settings-group-input-keyboard",
+                    fields: &[Field::KeyboardLayout, Field::KeyboardVariant],
+                },
+                Group {
+                    title_id: "settings-group-input-repeat",
+                    fields: &[Field::KeyboardRepeatDelay, Field::KeyboardRepeatRate],
+                },
+                Group {
+                    title_id: "settings-group-input-pointer",
+                    fields: &[Field::TapToClick, Field::NaturalScroll],
+                },
+            ],
+            Self::Layout => &[Group {
+                title_id: "settings-group-layout-tiling",
+                fields: &[
+                    Field::LayoutMasterRatio,
+                    Field::LayoutMasterCount,
+                    Field::LayoutGap,
+                ],
+            }],
+            Self::Launcher => &[
+                Group {
+                    title_id: "settings-group-launcher-command",
+                    fields: &[Field::LauncherTerminal],
+                },
+                Group {
+                    title_id: "settings-group-launcher-results",
+                    fields: &[
+                        Field::LauncherMaxResults,
+                        Field::LauncherIconSize,
+                        Field::LauncherIncludeHidden,
+                        Field::LauncherMaxQueryChars,
+                    ],
+                },
+            ],
+            Self::Wallpaper => &[
+                Group {
+                    title_id: "settings-group-wallpaper-image",
+                    fields: &[Field::WallpaperImage, Field::WallpaperMode],
+                },
+                Group {
+                    title_id: "settings-group-wallpaper-outputs",
+                    fields: &[Field::WallpaperPerOutput],
+                },
+            ],
+            Self::Displays => &[Group {
+                title_id: "settings-group-displays-outputs",
+                fields: &[Field::Outputs],
+            }],
+            Self::InputMethod => &[Group {
+                title_id: "settings-group-input-method-command",
+                fields: &[Field::InputMethodCommand],
+            }],
+        }
+    }
+
     /// The message id of the page's name.
     pub const fn label_id(self) -> &'static str {
         match self {
@@ -126,9 +276,33 @@ impl PageId {
         }
     }
 
-    /// Every message id the page's name and its fields need.
+    /// The message id of the sentence under the page's title.
+    ///
+    /// One screen carries one title and one explanation of what the screen is
+    /// for; the cards under it carry the headings (ui-guidelines §2).
+    pub const fn description_id(self) -> &'static str {
+        match self {
+            Self::InputMethod => "settings-page-input-method-description",
+            Self::Displays => "settings-page-displays-description",
+            Self::Input => "settings-page-input-description",
+            Self::Layout => "settings-page-layout-description",
+            Self::Launcher => "settings-page-launcher-description",
+            Self::Wallpaper => "settings-page-wallpaper-description",
+            Self::Appearance => "settings-page-appearance-description",
+            Self::Panel => "settings-page-panel-description",
+            Self::Notifications => "settings-page-notifications-description",
+            Self::Locale => "settings-page-locale-description",
+        }
+    }
+
+    /// Every message id the page's name, its explanation, its cards and its
+    /// fields need.
     pub fn message_ids(self) -> Vec<&'static str> {
-        let mut ids = vec![self.label_id()];
+        let mut ids = vec![self.label_id(), self.description_id()];
+
+        for group in self.groups() {
+            ids.push(group.title_id);
+        }
 
         for field in self.fields() {
             ids.extend(field.message_ids());
@@ -183,6 +357,15 @@ fn standalone_entry(page: PageId, model: &SettingsViewModel) -> PageView {
     PageView {
         page,
         label: page.label_id().to_owned(),
+        description: page.description_id().to_owned(),
+        groups: page
+            .groups()
+            .iter()
+            .map(|group| crate::view_model::GroupView {
+                title: group.title_id.to_owned(),
+                fields: group.fields.to_vec(),
+            })
+            .collect(),
         selected: page == model.page,
         focused: false,
     }
@@ -231,6 +414,45 @@ mod tests {
                 "{page:?} is named `{}`",
                 page.label_id()
             );
+            assert!(
+                page.description_id().starts_with("settings-page-"),
+                "{page:?} is explained by `{}`",
+                page.description_id()
+            );
+        }
+    }
+
+    #[test]
+    fn the_cards_of_a_page_hold_exactly_its_fields_in_the_order_it_draws_them() {
+        for page in PageId::ALL {
+            let grouped: Vec<Field> = page
+                .groups()
+                .iter()
+                .flat_map(|group| group.fields.iter().copied())
+                .collect();
+
+            assert_eq!(
+                grouped,
+                page.fields().to_vec(),
+                "{page:?}: the cards and the page disagree, so the keyboard would walk \
+                 the window in another order than it is drawn"
+            );
+
+            let unique: BTreeSet<Field> = grouped.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                grouped.len(),
+                "{page:?}: a field is in two cards"
+            );
+
+            for group in page.groups() {
+                assert!(!group.fields.is_empty(), "{page:?}: an empty card");
+                assert!(
+                    group.title_id.starts_with("settings-group-"),
+                    "{page:?} has a card titled `{}`",
+                    group.title_id
+                );
+            }
         }
     }
 
@@ -239,6 +461,8 @@ mod tests {
         let ids = PageId::Notifications.message_ids();
 
         assert!(ids.contains(&"settings-page-notifications"));
+        assert!(ids.contains(&"settings-page-notifications-description"));
+        assert!(ids.contains(&"settings-group-notifications-timeouts"));
         assert!(ids.contains(&Field::NotificationsNormalTimeout.label_id()));
         assert!(ids.contains(&"settings-unit-ms"));
         assert!(!ids.contains(&"settings-page-panel"));

@@ -30,6 +30,7 @@ use iced_runtime::user_interface::Cache;
 use inox_common::i18n::Locale;
 use inox_config::{Appearance, ConfigPaths, InoxConfig, Rgba, Theme as Tokens};
 use inox_settings::app::{self, Message, OutgoingCommand, SaveRequest, State};
+use inox_settings::apply::Component;
 use inox_settings::document::Documents;
 use inox_settings::{i18n, persist, theme};
 
@@ -49,6 +50,10 @@ pub struct Window {
     state: State,
     cache: RefCell<Cache>,
     operations: RefCell<Vec<Box<dyn iced_core::widget::Operation>>>,
+    /// Whether a compositor answers, so the display-trial workflow can be driven
+    /// without a session bus. Off by default: the ordinary tests exercise the
+    /// window in the state this milestone ships it in, where nothing answers.
+    compositor: bool,
 }
 
 impl Window {
@@ -83,7 +88,14 @@ impl Window {
             state,
             cache: RefCell::new(Cache::default()),
             operations: RefCell::new(Vec::new()),
+            compositor: false,
         }
+    }
+
+    /// The same window, but with a compositor that answers display trials.
+    pub fn with_compositor(mut self) -> Self {
+        self.compositor = true;
+        self
     }
 
     /// The directory the window's files live in.
@@ -147,6 +159,15 @@ impl Window {
     /// Drawing without that step would render every control as unusable, and a
     /// test that drew that way would be asserting about a window no user sees.
     pub fn render(&self) -> Vec<u8> {
+        self.render_at(Point::ORIGIN)
+    }
+
+    /// Draws the window with the pointer at `point`.
+    ///
+    /// The pointer is what decides the hovered state of every control the
+    /// window checks its own cursor against, so a test asserts the hover state
+    /// by drawing with the pointer over the control (ui-guidelines §5).
+    pub fn render_at(&self, cursor: Point) -> Vec<u8> {
         let mut renderer = renderer();
         let mut ui = self.interface(&mut renderer);
         let mut messages = Vec::new();
@@ -155,7 +176,7 @@ impl Window {
             &[Event::Window(iced_core::window::Event::RedrawRequested(
                 iced_core::time::Instant::now(),
             ))],
-            mouse::Cursor::Available(Point::ORIGIN),
+            mouse::Cursor::Available(cursor),
             &mut renderer,
             &mut clipboard::Null,
             &mut messages,
@@ -165,7 +186,7 @@ impl Window {
             &mut renderer,
             &self.theme(),
             &Style::default(),
-            mouse::Cursor::Available(Point::ORIGIN),
+            mouse::Cursor::Available(cursor),
         );
 
         self.cache.replace(ui.into_cache());
@@ -253,17 +274,65 @@ impl Window {
                             outcome,
                         });
                     }
+                    OutgoingCommand::Restore(request) => {
+                        let SaveRequest {
+                            generation,
+                            file,
+                            path,
+                            content,
+                            guard,
+                            ..
+                        } = *request;
+
+                        let outcome = persist::save(&path, content.as_bytes(), Some(&guard));
+
+                        self.update(Message::DisplayRestored {
+                            generation,
+                            file,
+                            outcome,
+                        });
+                    }
                     OutgoingCommand::Apply {
                         generation,
                         component,
+                        trial,
                     } => {
-                        // No transport exists in this milestone, which is what
-                        // the binary reports as well (ADR 0018).
-                        self.update(Message::ComponentUnreachable {
-                            generation,
-                            component,
-                            reason: "no transport is implemented in this milestone".to_owned(),
-                        });
+                        if trial && component == Component::Compositor && self.compositor {
+                            let config = InoxConfig::load(&self.paths, Appearance::System)
+                                .expect("the files load");
+                            self.update(Message::DisplayTrialArmed {
+                                generation,
+                                config: Box::new(config),
+                            });
+                        } else {
+                            // No transport exists in this milestone, which is what
+                            // the binary reports as well (ADR 0018).
+                            self.update(Message::ComponentUnreachable {
+                                generation,
+                                component,
+                                reason: "no transport is implemented in this milestone".to_owned(),
+                            });
+                        }
+                    }
+                    OutgoingCommand::ConfirmDisplay { generation } => {
+                        if self.compositor {
+                            self.update(Message::DisplayConfirmed { generation });
+                        } else {
+                            self.update(Message::DisplayConfirmFailed {
+                                generation,
+                                reason: "no transport is implemented in this milestone".to_owned(),
+                            });
+                        }
+                    }
+                    OutgoingCommand::RollbackDisplay { generation } => {
+                        if self.compositor {
+                            self.update(Message::DisplayReverted { generation });
+                        } else {
+                            self.update(Message::DisplayRevertFailed {
+                                generation,
+                                reason: "no transport is implemented in this milestone".to_owned(),
+                            });
+                        }
                     }
                     OutgoingCommand::Reload => {
                         let config = InoxConfig::load(&self.paths, Appearance::System)
@@ -393,6 +462,53 @@ pub fn has_ink(
 ) -> bool {
     (from_y..to_y.min(HEIGHT as u32))
         .any(|y| (from_x..to_x.min(WIDTH as u32)).any(|x| pixel(pixels, x, y) != background))
+}
+
+/// How wide the widest solid block of one exact colour was drawn, in logical
+/// pixels.
+///
+/// A field's own fill is the only thing of its colour on the window, so the
+/// width of that block is how wide the field was drawn (ui-guidelines §4: a
+/// short field must not be stretched across the window). A block is a stack of
+/// the colour at least [`BLOCK_ROWS`] tall: a card's hairline border can blend
+/// to the same channel values for a row or two, but only a field is a block.
+pub fn widest_block(pixels: &[u8], colour: [u8; 4]) -> u32 {
+    /// The fewest rows a block has to cover: a hairline is one, a field is a
+    /// control's height.
+    const BLOCK_ROWS: u32 = 8;
+
+    let mut widest = 0;
+
+    for x in 0..WIDTH as u32 {
+        let mut run = 0;
+
+        for y in 0..=HEIGHT as u32 {
+            if y < HEIGHT as u32 && pixel(pixels, x, y) == colour {
+                run += 1;
+                continue;
+            }
+
+            if run >= BLOCK_ROWS {
+                let middle = y - run / 2;
+                let mut left = x;
+                let mut right = x;
+
+                while left > 0 && pixel(pixels, left - 1, middle) == colour {
+                    left -= 1;
+                }
+
+                while right + 1 < WIDTH as u32 && pixel(pixels, right + 1, middle) == colour {
+                    right += 1;
+                }
+
+                widest = widest.max(right - left + 1);
+            }
+
+            run = 0;
+        }
+    }
+
+    widest
 }
 
 /// Writes a snapshot when `INOX_SCREENSHOT_DIR` is set (acceptance Q02).

@@ -6,8 +6,7 @@
 #
 # 星期与月份的编号与 `chrono` 一致：1 = 周一 … 7 = 周日，1 = 一月 … 12 = 十二月。
 
-# 面板自身窗口的标题：真实会话中它是 layer 表面，只有在没有 layer-shell 宿主时才是
-# 普通窗口（ADR 0018）。
+# 面板自身表面的标题：面板画的每一种表面都是 wlr-layer-shell 表面（ADR 0018）。
 panel-window-title = Inox 面板
 
 # 面板级状态（验收 D05）。
@@ -22,6 +21,10 @@ panel-task-disabled-service = 窗口服务不可用
 panel-task-tooltip = { $app }：{ $title }
 panel-task-tooltip-empty = { $app }
 panel-task-title-with-count = { $title }（{ $count }）
+
+# 坞栏图块：面板没有图标主题解码器，因此每块是一枚写着应用名首字的徽标；
+# 没有名字的应用用这条占位文案。它会被画在方形图块里，所以必须很短。
+panel-dock-icon-placeholder = ？
 
 # 托盘项（验收 D03）。
 panel-tray-unknown-item = 状态项

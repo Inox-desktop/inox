@@ -4,20 +4,21 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 ```text
 ┌─────────────────────────────────────────────┐
-│ Layer 4: 会话与系统集成                      │
-│  inox-session, inox-greet, inox-idle         │
+│ Layer 4: 会话与系统集成                     │
+│  inox-session, inox-greet, inox-idle,       │
+│  inox-host                                  │
 ├─────────────────────────────────────────────┤
-│ Layer 3: Shell 与用户界面                    │
-│  inox-shell, inox-panel, inox-launcher,      │
-│  inox-notifications, inox-settings,          │
-│  inox-lock, inox-wallpaper                   │
+│ Layer 3: Shell 与用户界面                   │
+│  inox-shell, inox-panel, inox-launcher,     │
+│  inox-notifications, inox-settings,         │
+│  inox-lock, inox-wallpaper                  │
 ├─────────────────────────────────────────────┤
-│ Layer 2: 合成器与窗口管理                    │
-│  inox-compositor, inox-xwayland,             │
-│  inox-protocols                              │
+│ Layer 2: 合成器与窗口管理                   │
+│  inox-compositor, inox-xwayland,            │
+│  inox-protocols, inox-auth                  │
 ├─────────────────────────────────────────────┤
-│ Layer 1: 基础设施与共享库                    │
-│  inox-common, inox-config                    │
+│ Layer 1: 基础设施与共享库                   │
+│  inox-common, inox-config                   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -26,9 +27,9 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | 层级 | 职责 | 成员 |
 |------|------|------|
 | **L1** 基础设施与共享库 | 通用类型、错误处理、日志、配置解析 | `inox-common`、`inox-config` |
-| **L2** 合成器与窗口管理 | DRM/KMS、输入、渲染、窗口管理、协议绑定、XWayland 集成 | `inox-compositor`、`inox-protocols`、`inox-xwayland` |
+| **L2** 合成器、窗口管理、协议与认证边界 | DRM/KMS、输入、渲染、窗口管理、协议绑定、XWayland 集成、系统认证 | `inox-compositor`、`inox-protocols`、`inox-xwayland`、`inox-auth` |
 | **L3** Shell 与用户界面 | 基于 Iced 的桌面外壳与 UI 组件 | `inox-shell`、`inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper` |
-| **L4** 会话与系统集成 | 会话管理、空闲管理、显示管理器 | `inox-session`、`inox-idle`、`inox-greet` |
+| **L4** 会话与系统集成 | 会话管理、空闲管理、显示管理、登录阶段编排 | `inox-session`、`inox-idle`、`inox-greet`、`inox-host` |
 | 元 / 组织 | 文档与组织级模板，不参与依赖图 | `inox`、`.github` |
 | 测试 | 端到端集成测试 | `inox-integration` |
 
@@ -68,6 +69,40 @@ ADR 0002 把依赖方向作为单条判据固定下来：任何一个 crate「�
 - **D-Bus**：通知、设置、`xdg-desktop-portal` 等跨进程服务走会话总线。
 - **配置热重载**：组件监听 `SIGHUP` 或 `inoxctl reload`，重新读取 TOML 并原子应用；重载失败保留旧配置并记录警告。
 
+## 登录链：开机到桌面
+
+桌面之外还有一段链，它必须先跑起来，上面那些组件才存在（[ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)）：
+
+```text
+systemd
+ ├─ inox-auth.service                 root，常驻，Restart=always
+ │    └─ /run/inox/auth.sock          root:greeter 0660；只接受 greeter 的 uid
+ │       ├─ Authenticate              校验口令（/etc/pam.d/inox-auth）
+ │       └─ StartSession ──► 会话负责人（一次登录一个进程）
+ │                             ├─ pam_open_session（XDG_VTNR 由 root 父进程给出）
+ │                             │  /etc/pam.d/inox-auth-session（auth 必须许可：负责人没有口令）
+ │                             ├─ logind.ActivateSession（新会话的 VT）
+ │                             └─ exec inox-session（目标账号，已降权）
+ └─ inox-greeter@<VT>.service         User=greeter, PAMName=inox-greeter
+      └─ inox-host                    TTYPath=/dev/tty<VT>, XDG_VTNR=<VT>
+           ├─ inox-compositor --socket wayland-inox-greet
+           └─ inox-greet              INOX_AUTH_SOCKET=/run/inox/auth.sock
+```
+
+- **VT 与设备归 logind + libseat**：Inox 组件不执行 VT ioctl、不转发 DRM fd。greeter 的设备访问来自它自己的
+  logind 会话，用户阶段的来自会话负责人建立的那个会话；VT 切换由 `inox-auth` 调 `ActivateSession` 完成。
+- **VT 归属**：greeter 在 `inox-greeter@<VT>`（实例名即 VT 号，开机链是 1）；用户会话由 `inox-auth` 取
+  VT2..=6 中第一个空闲且不等于 greeter 的 VT；同时只允许一个用户会话。
+- **注销回路**：用户会话结束时 `inox-auth` 重新激活它启动前记录的那个会话（通常就是 greeter），
+  登录界面一直驻留、3 秒后回到登录画面，因此不需要谁重新拉起它。
+- **救援通道**：`getty@tty3.service` 常驻，任何登录链故障都能 `Ctrl+Alt+F3` 进去修。
+- **部署**：`packaging/`（三个 PAM 栈、三个单元、安装/试运行/预检/回退/卸载脚本）。默认安装**不动开机链**，
+  试运行用 VT4，`--enable` 才把 `display-manager.service` 交给 `inox-greeter@1.service`。
+  步骤与排障见[登录与开机链](../usage/login.md)。
+
+真机证据**尚未取得**：安装、试运行、切换、注销、回退与 VT3 救援都还没有人在这台机器上跑过并留证
+（验收 S06–S11）。
+
 ## 当前实现边界
 
-架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与多窗口平铺（见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland` 均有实现；L3、L4 的组件目前都还是骨架，合成器与 Shell 之间的数据流尚未真实联通。
+架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与多窗口平铺（见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现，L3 各组件也已有可用实现（界面为普通窗口，layer-shell 宿主未接）。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按 ADR 0037 落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。

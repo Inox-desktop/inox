@@ -483,6 +483,142 @@ fn any_edit() -> impl Strategy<Value = (Field, Value)> {
         })
 }
 
+/// A window over a directory holding `files`, with a compositor that answers.
+///
+/// The display page is the only one that asks a question before a change
+/// becomes permanent (ADR 0028), and the question needs a consumer that can
+/// answer it: this is that consumer.
+fn display_window() -> Window {
+    Window::new().with_compositor()
+}
+
+/// One named output added to the display page.
+fn add_output(window: &mut Window, name: &str) {
+    window.update(Message::PageSelected(PageId::Displays));
+    window.update(Message::RowAdded(Field::Outputs));
+    window.update(Message::CellEdited {
+        field: Field::Outputs,
+        row: 0,
+        column: 0,
+        text: name.to_owned(),
+    });
+}
+
+#[test]
+fn a_display_change_is_applied_provisionally_and_asks_the_user() {
+    let mut window = display_window();
+    add_output(&mut window, "DP-1");
+
+    window.apply_and_drain();
+
+    let config = window.reload_config();
+    assert_eq!(
+        config.compositor.outputs.len(),
+        1,
+        "the change reached the file and the compositor"
+    );
+    let model = window.state().model();
+    let trial = model
+        .trial
+        .as_ref()
+        .expect("the display change is on trial");
+    assert_eq!(trial.remaining_seconds, 30);
+    assert_eq!(
+        model.status.kind,
+        StatusKind::Provisional,
+        "an unanswered trial is not reported as settled"
+    );
+}
+
+#[test]
+fn a_display_trial_that_is_not_answered_puts_the_previous_settings_back() {
+    let mut window = display_window();
+    add_output(&mut window, "DP-1");
+    window.apply_and_drain();
+
+    // The countdown the subscription would drive, one message a second.
+    for _ in 0..30 {
+        window.update(Message::TrialTick);
+    }
+    window.drain();
+
+    let config = window.reload_config();
+    assert!(
+        config.compositor.outputs.is_empty(),
+        "a mode nobody confirmed must not survive in the files"
+    );
+    assert!(
+        !String::from_utf8_lossy(&window.file("compositor.toml")).contains("DP-1"),
+        "the file holds no trace of the reverted output"
+    );
+    assert!(window.state().model().trial.is_none());
+    assert!(
+        window
+            .state()
+            .model()
+            .status
+            .details
+            .iter()
+            .any(|detail| detail.contains("were restored")),
+        "the window says what happened to the display"
+    );
+}
+
+#[test]
+fn a_display_trial_that_is_confirmed_keeps_the_change() {
+    let mut window = display_window();
+    add_output(&mut window, "DP-1");
+    window.apply_and_drain();
+
+    window.update(Message::TrialConfirm);
+    window.drain();
+
+    let config = window.reload_config();
+    assert_eq!(config.compositor.outputs.len(), 1);
+    assert_eq!(
+        config.compositor.outputs[0].name.as_deref(),
+        Some("DP-1"),
+        "the confirmed output is still there"
+    );
+    assert!(window.state().model().trial.is_none());
+}
+
+#[test]
+fn without_a_compositor_a_display_change_is_saved_and_says_so() {
+    let mut window = Window::new();
+    add_output(&mut window, "DP-1");
+
+    window.apply_and_drain();
+
+    assert!(
+        window.state().model().trial.is_none(),
+        "a change nobody could apply is not on trial"
+    );
+    assert_eq!(
+        window.state().model().status.kind,
+        StatusKind::SavedOnly,
+        "saved, and honest about not being in effect"
+    );
+    assert_eq!(window.reload_config().compositor.outputs.len(), 1);
+}
+
+#[test]
+fn a_panel_change_is_never_put_on_trial() {
+    let mut window = window(&[("shell.toml", SHELL)]);
+    window.update(Message::PageSelected(PageId::Panel));
+    window.update(Message::FieldSet {
+        field: Field::PanelHeight,
+        value: Value::Number(64),
+    });
+
+    window.apply_and_drain();
+
+    assert!(
+        window.state().model().trial.is_none(),
+        "only the display page asks before a change becomes permanent"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
 

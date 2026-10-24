@@ -31,10 +31,11 @@ max_query_chars = 128      # 1..=512
 
 [wallpaper]
 mode = "fill"              # fill | fit | stretch | center | tile
-# image = "wallpapers/steel.png"   # 相对配置目录的路径；省略则使用主题背景色
+# image = "nebula"                 # 内置壁纸名称、none（主题背景），或图片路径
+# image = "wallpapers/steel.png"   # 你自己的图片，相对配置文件所在目录
 
 [wallpaper.per_output]
-"*" = "wallpapers/steel.png"       # 未单独指定的输出
+"*" = "lake"                        # 未单独指定的输出；取值同 image
 "HDMI-A-1" = "wallpapers/wide.png"
 ```
 
@@ -87,11 +88,43 @@ mode = "fill"              # fill | fit | stretch | center | tile
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `mode` | 字符串 | `"fill"` | `fill`（裁剪填满，保持宽高比）/ `fit`（完整可见）/ `stretch` / `center` / `tile` |
-| `image` | 路径 | 省略 | 相对配置目录的图片路径，与主题资源使用同一套路径策略（拒绝绝对路径与 `..`） |
-| `per_output` | 表 | 空 | 按输出名覆盖图片；键 `*` 是未单独指定输出的回退 |
+| `image` | 字符串 | 省略＝内置默认壁纸 | 内置壁纸名称、`none`（主题背景），或图片路径 |
+| `per_output` | 表 | 空 | 按输出名覆盖 `image`，取值与 `image` 相同；键 `*` 是未单独指定输出的回退 |
 
-`image` 省略、文件不存在或无法解码时，壁纸回退到**主题的背景令牌**并给出可诊断的日志，而不是黑屏或
-崩溃：显式选择却读不到的资源必须被报告（ADR 0014），而「没有配置图片」是正常状态。
+### `image` 的取值
+
+`image` 既可以是内置壁纸的**名称**，也可以是一个**路径**：
+
+| 取值 | 含义 |
+|------|------|
+| 键**省略** | 内置默认壁纸（`nebula`） |
+| `"none"` | 主题背景：明确的「无图像」 |
+| 内置壁纸的名称 | 该内置壁纸 |
+| 其它字符串 | 图片路径。相对路径相对**配置文件所在目录**，绝对路径原样使用（因此 `/usr/share/backgrounds/…` 可直接写） |
+
+内置壁纸随发行版安装到 `$XDG_DATA_DIRS/inox/wallpapers/`；`INOX_WALLPAPER_DIR`（绝对路径）可以覆盖该目录，
+便于在源码检出或非常规布局下运行。**设置**应用（`inox-settings`）可以直接挑选这些壁纸，
+不需要手写路径。当前随附（ADR 0030）：
+
+| 名称 | 图片 | 作者 | 来源 |
+|------|------|------|------|
+| `nebula`（默认） | `nebula.jpg` | Scott Lord | <https://unsplash.com/photos/OHCl_XMUcZ4> |
+| `fuji` | `fuji.jpg` | Daniel Sessler | <https://unsplash.com/photos/AUPja_8Smd0> |
+| `bricks` | `bricks.jpg` | Joe Dudeck | <https://unsplash.com/photos/e2MLl-80u4E> |
+| `lake` | `lake.jpg` | Johannes Plenio | <https://unsplash.com/photos/gWFjkBDYtxg> |
+| `rainbow` | `rainbow.jpg` | Karla Hernandez | <https://unsplash.com/photos/BkjgNMEcfg8> |
+| `monument` | `monument.jpg` | Tom Gainor | <https://unsplash.com/photos/XprGan-6wy4> |
+
+随附图像依 **Unsplash License** 分发；署名与许可以及下采样方法记录在仓库根的
+`data/wallpapers/CREDITS.md`。打包方可以不安装这些文件，此时省略 `image` 会退到主题背景并记录一条警告。
+
+**名称与路径的区别**：与内置名称同名的文件（或恰好叫 `none` 的文件）不能再用裸名称选中，
+要写成带前缀的路径（例如 `./none`）。反过来说，任何**不**与内置名称相同的相对路径、以及任何绝对路径，
+行为与以前完全一致。
+
+`image` 指定的文件不存在或无法解码时，壁纸回退到**主题的背景令牌**并给出可诊断的日志，而不是黑屏或
+崩溃：显式选择却读不到的资源必须被报告（ADR 0014）。省略 `image` 时显示的**是**内置默认壁纸；
+只有显式写成 `none`（或把 `image` 设成空字符串）时才是主题背景。
 
 ## 相关页面
 

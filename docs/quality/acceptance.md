@@ -106,18 +106,37 @@ X03 的**跨 X11/Wayland 边界拖放腿被上游阻塞**：`xwayland-satellite`
 | S03 | M5 / `inox-lock`、`inox-idle`、`inox-session` | 空闲抑制启停、手动锁定、挂起准备、挂起/恢复 10 轮；锁定后拔插显示器和切 VT | 抑制器只影响自动空闲策略，不阻止手动锁定；挂起前锁定完成有确认，失败按明确策略取消/阻止挂起；恢复后始终先见锁屏；凭据不进日志、剪贴板、截图 | E1+E3；E4 验证真实挂起/VT |
 | S04 | 首次特权接口引入，最迟 M5 / `inox-protocols`、合成器与服务方 | 未授权客户端请求控制输出、截屏、输入注入或私有 reload；权限撤销后重试；低版本/未知协议请求 | 服务端执行权限检查与版本上限；默认无特权；客户端自报名称/PID 不构成授权；超限/无效请求被拒绝且不影响其他客户端；锁定时撤销捕获/输入能力 | E1+E2+E3；允许/拒绝/撤销事件 |
 | S05 | M5 / `inox-session`、`inox-compositor` | Shell 单独崩溃；再让合成器崩溃 | Shell 重启后现存客户端继续；合成器崩溃被记录并结束/重建会话，明确通知丢失的客户端连接；不得把重新拉起空桌面称为恢复原窗口或未保存数据 | E3；进程、连接与状态记录 |
+| S06 | M5 登录链首次安装（[ADR 0037](../adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)）/ `packaging` | 在装有 greetd 的登记机器上以 root 跑 `packaging/install.sh`，再原样跑第二次 | **三条** PAM 栈落地（`/etc/pam.d/inox-auth` 校验口令、`/etc/pam.d/inox-auth-session` 由会话负责人打开会话、`/etc/pam.d/inox-greeter` 给登录界面自己的会话；前两条缺任一条都会让登录以「会话无法启动」结束）与三个单元落地并被 `systemd-analyze verify` 接受；**`sudo packaging/preflight.sh` 报告 0 FAIL**（每条 WARN 也要有解释：它意味着链能跑但不是打包期望的样子）；`greeter` 账户存在（已存在时保留其 uid，不存在则创建为系统账号）；`getty@tty3.service` 已 enabled 且 active；**`display-manager.service` 与安装前解析到同一单元**（默认不动开机链）；第二次运行不产生新变化；任何被拒绝的运行（缺二进制等）不留半写状态 | E4（人类在登记机器上完成）+ E0（`bash -n`）；实际输出、**`preflight.sh` 的完整输出与退出码**、`readlink -f /etc/systemd/system/display-manager.service` 前后、`systemctl is-enabled getty@tty3` |
+| S07 | M5 登录链试运行（不动开机链）/ `packaging` | 安装后先 `sudo packaging/preflight.sh`（0 FAIL），再跑 `packaging/try-inox-greeter.sh`——它在 `chvt` 之前自己还会跑一遍预检；在 VT4 登录、注销；再跑 `packaging/try-rollback.sh` | 预检在 **`chvt` 之前**通过（FAIL 时屏幕没有被切走、单元没有被启动）；VT4 出现登录界面；`inox-greeter@4.service` 与 `inox-auth.service` 均 active；**试运行前后 `display-manager.service` 的解析结果不变**；`loginctl list-sessions` 中 greeter 会话在 VT4、用户会话在 VT2..=6 且不等于 4；注销后回到 VT4 的登录画面；回退后该实例停止、无其他 Inox 登录界面时 `inox-auth` 也停止；VT1 上原有显示管理器全程可用（`Ctrl+Alt+F1`） | E4；VT4 登录画面截图、`loginctl list-sessions` 前后、`journalctl -u 'inox-greeter@*' -b`（无 session inactive / libseat / DRM 错误）、`readlink -f` 前后 |
+| S07a | M5 无 VT 预演（[ADR 0037](../adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) §决策 3）/ `inox-host`、`packaging` | 任意开发机（无需 root、无需 `/etc`、systemd 或 VT）：跑 `packaging/rehearse-headless.sh`——私有 `XDG_RUNTIME_DIR`、只 `accept()` 的替身边界、真实 `inox-host` + 真实 `inox-compositor --headless`（llvmpipe）+ 真实 `inox-greet`，跑满 `--seconds` 后判定 | 脚本 PASS：合成器绑定 Wayland socket；宿主起了两个子进程（合成器 → 登录界面）；登录界面找到边界并读到系统账户列表；映射出 toplevel（渲染器真的画了帧）；到截止时间宿主仍存活；`SIGTERM` 后宿主退出码 0 且无残留进程。**S07 的前置**：S07 之前必须已有一次 PASS。它排除的是宿主编排、Wayland 握手与界面渲染，**不**覆盖 DRM/seat、VT 交接、PAM 与会话启动，因此不得据此声称登录可行 | E2；脚本输出（含被断言的日志行）与退出码；任何开发机可跑，也可在 CI 中作为无特权作业运行 |
+| S08 | M5 开机链切换 / `packaging` | 试运行通过后跑 `packaging/install.sh --enable`，重启；再**注入一次登录界面故障**（例如临时把 `/usr/bin/inox-host` 改名，或 `systemctl mask --runtime inox-auth.service`）后重启 | 重启后 VT1 是 Inox 登录界面；`inox-auth.service` 与 `inox-greeter@1.service` active；greetd 未启动且 `is-enabled` 为 `disabled`；`display-manager.service` 解析到 `inox-greeter@1.service`；`systemctl --failed` 为空；`getty@tty3.service` 仍 active。**故障注入那一半**：Inox 登录界面无法启动时，`inox-greeter@1.service` 在一分钟内耗尽重启预算进入 `failed`，`inox-login-fallback.service` 因此把 greetd 拉起来（`systemctl status greetd` 为 active，VT1 上出现 greetd 的登录界面），而 `systemctl is-enabled greetd` 仍是 `disabled`——fallback 只救这一次启动，不会把开机链改回去 | E4；重启前后 `systemctl is-enabled`、`loginctl list-sessions`、`systemctl --failed`、VT1 截图；故障注入后 `systemctl status inox-greeter@1 inox-login-fallback greetd`、`journalctl -u 'inox-greeter@1'`、`systemctl is-enabled greetd`、VT1 上 greetd 界面截图 |
+| S09 | M5 注销回登录画面 / `inox-greet`、`inox-auth`、`packaging` | 在 Inox 登录界面登录，在用户会话内注销，再登录一次 | 登录后用户会话的 `VT` 是 VT2..=6 中的一个空闲 VT 且不等于 greeter 的 VT；注销后 `inox-auth` 把画面交回 greeter 的 VT，屏幕上已是登录画面（驻留 3 s 后为 `Phase::Ready`，账户保留、口令为空）；同一账号可再次登录成功；`loginctl list-sessions` 中用户会话消失而 greeter 会话仍在。**自动化的一半**：登录后 `packaging/verify-login.sh` PASS，注销后 `packaging/verify-login.sh --after-logout` PASS（它逐条检查 VT/`Service=inox-auth-session`/seat/`XDG_*`/登录界面存活；FAIL 行直接指出哪条不变量不成立）——脚本 PASS 不能替代人自己完成的那次登录与注销 | E4 + E1（`inox-greet` 驻留复位、`inox-auth` 的 VT 选择与交回单测）；两次登录的 `loginctl list-sessions`、journal 片段、VT 截图、**两次 `verify-login.sh` 的输出与退出码** |
+| S10 | M5 回退到 greetd / `packaging` | 在 Inox 为开机链的机器上跑 `packaging/rollback-to-greetd.sh`，再重启 | 先切换后停服务：在 `display-manager.service` 被读回验证指向 greetd **之前**不停止任何 Inox 单元；成功后 `greetd.service` active、`inox-greeter@*` 与 `inox-auth.service` inactive 且 disabled；重启后出现原 greetd 界面；Inox 的 PAM 栈与单元保留且不影响 greetd；任一步失败都不留下「既不指向 greetd 也不指向 Inox」的开机链，并给出可执行的恢复命令 | E4；每步输出、各步 `readlink -f`、`systemctl status greetd`、重启后截图 |
+| S11 | M5 VT3 救援 console / `packaging` | 安装后 `Ctrl+Alt+F3` 登录；制造一次登录链故障（如 `systemctl mask inox-auth.service` 后重启）；再从 VT3 修复 | VT3 全程是可登录的 getty（安装、试运行、`--enable`、回退、卸载都不移除 `getty@tty3.service`）；故障态下可从 VT3 登录并用 `journalctl`/`systemctl` 修复；`chvt 1` 能回到图形登录界面 | E4；三处 `systemctl is-enabled getty@tty3` 记录、VT3 登录截图、修复前后的 `journalctl -u inox-auth` |
+
+S06–S11 是 `packaging` 的验收，除 S07a 外全部为 **E4**：脚本与单元是否正确，只能由人在这台登记机器上按
+[登录与开机链](../book/src/usage/login.md) 跑一遍并留证。S07a 是其中唯一的 **E2** 条目——它在任何开发机上
+无特权可跑（真实组件、私有 runtime、替身边界），排除宿主编排、Wayland 握手与界面渲染三类问题，
+但既不校验口令也不建立会话，所以它**不能**替代 S07–S09，也不构成登录可行的证据。CI 能为这一面提供的
+E0 检查（脚本的 `bash -n`、`mdbook build`、markdownlint）同样不构成登录链可用的证据；`inox-host` 的编排单测、
+`inox-auth` 的 VT 选择/交回单测与 `inox-greet` 的驻留复位单测属 E1，它们证明规则，不证明这台机器真的能登录。
+执行顺序：S06 → **S07a** → S07 → S08 → S09（`--enable` 之前必须先有一次通过的试运行），S10 与 S11 可在任意阶段执行；
+在真机条目全部为 `pass` 之前，M5 的日常可用结论与任何「Inox 能登录」的说法都不成立。登录链的默认路径是
+**不动开机链**：安装与试运行不得改动 `display-manager.service`，这一条本身就是 S06/S07 的通过条件。
 
 Portal 后端仍按独立 ADR 排期。发布若提供截屏/共享，必须有授权、拒绝、撤销和锁屏中止测试；若未提供，明确列为不可用并拒绝相关特权请求，不能绕过 Portal 暗中开放全局捕获。
+
+`inox-glass-v1`（毛玻璃/背景模糊请求，[ADR 0031](../adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)）**不是** S04 意义上的特权接口，理由是它不授予任何读取能力：合成器把模糊后的像素留在自己的帧缓冲里，客户端只收到一个半径上限（`capabilities`）的事件，拿不到图像、缓冲或颜色；请求被裁剪到请求者自己的表面，普通 toplevel 不满足「已知桌面层」的前提而得到 0；代价由半径上限、表面积裁剪与「每表面一个对象」共同界定。仍须遵守的边界是：锁定期间普通表面根本不参与合成，因此毛玻璃不得出现在锁定场景，也不得成为读取其他客户端内容的旁路——这两条由合成器侧断言覆盖。证据等级：离屏合成器像素证据与面板侧协议证据属 E1/E2；真实硬件上的磨砂观感（含窗口移动时的模糊跟随）尚无 E4 记录，不得据 E2 声明真机已可用。
 
 ## 9. 可访问性、国际化与视觉质量
 
 | ID | 首次门槛 / 责任 crate | 通过条件 | 证据 |
 |----|---------------------|----------|------|
-| Q01 | M4；锁屏/通知 M5 / L3 各组件 | 仅键盘完成启动、切窗、托盘菜单、设置应用/取消、锁定/解锁；焦点可见且唯一、无陷阱；交互控件暴露 role、name、state、action，屏幕阅读器可识别核心任务；接口占位不计通过 | E2+E3；语义树、焦点序列、屏幕阅读器人工记录。`inox-greet` 的登录路径已由纯函数键位映射 + 焦点模型 + 像素断言覆盖（`app::key_binding`、`view_model::focus_order`、`tests/render.rs`），**但那条路径只有测试能到达**：`--preview` 运行的是本构建真实的状态（没有认证边界），身份字段因此不可输入；**`inox-lock` 这一侧仍未取得**：锁表面刻意不读键鼠，因为本构建没有可用认证边界，屏幕上没有可操作的东西（ADR 0025 决策 5），「仅键盘完成锁定/解锁」要等边界与输入路径一起落地 |
+| Q01 | M4；锁屏/通知 M5 / L3 各组件 | 仅键盘完成启动、切窗、托盘菜单、设置应用/取消、锁定/解锁；焦点可见且唯一、无陷阱；交互控件暴露 role、name、state、action，屏幕阅读器可识别核心任务；接口占位不计通过 | E2+E3；语义树、焦点序列、屏幕阅读器人工记录。`inox-greet` 的登录路径已由纯函数键位映射 + 焦点模型 + 像素断言覆盖（`app::key_binding`、`view_model::focus_order`、`tests/render.rs`），登录与账户列表两幅画面的 Tab 顺序、Enter 选择与 Escape 退出都有断言，**但那条路径只有测试能到达**：`--preview` 运行的是本构建真实的状态（没有认证边界），口令字段因此不可输入；**`inox-lock` 这一侧仍未取得**：锁表面刻意不读键鼠，因为本构建没有可用认证边界，屏幕上没有可操作的东西（ADR 0025 决策 5），「仅键盘完成锁定/解锁」要等边界与输入路径一起落地 |
 | Q02 | M4 / L3 各组件 | 固定字体/主题/locale 的截图覆盖浅/深/高对比、错误/空态、1280×720；字体放大至 200%、长中英文、RTL 伪本地化下无关键操作裁切/重叠；动效尊重减少动态偏好；截图掩码/容差须有理由，基线变更有人类审查 | E2；前后截图、差异、语义断言。`inox-lock` 与 `inox-greet` 都在 1280×720 下按主题 × 语言 × 200% 字号渲染真实控件树并落盘为 CI 工件（`l3-screenshots-<crate>`）；锁屏还多一个「本构建没有认证边界」的场景。RTL 伪本地化与高对比主题仍缺 |
 | Q03 | M4 / L3 各组件、`inox-config` | `en-US` 与 `zh-CN` 核心任务文案齐备；Fluent ID/占位符一致、缺翻译可回退默认语言；动态内容作为数据，不解释为文案代码；主题缺资源/令牌有可诊断的回退 | E1+E2；资源检查与两种 locale 运行 |
 
-`inox-greet` 目前**没有自己的验收 ID**：它不在 PRD §3.1 的必需组件表里（可选显示管理器），ADR 0021 记录的是 L4 首版边界，因此它的界面证据挂在 Q01–Q03 的「各组件」之下，而不是一个 M5 的 DoD 项。它仍不是安全登录表面，也不得被读作 M5 的验收对象。
+`inox-greet` 的**界面**证据仍挂在 Q01–Q03 的「各组件」之下（它不在 PRD §3.1 的必需组件表里，ADR 0021 记录的是 L4 首版边界）；它的**登录生命周期**证据从 ADR 0037 起有了自己的条目——S09（注销回登录画面），与 `inox-auth`、`packaging` 共同负责。这两处都不能被读作「登录界面是安全登录表面已经验收」：S09 是 E4 项，且与 S06–S08 一样**尚未取得证据**。
 
 完整 AT-SPI 生态、全部辅助技术与更多语言仍可后续扩展，但 Q01–Q03 是核心任务最低要求。Iced/waydriver 的具体语义导出与驱动能力要在 M4 前用最小端到端原型验证并留 CI 证据，未通过即为阻塞项，不能假定框架已提供。
 
@@ -157,7 +176,7 @@ Portal 后端仍按独立 ADR 排期。发布若提供截屏/共享，必须有�
 | M2.5 | O01、O04、H01 建档；P01 基线 | 登记设备上真实输出/输入可用，仍非日常桌面 |
 | M3 | X01–X03 | Inox 上的 X11/剪贴板/拖放互通 |
 | M4 | W05、O02–O03、D01–D05、C01–C03、Q01–Q03 | 可操作、可恢复的 Shell 核心任务 |
-| M5 | D06、S01–S05、H02、P05 开始 | 在指定配置上日常可用，稳定性仍需完整跑完 |
+| M5 | D06、S01–S11（含 S07a）、H02、P05 开始 | 在指定配置上日常可用（含登录链 S06–S11 的真机证据），稳定性仍需完整跑完 |
 | M6 | C04、P01–P05、H01–H03、L01–L03 | 指定兼容组合与支持硬件上的发布候选合格 |
 
 门槛累计适用；“首次引入”条目不能等到表列最迟阶段才补。每个 PR 跑受影响项与既有回归（CI 至少跑受影响的 crate 分片），跨 crate 接口变更补消费者契约测试（工作区内可一次 PR 完成，但不因此免除契约测试）；里程碑结束与发布运行完整适用套件。更改门槛必须在评审中给出动机、证据、影响和替代措施；不能把尚未实现的新标准写为已开启的分支保护检查。

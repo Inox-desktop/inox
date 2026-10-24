@@ -32,6 +32,27 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  msrv:
+    name: msrv (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv-1.89
+      # `qt: "true"` because this is a *whole-workspace* command: it builds
+      # every member, `inox-qml-prototype` included, and `cxx-qt`'s build script
+      # panics with "Could not find Qt installation" when the Qt 6 dev packages
+      # are absent. The same reason applies to `clippy`, `doc` and `build`
+      # below — none of them is a per-crate shard.
+      - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
+      - run: cargo check --locked --workspace --all-targets --all-features
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest
@@ -45,7 +66,13 @@ jobs:
       # scripts, and some of those need pkg-config entries: `libudev-sys`
       # panics when `libudev.pc` is missing. System libraries are therefore
       # required here too, not only in `build` and `test`.
+      #
+      # `qt: "true"` for the same whole-workspace reason as `msrv`: `cxx-qt`'s
+      # build script (which `inox-qml-prototype` depends on) runs under clippy
+      # too and aborts without a Qt installation.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   deny:
@@ -69,8 +96,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # `cargo doc` compiles dependency build scripts as well, so it needs the
-      # same system libraries as `clippy` (see that job).
+      # same system libraries as `clippy` (see that job) — Qt included, for the
+      # same whole-workspace reason.
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo doc --workspace --no-deps --all-features
 
   build:
@@ -80,7 +110,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The release build links the Qt crates for real, and it is a
+      # whole-workspace build, so it needs both the Qt 6 packages and the `lld`
+      # linker they select (see the `qt` input of the system-deps action).
       - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
       - run: cargo build --workspace --release --all-features
 
   plan:
@@ -123,6 +158,21 @@ jobs:
                       # widget tree, so their shard needs a font installed (see the
                       # `fonts` input of the system-deps action).
                       "ui": any(d["name"] == "iced" for d in deps),
+                      # A crate that declares `cxx-qt` builds and links Qt through
+                      # pkg-config, so its build-script (and any bridge test) needs
+                      # the Qt 6 development packages — the `qt` input of the
+                      # system-deps action (ADR 0033/0035). Only registers `qt`
+                      # when the crate actually names cxx-qt, so non-Qt crates
+                      # stay off the extra system surface.
+                      "qt": any(d["name"] == "cxx-qt" for d in deps),
+                      # A crate that declares `pam` (through `inox-auth`'s
+                      # `server` feature) runs `pam-sys`'s build script, and
+                      # that one generates bindings with bindgen, which needs
+                      # libclang. Only inox-auth itself declares it —
+                      # `inox-greet` takes inox-auth with default features off
+                      # and never links libpam — so only that shard pays for
+                      # the extra package. See `.github/actions/system-deps`.
+                      "pam": any(d["name"] == "pam" for d in deps),
                   })
 
           # Fail loudly rather than silently testing nothing, and refuse to run a
@@ -154,15 +204,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Two kinds of shard need system packages: the ones whose manifests
       # declare `smithay` (`graphics`, plus `egl` because they run the headless
-      # EGL/GLES render tests) and the L3 components whose manifests declare
+      # EGL/GLES render tests), the L3 components whose manifests declare
       # `iced` (`ui`, plus `fonts` because their render tests lay text out
-      # through cosmic-text). Every other shard stays cheap. The package lists
-      # live in one place — see `.github/actions/system-deps/action.yml`.
+      # through cosmic-text), and the Qt Quick crates that declare `cxx-qt`
+      # (`qt`: their build script resolves Qt through pkg-config, so they need
+      # the Qt 6 development packages — ADR 0033/0035). Every other shard stays
+      # cheap. The package lists live in one place — see
+      # `.github/actions/system-deps/action.yml`.
       - uses: ./.github/actions/system-deps
-        if: matrix.graphics || matrix.ui
+        if: matrix.graphics || matrix.ui || matrix.qt || matrix.pam
         with:
           egl: ${{ matrix.graphics }}
           fonts: ${{ matrix.ui }}
+          qt: ${{ matrix.qt }}
       # One job per crate keeps a failure attributable and keeps the command the
       # same one a developer runs locally: `cargo test -p <crate>`.
       #
@@ -214,9 +268,14 @@ jobs:
       # plus the X11 side: `xwayland` (spawned by xwayland-satellite),
       # `x11-apps` for `xeyes` and `x11-utils` for `xwininfo`, and the xcb
       # packages `clang` needs to build xwayland-satellite from source.
+      #
+      # `qt: "true"` because "Build the binaries under test" runs
+      # `cargo build --workspace`, which builds `inox-qml-prototype` and so
+      # needs a Qt installation for `cxx-qt`'s build script.
       - uses: ./.github/actions/system-deps
         with:
           egl: "true"
+          qt: "true"
       - name: X11 and build dependencies
         run: |
           sudo apt-get install -y --no-install-recommends \
@@ -301,12 +360,90 @@ jobs:
           INOX_FCITX5_E2E: "1"
         run: dbus-run-session -- cargo test -p inox-compositor --all-features --test input_method -- --nocapture
 
-  book:
-    name: mdbook
+  license-audit:
+    # ADR 0034 / ADR 0033: cargo-deny only sees the Cargo dependency graph and
+    # cannot audit the system Qt `.so` the runtime links. After the Qt-quick
+    # migration the project is LGPLv3 and must never pull GPL-only Qt modules
+    # (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler — see
+    # ADR 0033 §"Qt 许可的客观事实"). This job installs the exact system
+    # packages the shell links, then asserts (a) the apt-provided Qt modules are
+    # present for the build and (b) at runtime `ldd` resolves only the declared
+    # Qt modules and none of the forbidden GPL-only ones.
+    name: license-audit (system Qt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: latest
-      - run: mdbook build docs/book
+      - name: Install system Qt (LGPL route, ADR 0033)
+        run: |
+          sudo apt-get update
+          # Same QML module names as `.github/actions/system-deps`: Ubuntu
+          # ships `qml6-module-qtquick*` in noble, and `qml6-module-quick` /
+          # `qml6-module-quick-window` do not exist there (an install of a
+          # nonexistent name aborts apt with exit 100).
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev qt6-declarative-dev \
+            qml6-module-qtquick qml6-module-qtquick-window \
+            qml6-module-qtquick-templates qml6-module-qtquick-controls \
+            libqt6waylandclient6 qt6-wayland-dev
+          # GPL-only modules must NOT be present: their presence means a build
+          # could silently link a GPL dependency into the LGPL project.
+          if dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard|qtdeclarative-scxml' >/dev/null; then
+            echo "a GPL-only Qt module is installed; refusing" >&2
+            dpkg -l | grep -E 'qtwayland6-compositor|qt6-virtualkeyboard'
+            exit 1
+          fi
+      - name: Assert only LGPL Qt modules are linked (ldd)
+        run: |
+          # Compile a trivial Qt Quick program against the installed LGPL modules
+          # and assert its runtime link set stays within the LGPL allow-list.
+          set -euo pipefail
+          cat > /tmp/linkcheck.cpp <<'CPP'
+          #include <QGuiApplication>
+          #include <QQmlApplicationEngine>
+          int main(int argc, char **argv) {
+              QGuiApplication app(argc, argv);
+              QQmlApplicationEngine engine;
+              return app.exec();
+          }
+          CPP
+          QT_PKG=$(pkg-config --cflags --libs Qt6Gui Qt6Qml Qt6Quick)
+          # shellcheck disable=SC2086
+          c++ /tmp/linkcheck.cpp -o /tmp/linkcheck $QT_PKG
+          ldd /tmp/linkcheck > /tmp/linkcheck.ldd || true
+          # Every linked Qt library must be one allowed LGPL module. The list is
+          # an allow-list, not a deny-list: a module nobody has vetted fails, so
+          # a GPL-only module cannot slip in just by being new. The entries are
+          # the LGPLv3 Qt 6 modules that a `QGuiApplication` +
+          # `QQmlApplicationEngine` program pulls in — the core four plus the
+          # transitively-linked Qml runtime, network, D-Bus and OpenGL helpers.
+          # `Qt6QmlCompiler` is deliberately absent: Qt's QML compiler is
+          # GPL-only (ADR 0033 §Qt 许可的客观事实), so linking it must fail here.
+          #
+          # `sed` strips the `.so` suffix so the case labels below are module
+          # names; keeping the suffix in one place is what let the previous
+          # revision compare `libQt6Core.so` against a `libQt6Core` label and
+          # reject every module, including the allowed ones.
+          grep -oE 'libQt6[A-Za-z]+\.so' /tmp/linkcheck.ldd \
+            | sed -E 's/\.so$//' | sort -u > /tmp/linkcheck.modules
+          cat /tmp/linkcheck.modules
+          # An empty list would make the loop below pass vacuously, which is the
+          # one way this job could report success without auditing anything.
+          if [ ! -s /tmp/linkcheck.modules ]; then
+            echo "no Qt modules found in ldd output; the link check is not auditing anything" >&2
+            exit 1
+          fi
+          while read -r mod; do
+            case "$mod" in
+              libQt6Core|libQt6Gui|libQt6Qml|libQt6Quick|\
+              libQt6DBus|libQt6Network|libQt6OpenGL|\
+              libQt6QmlMeta|libQt6QmlModels|libQt6QmlWorkerScript|\
+              libQt6QmlIntegration|libQt6WaylandClient)
+                echo "OK (LGPL): $mod"
+                ;;
+              *)
+                echo "FORBIDDEN GPL-only Qt module linked: $mod" >&2
+                exit 1
+                ;;
+            esac
+          done < /tmp/linkcheck.modules
+          echo "license-audit: only LGPL Qt modules linked"

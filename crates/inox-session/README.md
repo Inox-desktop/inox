@@ -10,7 +10,7 @@ Shell 是一次性检查；面板是必需服务；壁纸、通知与空闲监�
 
 测试由 CI 运行：纯重启策略、真实子进程/Wayland peer 故障、信号注销与目录清理，以及独立 job 中的真实 Inox headless 启动/退出。本地仅 fmt/check/clippy，不运行 build/test，不以自检代替验收。
 
-许可证 BSD 3-Clause，见根 LICENSE。
+许可证 LGPL-3.0，见根 LICENSE。
 
 ## 输入法启动
 

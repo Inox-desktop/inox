@@ -92,6 +92,8 @@ fn a_message_with_placeholders_names_them_in_both_locales() {
     for id in [
         "wallpaper-output-heading",
         "wallpaper-output-image",
+        "wallpaper-output-source",
+        "wallpaper-scaling",
         "wallpaper-reason-too-large",
         "wallpaper-reason-too-many-tiles",
     ] {
@@ -100,8 +102,9 @@ fn a_message_with_placeholders_names_them_in_both_locales() {
             "wallpaper-output-image" => vec![
                 ("width".to_owned(), "640".to_owned()),
                 ("height".to_owned(), "480".to_owned()),
-                ("path".to_owned(), "/w.png".to_owned()),
             ],
+            "wallpaper-output-source" => vec![("path".to_owned(), "/w.png".to_owned())],
+            "wallpaper-scaling" => vec![("mode".to_owned(), "tile".to_owned())],
             "wallpaper-reason-too-large" => vec![
                 ("pixels".to_owned(), "400000000".to_owned()),
                 ("limit".to_owned(), "33177600".to_owned()),

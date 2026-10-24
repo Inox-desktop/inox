@@ -26,6 +26,10 @@
   解码与无上限的平铺都是用户可用一个 70 字节文件触发的拒绝服务。
 - **降级不得变成黑屏或崩溃**：任何「用户显式选择却用不了」的资源都必须退到主题背景，并携带
   可读原因（`model::Unusable`）。已有帧不因新请求失败而被清空。
+- **内置壁纸的清单在 L1**：标识、文件名、作者与许可只在 `inox_config::wallpapers`；本 crate 不回答
+  「有哪些壁纸」，只把标识解析为搜索目录下的路径（`inox_common::paths::inox_wallpaper_dirs`，
+  `INOX_WALLPAPER_DIR` 可覆盖）。`wallpaper.image` 的取值规则（键省略＝默认壁纸、`none`＝主题背景、
+  标识＝内置壁纸、其余＝路径）见 ADR 0030，必须与本 crate 的 `model::Selection` 保持一致。
 
 ## 当前已验证 / 被阻塞
 
@@ -34,11 +38,12 @@
 - **被阻塞（E2/E3）**：合成器不广告 `wlr-layer-shell-unstable-v1`，`iced_layershell` 也无法针对
   当前 `iced` 代际编译（ADR 0018），因此二进制以普通窗口运行、只打印一条 `warn!`，
   `placement` 的策略不被应用。**不得**在文档或 PR 中把这一状态说成「壁纸已作为背景层生效」。
-- **未实现**：配置热重载（`SIGHUP` / `inoxctl reload`）、E2 级 GUI 证据、语义树导出。
+- 配置热重载由二进制的 `reload.rs` 接入 `SIGHUP` / 会话 D-Bus（`inoxctl reload`）；资源准备成功后才提交。**未实现**：E2 级 GUI 证据、语义树导出。
 
 ## 主要依赖
 
-- 上游 Inox crate：`inox-common`（`i18n`，Fluent 目录与语言协商）、`inox-config`（`[wallpaper]` 模型与主题令牌）。
+- 上游 Inox crate：`inox-common`（`i18n`，Fluent 目录与语言协商；`paths`，数据目录与壁纸搜索目录）、
+  `inox-config`（`[wallpaper]` 模型、内置壁纸清单与主题令牌）。
 - 第三方：`iced` 0.14（`tiny-skia` 渲染、`wayland`、`image`）、`image` 0.25（仅 `png` + `jpeg`）、
   `thiserror`、`tracing`、`tracing-subscriber`。
 - 测试：`iced_core` / `iced_runtime` / `iced_tiny_skia`（无头渲染夹具）、`proptest`（≥1000 样本）、`tempfile`。

@@ -270,6 +270,53 @@ const QUEUE_POLICY_CHOICES: &[Choice] = &[
     },
 ];
 
+/// The wallpapers `wallpaper.image` can be set to, in the order they are drawn.
+///
+/// The identifiers are the ones `inox-config` resolves ([`inox_config::wallpapers`]):
+/// the empty string for "whatever the session ships as its default", each entry
+/// of the shipped catalogue, and [`inox_config::BACKGROUND_ID`] for the theme
+/// background. A path a user typed by hand is deliberately *not* here — the
+/// projection appends whatever the configuration holds when it is not one of
+/// these, so a hand-written path still shows as the chosen option.
+///
+/// The label ids are the window's business (they name Fluent messages), which is
+/// why this list is not built from the catalogue; a unit test keeps the two in
+/// step instead.
+const WALLPAPER_CHOICES: &[Choice] = &[
+    Choice {
+        id: "",
+        label_id: "settings-choice-wallpaper-default",
+    },
+    Choice {
+        id: "nebula",
+        label_id: "settings-choice-wallpaper-nebula",
+    },
+    Choice {
+        id: "fuji",
+        label_id: "settings-choice-wallpaper-fuji",
+    },
+    Choice {
+        id: "bricks",
+        label_id: "settings-choice-wallpaper-bricks",
+    },
+    Choice {
+        id: "lake",
+        label_id: "settings-choice-wallpaper-lake",
+    },
+    Choice {
+        id: "rainbow",
+        label_id: "settings-choice-wallpaper-rainbow",
+    },
+    Choice {
+        id: "monument",
+        label_id: "settings-choice-wallpaper-monument",
+    },
+    Choice {
+        id: inox_config::BACKGROUND_ID,
+        label_id: "settings-choice-wallpaper-background",
+    },
+];
+
 impl Field {
     /// Every field, in the order the pages draw them.
     pub const ALL: [Self; 43] = [
@@ -575,7 +622,7 @@ impl Field {
                 step: 1,
                 unit_id: "settings-unit-count",
             }),
-            Self::WallpaperImage => Control::TEXT,
+            Self::WallpaperImage => Control::choices(WALLPAPER_CHOICES),
             Self::WallpaperMode => Control::choices(WALLPAPER_MODE_CHOICES),
             Self::KeyboardLayout => Control::TEXT,
             Self::KeyboardVariant => Control::TEXT,
@@ -720,7 +767,7 @@ impl Field {
             Self::LauncherIconSize => Value::Number(settings.launcher_icon_size),
             Self::LauncherIncludeHidden => Value::Flag(settings.launcher_include_hidden),
             Self::LauncherMaxQueryChars => Value::Number(settings.launcher_max_query_chars),
-            Self::WallpaperImage => Value::Text(settings.wallpaper_image.clone()),
+            Self::WallpaperImage => Value::Choice(settings.wallpaper_image.clone()),
             Self::WallpaperMode => Value::Choice(settings.wallpaper_mode.clone()),
             Self::KeyboardLayout => Value::Text(settings.input_keyboard_layout.clone()),
             Self::KeyboardVariant => Value::Text(settings.input_keyboard_variant.clone()),
@@ -811,7 +858,10 @@ impl Field {
             return Ok(None);
         }
 
-        if self == Self::WallpaperImage && matches!(value, Value::Text(text) if text.is_empty()) {
+        // The default choice is the absence of the key, exactly as "follow the
+        // environment" is for the locale: choosing it must remove the line, not
+        // write an empty string the loader would then have to interpret.
+        if self == Self::WallpaperImage && matches!(value, Value::Choice(id) if id.is_empty()) {
             return Ok(None);
         }
 
@@ -864,7 +914,7 @@ impl Field {
             (Self::LauncherMaxQueryChars, Value::Number(value)) => {
                 settings.launcher_max_query_chars = value
             }
-            (Self::WallpaperImage, Value::Text(value)) => settings.wallpaper_image = value,
+            (Self::WallpaperImage, Value::Choice(value)) => settings.wallpaper_image = value,
             (Self::WallpaperMode, Value::Choice(value)) => settings.wallpaper_mode = value,
             (Self::KeyboardLayout, Value::Text(value)) => settings.input_keyboard_layout = value,
             (Self::KeyboardVariant, Value::Text(value)) => settings.input_keyboard_variant = value,
@@ -2067,5 +2117,89 @@ mod tests {
                 .expect("a range")
                 .contains(9_000)
         );
+    }
+
+    #[test]
+    fn the_wallpaper_choices_are_the_catalogue_plus_the_default_and_the_background() {
+        let offered: BTreeSet<&str> = WALLPAPER_CHOICES.iter().map(|choice| choice.id).collect();
+        let mut expected: BTreeSet<&str> = inox_config::wallpapers::BUNDLED
+            .iter()
+            .map(|wallpaper| wallpaper.id)
+            .collect();
+        expected.insert(inox_config::BACKGROUND_ID);
+        expected.insert("");
+
+        assert_eq!(
+            offered, expected,
+            "the chooser and the shipped catalogue drifted apart"
+        );
+        assert!(
+            offered.contains(inox_config::wallpapers::DEFAULT_ID),
+            "the shipped default must be one of the offered wallpapers"
+        );
+    }
+
+    #[test]
+    fn an_absent_wallpaper_image_is_shown_as_the_default_choice() {
+        let settings = Settings::defaults();
+
+        assert_eq!(
+            Field::WallpaperImage.value(&settings),
+            Value::Choice(String::new())
+        );
+    }
+
+    #[test]
+    fn choosing_a_wallpaper_writes_its_identifier_and_nothing_else() {
+        let mut settings = Settings::defaults();
+        Field::WallpaperImage
+            .set(&mut settings, Value::Choice("fuji".to_owned()))
+            .expect("a choice");
+
+        assert_eq!(settings.wallpaper_image, "fuji");
+        assert_eq!(
+            Field::WallpaperImage
+                .toml_value(&Value::Choice("fuji".to_owned()))
+                .expect("a string"),
+            Some(Toml::String("fuji".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_default_choice_removes_the_key_rather_than_writing_an_empty_string() {
+        assert_eq!(
+            Field::WallpaperImage
+                .toml_value(&Value::Choice(String::new()))
+                .expect("a choice"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_theme_background_is_written_as_the_reserved_word() {
+        assert_eq!(
+            Field::WallpaperImage
+                .toml_value(&Value::Choice(inox_config::BACKGROUND_ID.to_owned()))
+                .expect("a string"),
+            Some(Toml::String(inox_config::BACKGROUND_ID.to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_path_written_by_hand_is_kept_as_the_chosen_value() {
+        // The window offers identifiers, but a configuration may hold a path;
+        // the draft reads it back as-is so the option the projection appends
+        // shows the path the file actually names.
+        let mut settings = Settings::defaults();
+        settings.wallpaper_image = "/images/主壁纸.png".to_owned();
+
+        assert_eq!(
+            Field::WallpaperImage.value(&settings),
+            Value::Choice("/images/主壁纸.png".to_owned())
+        );
+        Field::WallpaperImage
+            .set(&mut settings, Value::Choice("/images/other.png".to_owned()))
+            .expect("a choice");
+        assert_eq!(settings.wallpaper_image, "/images/other.png");
     }
 }

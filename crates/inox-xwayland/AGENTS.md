@@ -17,7 +17,7 @@ XWayland 集成服务：**监管外部 `xwayland-satellite` 进程**，把 rootl
 - 握手实现在 `src/handshake.rs`，**只允许用 `std`**（`UnixStream`），不得链接任何 X11 库、不得为此新增第三方依赖。每一次读都受读超时约束：超时、对端关闭、应答截断、垃圾字节、status 0 / 2、未知 status、尾随数据一律映射为错误即「未就绪」，绝不 panic；单次探测总时长由 `handshake::SETUP_TIMEOUT` 界定（探测在 calloop 定时器回调中同步执行）。
 - 退出策略：`SIGINT` / `SIGTERM` 归零退出；子进程自行退出则沿用其退出码（被信号杀死视为失败）。
 - 面向用户的字符串目前只有 CLI 帮助与错误信息；新增用户可见文案必须走 Fluent（根级 §7.3），并在本文件登记。
-- MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出（当前 **1.88**），本 crate 不单独声明。
+- MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出（当前 **1.89**），本 crate 不单独声明。
 - 工作区内依赖：`inox-common` 是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖。本 crate 属 L2，只能依赖 L1。
 
 ## 主要依赖

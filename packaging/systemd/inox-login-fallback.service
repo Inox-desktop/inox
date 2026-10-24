@@ -1,0 +1,51 @@
+[Unit]
+Description=Fall back to greetd when the Inox login screen cannot start
+Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
+
+# Triggered by `OnFailure=inox-login-fallback.service` in inox-greeter@.service.
+# That unit retries the login screen twenty times over sixty seconds
+# (StartLimitIntervalSec/StartLimitBurst); when it finally gives up, systemd puts it
+# in the `failed` state and starts this one. So "a minute of failing to start the
+# login screen" is the trigger — not a single lost boot-order race.
+#
+# What it does: starts greetd, the display manager this machine ran before Inox, so
+# that a machine whose Inox login chain cannot come up is still a machine somebody
+# can log into. That is the whole feature: fail *into* the old login manager instead
+# of into a black VT1 and a Ctrl+Alt+F3 habit.
+#
+# What it deliberately does NOT do:
+# - It does not re-enable greetd. `systemctl is-enabled greetd` stays `disabled`, and
+#   the next boot still tries Inox first — a bad boot is not turned into a permanent
+#   switch by a fallback.
+# - It does not touch display-manager.service. The boot chain still points at
+#   inox-greeter@1.service; this unit only makes *this* boot usable.
+# - It does not fix anything. It is a way to log in today, not a way to repair the
+#   chain: the reason the screen did not start is in
+#   `journalctl -u inox-greeter@1` and `systemctl --failed`.
+#
+# Best effort by design. `ExecCondition` skips the unit (clean skip, not a failure)
+# when greetd is not installed, because a machine whose only display manager is Inox
+# must not carry a fallback that fails on every boot. If greetd itself cannot start,
+# this unit fails and the machine is exactly where it would have been without it:
+# VT3's rescue getty.
+#
+# The trigger lives on the template, so a *trial* instance (inox-greeter@4) failing
+# would fire it too. The ExecCondition below narrows that away: the fallback only
+# runs when the boot chain is Inox (display-manager.service -> inox-greeter@1.service).
+# While greetd is still the boot chain there is nothing to fall back *to* — it is
+# already running and the trial's failure must not start a second display manager on
+# VT1.
+
+[Service]
+Type=oneshot
+# The check is "is there a greetd to fall back to at all, and is Inox actually the
+# boot chain", not "is greetd enabled": the whole point is that it is disabled.
+# `-L`/`readlink -f` resolves the alias, so this is false while greetd still owns
+# display-manager.service (a failed trial then changes nothing) and true after
+# `install.sh --enable`.
+ExecCondition=/usr/bin/sh -c 'test -x /usr/bin/greetd && [ "$(readlink -f /etc/systemd/system/display-manager.service 2>/dev/null)" = "/etc/systemd/system/inox-greeter@1.service" ]'
+ExecStart=/usr/bin/systemctl start greetd.service
+
+# No [Install]: nothing enables this unit. It exists to be triggered by OnFailure=,
+# which is also why there is no timer and no retry loop — one attempt, then the
+# machine is left in whatever state that attempt produced.

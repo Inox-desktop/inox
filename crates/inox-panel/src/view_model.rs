@@ -265,7 +265,11 @@ impl PanelInput<'_> {
 }
 
 /// The name of an application, or a localized placeholder for one that has none.
-fn app_label(app_id: &str, localizer: &Localizer) -> String {
+///
+/// Visible to the rest of the crate because the menu bar and the dock name the
+/// application too: they must not invent a second spelling for "an application
+/// with no name".
+pub(crate) fn app_label(app_id: &str, localizer: &Localizer) -> String {
     if app_id.is_empty() {
         localizer.message("panel-task-unknown-app")
     } else {

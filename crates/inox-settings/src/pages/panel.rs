@@ -13,20 +13,23 @@ use crate::app::Message;
 use crate::draft::Field;
 use crate::view_model::{FieldView, PageView};
 
-/// The fields this page edits.
+/// The fields this page edits, in the order the page draws them: where the strip
+/// sits, then how it behaves, then its clock, then its task buttons.
+/// [`crate::pages::PageId::groups`] splits them into the cards, and the keyboard
+/// walks them in the order they are drawn (acceptance Q01).
 pub const FIELDS: &[Field] = &[
     Field::PanelPosition,
     Field::PanelHeight,
-    Field::PanelAutohide,
-    Field::PanelShowClock,
     Field::PanelMargin,
     Field::PanelExclusive,
+    Field::PanelAutohide,
+    Field::PanelShowClock,
     Field::PanelClockFormat,
     Field::PanelMaxTaskButtons,
     Field::PanelIconSize,
 ];
 
-/// Draws the page: its heading and the fields listed above, in that order.
+/// Draws the page: its title, its cards and the fields listed above, in order.
 pub fn view<'a>(page: &PageView, fields: &[FieldView], tokens: &'a Tokens) -> Element<'a, Message> {
     crate::view::page_section(page, fields, tokens)
 }

@@ -1,0 +1,40 @@
+#%PAM-1.0
+#
+# PAM stack for logging a person in — ADR 0037 §决策 6, installed by
+# packaging/install.sh as /etc/pam.d/inox-auth.
+#
+# Who loads it: inox-auth starts this stack twice per login, both times as root.
+#   1. Authenticate: pam_authenticate for the account the login screen named.
+#   2. The session leader (`inox-auth --session-leader`, ADR 0037 §决策 5): this is
+#      the process that calls pam_open_session, so this is the process pam_systemd
+#      writes XDG_SESSION_ID / XDG_RUNTIME_DIR into, and the process that then
+#      execs the session program as the user.
+#
+# Why it is not `inox-greeter`: that name belongs to the greeter's *own* logind
+# session (see packaging/pam.d/inox-greeter). One file per service keeps the two
+# sessions — the one that owns a VT for the login screen, and the one that owns a
+# VT for the person — from being confused for each other.
+#
+# Why there is no pam_securetty: pam_securetty decides whether a root login is
+# allowed by looking at the calling process's controlling terminal. The login
+# screen is not on a tty (it is on a Wayland socket under inox-host), so the check
+# would either never fire or fire on the wrong terminal. Dropping it does not drop
+# root protection: inox-auth refuses root and every system account before PAM is
+# reached (ADR 0029), and pam_unix still enforces the password.
+#
+# Why `session` must reach pam_systemd: pam_systemd is what creates the logind
+# session, and the logind session is what gives the session program a seat,
+# XDG_SESSION_ID and /run/user/<uid>. system-login already ends with
+# `-session optional pam_systemd.so`; including it here is how a VT-capable session
+# comes into existence at all, and it is why the session leader sets XDG_VTNR in
+# its environment before pam_open_session (pam_systemd reads the VT from there).
+#
+# What this stack therefore also inherits from system-login (be aware, do not
+# "simplify" away): pam_faillock in system-auth (accounts lock out after repeated
+# failures — inox-auth's own rolling limit is a second, narrower budget),
+# pam_nologin (refuses logins while /etc/nologin exists), pam_shells (the account's
+# shell must be listed in /etc/shells) and pam_unix.
+
+auth       include    system-login
+account    include    system-login
+session    include    system-login

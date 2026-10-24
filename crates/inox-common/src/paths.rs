@@ -27,8 +27,26 @@ pub const ENV_CACHE_HOME: &str = "XDG_CACHE_HOME";
 /// Environment variable holding the user's runtime directory.
 pub const ENV_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
 
+/// Environment variable holding the system-wide data directory search path.
+pub const ENV_DATA_DIRS: &str = "XDG_DATA_DIRS";
+
+/// Environment variable overriding the wallpaper search path.
+///
+/// A single absolute directory, searched before the XDG locations. It exists so
+/// that a session started from a source checkout — and the tests — can point at
+/// wallpapers that are not installed into an XDG directory yet; an unset, empty
+/// or relative value is ignored like every other value read here.
+pub const ENV_WALLPAPER_DIR: &str = "INOX_WALLPAPER_DIR";
+
+/// The data directory search path the specification prescribes when
+/// [`ENV_DATA_DIRS`] is unset or yields nothing usable.
+const DEFAULT_DATA_DIRS: &str = "/usr/local/share:/usr/share";
+
 /// Directory Inox uses below each XDG base directory.
 pub const APP_DIR: &str = "inox";
+
+/// Directory holding the bundled wallpapers, below an Inox data directory.
+pub const WALLPAPERS_DIR: &str = "wallpapers";
 
 /// Errors returned while resolving XDG base directories.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -62,6 +80,8 @@ pub struct XdgEnv {
     state_home: Option<PathBuf>,
     cache_home: Option<PathBuf>,
     runtime_dir: Option<PathBuf>,
+    data_dirs: Option<Vec<PathBuf>>,
+    wallpaper_dir: Option<PathBuf>,
 }
 
 impl XdgEnv {
@@ -79,6 +99,8 @@ impl XdgEnv {
                 ENV_STATE_HOME,
                 ENV_CACHE_HOME,
                 ENV_RUNTIME_DIR,
+                ENV_DATA_DIRS,
+                ENV_WALLPAPER_DIR,
             ]
             .into_iter()
             .filter_map(|name| std::env::var(name).ok().map(|value| (name, value))),
@@ -120,6 +142,17 @@ impl XdgEnv {
                 ENV_STATE_HOME => env.state_home = Some(value),
                 ENV_CACHE_HOME => env.cache_home = Some(value),
                 ENV_RUNTIME_DIR => env.runtime_dir = Some(value),
+                ENV_DATA_DIRS => {
+                    env.data_dirs = Some(
+                        value
+                            .as_os_str()
+                            .to_string_lossy()
+                            .split(':')
+                            .map(PathBuf::from)
+                            .collect(),
+                    );
+                }
+                ENV_WALLPAPER_DIR => env.wallpaper_dir = Some(value),
                 _ => {}
             }
         }
@@ -219,6 +252,58 @@ impl XdgEnv {
         Ok(self.cache_home()?.join(APP_DIR))
     }
 
+    /// Resolve `$XDG_DATA_DIRS`, the system-wide data directories in the order
+    /// they are searched.
+    ///
+    /// Entries that are empty or relative are dropped, as the specification
+    /// requires; when that leaves nothing — the variable is unset, empty or
+    /// entirely unusable — the specification's default search path
+    /// (`/usr/local/share:/usr/share`) is returned instead.
+    #[must_use]
+    pub fn data_dirs(&self) -> Vec<PathBuf> {
+        let entries: Vec<PathBuf> = self
+            .data_dirs
+            .as_ref()
+            .map(|dirs| {
+                dirs.iter()
+                    .filter(|dir| dir.is_absolute())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if entries.is_empty() {
+            DEFAULT_DATA_DIRS.split(':').map(PathBuf::from).collect()
+        } else {
+            entries
+        }
+    }
+
+    /// The directories searched for wallpapers, highest priority first.
+    ///
+    /// [`ENV_WALLPAPER_DIR`] first when it is absolute, then
+    /// `$XDG_DATA_HOME/inox/wallpapers`, then `<dir>/inox/wallpapers` for every
+    /// entry of [`XdgEnv::data_dirs`]. A directory is listed whether or not it
+    /// exists; a caller reading wallpapers skips the ones that are not there, so
+    /// that a bundled default that is not installed is a fallback rather than an
+    /// error.
+    #[must_use]
+    pub fn inox_wallpaper_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+
+        if let Some(dir) = self.absolute(self.wallpaper_dir.as_ref()) {
+            dirs.push(dir);
+        }
+        if let Ok(data_home) = self.data_home() {
+            dirs.push(data_home.join(APP_DIR).join(WALLPAPERS_DIR));
+        }
+        for dir in self.data_dirs() {
+            dirs.push(dir.join(APP_DIR).join(WALLPAPERS_DIR));
+        }
+
+        dirs
+    }
+
     /// Resolve the Inox runtime directory, `$XDG_RUNTIME_DIR/inox`.
     ///
     /// # Errors
@@ -311,6 +396,13 @@ pub fn runtime_dir() -> Result<PathBuf, PathsError> {
 /// be determined.
 pub fn inox_config_dir() -> Result<PathBuf, PathsError> {
     XdgEnv::from_process().inox_config_dir()
+}
+
+/// The directories searched for wallpapers, from the environment of the current
+/// process; see [`XdgEnv::inox_wallpaper_dirs`].
+#[must_use]
+pub fn inox_wallpaper_dirs() -> Vec<PathBuf> {
+    XdgEnv::from_process().inox_wallpaper_dirs()
 }
 
 #[cfg(test)]
@@ -477,6 +569,111 @@ mod tests {
 
         assert_eq!(env.config_home().expect("absolute"), Path::new("/second"));
     }
+
+    #[test]
+    fn data_dirs_are_split_and_searched_in_order() {
+        let env = XdgEnv::from_pairs([
+            (ENV_HOME, HOME),
+            (ENV_DATA_DIRS, "/a/share:/b/share:/c/share"),
+        ]);
+
+        assert_eq!(
+            env.data_dirs(),
+            vec![
+                PathBuf::from("/a/share"),
+                PathBuf::from("/b/share"),
+                PathBuf::from("/c/share"),
+            ]
+        );
+    }
+
+    #[test]
+    fn data_dirs_fall_back_to_the_specification_default() {
+        // Unset, empty, and set-but-entirely-unusable all mean the same thing.
+        for value in [None, Some(""), Some("relative:./also-relative")] {
+            let env = match value {
+                Some(value) => XdgEnv::from_pairs([(ENV_HOME, HOME), (ENV_DATA_DIRS, value)]),
+                None => home_only(),
+            };
+
+            assert_eq!(
+                env.data_dirs(),
+                vec![
+                    PathBuf::from("/usr/local/share"),
+                    PathBuf::from("/usr/share")
+                ],
+                "expected `{value:?}` to fall back to the default search path"
+            );
+        }
+    }
+
+    #[test]
+    fn data_dirs_drop_the_unusable_entries_and_keep_the_rest() {
+        let env = XdgEnv::from_pairs([
+            (ENV_HOME, HOME),
+            (ENV_DATA_DIRS, "relative:/usr/share::/opt/share"),
+        ]);
+
+        assert_eq!(
+            env.data_dirs(),
+            vec![PathBuf::from("/usr/share"), PathBuf::from("/opt/share")]
+        );
+    }
+
+    #[test]
+    fn wallpaper_directories_put_the_user_first_then_the_system() {
+        let env = XdgEnv::from_pairs([
+            (ENV_HOME, HOME),
+            (ENV_DATA_HOME, "/data"),
+            (ENV_DATA_DIRS, "/usr/local/share:/usr/share"),
+        ]);
+
+        assert_eq!(
+            env.inox_wallpaper_dirs(),
+            vec![
+                PathBuf::from("/data/inox/wallpapers"),
+                PathBuf::from("/usr/local/share/inox/wallpapers"),
+                PathBuf::from("/usr/share/inox/wallpapers"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_wallpaper_override_comes_first_and_must_be_absolute() {
+        let env = XdgEnv::from_pairs([
+            (ENV_HOME, HOME),
+            (ENV_WALLPAPER_DIR, "/repo/data/wallpapers"),
+            (ENV_DATA_DIRS, "/usr/share"),
+        ]);
+
+        assert_eq!(
+            env.inox_wallpaper_dirs().first(),
+            Some(&PathBuf::from("/repo/data/wallpapers"))
+        );
+
+        // A relative override is ignored like every other value here.
+        let env = XdgEnv::from_pairs([
+            (ENV_HOME, HOME),
+            (ENV_WALLPAPER_DIR, "../wallpapers"),
+            (ENV_DATA_DIRS, "/usr/share"),
+        ]);
+
+        assert_eq!(
+            env.inox_wallpaper_dirs().first(),
+            Some(&PathBuf::from("/home/inox/.local/share/inox/wallpapers"))
+        );
+    }
+
+    #[test]
+    fn wallpaper_directories_skip_the_user_directory_when_home_is_unavailable() {
+        let env = XdgEnv::from_pairs([(ENV_DATA_DIRS, "/usr/share")]);
+
+        assert_eq!(
+            env.inox_wallpaper_dirs(),
+            vec![PathBuf::from("/usr/share/inox/wallpapers")]
+        );
+    }
+
     #[test]
     fn errors_name_the_variable_they_are_about() {
         assert!(PathsError::HomeUnavailable.to_string().contains("$HOME"));

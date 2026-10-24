@@ -15,17 +15,18 @@
 mod support;
 
 use support::{
-    Daemon, HEIGHT, WIDTH, count_of, distinct_colours, has_ink, ink_span, lowest_ink, pixel,
-    snapshot, token_pixel,
+    Daemon, HEIGHT, WIDTH, count_of, distinct_colours, has_ink, ink_span, lowest_drawn_row,
+    lowest_ink, pixel, runs_in_column, snapshot, token_pixel,
 };
 
-use inox_config::{NotificationPosition, NotificationsConfig, Theme as Tokens};
+use inox_config::{NotificationPosition, NotificationsConfig, Theme as Tokens, Typography};
 use inox_notifications::actions::ActionId;
 use inox_notifications::app::Message;
 use inox_notifications::contract::{NotifyRequest, Outgoing, Signal};
 use inox_notifications::policy::SessionState;
 use inox_notifications::protocol::{CloseReason, HINT_URGENCY, HintValue};
-use inox_notifications::view_model::StackStatus;
+use inox_notifications::view::StackGeometry;
+use inox_notifications::view_model::{ActionEmphasis, StackStatus};
 
 /// The daemon of a scenario: the default configuration and the dark tokens.
 fn daemon(tokens: Tokens) -> Daemon {
@@ -542,4 +543,498 @@ fn every_state_draws_the_background_token_underneath() {
             "the corner away from a top-right stack stays background"
         );
     }
+}
+
+/// Where a card's left edge is at the acceptance size, with the default display
+/// configuration.
+fn card_left() -> f32 {
+    WIDTH
+        - f32::from(NotificationsConfig::default().display.margin)
+        - f32::from(NotificationsConfig::default().display.width)
+}
+
+/// The column inside a card's own padding: pure surface for as tall as the card
+/// is, which is what makes the gaps between the runs the gaps between the cards.
+fn padding_column() -> u32 {
+    (card_left() as u32) + 1
+}
+
+/// The `(from, to)` rectangle to the left of the popup's own column, which no
+/// scenario may draw in (ui-guidelines §7: no horizontal overflow).
+fn left_of_the_column() -> ((u32, u32), (u32, u32)) {
+    ((0, 0), (card_left() as u32 - 4, HEIGHT as u32))
+}
+
+/// A notification that says how urgent it is.
+fn with_urgency(app_name: &str, summary: &str, urgency: u8) -> NotifyRequest {
+    NotifyRequest {
+        app_name: app_name.to_owned(),
+        summary: summary.to_owned(),
+        hints: vec![(HINT_URGENCY.to_owned(), HintValue::Byte(urgency))],
+        ..NotifyRequest::default()
+    }
+}
+
+#[test]
+fn a_card_is_the_surface_token_inset_by_the_large_step_and_gapped_by_the_large_step() {
+    let tokens = Tokens::builtin_dark();
+    let daemon = populated(tokens.clone());
+    let pixels = daemon.render();
+    let size = daemon.size();
+    let geometry = StackGeometry::new(&tokens, &NotificationsConfig::default().display);
+
+    snapshot("cards", &pixels, size);
+
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.border)) > 0,
+        "every card has a hairline edge (ui-guidelines §4)"
+    );
+
+    let runs = runs_in_column(
+        &pixels,
+        size,
+        padding_column(),
+        token_pixel(tokens.colors.surface),
+    );
+
+    assert_eq!(
+        runs.len(),
+        3,
+        "one run of surface per card, so no two cards touch: {runs:?}"
+    );
+
+    for pair in runs.windows(2) {
+        let gap = pair[1].0 - pair[0].1 - 1;
+
+        assert!(
+            f32::from(u16::try_from(gap).unwrap_or(u16::MAX)) >= geometry.card_gap,
+            "two cards are {gap} px apart, closer than the {} px the tokens ask \
+             for (ui-guidelines §3: blocks are separated by `lg`)",
+            geometry.card_gap
+        );
+    }
+}
+
+#[test]
+fn a_critical_notification_is_edged_and_says_so_rather_than_only_being_red() {
+    let tokens = Tokens::builtin_dark();
+    let mut critical = daemon(tokens.clone());
+    critical.notify_with(with_urgency("accounts", "Disk is full", 2));
+
+    let critical_pixels = critical.render();
+    snapshot("urgency-critical", &critical_pixels, critical.size());
+
+    assert_eq!(
+        critical.state().model().popups[0].urgency_note.as_deref(),
+        Some("Critical"),
+        "ui-guidelines §5: urgency is a colour *and* a sentence"
+    );
+    assert!(
+        count_of(&critical_pixels, token_pixel(tokens.colors.danger)) > 0,
+        "a critical card is edged in the danger colour"
+    );
+    assert!(
+        count_of(&critical_pixels, token_pixel(tokens.colors.text)) > 0,
+        "and its title is still ordinary text, not a second urgency colour"
+    );
+
+    let mut ordinary = daemon(tokens.clone());
+    ordinary.notify("accounts", "Disk is full", "body");
+
+    let ordinary_pixels = ordinary.render();
+
+    assert_eq!(ordinary.state().model().popups[0].urgency_note, None);
+    assert_eq!(
+        count_of(&ordinary_pixels, token_pixel(tokens.colors.danger)),
+        0,
+        "an ordinary notification claims no urgency it was not sent"
+    );
+}
+
+#[test]
+fn a_low_priority_notification_is_said_in_a_sentence_and_not_in_the_danger_colour() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+    daemon.notify_with(with_urgency("backup", "A backup finished", 0));
+
+    let pixels = daemon.render();
+    snapshot("urgency-low", &pixels, daemon.size());
+
+    assert_eq!(
+        daemon.state().model().popups[0].urgency_note.as_deref(),
+        Some("Low priority")
+    );
+    assert_eq!(
+        count_of(&pixels, token_pixel(tokens.colors.danger)),
+        0,
+        "low urgency is quiet, not alarming"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.border)) > 0,
+        "its card keeps the ordinary hairline edge"
+    );
+}
+
+#[test]
+fn three_action_tiers_are_drawn_in_three_colours() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+    daemon.notify_with(NotifyRequest {
+        app_name: "files".to_owned(),
+        summary: "Delete this file?".to_owned(),
+        body: "It will not go to the trash".to_owned(),
+        actions: vec![
+            "open".to_owned(),
+            "Open".to_owned(),
+            "snooze".to_owned(),
+            "Snooze".to_owned(),
+            "delete".to_owned(),
+            "Delete".to_owned(),
+        ],
+        ..NotifyRequest::default()
+    });
+
+    let pixels = daemon.render();
+    snapshot("action-tiers", &pixels, daemon.size());
+
+    let tiers: Vec<ActionEmphasis> = daemon.state().model().popups[0]
+        .actions
+        .iter()
+        .map(|action| action.emphasis)
+        .collect();
+
+    assert_eq!(
+        tiers,
+        [
+            ActionEmphasis::Primary,
+            ActionEmphasis::Secondary,
+            ActionEmphasis::Danger
+        ]
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.accent)) > 0,
+        "the primary action is accent-coloured"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.danger)) > 0,
+        "the dangerous one is danger-coloured"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.text)) > 0,
+        "the ordinary one is written in ordinary text"
+    );
+}
+
+#[test]
+fn many_long_actions_wrap_inside_the_card_instead_of_running_off_it() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+    let actions: Vec<String> = (0..8)
+        .flat_map(|index| {
+            [
+                format!("action-{index}"),
+                format!("Do something fairly long, number {index}"),
+            ]
+        })
+        .collect();
+
+    daemon.notify_with(NotifyRequest {
+        app_name: "app".to_owned(),
+        summary: "Eight actions".to_owned(),
+        actions,
+        ..NotifyRequest::default()
+    });
+
+    let pixels = daemon.render();
+    snapshot("many-actions", &pixels, daemon.size());
+
+    assert_eq!(daemon.state().model().popups[0].actions.len(), 8);
+    assert!(
+        !has_ink(
+            &pixels,
+            WIDTH as u32,
+            left_of_the_column().0,
+            left_of_the_column().1,
+            token_pixel(tokens.colors.background)
+        ),
+        "ui-guidelines §7: a row of actions may wrap, never overflow"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.accent)) > 0,
+        "the first action is still drawn"
+    );
+}
+
+#[test]
+fn a_disabled_action_says_why_on_the_card_and_not_only_on_hover() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+    daemon.notify_with(NotifyRequest {
+        app_name: "chat".to_owned(),
+        summary: "A message arrived".to_owned(),
+        actions: vec!["open".to_owned(), "Open".to_owned()],
+        ..NotifyRequest::default()
+    });
+
+    let enabled = daemon.render();
+    let enabled_bottom = lowest_drawn_row(
+        &enabled,
+        daemon.size(),
+        token_pixel(tokens.colors.background),
+    );
+
+    let mut config = NotificationsConfig::default();
+    config.policy.show_actions = false;
+    daemon.update(Message::ConfigReloaded(config));
+
+    let disabled = daemon.render();
+    snapshot("disabled-with-reason", &disabled, daemon.size());
+
+    let disabled_bottom = lowest_drawn_row(
+        &disabled,
+        daemon.size(),
+        token_pixel(tokens.colors.background),
+    );
+
+    assert_eq!(
+        daemon.state().model().popups[0].actions[0]
+            .disabled_reason
+            .as_deref(),
+        Some("Actions are turned off in notifications.toml")
+    );
+    assert_eq!(
+        daemon.state().model().popups[0].actions[0].emphasis,
+        ActionEmphasis::Primary,
+        "an unavailable action keeps the tier it was given"
+    );
+    assert!(
+        disabled_bottom > enabled_bottom,
+        "the reason is drawn on the card, so the card is taller \
+         ({disabled_bottom:?} against {enabled_bottom:?})"
+    );
+}
+
+#[test]
+fn a_long_body_wraps_inside_the_card_and_leaves_the_actions_reachable() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+    daemon.notify_with(NotifyRequest {
+        app_name: "app".to_owned(),
+        summary: "A long message".to_owned(),
+        body: "a long sentence that has to wrap ".repeat(40),
+        actions: vec!["open".to_owned(), "Open".to_owned()],
+        ..NotifyRequest::default()
+    });
+
+    let pixels = daemon.render();
+    let size = daemon.size();
+    snapshot("long-body", &pixels, size);
+
+    assert!(
+        !has_ink(
+            &pixels,
+            WIDTH as u32,
+            left_of_the_column().0,
+            left_of_the_column().1,
+            token_pixel(tokens.colors.background)
+        ),
+        "a long body wraps rather than widening the card"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.accent)) > 0,
+        "and the actions are still on the card"
+    );
+    assert!(
+        lowest_drawn_row(&pixels, size, token_pixel(tokens.colors.background))
+            .is_some_and(|row| row < HEIGHT as u32),
+        "the card is drawn inside the surface"
+    );
+}
+
+#[test]
+fn the_overflow_line_is_a_caution_rather_than_a_card() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+
+    for index in 0..3 {
+        daemon.notify("app", &format!("notification {index}"), "body");
+    }
+
+    let three = daemon.render();
+
+    for index in 3..6 {
+        daemon.notify("app", &format!("notification {index}"), "body");
+    }
+
+    let six = daemon.render();
+    snapshot("overflow-caution", &six, daemon.size());
+
+    assert_eq!(
+        count_of(&three, token_pixel(tokens.colors.warning)),
+        0,
+        "nothing to warn about while everything fits"
+    );
+    assert!(
+        count_of(&six, token_pixel(tokens.colors.warning)) > 0,
+        "the overflow sentence is drawn in the warning colour: it is about \
+         notifications the user cannot see (D05)"
+    );
+}
+
+#[test]
+fn the_empty_state_is_a_bounded_line_that_claims_nothing() {
+    let tokens = Tokens::builtin_dark();
+    let mut config = NotificationsConfig::default();
+    config.display.position = NotificationPosition::BottomLeft;
+    let daemon = Daemon::with(config, tokens.clone());
+
+    let pixels = daemon.render();
+    snapshot("empty-bounded", &pixels, daemon.size());
+
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.surface_variant)) > 0,
+        "the daemon's own line is drawn"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens.colors.border)) > 0,
+        "and it is bounded by a hairline like every other surface"
+    );
+
+    for claimed in [
+        tokens.colors.accent,
+        tokens.colors.danger,
+        tokens.colors.warning,
+        tokens.colors.success,
+    ] {
+        assert_eq!(
+            count_of(&pixels, token_pixel(claimed)),
+            0,
+            "an empty stack claims no state it does not have (ui-guidelines §6)"
+        );
+    }
+}
+
+#[test]
+fn two_hundred_percent_text_scale_neither_clips_nor_overlaps_nor_overflows() {
+    let tokens_100 = Tokens::builtin_dark();
+    let tokens_200 = Tokens {
+        typography: Typography {
+            scale: 2.0,
+            ..Tokens::builtin_dark().typography.clone()
+        },
+        ..Tokens::builtin_dark()
+    };
+
+    let scaled = StackGeometry::new(&tokens_200, &NotificationsConfig::default().display);
+    let unscaled = StackGeometry::new(&tokens_100, &NotificationsConfig::default().display);
+
+    assert!(
+        scaled.body_size > unscaled.body_size,
+        "200 % is twice the text, not the same text"
+    );
+
+    let mut daemon = daemon(tokens_200.clone());
+    daemon.notify("firefox", "Inox — Documentation", "A page finished loading");
+    daemon.notify_with(NotifyRequest {
+        app_name: "chat".to_owned(),
+        summary: "A message arrived".to_owned(),
+        actions: vec!["open".to_owned(), "Open".to_owned()],
+        ..NotifyRequest::default()
+    });
+    daemon.notify_with(with_urgency("build", "Build finished", 2));
+
+    // The surface the daemon would ask for is a layer surface the compositor
+    // sizes (ADR 0018); while there is no such host, the test gives the stack a
+    // surface tall enough for what 200 % asks for rather than the acceptance
+    // size, which is the only way "not clipped" can be observed at all.
+    let size = iced::Size::new(WIDTH, HEIGHT * 2.0);
+    let pixels = daemon.render_at(size);
+    snapshot("scale-200", &pixels, size);
+
+    let background = token_pixel(tokens_200.colors.background);
+
+    assert!(
+        !has_ink(
+            &pixels,
+            WIDTH as u32,
+            (0, 0),
+            (card_left() as u32 - 4, size.height as u32),
+            background
+        ),
+        "200 % pushes nothing out of the popup's own column"
+    );
+    assert_eq!(
+        runs_in_column(
+            &pixels,
+            size,
+            padding_column(),
+            token_pixel(tokens_200.colors.surface)
+        )
+        .len(),
+        3,
+        "three cards, none of them overlapping the next"
+    );
+    assert!(
+        count_of(&pixels, token_pixel(tokens_200.colors.accent)) > 0,
+        "the action button grew with the text instead of being cut off"
+    );
+
+    let bottom = lowest_drawn_row(&pixels, size, background).expect("something is drawn");
+
+    assert!(
+        bottom + u32::from(NotificationsConfig::default().display.margin) <= size.height as u32,
+        "the stack ends inside the surface, margin included: {bottom} of {}",
+        size.height
+    );
+    assert!(
+        bottom > HEIGHT as u32,
+        "and it is genuinely taller than the 100 % stack, which is what 200 % means"
+    );
+}
+
+#[test]
+fn the_feedback_of_a_control_is_a_hover_before_a_press_and_a_press_at_once() {
+    let tokens = Tokens::builtin_dark();
+    let mut daemon = daemon(tokens.clone());
+    daemon.notify_with(NotifyRequest {
+        app_name: "chat".to_owned(),
+        summary: "A message arrived".to_owned(),
+        actions: vec!["open".to_owned(), "Open".to_owned()],
+        ..NotifyRequest::default()
+    });
+
+    let button = lowest_ink(
+        &daemon.render(),
+        daemon.size(),
+        token_pixel(tokens.colors.accent),
+    )
+    .expect("the action button is drawn");
+
+    let resting = daemon.render();
+    let hovered = daemon.render_hovered(button);
+    let pressed = daemon.render_pressed(button);
+
+    snapshot("action-pressed", &pressed, daemon.size());
+
+    assert_ne!(resting, hovered, "a pointer over a control changes it");
+    assert_ne!(
+        hovered, pressed,
+        "and holding the button down is a third thing"
+    );
+
+    let alternate = |pixels: &Vec<u8>| count_of(pixels, token_pixel(tokens.colors.surface_variant));
+    let accent = |pixels: &Vec<u8>| count_of(pixels, token_pixel(tokens.colors.accent));
+
+    assert!(
+        alternate(&hovered) > alternate(&resting),
+        "hovering paints the alternate surface over the one under the pointer"
+    );
+    assert!(
+        accent(&pressed) > accent(&resting) + 1_000,
+        "the press fills the control with the accent before anything is released \
+         (ui-guidelines §5: the feedback is on the way down, not on the way up): \
+         {} against {}",
+        accent(&pressed),
+        accent(&resting)
+    );
 }

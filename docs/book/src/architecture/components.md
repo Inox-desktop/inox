@@ -14,13 +14,16 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | **骨架** | 只有 crate 结构、CI 与文档，`src/` 中尚无业务逻辑 |
 | **计划中** | 尚未创建，仅在 PRD 中规划 |
 
+「已实现」说的是**代码与测试**已落地，不是真机已验证：登录链（`inox-auth`、`inox-host`、`inox-greet`）
+的真机证据是 E4，**尚未取得**，逐条见 [ADR 0037 §验收](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)。
+
 ## 全部组件
 
 | crate | 层级 | 路径 | 职责 | 发布物 | 当前状态 |
 |-------|------|------|------|--------|----------|
 | `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、工具函数 | crate | 已实现（`logging`、`paths`） |
 | `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate | 已实现（模型、解析、错误定位；ADR 0009 仍为 `proposed`） |
-| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc`） |
+| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc` 绑定 + `inox-glass-v1` 的绑定与协议往返；后者由合成器在 headless 路径实现，DRM 路径报 0） |
 | `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区与私有 `inox_ipc`） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；单输出真实后端已实现，E4 尚未执行） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、真实 X11 连接往返的就绪判定、生命周期） |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 部分实现（跨入口导航、服务契约、内部入口注册表；不绘制界面） |
@@ -32,13 +35,18 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现（来源解析、缩放几何、原子应用与预览窗口；layer-shell 背景客户端待接线） |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，拉起合成器与 Shell | 二进制 `inox-session` | 部分实现：Wayland 往返就绪、有界进程监督/注销；完整服务 ready 待实现 |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 部分实现：标准空闲通知客户端与锁前挂起策略；可信锁/挂起通道待审查 |
-| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 部分实现：登录状态机与阶段驱动的登录界面（六个阶段各有画面、键盘可达、双语，由测试覆盖）；`--preview` 显示的是本构建真实所处的阶段——没有认证边界，因此是不可用、不可输入的那一幅；真实认证与 greeter 宿主未接线 |
+| `inox-auth` | L2 | `crates/inox-auth` | 认证边界（PAM + `auth-v1` + VT 分配/交回） | 二进制 `inox-auth` | 已实现：系统 PAM（安全封装，无新增 `unsafe`）、Unix 套接字服务与 `SO_PEERCRED` 对端校验、滚动限额；ADR 0037 的会话负责人（`src/leader.rs`：一次登录一个进程，`pam_open_session` 只在它里面调用）与 logind VT 分配/交回（`src/logind.rs`）已落地，一次只允许一个用户会话；口令与打开会话分在**两个栈**上（`--service inox-auth` 校验口令、`--session-service inox-auth-session` 打开会话，见 `packaging/`）；契约文本在 `inox-protocols/protocol/auth-v1.md`；真机 PAM/VT 行为是 E4，尚未取得 |
+| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 已接线：默认路径要求认证边界套接字（否则开窗前拒绝），口令字段以掩码呈现、凭据只经 `Secret` 移交，认证成功后由边界启动会话；身份来自系统账户库（`getent passwd`，[ADR 0032](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0032-greeter-account-selection-and-login-interface.md)），界面不提供手工输入账户名；会话启动后**驻留并在 3 秒后回到登录画面**（`state::SESSION_STARTED_DWELL`，ADR 0037 §决策 4），因此注销回来时屏幕上已经是登录界面；`--preview` 仍是「没有边界时的界面」；真机验收是 E4，尚未取得 |
+| `inox-host` | L4 | `crates/inox-host` | greeter 宿主：在裸 VT 上按顺序拉起登录界面的合成器与登录界面，监督并在退出时清理（ADR 0037 §决策 1/3） | 二进制 `inox-host` | 已实现：`supervisor`（边界不可达拒绝、合成器就绪等待 10 s、登录界面 60 s 内最多 3 次有界重启、SIGTERM 逆序清理）与 `cli`/`process`/`runtime` 适配，`tests/supervisor.rs` 用真进程（假合成器与假界面）驱动；它不认证、不碰凭据、不启动用户会话。真机 VT 交接与登录是 E4，尚未取得 |
 | `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 | 部分实现（分层检查已落地；M3 的 XWayland/剪贴板/拖放 E3 用例以进程方式驱动工作区二进制，完整会话 E2E 待 M6） |
 
-工作区之外还有两处非 crate 位置：
+工作区之外还有三处非 crate 位置：
 
 - **本站点**位于 `docs/book/`（mdBook），无 `Cargo.toml`，不参与依赖图与 `cargo deny`；
-- 组织仓库 `.github` 承载组织级工作流模板与 Issue/PR 模板。
+- 组织仓库 `.github` 承载组织级工作流模板与 Issue/PR 模板；
+- **安装面**位于 `packaging/`（PAM 栈、systemd 单元、安装/试运行/回退脚本，ADR 0037 §决策 6），
+  同样没有 `Cargo.toml`，不参与分层检查——它装的是二进制与单元，不是代码。它是登录链唯一的部署入口，
+  使用方式见[登录与开机链](../usage/login.md)。
 
 规划中、**尚未创建**的组件：`inox-portal`（`xdg-desktop-portal` 后端）、`inox-screenshot`（截图/录屏）、`inox-osd`（屏幕提示）、`inox-cli`（`inoxctl` 命令行工具）。新增 crate 属破坏性架构变更，须先写 ADR。
 
@@ -78,6 +86,27 @@ ADR 0002 规则 6 允许 `inox-wallpaper` 直接依赖 `inox-compositor`，其�
 配置模型在 `inox-config`，主题令牌在 `inox-config::theme`。代价是每个组件各有约一百行相同的
 「令牌 → Iced 主题」映射与宿主引导代码——这是 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)
 明确接受的权衡，而不是疏忽；共享 UI crate 需要先获得 ADR 批准。
+
+### 登录链：三个组件，三个权威
+
+开机到桌面这条链上没有第四个权威（[ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)）：
+
+- `inox-auth`（L2）**拥有认证与用户会话**：它验口令；一次登录一个**会话负责人**（`--session-leader`）
+  在自己的进程里 `pam_open_session`，再由它降权 `exec` 成目标账号的 `inox-session`——`pam_systemd`
+  只给调用它的那个进程注册 logind 会话，所以打开会话这件事不能留在共享的守护进程里；
+- `inox-host`（L4）**拥有登录阶段的进程编排**：起合成器、起登录界面、有界重启、退出时逆序清理。
+  它不认证、不碰凭据、不启动用户会话，也不依赖 `inox-auth` 的 `server` feature——它只知道套接字能不能连；
+- `inox-greet`（L4）**拥有登录界面**，只经 `auth-v1` 与边界说话，不关窗也不重启自己（驻留复位）；
+- **VT 与设备归 logind + libseat**：没有任何 Inox 组件执行 VT ioctl 或转发 DRM fd。
+
+部署侧因此只有**三个单元、三个 PAM 栈**：`inox-auth.service`（root，常驻）与
+`inox-greeter@<VT>.service`（模板，实例名就是 VT 号，`User=greeter`、`PAMName=inox-greeter`、
+`ExecStart=/usr/bin/inox-host`）；栈是 `inox-auth`（口令在这里校验）、`inox-auth-session`（会话负责人
+在这里打开会话，`auth` 行必须许可，因为它没有口令）与 `inox-greeter`（登录界面自己的 logind 会话）。
+把前两个合成一个文件是**不能**做的事：许可行落在校验口令的栈上就是所有人免密登录。
+第三个单元是 `inox-login-fallback.service`：它由登录单元的 `OnFailure=` 触发，会话前的重试预算耗尽、登录界面被判 failed 之后启动 greetd，让一次失败的启动仍然能登录；它不重新启用 greetd，也不改开机链。模板单元不能带 `Alias=display-manager.service`，开机链的别名由 `packaging/install.sh --enable`
+对 `inox-greeter@1.service` 建立。真机证据（安装、试运行、切换、注销、回退、VT3 救援）**尚未取得**，
+见[登录与开机链](../usage/login.md)。
 
 ### layer-shell 宿主尚未具备
 

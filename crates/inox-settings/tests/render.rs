@@ -25,9 +25,11 @@ use inox_config::Theme as Tokens;
 use inox_settings::app::Message;
 use inox_settings::draft::{Field, Value};
 use inox_settings::pages::PageId;
-use inox_settings::view_model::StatusKind;
+use inox_settings::view::SettingsGeometry;
+use inox_settings::view_model::{ControlView, StatusKind};
 use support::{
     HEIGHT, WIDTH, Window, count_near, distinct_colours, has_ink, pixel, snapshot, token_pixel,
+    widest_block,
 };
 
 /// The theme the dark scenarios draw with.
@@ -252,6 +254,138 @@ fn the_focus_is_drawn_on_every_entry_the_walk_holds() {
             );
         }
     }
+}
+
+/// A window with a display change the compositor has taken on trial.
+///
+/// The trial is the state ADR 0028 exists for: the values are in effect, and the
+/// window is asking whether to keep them.
+fn on_trial(tokens: Tokens) -> Window {
+    let mut window = Window::with_locale(&[], inox_common::i18n::Locale::default_locale(), tokens)
+        .with_compositor();
+    window.update(Message::PageSelected(PageId::Displays));
+    window.update(Message::RowAdded(Field::Outputs));
+    window.update(Message::CellEdited {
+        field: Field::Outputs,
+        row: 0,
+        column: 0,
+        text: "DP-1".to_owned(),
+    });
+    window.apply_and_drain();
+
+    window
+}
+
+#[test]
+fn a_display_trial_is_drawn_as_a_dialog_over_the_window() {
+    let tokens = dark();
+    let window = on_trial(tokens.clone());
+    assert!(
+        window.state().model().trial.is_some(),
+        "the compositor took the change, so the window asks"
+    );
+
+    let asking = window.render();
+    snapshot("display-trial", &asking);
+
+    // The same window with the question answered: the dialog is the difference.
+    let mut answered = on_trial(tokens.clone());
+    answered.update(Message::TrialConfirm);
+    answered.drain();
+    let settled = answered.render();
+    snapshot("display-trial-confirmed", &settled);
+
+    assert_ne!(
+        asking, settled,
+        "an unanswered display change has to look different from a settled one"
+    );
+    assert!(
+        window
+            .state()
+            .model()
+            .status
+            .message
+            .contains("waiting for confirmation"),
+        "the status line says the display is waiting: {}",
+        window.state().model().status.message
+    );
+    assert!(
+        count_near(&asking, token_pixel(tokens.colors.warning), 24) > 0,
+        "the dialog and the status line are drawn in the warning colour"
+    );
+    assert!(
+        has_ink(
+            &asking,
+            400,
+            880,
+            280,
+            460,
+            token_pixel(tokens.colors.background)
+        ),
+        "the question is drawn in the middle of the window"
+    );
+}
+
+#[test]
+fn clicking_the_confirm_answer_keeps_the_display_settings() {
+    let mut window = on_trial(dark());
+
+    // Where the answers are depends on the layout, so the test walks the middle
+    // of the window and stops at the first click the dialog answers.
+    let mut pressed = None;
+
+    'outer: for step in 0..60 {
+        let y = 300.0 + step as f32 * 3.0;
+
+        for column in 0..80 {
+            let x = 400.0 + column as f32 * 5.0;
+
+            if window
+                .click(Point::new(x, y))
+                .iter()
+                .any(|message| matches!(message, Message::TrialConfirm))
+            {
+                pressed = Some(Point::new(x, y));
+                break 'outer;
+            }
+        }
+    }
+
+    let point = pressed.expect("the dialog draws a confirm answer");
+    window.click_through(point);
+    window.drain();
+
+    assert!(
+        window.state().model().trial.is_none(),
+        "the click answered the question"
+    );
+    assert_eq!(
+        window.reload_config().compositor.outputs.len(),
+        1,
+        "the confirmed display settings are still there"
+    );
+}
+
+#[test]
+fn the_display_trial_is_answerable_by_keyboard_alone() {
+    let mut window = on_trial(dark());
+
+    // The question puts the keyboard on the answer that keeps the change, so one
+    // Enter answers it (Q01).
+    assert_eq!(
+        window
+            .state()
+            .model()
+            .focused
+            .map(|target| format!("{target:?}")),
+        Some("Trial(Confirm)".to_owned())
+    );
+
+    window.update(Message::Activate);
+    window.drain();
+
+    assert!(window.state().model().trial.is_none());
+    assert_eq!(window.reload_config().compositor.outputs.len(), 1);
 }
 
 #[test]
@@ -502,4 +636,186 @@ fn enlarged_english_navigation_remains_reachable_by_keyboard() {
     let enlarged = window.render();
     assert_ne!(initial, enlarged);
     snapshot("enlarged-navigation", &enlarged);
+}
+
+#[test]
+fn a_short_field_is_not_drawn_across_the_window() {
+    let tokens = dark();
+    let geometry = SettingsGeometry::new(&tokens);
+    let field = token_pixel(tokens.colors.surface_variant);
+
+    // The layout page holds numbers and nothing else, so the widest field drawn
+    // in a field's own colour on it is a number with its unit: six extra-large
+    // steps at the most (ui-guidelines §4).
+    let mut layout = Window::new();
+    layout.update(Message::PageSelected(PageId::Layout));
+    let pixels = layout.render();
+    let measured = widest_block(&pixels, field);
+
+    assert!(
+        measured as f32 <= geometry.short_width + 2.0,
+        "a number is drawn {measured} pixels wide, more than the {} a short value gets",
+        geometry.short_width
+    );
+
+    // The panel page also holds one format string. That is a long value and no
+    // longer: twelve extra-large steps at the most.
+    let pixels = populated(tokens).render();
+    let measured = widest_block(&pixels, field);
+
+    assert!(
+        measured as f32 <= geometry.wide_width + 2.0,
+        "a field is drawn {measured} pixels wide, more than the {} a long value gets",
+        geometry.wide_width
+    );
+    assert!(
+        (measured as f32) > geometry.short_width,
+        "the format string is the wide field this page holds"
+    );
+}
+
+#[test]
+fn a_hovered_entry_looks_different_from_a_resting_one() {
+    let tokens = dark();
+    let window = Window::new();
+
+    // Where the entries are is the layout's business, so the test asks it for
+    // one rather than writing a coordinate down. It looks for an entry that is
+    // not the open page: hovering the open page keeps the accent fill, which is
+    // its own rule and the next test's subject.
+    let mut entry_y = None;
+
+    for step in 0..80 {
+        let y = 4.0 + step as f32 * 4.0;
+
+        if window
+            .click(Point::new(40.0, y))
+            .iter()
+            .any(|message| matches!(message, Message::PageSelected(PageId::Panel)))
+        {
+            entry_y = Some(y);
+            break;
+        }
+    }
+
+    let y = entry_y.expect("the navigation list draws the panel's entry");
+    let resting = window.render();
+    // Inside the entry and past its label, so the pixel sampled is the entry's
+    // own fill rather than a glyph.
+    let hovered = window.render_at(Point::new(138.0, y));
+
+    snapshot("hovered", &hovered);
+
+    assert_eq!(
+        pixel(&hovered, 138, y as u32),
+        token_pixel(tokens.colors.surface_variant),
+        "a hovered entry is drawn on the hover surface"
+    );
+    assert_ne!(resting, hovered, "a hover has to be visible");
+}
+
+#[test]
+fn hovering_the_open_page_keeps_its_label_readable() {
+    let tokens = dark();
+    let window = Window::new();
+    let mut entry_y = None;
+
+    for step in 0..80 {
+        let y = 4.0 + step as f32 * 4.0;
+
+        if window
+            .click(Point::new(40.0, y))
+            .iter()
+            .any(|message| matches!(message, Message::PageSelected(PageId::Appearance)))
+        {
+            entry_y = Some(y);
+            break;
+        }
+    }
+
+    let y = entry_y.expect("the navigation list draws the appearance entry");
+    let hovered = window.render_at(Point::new(138.0, y));
+
+    assert_eq!(
+        pixel(&hovered, 138, y as u32),
+        token_pixel(tokens.colors.accent),
+        "the entry holding the open page keeps the accent fill under the pointer, \
+         so the text on it stays readable"
+    );
+}
+
+#[test]
+fn an_empty_list_says_what_it_will_do() {
+    let tokens = dark();
+    let mut window = Window::new();
+    window.update(Message::PageSelected(PageId::Displays));
+
+    let pixels = window.render();
+    snapshot("empty-list", &pixels);
+
+    let model = window.state().model();
+    let Some(ControlView::Collection { rows, empty, .. }) =
+        model.field(Field::Outputs).map(|field| &field.control)
+    else {
+        panic!("the displays are a list");
+    };
+
+    assert!(rows.is_empty(), "the window holds no display preference");
+    assert!(
+        !empty.trim().is_empty(),
+        "an empty list says what the window will do rather than drawing a blank"
+    );
+    assert_eq!(
+        widest_block(&pixels, token_pixel(tokens.colors.surface_variant)),
+        0,
+        "an empty list draws no fields to type into"
+    );
+
+    let mut with_a_row = Window::new();
+    with_a_row.update(Message::PageSelected(PageId::Displays));
+    with_a_row.update(Message::RowAdded(Field::Outputs));
+    assert_ne!(
+        pixels,
+        with_a_row.render(),
+        "a list with an entry looks different from an empty one"
+    );
+}
+
+#[test]
+fn nothing_is_drawn_past_the_windows_own_padding_at_a_doubled_scale() {
+    let mut tokens = dark();
+    tokens.typography.scale = 2.0;
+    let geometry = SettingsGeometry::new(&tokens);
+    let edge = (WIDTH - geometry.page_padding.right).max(0.0) as u32;
+    let background = token_pixel(tokens.colors.background);
+
+    for page in [PageId::Panel, PageId::Notifications, PageId::Displays] {
+        let mut window = Window::with_locale(
+            &[],
+            inox_common::i18n::Locale::default_locale(),
+            tokens.clone(),
+        );
+        window.update(Message::PageSelected(page));
+
+        if page == PageId::Displays {
+            window.update(Message::RowAdded(Field::Outputs));
+        }
+
+        let pixels = window.render();
+        snapshot(&format!("enlarged-{page:?}"), &pixels);
+
+        assert!(distinct_colours(&pixels) > 4, "{page:?} is not blank");
+        assert!(
+            !has_ink(
+                &pixels,
+                edge + 1,
+                WIDTH as u32,
+                60,
+                HEIGHT as u32,
+                background
+            ),
+            "{page:?} draws past the window's own padding at 200%, which is a scroll \
+             the user cannot reach"
+        );
+    }
 }

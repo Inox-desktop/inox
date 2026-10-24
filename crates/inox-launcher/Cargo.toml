@@ -16,6 +16,8 @@ categories.workspace = true
 # in the root `Cargo.toml` is enforced by
 # `cargo test -p inox-integration --test layering`.
 [dependencies]
+calloop.workspace = true
+zbus.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

@@ -1,6 +1,6 @@
 # 配置目录布局
 
-> **状态：`inox-config` 已实现，消费方接入中。** 本页与[合成器配置](./compositor.md)、[面板、启动器与壁纸配置](./shell.md)、[通知配置](./notifications.md)、[主题与设计令牌](./theme.md)描述的字段与默认值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）与 [ADR 0014](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0014-configuration-apply-and-migration.md)（状态 `proposed`）。`inox-config` 的模型、解析、错误定位与热重载语义均已实现并有测试；L3 组件通过 `InoxConfig` 读取配置。**`inox-compositor` 仍只解析命令行参数**，尚未读取 `compositor.toml`；各组件的行为验收等级见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)。
+> **状态：`inox-config` 已实现，消费方接入中。** 本页与[合成器配置](./compositor.md)、[面板、启动器与壁纸配置](./shell.md)、[通知配置](./notifications.md)、[主题与设计令牌](./theme.md)描述的字段与默认值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）与 [ADR 0014](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0014-configuration-apply-and-migration.md)（状态 `proposed`）。`inox-config` 的模型、解析、错误定位与热重载语义均已实现并有测试；L3 组件通过 `InoxConfig` 读取配置。`inox-compositor` 的物理后端启动时读取 TOML，运行中应用范围见本页热重载部分；各组件的行为验收等级见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)。
 
 目录布局本身由 PRD §9.1 规定：
 
@@ -84,15 +84,29 @@ ADR 0009 对四种情况给出了明确不同的行为，取舍是「首次运�
 
 ## 热重载
 
-- 组件在收到 `SIGHUP` 或 `inoxctl reload` 后重新读盘。
-- 重载失败时**保留旧配置**并以 `warn!` 记录原因，返回错误但不退出、不半应用。
-- `inox-config` 只提供确定性的重载语义（重新读盘、成功则原子替换、失败则保留旧值），**不引入信号依赖、也不实现 IPC 服务端**：SIGHUP 到 calloop 事件源的接线属于各组件，`inoxctl reload` 的服务端属于 L2 的 `inox-protocols` + `inox-ipc`。这一分工来自 ADR 0002 的依赖方向（L1 不得依赖 L2）。
-- 只有调用同一个重载入口的组件才享有「失败保留旧配置」的保证；自行读取配置的组件会绕过这条语义。
+在设置中点击「应用」会先原子保存，再请求受影响的运行中组件重载。
+只有消费方实际应用并回读当前候选后才显示「已生效」；组件未运行、超时或拒绝会分别报告。
+手工编辑后可运行 `inoxctl reload`，或向指定消费方发送 `SIGHUP`。
+解析失败保留当前配置；壁纸读取/解码失败保留旧帧。修改生效不重建现有应用连接或通知。
+
+目前支持合成器的主题、键盘和触摸板偏好、平铺布局，以及面板内容、高度、启动器偏好、
+通知策略和壁纸预览。**显示模式、输出缩放与位置可以在运行中切换，但必须先确认**：
+合成器以「试用」应用新值，设置页弹出确认框并倒计时 30 秒，未确认就恢复试用前的偏好
+并把 `compositor.toml` 的 `outputs` 改回原值；期限由合成器持有，设置窗口消失也会回退。
+headless 后端的输出来自 `--output`，该路径仍拒绝运行时改动。输入法进程替换与进程环境
+仍需下次会话。依赖 layer-shell 的面板摆放、自动隐藏和通知桌面角落仍受宿主限制，
+会拒绝实时应用。
+
+配置 schema 与快照在 L1 的 `inox-config`；D-Bus、SIGHUP 和资源提交在消费方二进制。
+协议契约位于 `inox-protocols/protocol/configuration-v1.md` 与
+`configuration-v2.md`（显示试用的 `Trial`/`Confirm`/`Rollback`），不新增 Cargo 层级边。
+详见 [ADR 0026](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0026-live-configuration-reload.md)
+与 [ADR 0028](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0028-display-trial-confirm-and-rollback.md)。
 
 ## 当前实现状态
 
-- `inox-config`：已实现目录发现、四个文件的模型与解析、字段路径与行列定位、主题解析与 `ConfigStore` 热重载语义，并有单元测试。
-- `inox-common`：`logging`、`paths` 已实现；`i18n` 提供 Fluent 目录加载、语言协商与目录一致性检查。
-- `inox-compositor`：**只解析命令行参数，不读取 TOML**（见[合成器配置](./compositor.md)），也没有广告 layer-shell。
-- L3 组件（面板、启动器、壁纸、通知、设置、锁屏）：通过 `InoxConfig` 读取各自的配置；交付等级与阻塞项见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)。
-- L4 组件（`inox-session`、`inox-idle`、`inox-greet`）：仍为骨架。
+- `inox-config`：目录发现、四个文件的模型与解析、字段路径与行列定位、主题解析、语义快照与 `ConfigStore`。
+- `inox-compositor`：物理后端启动时读取 TOML；Wayland、会话 D-Bus 与 SIGHUP 可触发运行中配置应用。headless 默认仍保持命令行给定的输出，只有明确重载才读取配置。
+- 面板、启动器、壁纸与通知：接入独立配置回执，保留原有运行状态；它们当前仍以普通窗口/预览运行，配置确认不证明桌面摆放已实现。
+- 设置：逐消费方请求、语义回读、错误呈现与 `inoxctl reload`；仍保留原子写入和外部编辑检测。
+- 锁屏、登录、会话环境、空闲服务等其他组件的运行中配置应用不在本次范围。

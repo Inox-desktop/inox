@@ -29,6 +29,7 @@
 # 使用
 
 - [构建与运行](./usage/building.md)
+- [登录与开机链](./usage/login.md)
 - [系统设置](./usage/settings.md)
 - [输入法](./usage/input-methods.md)
 

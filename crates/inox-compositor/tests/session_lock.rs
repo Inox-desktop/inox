@@ -4,10 +4,20 @@
 //! client may do with `ext_session_lock_manager_v1`, what the compositor refuses,
 //! and what the screen and the seat look like while a lock is held.
 //!
-//! The test drives three real Wayland clients over in-process socket pairs against
+//! The test drives five real Wayland clients over in-process socket pairs against
 //! a real `InoxState` on one thread, exactly as `tests/layer_shell.rs` does, and
 //! asserts on the compositor's observable state and on read-back pixels rather
 //! than on logs.
+//!
+//! The first scenario is the compositor half of ADR 0031's acceptance table: a
+//! background layer with a sharp black/white edge and a translucent top-layer
+//! "pane" whose client holds a real `inox_glass_v1` object has its backdrop
+//! frosted, the session is then locked, and the frame is read back. The frost is
+//! live in the unlocked frame and cannot appear in the locked one, a glass object
+//! created *after* `locked` is told `capabilities(max_radius = 0)`, and the lock
+//! survives every glass request. That table listed this case as 待补, pinned only
+//! by the pure `glass::collect_panes(locked = true, ..)` unit test and the early
+//! return in `scene_elements`; this is the end-to-end evidence with pixels.
 //!
 //! Everything lives in one test function on purpose: a process may only ever hold
 //! one EGL display (see the `SAFETY` note in `src/render.rs`), and test functions
@@ -22,19 +32,23 @@ use std::{
 };
 
 use calloop::EventLoop;
-use inox_compositor::{ClientState, CompositorConfig, HeadlessOutput, InoxState};
+use inox_compositor::{
+    ClientState, CompositorConfig, HeadlessOutput, InoxState, glass::MAX_BLUR_RADIUS,
+};
 use inox_protocols::{
+    glass::inox_glass::client::{inox_glass_manager_v1 as glass_manager, inox_glass_v1 as glass},
     ipc::inox_ipc::client::inox_ipc as ipc,
     standard::{
         core::client::{
-            wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
-            wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm,
-            wl_shm_pool, wl_surface,
+            wl_buffer, wl_callback, wl_compositor, wl_data_device, wl_data_device_manager,
+            wl_data_offer, wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_registry,
+            wl_seat, wl_shm, wl_shm_pool, wl_surface,
         },
         ext::session_lock::client::{
             ext_session_lock_manager_v1 as manager, ext_session_lock_surface_v1 as lock_surface,
             ext_session_lock_v1 as lock,
         },
+        wlr::layer_shell::client::{zwlr_layer_shell_v1 as shell, zwlr_layer_surface_v1 as layer},
         xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
     },
 };
@@ -63,6 +77,32 @@ const KEY_LEFT_META: u32 = 125 + 8;
 const KEY_Q: u32 = 16 + 8;
 const KEY_A: u32 = 30 + 8;
 
+// The frosted-glass scene, the same geometry `tests/glass_blur.rs` measures: a
+// black-to-white edge at `GLASS_EDGE_X` behind a translucent 120x80 pane that
+// covers it, with a 24-column blur.
+/// Where the background layer's black-to-white edge sits.
+const GLASS_EDGE_X: i32 = 60;
+/// Width of the frosted pane, in logical pixels.
+const PANE_WIDTH: i32 = 120;
+/// Height of the frosted pane, in logical pixels.
+const PANE_HEIGHT: i32 = 80;
+/// A row inside the pane; the pane spans y in `0..PANE_HEIGHT`.
+const GLASS_ROW_INSIDE: usize = 40;
+/// A row well below the pane, where the backdrop must still be sharp.
+const GLASS_ROW_OUTSIDE: usize = 200;
+/// The requested blur radius, in logical pixels (and physical: scale is 1).
+const GLASS_RADIUS: u32 = 24;
+/// The pane's own pixels: premultiplied grey with ~38 % alpha (`Argb8888` is
+/// premultiplied), so the frosted backdrop dominates but the pane is genuinely
+/// translucent rather than invisible.
+const PANE_RGBA: [u8; 4] = [48, 48, 48, 96];
+/// The two colours of the structured backdrop.
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+const WHITE: [u8; 4] = [255, 255, 255, 255];
+/// A sharp two-colour edge may straddle at most one texel; two is the tolerance
+/// the existing pixel tests use for driver rounding.
+const MAX_INTERMEDIATE_OUTSIDE_PANE: usize = 2;
+
 #[derive(Default)]
 struct Client {
     globals: HashMap<String, (u32, u32)>,
@@ -75,6 +115,14 @@ struct Client {
     data_offers: usize,
     device: Option<wl_data_device::WlDataDevice>,
     source: Option<wl_data_source::WlDataSource>,
+    /// Layer-surface configures, keyed by the user data the surface was created
+    /// with (the `tests/glass_blur.rs` shape, which a separate binary cannot
+    /// share).
+    layer_configures: HashMap<usize, Vec<(u32, i32, i32)>>,
+    /// `capabilities` per glass object, keyed by the user data it was created with.
+    max_radius: HashMap<usize, u32>,
+    /// `wl_display.sync` callbacks seen, which is what orders a test without a sleep.
+    callbacks: usize,
 }
 
 /// What a client saw happen to its session lock object.
@@ -214,6 +262,59 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
+impl Dispatch<layer::ZwlrLayerSurfaceV1, usize> for Client {
+    fn event(
+        state: &mut Self,
+        proxy: &layer::ZwlrLayerSurfaceV1,
+        event: layer::Event,
+        id: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let layer::Event::Configure {
+            serial,
+            width,
+            height,
+        } = event
+        {
+            state.layer_configures.entry(*id).or_default().push((
+                serial,
+                width as i32,
+                height as i32,
+            ));
+            proxy.ack_configure(serial);
+        }
+    }
+}
+
+impl Dispatch<glass::InoxGlassV1, usize> for Client {
+    fn event(
+        state: &mut Self,
+        _: &glass::InoxGlassV1,
+        event: glass::Event,
+        id: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let glass::Event::Capabilities { max_radius } = event {
+            state.max_radius.insert(*id, max_radius);
+        }
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.callbacks += 1;
+    }
+}
+
 impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
     fn event(
         _: &mut Self,
@@ -239,6 +340,8 @@ wayland_client::delegate_noop!(Client: ignore wl_seat::WlSeat);
 wayland_client::delegate_noop!(Client: ignore xdg_wm_base::XdgWmBase);
 wayland_client::delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 wayland_client::delegate_noop!(Client: ignore manager::ExtSessionLockManagerV1);
+wayland_client::delegate_noop!(Client: ignore shell::ZwlrLayerShellV1);
+wayland_client::delegate_noop!(Client: ignore glass_manager::InoxGlassManagerV1);
 wayland_client::delegate_noop!(Client: ignore wl_data_device_manager::WlDataDeviceManager);
 wayland_client::delegate_noop!(Client: ignore wl_data_offer::WlDataOffer);
 wayland_client::delegate_noop!(Client: ignore wl_data_source::WlDataSource);
@@ -313,6 +416,68 @@ impl Peer {
         );
         pool.destroy();
         buffer
+    }
+
+    /// A `wl_shm` buffer of `width` x `height` filled with `data` (BGRA rows).
+    fn shm_buffer(&self, width: i32, height: i32, data: &[u8]) -> wl_buffer::WlBuffer {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(data).unwrap();
+        let shm: wl_shm::WlShm = self.bind(1);
+        let pool = shm.create_pool(file.as_fd(), width * height * 4, &self.queue.handle(), ());
+        let buffer = pool.create_buffer(
+            0,
+            width,
+            height,
+            width * 4,
+            wl_shm::Format::Argb8888,
+            &self.queue.handle(),
+            (),
+        );
+        pool.destroy();
+        buffer
+    }
+
+    /// A `wl_shm` buffer split at `edge_x` into `left` and `right`.
+    fn two_tone_buffer(
+        &self,
+        width: i32,
+        height: i32,
+        edge_x: i32,
+        left: [u8; 4],
+        right: [u8; 4],
+    ) -> wl_buffer::WlBuffer {
+        let mut data = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..height {
+            for x in 0..width {
+                let colour = if x < edge_x { left } else { right };
+                // `Argb8888` is BGRA in memory on a little-endian machine.
+                data.extend_from_slice(&[colour[2], colour[1], colour[0], colour[3]]);
+            }
+        }
+        self.shm_buffer(width, height, &data)
+    }
+
+    /// A layer surface in `depth`, created with user data `id`.
+    fn layer(&self, id: usize, depth: shell::Layer) -> LayerSurface {
+        let compositor: wl_compositor::WlCompositor = self.bind(5);
+        let shell: shell::ZwlrLayerShellV1 = self.bind(4);
+        let surface = compositor.create_surface(&self.queue.handle(), ());
+        let role = shell.get_layer_surface(
+            &surface,
+            None,
+            depth,
+            format!("session-lock-glass-{id}"),
+            &self.queue.handle(),
+            id,
+        );
+        LayerSurface { surface, role, id }
+    }
+
+    /// Bind the private glass manager.
+    fn glass_manager(&self) -> glass_manager::InoxGlassManagerV1 {
+        let (name, advertised) = self.state.globals["inox_glass_manager_v1"];
+        self.registry
+            .bind(name, advertised.min(1), &self.queue.handle(), ())
     }
 
     /// Claim the trusted lock role over `inox_ipc`.
@@ -399,6 +564,28 @@ impl Peer {
     }
 }
 
+/// A real layer surface, with the geometry the compositor configured it to.
+struct LayerSurface {
+    surface: wl_surface::WlSurface,
+    role: layer::ZwlrLayerSurfaceV1,
+    id: usize,
+}
+
+impl LayerSurface {
+    fn configure_size(&self, peer: &Peer) -> (i32, i32) {
+        let (_, width, height) = *peer.state.layer_configures[&self.id].last().unwrap();
+        (width, height)
+    }
+
+    /// Paint the surface with a buffer, once the compositor has sized it.
+    fn attach(&self, peer: &Peer, buffer: &wl_buffer::WlBuffer) {
+        let (width, height) = self.configure_size(peer);
+        self.surface.attach(Some(buffer), 0, 0);
+        self.surface.damage_buffer(0, 0, width, height);
+        self.surface.commit();
+    }
+}
+
 fn step(display: &mut Display<InoxState>, state: &mut InoxState, peers: &mut [&mut Peer]) {
     for peer in peers.iter_mut() {
         peer.pump();
@@ -450,6 +637,130 @@ fn await_configure(
         .surface_configures
         .last()
         .expect("a configure was just awaited")
+}
+
+/// Wait for the first configure the compositor sends `peer`'s layer surface `id`.
+fn await_layer_configure(
+    display: &mut Display<InoxState>,
+    state: &mut InoxState,
+    peer: &mut Peer,
+    id: usize,
+) {
+    until(
+        "a layer surface configure",
+        display,
+        state,
+        &mut [peer],
+        |_, peers| peers[0].state.layer_configures.contains_key(&id),
+    );
+}
+
+/// Wait until the server has processed every request already sent on `peer`.
+///
+/// A `wl_display.sync` callback is processed in order behind them, so this orders
+/// the test without a sleep.
+fn round_trip(display: &mut Display<InoxState>, state: &mut InoxState, peer: &mut Peer) {
+    let before = peer.state.callbacks;
+    peer.connection.display().sync(&peer.queue.handle(), ());
+    until(
+        "a display round trip",
+        display,
+        state,
+        &mut [peer],
+        |_, peers| peers[0].state.callbacks > before,
+    );
+}
+
+/// The red channel of one row.
+///
+/// Every colour in the glass scene is grey or a two-tone edge, so the channel
+/// carries the whole signal and the readback's `Abgr8888` byte order never has to
+/// be guessed.
+fn row(frame: &[u8], y: usize) -> Vec<u8> {
+    (0..WIDTH as usize)
+        .map(|x| frame[(y * WIDTH as usize + x) * 4])
+        .collect()
+}
+
+/// The pane's own columns: the pane is anchored to the top-left corner.
+fn pane_columns() -> std::ops::Range<usize> {
+    0..PANE_WIDTH as usize
+}
+
+/// How many samples lie strictly between the row's two extremes.
+///
+/// A sharp two-colour edge has (almost) none; a blurred one has many. This is the
+/// measurement that separates "the composited backdrop was blurred" from "the
+/// client's translucent pixels were drawn over the sharp scene" — the two produce
+/// very different counts and identical plateaus.
+fn intermediate(values: &[u8]) -> usize {
+    let (Some(&low), Some(&high)) = (values.iter().min(), values.iter().max()) else {
+        return 0;
+    };
+    if high.saturating_sub(low) < 8 {
+        return 0;
+    }
+    // A margin of an eighth of the range keeps driver rounding and the translucent
+    // pane's own colour from being counted as a blur.
+    let margin = (high - low) / 8;
+    values
+        .iter()
+        .filter(|value| **value > low + margin && **value < high - margin)
+        .count()
+}
+
+/// How many pixels of `frame` are `probe` within the one-step tolerance drivers
+/// need for float-to-unorm rounding.
+fn count_probe(frame: &[u8], probe: [u8; 4]) -> usize {
+    frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| {
+            pixel
+                .iter()
+                .zip(probe)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 1)
+        })
+        .count()
+}
+
+/// How many pixels the two frames disagree on by more than one 8-bit step.
+fn differing_pixels(before: &[u8], after: &[u8]) -> usize {
+    assert_eq!(before.len(), after.len(), "frames must have the same size");
+    before
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<4>().0)
+        .filter(|(left, right)| {
+            left.iter()
+                .zip(right.iter())
+                .any(|(left, right)| left.abs_diff(*right) > 1)
+        })
+        .count()
+}
+
+/// The largest per-channel distance between any pixel and `probe`.
+///
+/// Zero means the frame is `probe` exactly; one is the tolerance float-to-unorm
+/// rounding needs, which is what "every pixel is the lock surface" is asserted
+/// with.
+fn max_channel_distance(frame: &[u8], probe: [u8; 4]) -> u8 {
+    frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|pixel| {
+            pixel
+                .iter()
+                .zip(probe)
+                .map(|(actual, expected)| actual.abs_diff(expected))
+                .max()
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The frame the compositor would put on the default output right now.
@@ -543,6 +854,319 @@ fn the_session_lock_covers_the_screen_refuses_strangers_and_survives_its_client(
     // The global is advertised to every client; the decision about who may *use*
     // it happens on the request (ADR 0022 decision 3).
     assert_eq!(app.state.globals["ext_session_lock_manager_v1"].1, 1);
+
+    // --- frosting is live before a lock, and cannot survive one --------------
+    //
+    // ADR 0031's acceptance table left exactly this case open: the "a locked
+    // session contributes no panes" rule was pinned only by the pure
+    // `glass::collect_panes(locked = true, ..)` unit test and the early return in
+    // `scene_elements`. This is the end-to-end half, with the same scene
+    // `tests/glass_blur.rs` measures — a background layer carrying a sharp
+    // black/white edge, a translucent top-layer pane over it, and a real
+    // `inox_glass_v1` object with a radius and a region — and it is placed before
+    // the ordinary desktop exists so the only content on screen is the glass
+    // scene itself.
+    let mut glassy = Peer::connect(&mut handle);
+    let mut locker = Peer::connect(&mut handle);
+    until(
+        "the glass client and the lock holder see their globals",
+        &mut display,
+        &mut state,
+        &mut [&mut glassy, &mut locker],
+        |_, peers| {
+            peers.iter().all(|peer| {
+                peer.has_global("zwlr_layer_shell_v1") && peer.has_global("inox_glass_manager_v1")
+            })
+        },
+    );
+
+    // The structured backdrop: a background layer surface with a sharp edge at
+    // GLASS_EDGE_X, exactly as in `tests/glass_blur.rs`.
+    let backdrop = glassy.layer(0, shell::Layer::Background);
+    backdrop.role.set_size(0, 0);
+    backdrop.role.set_anchor(
+        layer::Anchor::Top | layer::Anchor::Bottom | layer::Anchor::Left | layer::Anchor::Right,
+    );
+    backdrop.role.set_exclusive_zone(-1);
+    backdrop.surface.commit();
+    await_layer_configure(&mut display, &mut state, &mut glassy, 0);
+    assert_eq!(backdrop.configure_size(&glassy), (WIDTH, HEIGHT));
+    let pattern = glassy.two_tone_buffer(WIDTH, HEIGHT, GLASS_EDGE_X, BLACK, WHITE);
+    backdrop.attach(&glassy, &pattern);
+    until(
+        "the background layer is mapped",
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        |state, _| state.layer_count() == 1,
+    );
+
+    // The pane: a translucent top layer surface over the edge.
+    let pane = glassy.layer(1, shell::Layer::Top);
+    pane.role.set_size(PANE_WIDTH as u32, PANE_HEIGHT as u32);
+    pane.role
+        .set_anchor(layer::Anchor::Top | layer::Anchor::Left);
+    pane.surface.commit();
+    await_layer_configure(&mut display, &mut state, &mut glassy, 1);
+    assert_eq!(pane.configure_size(&glassy), (PANE_WIDTH, PANE_HEIGHT));
+    let translucent = glassy.buffer(PANE_WIDTH, PANE_HEIGHT, PANE_RGBA);
+    pane.attach(&glassy, &translucent);
+    until(
+        "the pane layer is mapped",
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        |state, _| state.layer_count() == 2,
+    );
+
+    // The pane already has its layer role, so the compositor must offer it the
+    // real maximum, and the effect must really be applied.
+    let manager = glassy.glass_manager();
+    let pane_glass = manager.get_glass(&pane.surface, &glassy.queue.handle(), 1);
+    until(
+        "the pane's glass object is told its maximum",
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        |_, peers| peers[0].state.max_radius.contains_key(&1),
+    );
+    let unlocked_max_radius = glassy.state.max_radius[&1];
+    assert_eq!(
+        unlocked_max_radius, MAX_BLUR_RADIUS,
+        "an unlocked layer surface is offered the compositor's real maximum"
+    );
+    pane_glass.set_radius(GLASS_RADIUS);
+    pane_glass.set_region(0, 0, PANE_WIDTH, PANE_HEIGHT);
+    round_trip(&mut display, &mut state, &mut glassy);
+
+    let frosted = settle_until(
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        "the live frost before the lock",
+        |rendered| {
+            intermediate(&row(rendered, GLASS_ROW_INSIDE)[pane_columns()])
+                >= GLASS_RADIUS as usize / 2
+        },
+    );
+    let live_ramp = intermediate(&row(&frosted, GLASS_ROW_INSIDE)[pane_columns()]);
+    let live_pattern = count_probe(&frosted, WHITE);
+    let sharp_below_pane = intermediate(&row(&frosted, GLASS_ROW_OUTSIDE));
+    assert!(
+        live_ramp >= GLASS_RADIUS as usize / 2,
+        "the frost must be live before the lock, otherwise the locked frame proves nothing: \
+         {live_ramp} intermediate columns"
+    );
+    assert!(
+        live_pattern > 0 && frame_contains(&frosted, WHITE),
+        "the structured backdrop must be on screen before the lock: {live_pattern} white pixels"
+    );
+    assert!(
+        sharp_below_pane <= MAX_INTERMEDIATE_OUTSIDE_PANE,
+        "the backdrop below the pane must stay sharp, otherwise the ramp above it is not the \
+         effect: {sharp_below_pane} intermediate columns"
+    );
+
+    // The lock holder claims the trusted role and covers the glass scene. The
+    // keyboard is bound so the lock client is the full real thing, not a client
+    // that merely holds the object.
+    locker.claim(TOKEN);
+    let locker_seat: wl_seat::WlSeat = locker.bind(9);
+    let _locker_keyboard = locker_seat.get_keyboard(&locker.queue.handle(), ());
+    let held = locker.request_lock();
+    until(
+        "the glass scene is behind a lock",
+        &mut display,
+        &mut state,
+        &mut [&mut locker],
+        |state, _| state.session_locked(),
+    );
+    let lock_frame = locker.create_lock_surface(&held);
+    let (_, width, height) = await_configure(&mut display, &mut state, &mut locker);
+    assert_eq!((width, height), (WIDTH as u32, HEIGHT as u32));
+    locker.paint_lock_surface(&lock_frame, (width, height), LOCK_FRAME);
+    let locked = settle_until(
+        &mut display,
+        &mut state,
+        &mut [&mut locker],
+        "the lock surface over the glass scene",
+        |rendered| max_channel_distance(rendered, LOCK_FRAME) <= 1,
+    );
+
+    // The locked frame is the lock surface and nothing else: not one pixel of the
+    // pattern, the pane or the frost survives, within the one-step rounding
+    // tolerance.
+    assert!(
+        max_channel_distance(&locked, LOCK_FRAME) <= 1,
+        "every pixel of the locked frame must be the lock surface, found a channel up to {} \
+         steps away",
+        max_channel_distance(&locked, LOCK_FRAME)
+    );
+    assert_eq!(
+        count_probe(&locked, WHITE),
+        0,
+        "the background pattern must be gone from a locked screen"
+    );
+    let locked_ramp = intermediate(&row(&locked, GLASS_ROW_INSIDE)[pane_columns()]);
+    assert_eq!(
+        locked_ramp, 0,
+        "the frosted edge must be gone from a locked screen"
+    );
+    let locked_sharp = intermediate(&row(&locked, GLASS_ROW_OUTSIDE));
+    assert_eq!(
+        locked_sharp, 0,
+        "the sharp edge below the pane must be gone from a locked screen too"
+    );
+    let hidden = differing_pixels(&frosted, &locked);
+    assert!(
+        hidden >= (WIDTH * HEIGHT) as usize / 2,
+        "the locked frame must differ from the pre-lock frame it replaced: only {hidden} pixels"
+    );
+    assert!(state.session_locked());
+
+    // `locked` arrives once the covered frame has been presented; only then does
+    // the "created while locked" case below mean what it says.
+    until(
+        "the lock holder is told it owns the screen",
+        &mut display,
+        &mut state,
+        &mut [&mut locker],
+        |_, peers| !peers[0].state.lock_events.is_empty(),
+    );
+    assert_eq!(
+        locker.state.lock_events,
+        vec![LockEvent::Locked],
+        "`locked` arrives once the locked frame has been presented"
+    );
+
+    // --- a glass object created while locked is told 0 -----------------------
+    //
+    // The compositor still answers the layer-shell and glass protocols while a
+    // lock is held; what it must not do is promise a blur it will not draw. The
+    // new surface is committed and mapped exactly like the pre-lock pane — same
+    // layer role, same size, same pixels — so the lock is the only reason to
+    // answer 0 and the only reason it may not change the frame.
+    let late = glassy.layer(2, shell::Layer::Top);
+    late.role.set_size(PANE_WIDTH as u32, PANE_HEIGHT as u32);
+    late.role
+        .set_anchor(layer::Anchor::Top | layer::Anchor::Left);
+    late.surface.commit();
+    await_layer_configure(&mut display, &mut state, &mut glassy, 2);
+    assert_eq!(late.configure_size(&glassy), (PANE_WIDTH, PANE_HEIGHT));
+    // It is attached and mapped: the pixel assertion below is about a pane that is
+    // really part of the scene, not about a surface that never had content.
+    late.attach(&glassy, &translucent);
+    until(
+        "the pane created under the lock is mapped",
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        |state, _| state.layer_count() == 3,
+    );
+    let late_manager = glassy.glass_manager();
+    let late_glass = late_manager.get_glass(&late.surface, &glassy.queue.handle(), 2);
+    until(
+        "the locked scene's glass object is told its maximum",
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        |_, peers| peers[0].state.max_radius.contains_key(&2),
+    );
+    let locked_max_radius = glassy.state.max_radius[&2];
+    assert_eq!(
+        locked_max_radius, 0,
+        "a glass object created while the session is locked must be told 0"
+    );
+    assert_eq!(
+        glassy.state.max_radius[&1], unlocked_max_radius,
+        "`capabilities` is sent once: the pre-lock object keeps the maximum it was promised, \
+         and the compositor simply does not apply it while locked"
+    );
+    late_glass.set_radius(GLASS_RADIUS);
+    late_glass.set_region(0, 0, PANE_WIDTH, PANE_HEIGHT);
+    round_trip(&mut display, &mut state, &mut glassy);
+
+    state.render_frame().unwrap();
+    let after_glass_traffic = state.read_frame_rgba().unwrap();
+    assert_eq!(
+        differing_pixels(&locked, &after_glass_traffic),
+        0,
+        "a pane created under the lock must not change a single pixel of the locked frame"
+    );
+    assert_eq!(
+        count_probe(&after_glass_traffic, WHITE),
+        0,
+        "no pattern may appear because a locked client asked for frosting"
+    );
+
+    // --- the held lock survives the glass traffic ----------------------------
+    assert_eq!(
+        locker.state.lock_events,
+        vec![LockEvent::Locked],
+        "glass traffic must not disturb the lock: one `locked`, no `finished`"
+    );
+    assert!(state.session_locked());
+    state.render_frame().unwrap();
+    let still_locked = state.read_frame_rgba().unwrap();
+    assert!(
+        max_channel_distance(&still_locked, LOCK_FRAME) <= 1,
+        "the frame read back after the glass traffic must still be a locked frame"
+    );
+
+    // --- the same scene without the lock ------------------------------------
+    //
+    // The discriminative half: the lock is released and the very same surfaces
+    // come back, so the empty locked frame above cannot be explained by a scene
+    // that was never drawn.
+    held.unlock_and_destroy();
+    until(
+        "the lock is released",
+        &mut display,
+        &mut state,
+        &mut [&mut locker, &mut glassy],
+        |state, _| !state.session_locked(),
+    );
+    let restored = settle_until(
+        &mut display,
+        &mut state,
+        &mut [&mut glassy],
+        "the frosted scene after the unlock",
+        |rendered| count_probe(rendered, WHITE) > 0,
+    );
+    let restored_pattern = count_probe(&restored, WHITE);
+    assert!(
+        restored_pattern > 0,
+        "the same scene must come back when the lock is released, otherwise the locked frame \
+         proved nothing"
+    );
+
+    // Release the scene so the rest of this test measures the ordinary desktop.
+    drop(glassy);
+    drop(locker);
+    until(
+        "the glass scene is released",
+        &mut display,
+        &mut state,
+        &mut [&mut app, &mut keeper, &mut stranger],
+        |state, _| state.layer_count() == 0 && state.window_count() == 0,
+    );
+    state.render_frame().unwrap();
+    let cleaned = state.read_frame_rgba().unwrap();
+    assert_eq!(
+        count_probe(&cleaned, WHITE),
+        0,
+        "the disconnected glass client leaves no pattern behind"
+    );
+
+    println!(
+        "session lock + glass: capabilities pre-lock = {unlocked_max_radius}, mid-lock = \
+         {locked_max_radius}; frosted row intermediate columns pre-lock = {live_ramp} (sharp row \
+         below the pane = {sharp_below_pane}, max {MAX_INTERMEDIATE_OUTSIDE_PANE} outside a pane), \
+         locked = {locked_ramp} (sharp row = {locked_sharp}); white pattern pixels pre-lock = \
+         {live_pattern}, locked = 0, restored = {restored_pattern}; pixels differing pre-lock vs \
+         locked = {hidden} of {}",
+        WIDTH * HEIGHT
+    );
 
     let seat: wl_seat::WlSeat = app.bind(9);
     let _keyboard = seat.get_keyboard(&app.queue.handle(), ());

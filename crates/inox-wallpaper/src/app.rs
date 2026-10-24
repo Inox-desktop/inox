@@ -12,7 +12,7 @@
 //! is [`crate::apply`], and what the widget tree shows is
 //! [`crate::view_model`]'s projection of this state.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -44,6 +44,12 @@ pub struct Preview {
     pub mode: WallpaperMode,
     /// What the configuration asks that output to draw.
     pub selection: Selection,
+    /// Where a bundled wallpaper is searched for, in order.
+    ///
+    /// Resolved once, from the session environment, and carried here so that
+    /// loading a frame — which runs off the interaction loop — does not read the
+    /// environment again.
+    pub wallpaper_dirs: Arc<[PathBuf]>,
 }
 
 impl Preview {
@@ -54,7 +60,12 @@ impl Preview {
     /// "first" is deterministic — and otherwise a synthetic name that resolves
     /// through the wildcard and the shared image exactly as a real output would.
     #[must_use]
-    pub fn from_config(config: &WallpaperConfig, config_dir: &Path, size: Size) -> Self {
+    pub fn from_config(
+        config: &WallpaperConfig,
+        config_dir: &Path,
+        size: Size,
+        wallpaper_dirs: Arc<[PathBuf]>,
+    ) -> Self {
         let output = preview_output(config);
 
         Self {
@@ -62,6 +73,7 @@ impl Preview {
             output,
             size,
             mode: config.mode,
+            wallpaper_dirs,
         }
     }
 }
@@ -140,6 +152,31 @@ pub struct State {
 }
 
 impl State {
+    /// Commits an already prepared wallpaper and invalidates earlier image requests.
+    ///
+    /// # Errors
+    /// A resource failure leaves the visible frame and all preferences unchanged.
+    pub fn apply_configuration(
+        &mut self,
+        theme: Arc<Theme>,
+        localizer: Rc<Localizer>,
+        preview: Preview,
+        preparation: Preparation,
+    ) -> Result<(), crate::model::Unusable> {
+        if let Preparation::Degraded { reason, .. } = &preparation {
+            return Err(reason.clone());
+        }
+        self.generation = self.generation.next();
+        self.queued = None;
+        self.in_flight = None;
+        self.theme = theme;
+        self.localizer = localizer;
+        self.preview = preview;
+        self.configuration = None;
+        self.accept(self.generation, preparation);
+        Ok(())
+    }
+
     /// A state that has not loaded anything yet.
     ///
     /// `configuration` is the reason the configuration could not be read, when
@@ -256,13 +293,13 @@ impl State {
 
     /// Records what the component starts out doing.
     ///
-    /// A configured image is queued for the runtime to load. A configuration
-    /// that names no image needs no work at all, so its output state is recorded
-    /// here rather than left unknown: the preview then shows the theme
-    /// background with the line that says so, instead of an empty window that
-    /// could be mistaken for a failure.
+    /// A configured image — a path or a bundled wallpaper — is queued for the
+    /// runtime to load. A theme background needs no work at all, so its output
+    /// state is recorded here rather than left unknown: the preview then shows
+    /// the theme background with the line that says so, instead of an empty
+    /// window that could be mistaken for a failure.
     fn start(&mut self) {
-        if self.preview.selection.path().is_some() {
+        if self.preview.selection.wants_image() {
             self.queued = Some(Request {
                 generation: self.generation,
                 output: self.preview.output.clone(),
@@ -289,11 +326,11 @@ impl State {
     /// why a request in flight is not a reason to refuse (ADR 0013, acceptance
     /// C02).
     ///
-    /// Nothing configured is the one case that queues nothing: there is no image
-    /// to load, and the interface says so instead of offering a control that
-    /// would do nothing.
+    /// Nothing to draw is the one case that queues nothing: there is no image to
+    /// load, and the interface says so instead of offering a control that would
+    /// do nothing.
     fn queue_reload(&mut self) -> bool {
-        if self.preview.selection.path().is_none() {
+        if !self.preview.selection.wants_image() {
             return false;
         }
 
@@ -349,7 +386,12 @@ impl State {
 /// frame is ready.
 pub fn boot(state: &mut State) -> Task<Message> {
     match state.take_request() {
-        Some(request) => load(request, state.preview.mode, state.preview.size),
+        Some(request) => load(
+            request,
+            state.preview.mode,
+            state.preview.size,
+            &state.preview.wallpaper_dirs,
+        ),
         None => Task::none(),
     }
 }
@@ -371,7 +413,12 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             }
 
             match state.take_request() {
-                Some(request) => load(request, state.preview.mode, state.preview.size),
+                Some(request) => load(
+                    request,
+                    state.preview.mode,
+                    state.preview.size,
+                    &state.preview.wallpaper_dirs,
+                ),
                 None => Task::none(),
             }
         }
@@ -379,12 +426,27 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 }
 
 /// Decodes and places one request, off the interaction loop.
-fn load(request: Request, mode: WallpaperMode, size: Size) -> Task<Message> {
+fn load(
+    request: Request,
+    mode: WallpaperMode,
+    size: Size,
+    wallpaper_dirs: &[PathBuf],
+) -> Task<Message> {
     let generation = request.generation;
+    // The directories are copied into the task because it outlives this call;
+    // they are a handful of paths, and the alternative is a reference into the
+    // state that the runtime's thread would have to keep alive.
+    let wallpaper_dirs = wallpaper_dirs.to_vec();
 
     Task::perform(
         async move {
-            let preparation = apply::prepare(request.output, &request.selection, mode, size);
+            let preparation = apply::prepare(
+                request.output,
+                &request.selection,
+                mode,
+                size,
+                &wallpaper_dirs,
+            );
 
             Message::FramePrepared {
                 generation,
@@ -407,6 +469,7 @@ mod tests {
             size: PREVIEW_SIZE,
             mode: WallpaperMode::Fill,
             selection,
+            wallpaper_dirs: Arc::from(Vec::<PathBuf>::new()),
         }
     }
 
@@ -435,7 +498,54 @@ mod tests {
             &Selection::Image(path),
             WallpaperMode::Fill,
             PREVIEW_SIZE,
+            &[],
         )
+    }
+
+    #[test]
+    fn live_wallpaper_commit_invalidates_old_loads_and_failure_keeps_preferences() {
+        let dir = tempfile::tempdir().expect("directory");
+        let mut state = state(Selection::Image(dir.path().join("old.png")));
+        let old = state.take_request().expect("initial image request");
+        let next = Preview::from_config(
+            &WallpaperConfig::default(),
+            dir.path(),
+            PREVIEW_SIZE,
+            Arc::from(Vec::<PathBuf>::new()),
+        );
+        let preparation = prepared(dir.path(), next.output.as_str(), 8, 8);
+        let localizer = Rc::clone(&state.localizer);
+        state
+            .apply_configuration(
+                Arc::new(Theme::builtin_light()),
+                localizer.clone(),
+                next.clone(),
+                preparation,
+            )
+            .expect("prepared image");
+        let current = state.snapshot.clone();
+        state.accept(old.generation, Preparation::Nothing { output: old.output });
+        assert_eq!(
+            state.snapshot, current,
+            "a superseded decode cannot clear the new frame"
+        );
+        let error = Preparation::Degraded {
+            output: next.output.clone(),
+            path: dir.path().join("missing"),
+            reason: Unusable::Missing,
+        };
+        assert_eq!(
+            state.apply_configuration(
+                Arc::new(Theme::builtin_dark()),
+                localizer,
+                next.clone(),
+                error
+            ),
+            Err(Unusable::Missing)
+        );
+        assert_eq!(state.theme(), &Theme::builtin_light());
+        assert_eq!(state.preview(), &next);
+        assert_eq!(state.snapshot, current);
     }
 
     #[test]
@@ -713,7 +823,12 @@ mod tests {
             .per_output
             .insert("HDMI-A-1".to_owned(), PathBuf::from("wide.png"));
 
-        let preview = Preview::from_config(&config, Path::new("/cfg"), PREVIEW_SIZE);
+        let preview = Preview::from_config(
+            &config,
+            Path::new("/cfg"),
+            PREVIEW_SIZE,
+            Arc::from(Vec::<PathBuf>::new()),
+        );
 
         assert_eq!(preview.output.as_str(), "HDMI-A-1");
         assert_eq!(
@@ -726,5 +841,49 @@ mod tests {
     #[test]
     fn the_preview_size_is_the_one_the_screenshots_are_taken_at() {
         assert_eq!(PREVIEW_SIZE, Size::new(1280, 720));
+    }
+
+    #[test]
+    fn a_configuration_that_names_no_image_previews_the_bundled_default() {
+        let default = inox_config::wallpapers::default_bundled().expect("a default is shipped");
+        let config = WallpaperConfig::default();
+
+        let preview = Preview::from_config(
+            &config,
+            Path::new("/cfg"),
+            PREVIEW_SIZE,
+            Arc::from(vec![PathBuf::from("/usr/share/inox/wallpapers")]),
+        );
+
+        assert_eq!(
+            preview.selection,
+            Selection::Bundled {
+                wallpaper: default,
+                explicit: false,
+            }
+        );
+        assert_eq!(
+            preview.wallpaper_dirs.as_ref(),
+            &[PathBuf::from("/usr/share/inox/wallpapers")]
+        );
+    }
+
+    #[test]
+    fn a_bundled_default_queues_a_request_like_any_other_image() {
+        let default = inox_config::wallpapers::default_bundled().expect("a default is shipped");
+        let mut state = state(Selection::Bundled {
+            wallpaper: default,
+            explicit: false,
+        });
+
+        assert!(state.is_busy(), "the bundled default is an image to load");
+        let request = state.take_request().expect("a request");
+        assert_eq!(
+            request.selection,
+            Selection::Bundled {
+                wallpaper: default,
+                explicit: false,
+            }
+        );
     }
 }

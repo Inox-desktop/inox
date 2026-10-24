@@ -55,15 +55,17 @@ cargo test -p inox-integration --test layering
 
 ### 许可证白名单
 
-仅允许 BSD / MIT / Apache-2.0 / ISC / Zlib 等宽松许可证；**禁止 GPL / AGPL / SSPL 进入核心依赖**。由单一 `cargo deny check` 强制，同时检查 RUSTSEC 漏洞与重复版本。
+允许宽松许可 + LGPL（项目本身 LGPL-3.0，ADR 0034）；**禁止 AGPL / SSPL 进入核心依赖**，并禁止 GPL-only 的 Qt 模块（Qt Wayland Compositor、Qt Virtual Keyboard、Qt QML Compiler）。由单一 `cargo deny check` 检查 Cargo 依赖图；系统库许可由独立的 `license-audit` CI job 校验。
 
 **检查范围是完整依赖图**，而不是旧方案中 18 份 `deny.toml` 各自看到的子图；因此迁移后可能出现此前被分割掩盖的真实告警，这类告警应逐条处理，不得靠放宽白名单消除。
 
 ## MSRV
 
-MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出，当前为 **1.88**；成员一律 `rust-version.workspace = true`，不再各自声明。CI 跟随 `stable`，声明的下限只约束使用者。
+MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出，当前为 **1.89**；成员一律 `rust-version.workspace = true`，不再各自声明。CI 跟随 `stable`，声明的下限只约束使用者。
 
-下限来自依赖本身的硬要求，而不是偏好：L3 里程碑引入的 `iced` 0.14 与 `image` 0.25 都声明 `rust-version = "1.88"`。此前的 1.86 同样是被依赖推着走 —— `inox-compositor` 经由 `smithay` 0.7 依赖的 `calloop` 0.14 要求 rustc ≥ 1.86。旧方案中「`inox-compositor` 是 1.86、其余 L1 是 1.85」的分裂状态已随工作区统一而消失；根级 `AGENTS.md` §8 要求提升 MSRV 时说明破坏性影响，本次提升只排除 1.86/1.87 工具链的使用者，不改变任何已发布行为。
+当前下限来自 `zbus` 6.0 的 Rust 1.89 要求（[ADR 0027](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0027-zbus-6-migration.md)）。此次从 1.88 提升到 1.89，不再支持 1.88 工具链；Iced/image 引入时曾把工作区从 1.86 提升到 1.88。成员仍统一继承根声明，CI 除 stable 全量检查外增加 Rust 1.89 静态检查。
+
+zbus 6 将停止维护的 zvariant、zvariant_derive、zbus_names 合并进自身，不再使用旧 blocking API。通知传输线程与配置重载工作线程使用 `zbus::block_on` 驱动异步 API；数据类型改为 `Variant` / `OwnedVariant`，标准 D-Bus 错误按 `Error::FDO` 分类。总线接口与用户配置格式不变，许可证仍为 MIT，完整依赖检查仍由 CI 执行。
 
 ## L3 的第三方依赖
 
@@ -76,6 +78,7 @@ L3 组件（面板、启动器、通知、设置、锁屏、壁纸）在 L1/L2 �
 | `unic-langid` 0.9 | MIT OR Apache-2.0 | BCP-47 语言标签 | 同上 |
 | `chrono` 0.4 | MIT OR Apache-2.0 | 面板时钟的民用时间 | `inox-panel` |
 | `image` 0.25 | MIT OR Apache-2.0 | 壁纸的 PNG/JPEG 解码（只启用这两种格式） | `inox-wallpaper`、渲染测试 |
+| `zbus` 6.0 | MIT | 通知总线与配置重载；显式启用 default-rt/proxy/service/p2p/tracing | 通知、设置与配置消费方 |
 | `zeroize` 1 | MIT OR Apache-2.0 | 凭据缓冲在释放时清零（ADR 0015） | `inox-lock` |
 | `iced_core` / `iced_runtime` / `iced_tiny_skia` 0.14 | MIT | iced 的离屏一半：`UserInterface` 负责布局与事件、tiny-skia 渲染器负责像素。各 L3 组件作 **dev-dependency**（渲染测试装置）；`inox-lock` 作 **dependency**——锁表面不是窗口，提交的帧由它画成（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)） | 各 L3 组件的 `tests/`；`inox-lock` 的 `src/render.rs` |
 

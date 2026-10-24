@@ -1,6 +1,6 @@
 # 构建与运行
 
-> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；L3 目前以普通窗口运行，layer-shell 客户端与完整服务 ready 尚未接线。锁屏的协议腿与界面已经落地（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），但**真实认证**仍受 ADR 0015 的人类安全评审阻塞，挂起与真实登录同样未接线。本页说明可运行路径及其限制。
+> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；L3 目前以普通窗口运行，layer-shell 客户端与完整服务 ready 尚未接线。锁屏的协议腿与界面已经落地（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。**认证边界与开机登录链**已按 [ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 接线（`inox-host` + `packaging/`），但**真机登录尚未取得证据**；挂起仍未接线。本页说明可运行路径及其限制，登录链的安装、试运行与回退另见[登录与开机链](login.md)。
 
 ## 今天能跑到什么程度
 
@@ -11,7 +11,7 @@
 | 用真实键盘/鼠标操作 | **不行**：没有 libinput/udev 后端；输入事件只能由测试注入（M3 起经测试专用套接字，需 `test-input` feature 构建） |
 | 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件都已实现，`cargo run -p inox-panel` 会打开一个普通窗口；由于合成器尚未广告 `zwlr_layer_shell_v1` 且 `iced_layershell` 当前无法编译（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)），它们**不是** layer-shell 客户端，放置策略只被建模与测试、未被应用；`inox-lock` 默认以可读错误非零退出（认证边界未评审），`--take-lock` 则真实取锁并把界面画到每个输出上 |
 | 启动与监督会话 | **部分可以**：`inox-session` 能启动合成器及桌面组件，提供有限重启、故障隔离和注销；尚无完整服务 ready，也未接入 XWayland 的 DISPLAY 发布 |
-| 真实登录、自动锁定与挂起 | **不行**：`inox-greet` 默认拒绝认证，只有显式预览；`inox-idle` 有协议客户端与策略，但 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线 |
+| 真实登录、自动锁定与挂起 | **未验证**：登录链（`inox-host` 起合成器与登录界面，`inox-auth` 认证并建立用户会话）与部署面 `packaging/` 已接线，但**没有任何真机登录证据**；`inox-greet` 不带 `--preview` 时要求认证边界，`inox-idle` 有协议客户端与策略，而 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线。步骤见[登录与开机链](login.md) |
 | 锁定会话、收发通知 | **部分可以**：`inox-lock --take-lock` 会话内真的会锁住屏幕并画出界面（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），`inox-notifications` 提供 `org.freedesktop.Notifications`；但锁屏**不能认证任何人**（ADR 0015 要求人类安全审查），因此它会如实显示「本构建没有认证边界」，释放会话只能靠注销 |
 | 运行 X11 应用 | **可以，但看不到画面**：合成器已广告 satellite 所需的宿主协议（含 `wp_viewporter`），`inox-xwayland` 可在会话中启动并监督它；运行时需自备 `xwayland-satellite`（≥ v0.8.3）与 `Xwayland` |
 | 剪贴板与拖放 | **可以（仅限 headless 内）**：剪贴板读取权跟随键盘焦点；Wayland↔Wayland 拖放与 X11 内部拖放可用；跨 X11/Wayland 边界的拖放**不可用**（上游 satellite 未实现 XDND） |
@@ -47,11 +47,22 @@ INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headles
 
 在可用 Wayland 宿主中，`inox-greet --preview` 打开登录界面。要看清它显示的是什么：**界面为六个生命周期阶段各有一幅画面，而这台构建只会到达其中一幅**。
 
-界面在设计上覆盖不可用、就绪、验证中、会话启动中、失败与已启动六个阶段，键盘（Tab/Shift+Tab/Enter/Escape）与每个禁用控件的原因都已建模，并由测试逐阶段覆盖。但 `--preview` 把认证传输的可用性固定为「没有」——这正是本构建的事实——所以它显示的是**不可用**那一幅：身份字段不可输入，登录按钮禁用，键盘只剩 Escape（清空）。它**不采集密码、不认证、不启动用户会话**，界面上也写着这一点。
+界面在设计上覆盖不可用、就绪、验证中、会话启动中、失败与已启动六个阶段，键盘（Tab/Shift+Tab/Enter/Escape）与每个禁用控件的原因都已建模，并由测试逐阶段覆盖。但 `--preview` 把认证传输的可用性固定为「没有」——这正是本构建的事实——所以它显示的是**不可用**那一幅：口令字段不可输入，登录按钮禁用，键盘只剩 Escape（清空）。它**不采集密码、不认证、不启动用户会话**，界面上也写着这一点。
 
-换句话说：预览展示的是诚实的状态，不是一次演示。要看到其余五个阶段，只有测试与截图工件，没有运行的二进制会因为一个开关就假装自己有认证边界。
+身份不靠键入（[ADR 0032](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0032-greeter-account-selection-and-login-interface.md)）：界面读系统账户库（`getent passwd`，回落 `/etc/passwd`）列出可登录的账户，默认选中本 greeter 上次登录成功过的那个（记录在 `$XDG_STATE_HOME/inox/greet/last-user`），账户多于一个时可以「切换用户」。账户库读不到时界面仍然打开，并说明是读不到列表还是列表里没有可登录的账户。
+
+换句话说：预览展示的是诚实的状态，不是一次演示。其余阶段只出现在**真实路径**上——由 `inox-host` 在裸 VT 上拉起、边界套接字可连时（见[登录与开机链](login.md)）——以及测试与截图工件里；没有运行的二进制会因为一个开关就假装自己有认证边界。
 
 安全接线与证据边界见 [ADR 0021](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0021-l4-session-services.md)。
+
+### 开机登录链（安装面）
+
+登录链不再靠手工起进程：`packaging/` 提供三个 PAM 栈与三个 systemd 单元
+（`inox-auth.service`、`inox-greeter@<VT>.service`、登录界面起不来时启动 greetd 的
+`inox-login-fallback.service`），以及安装、试运行、预检、回退、卸载等脚本。
+默认安装**不改开机链**，试运行用 VT4 并保留原显示管理器；`install.sh --enable` 才把
+`display-manager.service` 交给 `inox-greeter@1.service`。完整步骤、验证项与排障见[登录与开机链](login.md)。
+**真机证据尚未取得**，因此本页与那页都不构成「已能登录」的声明。
 
 ## 前置条件
 
@@ -59,7 +70,7 @@ INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headles
 
 | 依赖 | 用途 |
 |------|------|
-| Rust stable 工具链 | 根目录 `rust-toolchain.toml` 固定 stable、edition 2024；工作区统一 MSRV 为 1.88 |
+| Rust stable 工具链 | 根目录 `rust-toolchain.toml` 固定 stable、edition 2024；工作区统一 MSRV 为 1.89 |
 | `libxkbcommon-dev` | 构建期：Smithay 的 `wayland_frontend` 在链接期需要 `-lxkbcommon` |
 | `xkb-data` | 运行期：合成器用它提供的 rules 文件编译确定性 keymap（`evdev` / `pc105` / `us`） |
 | EGL 与 Mesa DRI 驱动（如 `libegl1`、`libgl1-mesa-dri`） | 运行期：Smithay 的 `GlesRenderer` 通过 `dlopen` 加载 `libEGL.so.1`；无 GPU 时用 llvmpipe 软件渲染 |
@@ -139,6 +150,13 @@ INOX_SCREENSHOT_DIR=/tmp/inox-shots cargo test -p inox-panel --test render
 ```
 
 语言由 `config.toml` 的 `[locale]` 或环境变量（`LC_ALL` / `LC_MESSAGES` / `LANG`）决定，`en-US` 与 `zh-CN` 都有完整目录。
+
+从源码检出直接运行时，内置壁纸还没有装到 `$XDG_DATA_DIRS/inox/wallpapers/`，壁纸组件会退到主题背景并记录一条
+`warn!`。用 `INOX_WALLPAPER_DIR` 指向仓库里的那份即可看到真正的默认壁纸：
+
+```bash
+INOX_WALLPAPER_DIR="$PWD/data/wallpapers" cargo run -p inox-wallpaper
+```
 
 ## 用真实客户端验证
 

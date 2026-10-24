@@ -79,6 +79,22 @@ settings-status-component-rejected = { $component } refused the change
 settings-status-reload-failed = The files could not be read again
 settings-status-unreachable = { $component } cannot be asked to apply the change
 
+# The display trial (ADR 0028). A mode, scale or position change takes effect
+# immediately, so the window asks before it becomes permanent: the compositor
+# keeps it only if it is confirmed, and puts the previous display settings back
+# when the countdown runs out. Only the display page does this.
+settings-status-display-trial = The display settings are applied, waiting for confirmation
+settings-display-trial-title = Keep these display settings?
+settings-display-trial-message = The display settings are in effect. Unless you confirm, the previous settings come back in { $seconds } seconds.
+settings-display-trial-confirm = Keep the changes
+settings-display-trial-revert = Restore the previous settings
+settings-display-trial-active = The display settings are waiting for an answer
+settings-display-trial-answering = The answer is on its way
+settings-display-trial-notice-confirmed = The display settings were confirmed
+settings-display-trial-notice-reverted = The previous display settings were restored
+settings-display-trial-notice-unreachable = The previous display settings were restored in the files, but the compositor could not be told: { $reason }
+settings-display-trial-notice-failed = The previous display settings could not be restored: { $reason }
+
 # What each component answered, and what went wrong.
 settings-detail-component-state = { $component }: { $state }
 settings-detail-conflict-digest = The file now holds { $current }
@@ -113,7 +129,7 @@ settings-field-launcher-max-results = Maximum results
 settings-field-launcher-icon-size = Result icon size
 settings-field-launcher-include-hidden = Include hidden applications
 settings-field-launcher-max-query-chars = Search length limit
-settings-field-wallpaper-image = Image path (empty for theme background)
+settings-field-wallpaper-image = Background image
 settings-field-wallpaper-mode = Image placement
 settings-field-keyboard-layout = Keyboard layout
 settings-field-keyboard-variant = Keyboard variant
@@ -143,6 +159,14 @@ settings-choice-center = Center
 settings-choice-tile = Tile
 settings-choice-drop-oldest = Drop oldest
 settings-choice-coalesce-by-app = Group by application
+settings-choice-wallpaper-default = Default wallpaper
+settings-choice-wallpaper-nebula = Nebula
+settings-choice-wallpaper-fuji = Mount Fuji
+settings-choice-wallpaper-bricks = Brick pavement
+settings-choice-wallpaper-lake = Mountain lake
+settings-choice-wallpaper-rainbow = Rainbow road
+settings-choice-wallpaper-monument = Washington Monument
+settings-choice-wallpaper-background = Theme background
 settings-unit-count = items
 settings-unit-hz = Hz
 settings-unit-percent = %
@@ -162,12 +186,12 @@ settings-output-scale = Scale (0.25–8)
 settings-output-x = Horizontal position (empty for automatic)
 settings-output-y = Vertical position (empty for automatic)
 settings-terminal-argument = Executable or one argument
-settings-wallpaper-path = Image path
+settings-wallpaper-path = Wallpaper
 settings-list-add = Add entry
 settings-list-remove = Remove entry
-settings-outputs-help = Saved preferences are read at the next session start. No live display change is requested. An empty list uses the backend defaults. Leave both positions empty for automatic placement; a single empty coordinate uses zero.
+settings-outputs-help = Changing these applies the new mode, scale and position at once, and the window asks you to confirm: without an answer the previous settings come back after 30 seconds. An empty list uses the backend defaults. Leave both positions empty for automatic placement; a single empty coordinate uses zero.
 settings-terminal-help = Enter the executable first, then one argument per entry. Arguments are passed directly, without a shell. An empty list uses the launcher default.
-settings-wallpapers-help = Enter a connector name and an image path for each override. Use * for other displays. Empty lists use the main wallpaper.
+settings-wallpapers-help = Enter a connector name and a wallpaper — a bundled name, none, or an image path — for each override. Use * for other displays. Empty lists use the main wallpaper.
 settings-error-collection = Check entry { $row }: dimensions 1–16384, refresh 1–1000, scale 0.25–8, positions within ±4194304.
 
 settings-page-input-method = Input Method
@@ -176,3 +200,56 @@ settings-input-method-help = Enter fcitx5 or a compatible executable first, then
 
 settings-error-input-method-command = Check entry { $row }: the first entry must name an executable and arguments cannot contain a NUL character.
 settings-error-wallpaper-entry = Check entry { $row }: display names must be unique.
+
+settings-ctl-help = Usage: inoxctl reload (reload running components) or inoxctl --help
+settings-ctl-applied = { $component }: applied
+settings-ctl-absent = { $component }: not running
+settings-ctl-failed = { $component }: reload was not confirmed
+settings-ctl-incomplete = Configuration reload did not complete successfully.
+
+# What each screen is for. One screen carries one title (the page's name) and one
+# of these sentences under it, drawn as a caption (ui-guidelines §2).
+settings-page-appearance-description = Which theme the session uses.
+settings-page-panel-description = The strip along an output's edge, and what it shows.
+settings-page-notifications-description = Where popups appear, how long they stay, and whether the session starts quiet.
+settings-page-locale-description = The language the session runs in.
+settings-page-input-description = How the keyboard and the pointer behave.
+settings-page-layout-description = How tiled windows are arranged.
+settings-page-launcher-description = What the launcher runs and how much it shows.
+settings-page-wallpaper-description = What is drawn behind every window.
+settings-page-displays-description = Saved display preferences for the next compositor start.
+settings-page-input-method-description = The input method the session starts automatically.
+
+# The cards a page's fields are grouped into (ui-guidelines §4). A card is a
+# heading and the fields of one topic; cards are separated by a large step.
+settings-group-appearance-theme = Theme
+settings-group-panel-strip = The strip
+settings-group-panel-behaviour = Behaviour
+settings-group-panel-clock = Clock
+settings-group-panel-tasks = Task buttons
+settings-group-notifications-display = Popups
+settings-group-notifications-timeouts = How long they stay
+settings-group-notifications-queue = When the queue is full
+settings-group-notifications-policy = Policy
+settings-group-locale-language = Language
+settings-group-input-keyboard = Keyboard
+settings-group-input-repeat = Key repeat
+settings-group-input-pointer = Pointer
+settings-group-layout-tiling = Tiling
+settings-group-launcher-command = Command
+settings-group-launcher-results = Results
+settings-group-wallpaper-image = Background image
+settings-group-wallpaper-outputs = Per-display images
+settings-group-displays-outputs = Outputs
+settings-group-input-method-command = Engine
+
+# What a list says when it holds nothing yet. An empty list is a state the user
+# has to be able to read, not a blank space (ui-guidelines §6).
+settings-empty-outputs = No display preferences yet; the backend defaults are used.
+settings-empty-input-method = No engine command; automatic startup is off.
+settings-empty-launcher-terminal = No terminal command; the launcher default is used.
+settings-empty-wallpaper-per-output = No per-display images; every display uses the main wallpaper.
+
+# A change a consumer refused or could not be asked about is not stuck: Apply is
+# offered again for exactly that state, and this line says so.
+settings-status-retry-hint = Press Apply to send the change to the components again.

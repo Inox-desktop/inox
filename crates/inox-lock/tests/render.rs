@@ -16,6 +16,7 @@ mod support;
 use support::{Lock, count_of, distinct_colours, pixel, snapshot};
 
 use iced::Point;
+use inox_common::i18n::Locale;
 use inox_config::Theme as Tokens;
 use inox_lock::app::Message;
 use inox_lock::contract::{AuthFailure, AuthOutcome, ProtocolAbsence, ServiceFailure};
@@ -48,6 +49,24 @@ fn locked(tokens: Tokens) -> Lock {
 fn answer(lock: &mut Lock, outcome: AuthOutcome) {
     let generation = lock.state().boundary().generation().expect("an attempt");
     lock.update(Message::AuthAnswered(generation, outcome));
+}
+
+/// A locked screen in `locale` whose boundary failed with `failure`.
+///
+/// The same lock as [`locked`], in a language and a text scale the two can differ
+/// in: a translated line has a different length, and `zh-CN` draws glyphs the
+/// Latin fallback does not have.
+fn locked_in(locale: &Locale, tokens: Tokens, failure: ServiceFailure) -> Lock {
+    let mut lock = Lock::in_locale(tokens, locale);
+
+    lock.update(Message::ProtocolPresent);
+    lock.update(Message::OutputAdded(output()));
+    lock.update(Message::LockRequested(LockReason::User));
+    lock.update(Message::OutputCovered(output()));
+    lock.update(Message::AuthUnavailable(failure));
+
+    assert_eq!(lock.state().machine().phase(), Phase::Locked);
+    lock
 }
 
 /// Fails an attempt: types, submits, and has the boundary refuse it.
@@ -113,6 +132,110 @@ fn the_light_theme_draws_a_different_screen() {
     assert!(distinct_colours(&light_pixels) > 2);
 
     snapshot("light", &light_pixels, size);
+}
+
+#[test]
+fn a_disabled_control_is_drawn_differently_from_an_enabled_one() {
+    // The same screen and the same typed credential, with the one difference the
+    // guidelines name (acceptance D05): whether the control can be used. The
+    // enabled one is the accent; the disabled one keeps only the muted text, and
+    // the reason it cannot be used is printed beside it.
+    let mut enabled = locked(Tokens::builtin_dark());
+    enabled.type_text("hunter2");
+
+    let mut disabled = locked(Tokens::builtin_dark());
+    disabled.type_text("hunter2");
+    disabled.update(Message::AuthUnavailable(ServiceFailure::NotProvided));
+
+    let size = enabled.size();
+    let tokens = enabled.tokens().clone();
+    let enabled_pixels = enabled.render();
+    let disabled_pixels = disabled.render();
+
+    assert!(enabled.state().model().submit.enabled);
+    assert!(!disabled.state().model().submit.enabled);
+    assert!(
+        support::bounds_of(&enabled_pixels, size, tokens.colors.accent).is_some(),
+        "a control that can be used is drawn as one"
+    );
+    assert!(
+        support::bounds_of(&disabled_pixels, size, tokens.colors.accent).is_none(),
+        "and a control that cannot is not drawn as if it could"
+    );
+    assert_ne!(
+        enabled_pixels, disabled_pixels,
+        "a disabled control that looks like an enabled one is not disabled"
+    );
+    assert!(
+        disabled
+            .state()
+            .model()
+            .disabled_reason
+            .as_ref()
+            .is_some_and(|reason| !reason.is_empty()),
+        "a disabled control without a readable reason leaves the user guessing"
+    );
+}
+
+/// The area one field fills, as the floor for "a field is drawn here".
+///
+/// Derived from the theme rather than guessed at: the card takes half the surface,
+/// a control two thirds of the card, and a field is one body line plus the
+/// control's own padding tall.
+fn one_field(tokens: &Tokens, size: iced::Size<f32>) -> usize {
+    let width = size.width / 3.0;
+    let height =
+        inox_lock::theme::body_size(tokens) + 2.0 * inox_lock::theme::control_padding(tokens).top;
+
+    (width * height) as usize
+}
+
+#[test]
+fn a_screen_that_cannot_check_a_password_draws_no_field_to_type_into() {
+    // The shipped `--take-lock` state: the screen says it cannot check anything,
+    // and a screen that says that must not also hold out a password box (ADR 0025
+    // decision 5). The field is drawn on the `background` token inside the card's
+    // `surface`, so it is an *area of the background token inside the card* — which
+    // is what this counts, rather than looking for a colour that antialiasing can
+    // put anywhere.
+    let prompt = {
+        let mut lock = locked(Tokens::builtin_dark());
+        lock.type_text("hunter2");
+        lock
+    };
+    let missing = {
+        let mut lock = locked(Tokens::builtin_dark());
+        lock.update(Message::AuthUnavailable(ServiceFailure::NotProvided));
+        lock
+    };
+
+    let size = prompt.size();
+    let tokens = prompt.tokens().clone();
+    let inset = u32::from(tokens.radii.md) + 2;
+
+    let fill_in = |lock: &Lock| {
+        let pixels = lock.render();
+        let card = support::bounds_of(&pixels, size, tokens.colors.surface)
+            .expect("the card is drawn on the surface token");
+
+        support::ink_inside(&pixels, size, card, tokens.colors.background, inset)
+    };
+
+    let drawn = fill_in(&prompt);
+    let absent = fill_in(&missing);
+
+    assert!(prompt.state().model().prompts_for_credential);
+    assert!(!missing.state().model().prompts_for_credential);
+    assert!(
+        drawn > one_field(&tokens, size),
+        "a screen that asks for a password draws the field to type it into: \
+         {drawn} pixels of the field's fill"
+    );
+    assert!(
+        absent < drawn / 10,
+        "and a screen that cannot check one draws no field at all: {absent} pixels \
+         of the field's fill against {drawn}"
+    );
 }
 
 #[test]
@@ -313,30 +436,34 @@ fn an_unusable_boundary_offers_a_retry_that_is_drawn() {
         Face::Unavailable { retry: Some(_), .. }
     ));
 
-    // "This colour appears" is not "a control is drawn": a card's antialiased
-    // border can land on exactly the fill token. What separates the two is how
-    // much of it there is — a filled control is an area — so the control is
-    // measured against the same screen in the state that draws no retry at all.
+    // The retry control is the screen's secondary action: text on a hairline
+    // outline and no fill, which is what guidelines §5 asks a control at rest to
+    // look like. What says a control is there is therefore its *outline*, and
+    // "this colour appears" is not enough to say so: an antialiased card border
+    // lands on the odd stray pixel of any token. So the ink is measured against
+    // the same screen in the state that draws no retry at all, where the card's
+    // own outline is the only one.
     let without = {
         let mut other = locked(Tokens::builtin_dark());
         other.update(Message::AuthUnavailable(ServiceFailure::NotProvided));
         other
     };
-    let fill = count_of(&pixels, tokens.colors.surface_variant);
-    let without_retry = count_of(&without.render(), tokens.colors.surface_variant);
+    let outline = count_of(&pixels, tokens.colors.border);
+    let without_retry = count_of(&without.render(), tokens.colors.border);
 
     assert!(matches!(
         without.state().model().face,
         Face::Unavailable { retry: None, .. }
     ));
     assert!(
-        fill > without_retry,
-        "the retry control fills an area of the screen: {fill} pixels of the fill \
-         token here against {without_retry} on the same screen without it"
+        outline > without_retry,
+        "the retry control's outline is a control's worth of ink, and a control \
+         that is not drawn leaves none: {outline} pixels of the outline token here \
+         against {without_retry} on the same screen without it"
     );
     assert!(
-        support::bounds_of(&pixels, size, tokens.colors.surface_variant).is_some(),
-        "and the fill is bounded, which is what a drawn control looks like"
+        support::bounds_of(&pixels, size, tokens.colors.border).is_some(),
+        "and the outline is bounded, which is what a drawn control looks like"
     );
 
     snapshot("boundary-unavailable", &pixels, size);
@@ -349,9 +476,9 @@ fn a_boundary_this_build_does_not_have_draws_no_retry() {
     // anything and offers nothing to press (ADR 0025 decision 5). The difference
     // from the case above is the whole point — a service that is down can come
     // back, one that does not exist cannot — so this is asserted by comparing the
-    // two screens rather than by looking for a colour: the retry control's fill
-    // token turns up in a handful of antialiased border pixels on any screen, and
-    // a test that looked for it would pass for the wrong reason.
+    // two screens rather than by looking for a colour: the outline token turns up
+    // in a handful of antialiased pixels on any screen, and a test that looked for
+    // it would pass for the wrong reason.
     let missing = {
         let mut lock = locked(Tokens::builtin_dark());
         lock.update(Message::AuthUnavailable(ServiceFailure::NotProvided));
@@ -396,9 +523,9 @@ fn a_boundary_this_build_does_not_have_draws_no_retry() {
         "the other screen is the one that offers a retry, so it is the comparison"
     );
     assert!(
-        count_of(&pixels, tokens.colors.surface_variant)
-            < count_of(&retryable_pixels, tokens.colors.surface_variant),
-        "a boundary that cannot come back draws less than one that can"
+        count_of(&pixels, tokens.colors.border) < count_of(&retryable_pixels, tokens.colors.border),
+        "a boundary that cannot come back draws no control, and a control that is \
+         not drawn leaves no outline behind"
     );
     assert!(
         pixels != retryable_pixels,
@@ -415,16 +542,11 @@ fn the_chinese_catalog_renders_a_screen_that_still_fits() {
     // is a real risk here rather than a formality — `zh-CN` draws glyphs the Latin
     // fallback does not have, the lines are a different length, and the widest
     // text on this screen is the reason line under the prompt.
-    let locale = inox_common::i18n::Locale::parse("zh-CN").expect("a well-formed tag");
+    let locale = Locale::parse("zh-CN").expect("a well-formed tag");
     let mut tokens = Tokens::builtin_dark();
     tokens.typography.scale = 2.0;
-    let mut lock = Lock::in_locale(tokens, &locale);
-
-    lock.update(Message::ProtocolPresent);
-    lock.update(Message::OutputAdded(output()));
-    lock.update(Message::LockRequested(LockReason::User));
-    lock.update(Message::OutputCovered(output()));
-    lock.update(Message::AuthUnavailable(ServiceFailure::Disconnected));
+    let lock = locked_in(&locale, tokens.clone(), ServiceFailure::Disconnected);
+    let without_retry = locked_in(&locale, tokens.clone(), ServiceFailure::NotProvided);
 
     let size = lock.size();
     let tokens = lock.tokens().clone();
@@ -441,12 +563,20 @@ fn the_chinese_catalog_renders_a_screen_that_still_fits() {
         lock.state().model().headline
     );
 
-    let retry = support::bounds_of(&pixels, size, tokens.colors.surface_variant)
-        .expect("the retry control is drawn");
+    // The retry control is a hairline outline with no fill, so it is found by the
+    // outline it adds rather than by a colour of its own (guidelines §5).
     assert!(
-        retry.x >= 0.0 && retry.x + retry.width <= size.width,
-        "the retry control is inside the screen at 200 % text in the translated \
-         catalog: {retry:?}"
+        count_of(&pixels, tokens.colors.border)
+            > count_of(&without_retry.render(), tokens.colors.border),
+        "the retry control is drawn"
+    );
+
+    let drawn = support::bounds_of(&pixels, size, tokens.colors.border)
+        .expect("the screen has an outline on it");
+    assert!(
+        drawn.x >= 0.0 && drawn.x + drawn.width <= size.width,
+        "nothing has overflowed the screen horizontally at 200 % text in the \
+         translated catalog: {drawn:?}"
     );
 
     snapshot("chinese-large-text", &pixels, size);
@@ -474,6 +604,41 @@ fn doubled_text_still_leaves_the_unlock_button_on_screen() {
     );
 
     snapshot("large-text", &pixels, size);
+}
+
+#[test]
+fn the_longest_state_fits_the_screen_at_two_hundred_percent_text() {
+    // The rate-limited screen at 200 % is the tallest thing this surface draws: the
+    // heading, two lines of state, the field, the reason, the control and the hint.
+    // Acceptance Q02 asks for no clipping at 200 %, and this surface has no
+    // scrollable to hide behind — it covers an output whose size it does not choose
+    // — so the card has to end inside the output rather than at its edge.
+    for tokens in [Tokens::builtin_dark(), Tokens::builtin_light()] {
+        let mut tokens = tokens;
+        tokens.typography.scale = 2.0;
+        let mut lock = locked(tokens);
+
+        for _ in 0..inox_lock::attempts::AttemptPolicy::standard().allowance {
+            fail_an_attempt(&mut lock);
+        }
+
+        let size = lock.size();
+        let pixels = lock.render();
+
+        assert!(matches!(lock.state().model().face, Face::Waiting { .. }));
+
+        let card = support::bounds_of(&pixels, size, lock.tokens().colors.surface)
+            .expect("the card is drawn on the surface token");
+
+        assert!(
+            card.y >= 0.0 && card.y + card.height <= size.height,
+            "the card is inside the output at 200 % text: {card:?}"
+        );
+        assert!(
+            card.x >= 0.0 && card.x + card.width <= size.width,
+            "and inside it horizontally: {card:?}"
+        );
+    }
 }
 
 #[test]

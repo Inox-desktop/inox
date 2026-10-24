@@ -25,8 +25,10 @@ use iced_runtime::user_interface::Cache;
 
 use inox_common::i18n::Locale;
 use inox_config::{Rgba, Theme as Tokens};
+use inox_greet::accounts::{Account, Accounts};
 use inox_greet::app::{self, Message, State};
 use inox_greet::theme;
+use inox_greet::view_model::FocusTarget;
 
 /// The size acceptance Q02 snapshots are taken at.
 ///
@@ -42,6 +44,19 @@ pub const HEIGHT: f32 = 720.0;
 /// The renderer's default text size, in logical pixels.
 const TEXT_SIZE: f32 = 16.0;
 
+/// The accounts the render tests offer.
+///
+/// Two ordinary accounts in uid order, the first of them with a full name, so that
+/// the medallion, the name line and the account list are all drawn from data rather
+/// than from a literal, and so that "there is more than one account" — which is
+/// what the switch control exists for — is true.
+pub fn accounts() -> Vec<Account> {
+    vec![
+        Account::new("alice", 1000, Some("Alice Doe".to_owned())),
+        Account::new("bob", 1001, None),
+    ]
+}
+
 /// The login screen, its state, and the size it is drawn at.
 pub struct Login {
     state: State,
@@ -49,7 +64,8 @@ pub struct Login {
 }
 
 impl Login {
-    /// A login screen with no authentication transport, as the binary runs it.
+    /// A login screen with no authentication transport, as the `--preview` path runs
+    /// it.
     pub fn new() -> Self {
         Self::with(Tokens::builtin_dark(), false)
     }
@@ -61,10 +77,24 @@ impl Login {
 
     /// A login screen in a particular language.
     pub fn in_locale(tokens: Tokens, available: bool, locale: &Locale) -> Self {
+        Self::with_accounts(tokens, available, locale, accounts())
+    }
+
+    /// A login screen that offers exactly `accounts`.
+    pub fn with_accounts(
+        tokens: Tokens,
+        available: bool,
+        locale: &Locale,
+        accounts: Vec<Account>,
+    ) -> Self {
         let localizer = inox_greet::i18n::load(locale).expect("the login screen's catalogs parse");
+        let roster = Accounts {
+            accounts,
+            ..Accounts::default()
+        };
 
         Self {
-            state: State::with_boundary(Rc::new(localizer), tokens, available),
+            state: State::with_boundary(Rc::new(localizer), tokens, available, roster),
             size: Size::new(WIDTH, HEIGHT),
         }
     }
@@ -105,12 +135,57 @@ impl Login {
         }
     }
 
-    /// Types `text` into the identity field, one message at a time.
-    pub fn type_text(&mut self, text: &str) {
-        for prefix in 1..=text.len() {
-            if text.is_char_boundary(prefix) {
-                self.update(Message::Identity(text[..prefix].to_owned()));
+    /// Chooses `name` from the account list, the way the keyboard does.
+    ///
+    /// Through `SwitchUser`, `FocusNext` and `Activate` rather than by assigning
+    /// the account: "this row is reachable and operable with the keyboard" is one of
+    /// the things the render tests are here to check.
+    pub fn choose_account(&mut self, name: &str) {
+        self.update(Message::SwitchUser);
+
+        let index = self
+            .state
+            .model()
+            .accounts
+            .iter()
+            .position(|account| account.name == name)
+            .unwrap_or_else(|| panic!("`{name}` is not an account this screen offers"));
+
+        self.focus(FocusTarget::account(index));
+        self.update(Message::Activate);
+    }
+
+    /// Opens the account list the way the keyboard does, and leaves it open.
+    pub fn open_account_list(&mut self) {
+        self.update(Message::SwitchUser);
+    }
+
+    /// Moves the keyboard focus to `target`, whichever control that is now.
+    ///
+    /// Through `FocusNext` rather than by assigning the field, because "this control
+    /// is reachable with the keyboard" is one of the things the render tests are
+    /// here to check.
+    pub fn focus(&mut self, target: FocusTarget) {
+        for _ in 0..self.state.model().focus_order.len() + 1 {
+            if self.state.model().focus == Some(target) {
+                return;
             }
+            self.update(Message::FocusNext);
+        }
+
+        panic!("{target:?} is not reachable on this screen");
+    }
+
+    /// Types `text` into the credential field, one message at a time.
+    ///
+    /// The messages are the ones `app::key_binding` produces for the same keystrokes:
+    /// the credential field is a mask, so there is no iced text box here to drive
+    /// with iced events.
+    pub fn type_credential(&mut self, text: &str) {
+        self.focus(FocusTarget::Credential);
+
+        for character in text.chars() {
+            self.update(Message::Credential(character));
         }
     }
 
@@ -260,7 +335,6 @@ pub fn bounds_of(pixels: &[u8], size: Size<f32>, colour: Rgba) -> Option<Rectang
 
     let (mut min_x, mut min_y) = (u32::MAX, u32::MAX);
     let (mut max_x, mut max_y) = (0u32, 0u32);
-
     for y in 0..height {
         for x in 0..width {
             if pixel(pixels, width, x, y) == want {
@@ -284,6 +358,68 @@ pub fn bounds_of(pixels: &[u8], size: Size<f32>, colour: Rgba) -> Option<Rectang
     })
 }
 
+/// The bounding box of the largest filled shape of `colour`, in logical pixels.
+///
+/// [`bounds_of`] answers "where is this colour at all?", which is the wrong
+/// question for a shape: a card's rounded corner drawn over the background
+/// anti-aliases through a handful of pixels that match a fill colour exactly, so
+/// the bounding box of a fill can be dragged across the whole screen by a corner
+/// it has nothing to do with. This measures the longest run of the colour in every
+/// row and keeps the rows that carry a real chord of it, which is the shape's own
+/// extent — a disc is as wide as it is tall, and nothing else in these screens is.
+/// The rows rather than one column, because the shape has something drawn on it:
+/// walking a column down the middle of a medallion stops at the letter.
+pub fn find_disc(pixels: &[u8], size: Size<f32>, colour: Rgba) -> Option<Rectangle> {
+    /// The shortest run that is a shape rather than the anti-aliasing of an edge.
+    const SMALLEST_DISC: u32 = 4;
+
+    let want = token_pixel(colour);
+    let width = size.width as u32;
+    let height = size.height as u32;
+    let mut longest = vec![0u32; height as usize];
+    let mut start = vec![0u32; height as usize];
+
+    for y in 0..height {
+        let mut run = 0;
+        let mut run_start = 0;
+
+        for x in 0..=width {
+            if x < width && pixel(pixels, width, x, y) == want {
+                if run == 0 {
+                    run_start = x;
+                }
+                run += 1;
+            } else {
+                if run > longest[y as usize] {
+                    longest[y as usize] = run;
+                    start[y as usize] = run_start;
+                }
+                run = 0;
+            }
+        }
+    }
+
+    let widest = longest.iter().copied().max().unwrap_or(0);
+
+    if widest < SMALLEST_DISC {
+        return None;
+    }
+
+    let threshold = (widest / 8).max(SMALLEST_DISC);
+    let top = (0..height).find(|y| longest[*y as usize] >= threshold)?;
+    let bottom = (0..height)
+        .rev()
+        .find(|y| longest[*y as usize] >= threshold)?;
+    let middle = (0..height).find(|y| longest[*y as usize] == widest)?;
+
+    Some(Rectangle {
+        x: start[middle as usize] as f32,
+        y: top as f32,
+        width: widest as f32,
+        height: (bottom - top + 1) as f32,
+    })
+}
+
 /// How many pixels of `pixels` are exactly `colour`.
 pub fn count_of(pixels: &[u8], colour: Rgba) -> usize {
     let want = token_pixel(colour);
@@ -294,6 +430,46 @@ pub fn count_of(pixels: &[u8], colour: Rgba) -> usize {
         .iter()
         .filter(|px| **px == want)
         .count()
+}
+
+/// How many pixels of `colour` are drawn strictly inside `area`.
+///
+/// The `inset` is what turns "is there a field in this card?" into a question about
+/// the card's *interior*: the card's own outline and its rounded corners are drawn
+/// in the colours around it, within a corner radius of its edge, and counting them
+/// would answer yes whatever the card held. Inset by the corner radius and the
+/// only thing left is what the card actually contains.
+pub fn ink_inside(
+    pixels: &[u8],
+    size: Size<f32>,
+    area: Rectangle,
+    colour: Rgba,
+    inset: u32,
+) -> usize {
+    let want = token_pixel(colour);
+    let width = size.width as u32;
+    let height = size.height as u32;
+
+    let from_x = ((area.x.max(0.0) as u32) + inset).min(width);
+    let from_y = ((area.y.max(0.0) as u32) + inset).min(height);
+    let to_x = ((area.x + area.width) as u32)
+        .min(width)
+        .saturating_sub(inset);
+    let to_y = ((area.y + area.height) as u32)
+        .min(height)
+        .saturating_sub(inset);
+
+    let mut count = 0;
+
+    for y in from_y..to_y {
+        for x in from_x..to_x {
+            if pixel(pixels, width, x, y) == want {
+                count += 1;
+            }
+        }
+    }
+
+    count
 }
 
 /// Whether every pixel of `pixels` is opaque.

@@ -59,6 +59,7 @@
 | `root` | `config.toml`：`RootConfig`、`ComponentFiles`、`ThemeSelection`、`Appearance` |
 | `theme` | 设计令牌、内置主题、主题解析与加载 |
 | `compositor` | `compositor.toml`：输出、输入、平铺布局 |
+| `wallpapers` | Inox 随发行版附带的内置壁纸清单（标识、文件名、作者、来源、许可），以及默认与「主题背景」两个保留取值 |
 | `store` | `InoxConfig::load` 与 `ConfigStore` 热重载 |
 
 所有模型都带 `#[serde(deny_unknown_fields)]`：配置里的拼写错误必须报错，不允许静默忽略。
@@ -71,4 +72,4 @@
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。

@@ -1,0 +1,54 @@
+#%PAM-1.0
+#
+# PAM stack the *session leader* opens the session through — ADR 0037 §决策 5,
+# installed by packaging/install.sh as /etc/pam.d/inox-auth-session.
+#
+# Who loads it: `inox-auth --session-leader --user <name> --vt <n>`, one process per
+# login, started as root by the boundary. This is the process that calls
+# pam_open_session and then execs the session program as the user, so this is the
+# process pam_systemd writes XDG_SESSION_ID / XDG_RUNTIME_DIR into and the process
+# whose cgroup and VT become the user's logind session.
+#
+# Why this is a SECOND file and must never be merged into /etc/pam.d/inox-auth:
+# the leader holds no credential. It has no password to check and never receives
+# one (the boundary cleared it when Authenticate ended). The safe `pam` wrapper only
+# opens a session on a client that has authenticated, so the leader has to run an
+# auth transaction that succeeds unconditionally — that is what the `auth` line
+# below is for. Putting a permit line into the authentication stack would mean
+# anything that reached `pam_authenticate` on it would be accepted: a passwordless
+# login for every account. The password is checked exactly once, in
+# /etc/pam.d/inox-auth; this file exists so that checking it and opening a session
+# for it can happen in two different processes without moving the permit anywhere
+# near the password.
+#
+# Why `required` and not `optional`: pam_permit cannot fail, so the two are equal
+# while the module is present. They differ when it is not — `optional` turns a
+# missing or unreadable pam_permit.so into a line PAM silently ignores, and the
+# failure then surfaces much later as a session that does not start, with a message
+# that points at logind instead of at packaging. `required` fails the transaction
+# where the problem is. (crates/inox-auth/src/pam.rs carries the same requirement in
+# its own words.)
+#
+# Why `account` and `session` still walk system-login: they are the real login
+# stack. `account` is where account expiry, pam_nologin and pam_access are applied
+# for this login; `session` is what registers the logind session at all —
+# system-login ends with `-session optional pam_systemd.so`, and pam_systemd reads
+# the VT from the XDG_VTNR the root parent put in this process's environment. No
+# pam_systemd, no logind session; no logind session, no seat for libseat and no
+# compositor on the display. It also brings pam_env, pam_limits, pam_umask,
+# pam_loginuid, pam_keyinit and the lastlog/motd/mail lines, all inherited from the
+# distribution's own stack on purpose.
+#
+# What must not appear here: pam_securetty (the leader is not on a tty and this is
+# not where a root login is decided), any password-checking auth line (pam_unix and
+# friends would prompt for a password this process does not have and must never
+# hold), and anything that would make this file able to authenticate somebody.
+#
+# When this file is missing, pam_start("inox-auth-session") fails and every
+# StartSession answers `started:false` — the screen shows a failed session start,
+# which looks like a rejected password but is packaging. The reason is logged by
+# `journalctl -u inox-auth`.
+
+auth       required   pam_permit.so
+account    include    system-login
+session    include    system-login

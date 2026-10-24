@@ -11,7 +11,7 @@
 
 | 模块 | 职责 |
 |------|------|
-| `src/model.rs` | `[wallpaper]` → 每个输出的选择：具名输出 → `*` → 共享 `image` → 主题背景 |
+| `src/model.rs` | `[wallpaper]` → 每个输出的选择：具名输出 → `*` → 共享 `image` → 内置默认壁纸（取值语义见下，[ADR 0030](../../docs/adr/0030-bundled-wallpapers-and-the-default-background.md)） |
 | `src/source.rs` | 选择 → 文件系统：存在、是文件、可打开；失败即降级并携带原因 |
 | `src/decode.rs` | PNG/JPEG → RGBA8，带像素上限（`MAX_PIXELS`）与逐类错误 |
 | `src/scaling.rs` | `fill` / `fit` / `stretch` / `center` / `tile` 的目标矩形，含平铺上限 |
@@ -37,17 +37,32 @@
 
 ```toml
 [wallpaper]
-mode = "fill"                  # fill | fit | stretch | center | tile
-image = "backgrounds/wall.png" # 相对配置目录；也可写绝对路径
-per_output = { "HDMI-A-1" = "wide.png", "*" = "default.png" }
+mode = "fill"                           # fill | fit | stretch | center | tile
+image = "nebula"                        # 内置壁纸名称、none（主题背景），或图片路径
+per_output = { "HDMI-A-1" = "lake", "*" = "backgrounds/wall.png" }
 ```
+
+`image`（以及 `per_output` 的每个值）的取值：
+
+| 取值 | 含义 |
+|------|------|
+| 键**省略** | 内置默认壁纸（`inox_config::wallpapers::DEFAULT_ID`） |
+| `"none"` | 主题背景：明确的「无图像」 |
+| 内置壁纸的名称 | 该内置壁纸 |
+| 其它字符串 | 图片路径；相对路径相对配置文件所在目录，绝对路径原样使用 |
+
+内置壁纸的标识、文件名、作者与许可是 `inox_config::wallpapers::BUNDLED`（L1 的清单，不含路径）；
+文件安装到 `$XDG_DATA_DIRS/inox/wallpapers/`，`INOX_WALLPAPER_DIR`（绝对路径）可以覆盖该目录。
+`inox-settings` 直接提供挑选这些壁纸的选择控件，署名记录在仓库根的 `data/wallpapers/CREDITS.md`。
 
 ## 失败即降级，且可诊断
 
-ADR 0014 划的线在这里被逐条实现：**用户显式选择却读不到的资源必须报告**，而**没有选择**只是默认值。
+ADR 0014 划的线在这里被逐条实现：**用户显式选择却读不到的资源必须报告**，而**默认值与「没有选择」不是错误**。
 
 - 文件缺失、是目录、读不了、解码失败、像素超限、几何退化、平铺份数超限 → 输出退到主题背景，
   屏幕**永不**变成黑屏，进程**永不**崩溃；原因以「输出名 + 路径 + 原因」呈现，文案来自 Fluent 目录。
+- **从未选择**的默认壁纸缺失（例如打包时没有安装 `data/wallpapers/`）只记一条 `warn!` 并退到主题背景，
+  不进入错误态；**显式**选择的内置壁纸不可用才按上面的路径报告（ADR 0030）。
 - 已经显示中的壁纸不会因为一次重载失败而被清空：新帧**完整**之后才替换旧帧，失败时保留旧帧。
 - 一个输出失败不影响其它输出，结果逐输出分别报告（ADR 0013 的快照/应用契约）。
 
@@ -79,4 +94,4 @@ CI 可收集为 artifact（验收 Q02）。
 
 ## 许可证
 
-BSD 3-Clause，见仓库根的 [`LICENSE`](../../LICENSE)。
+LGPL-3.0，见仓库根的 [`LICENSE`](../../LICENSE)。

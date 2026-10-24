@@ -7,6 +7,7 @@
 launcher-window-title = Applications
 launcher-search-placeholder = Search applications
 launcher-search-hint = Up/Down to choose · Enter to launch · Esc to close
+launcher-list-prompt = Type to search, or choose from the list below.
 
 launcher-state-loading = Reading the application index…
 launcher-state-empty-title = No applications found
@@ -16,6 +17,7 @@ launcher-state-nomatch-title = No matches
 launcher-state-nomatch-body = No application matches “{ $query }”.
 launcher-state-unavailable-title = The application index is unavailable
 launcher-state-action-retry = Try again
+launcher-state-action-clear = Clear search
 launcher-state-truncated = Only the first { $limit } characters are searched.
 
 launcher-row-icon-placeholder = ?

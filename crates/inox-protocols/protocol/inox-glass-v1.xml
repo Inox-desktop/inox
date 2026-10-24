@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="inox_glass">
+  <copyright>
+    Copyright (c) 2026, Inox Desktop Contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="inox_glass_manager_v1" version="1">
+    <description summary="frosted glass (backdrop blur) for a surface">
+      Private, unstable Inox protocol that lets a client ask the compositor to
+      frost part of a surface it draws: the compositor blurs what is already
+      composited *behind* that region and lets the client's translucent pixels
+      blend over the blurred backdrop.
+
+      Why this is a compositor-side feature. A client can blur anything it
+      renders itself, but it cannot sample the pixels behind its own surface:
+      those live in the compositor's framebuffer, and no protocol hands them
+      out (that is the whole point of a compositor). A frosted pane that shows
+      the wallpaper and the windows behind it therefore has to be drawn by the
+      component that owns the composited framebuffer, which is the compositor.
+
+      What this protocol does *not* grant. The blurred pixels never leave the
+      compositor: a client asks for a region to be blurred and blended, and
+      receives no image, no buffer and no colour back. It learns only whether
+      the compositor accepted the request (through the capabilities event), so
+      this is not a screen-reading capability and cannot be used to observe
+      another client's content. Every request is clipped to the surface it was
+      made for, so a client cannot frost — or force work on — a region of the
+      output it does not draw.
+
+      Cost and lifetime. The compositor clamps the requested radius to its own
+      maximum, reports that maximum through capabilities, and applies the
+      effect only while the surface is mapped and committed. Frosting ends when
+      the surface, the glass object or the client goes away, and a compositor
+      that cannot blur (no renderer support, a locked session, a surface whose
+      pixels are not composited at all) simply does not apply it.
+
+      Which surfaces can be frosted. The effect needs a surface whose position
+      the compositor knows without waiting for a window-management decision, so
+      this compositor frosts surfaces with a layer role (wlr-layer-shell) — a
+      panel, a dock, a notification stack — and reports max_radius 0 for any
+      other surface, an ordinary toplevel included. A client therefore creates
+      the layer role first and the glass object second; a client that asks
+      earlier is told 0, and may destroy the object and ask again once the role
+      exists. Advertising a maximum the compositor would not honour for that
+      surface is the one thing the event must never do, precisely because the
+      client decides its fallback (plain translucency) from it.
+
+      This protocol is an Inox extension and is not part of the upstream
+      wayland-protocols. It is unstable until Inox 1.0: the interface may
+      change in a backwards-incompatible way, and consumers must negotiate
+      through the version event and the capabilities event instead of assuming
+      a fixed revision (ADR 0006, ADR 0031).
+
+      Warning! The protocol described in this file is currently in the testing
+      phase. Backward compatible changes may be added together with the
+      corresponding interface version bump. Backward incompatible changes can
+      be done by creating a new version of this protocol.
+    </description>
+
+    <enum name="error">
+      <description summary="fatal errors for the glass objects of one surface"/>
+      <entry name="already_created" value="0"
+             summary="the surface already has an inox_glass_v1 object"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager object">
+        Destroy the manager. The glass objects it created stay valid: they
+        belong to the surface they were created for, not to this object.
+      </description>
+    </request>
+
+    <request name="get_glass">
+      <description summary="create a glass object for a surface">
+        Create a frost controller for `surface`. A surface may have at most one
+        such object; asking for a second one is a protocol error, because two
+        controllers would describe the same pane with conflicting parameters.
+
+        The object starts with frosting disabled: a client that creates one and
+        sets nothing has asked for nothing. The compositor sends the
+        capabilities event for this object once it has been created, which is
+        how a client learns the largest radius it accepts before it sets one.
+      </description>
+      <arg name="id" type="new_id" interface="inox_glass_v1"
+           summary="the new glass object"/>
+      <arg name="surface" type="object" interface="wl_surface"
+           summary="the surface whose backdrop should be frosted"/>
+    </request>
+  </interface>
+
+  <interface name="inox_glass_v1" version="1">
+    <description summary="frosting parameters for one surface">
+      Parameters for frosting one surface. Every request replaces the previous
+      value; the effect is applied from the next committed frame on.
+
+      Coordinates and units. The region is in the surface's own logical
+      coordinates and is clipped to that surface: a region that reaches outside
+      the surface is not an error, the part inside is used, and a region with
+      no area inside the surface means "nothing to frost". The radius is in
+      logical pixels and is clamped to the maximum the compositor reported; 0
+      means the backdrop is not blurred, which is what a client wants when its
+      glass material must degrade to plain translucency.
+    </description>
+
+    <request name="set_radius">
+      <description summary="set the blur radius">
+        Set the blur radius in logical pixels. Values above the compositor's
+        maximum are clamped to it rather than rejected, so a client that scales
+        its pane can keep asking for "as much as the compositor can do"; 0
+        disables the blur and leaves the surface composited as an ordinary
+        translucent surface.
+      </description>
+      <arg name="radius" type="uint" summary="blur radius in logical pixels"/>
+    </request>
+
+    <request name="set_region">
+      <description summary="set the region to frost, in surface-local coordinates">
+        Set the region to frost, relative to the surface's top-left corner. A
+        width or height that is not positive clears the region, so a client can
+        stop frosting a pane without destroying the object.
+
+        The initial region of a new object is empty, so a client that only sets
+        a radius does not silently frost whatever the surface happens to cover.
+      </description>
+      <arg name="x" type="int" summary="region origin, surface-local"/>
+      <arg name="y" type="int" summary="region origin, surface-local"/>
+      <arg name="width" type="int" summary="region width, surface-local"/>
+      <arg name="height" type="int" summary="region height, surface-local"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the glass object">
+        Destroy the object. Frosting this surface ends with the next committed
+        frame; the surface itself is not touched.
+      </description>
+    </request>
+
+    <event name="capabilities">
+      <description summary="what this compositor can frost">
+        Sent once, right after the object is created, before any request on it
+        is answered. `max_radius` is the largest blur radius the compositor
+        will apply, in logical pixels.
+
+        A maximum of 0 means this compositor will not blur this surface's
+        backdrop at all — no renderer support, a locked session, or a surface
+        with no layer role, which the compositor does not composite at a known
+        desktop layer. A client must then present its glass as plain
+        translucency instead of claiming a blur it did not get, and it may ask
+        again for a surface that has gained a layer role since.
+      </description>
+      <arg name="max_radius" type="uint" summary="largest accepted blur radius, 0 if none"/>
+    </event>
+  </interface>
+</protocol>

@@ -71,7 +71,7 @@ mod tests {
         let localizer = load(&Locale::default_locale()).expect("the catalogs parse");
 
         assert_eq!(localizer.locale().tag(), "en-US");
-        assert_eq!(localizer.message("greet-headline"), "Log in to Inox");
+        assert_eq!(localizer.message("greet-window-title"), "Inox login");
         assert_ne!(localizer.message("greet-usage"), "greet-usage");
     }
 
@@ -80,8 +80,8 @@ mod tests {
         let localizer = load(&zh_cn()).expect("the catalogs parse");
 
         assert_eq!(localizer.locale().tag(), "zh-CN");
-        assert_eq!(localizer.message("greet-headline"), "登录 Inox");
-        assert!(localizer.is_translated("greet-headline"));
+        assert_eq!(localizer.message("greet-window-title"), "Inox 登录");
+        assert!(localizer.is_translated("greet-window-title"));
     }
 
     #[test]
@@ -90,7 +90,7 @@ mod tests {
         let localizer = load(&french).expect("the catalogs parse");
 
         assert_eq!(localizer.locale().tag(), "en-US");
-        assert_eq!(localizer.message("greet-headline"), "Log in to Inox");
+        assert_eq!(localizer.message("greet-window-title"), "Inox login");
     }
 
     #[test]
@@ -99,12 +99,12 @@ mod tests {
 
         let message = localizer.message("greet-blocked");
 
-        // The block is the *authentication boundary*, not the display manager:
-        // ADR 0015 requires a human security review of it before this component
-        // may authenticate anyone, and a message that blamed something else would
-        // send whoever reads it to the wrong place.
+        // The block is the *authentication boundary*, not the display manager: the
+        // screen cannot check a login because the process that can is not there, and
+        // a message that blamed something else would send whoever reads it to the
+        // wrong place (ADR 0029).
         assert!(message.contains("authentication boundary"), "{message}");
-        assert!(message.contains("security review"), "{message}");
+        assert!(message.contains("not available"), "{message}");
         assert!(
             !message.contains("greet-blocked"),
             "a message id on screen is a missing translation: {message}"
@@ -118,29 +118,35 @@ mod tests {
         let ids = [
             "greet-usage",
             "greet-window-title",
-            "greet-headline",
-            "greet-field-label",
-            "greet-placeholder",
+            "greet-credential-label",
+            "greet-credential-placeholder",
+            "greet-credential-too-long",
             "greet-hint",
             "greet-hint-clear",
             "greet-submit",
             "greet-clear",
+            "greet-switch-user",
+            "greet-back",
+            "greet-choose-account",
             "greet-session-label",
             "greet-session-name",
             "greet-banner",
+            "greet-banner-live",
             "greet-blocked",
             "greet-unavailable",
             "greet-checking",
             "greet-starting",
             "greet-started",
             "greet-failed",
-            "greet-invalid-user",
             "greet-identity-too-long",
             "greet-disabled-unavailable",
             "greet-disabled-verifying",
             "greet-disabled-started",
             "greet-disabled-invalid",
             "greet-disabled-rate-limited",
+            "greet-disabled-no-accounts",
+            "greet-disabled-accounts-unreadable",
+            "greet-disabled-account-unselected",
         ];
 
         for locale in [Locale::default_locale(), zh_cn()] {

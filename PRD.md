@@ -4,7 +4,7 @@
 **日期**：2026-10-16
 **状态**：草案
 **组织**：https://github.com/Inox-desktop
-**许可证**：BSD 3-Clause
+**许可证**：LGPL-3.0
 
 ---
 
@@ -17,6 +17,9 @@
 | 1.2 | 2026-10-16 | 参考 Plasma Desktop 的实际测试与状态处理，提出分级证据、完整用户任务、多屏/故障/迁移/锁屏验收、性能测量口径和发布支持矩阵；新增 ADR 0011–0015。新增规范与架构调整待人类评审，不代表已开启门禁或已通过验收 |
 | 1.3 | 2026-10-16 | 按 [ADR 0016](docs/adr/0016-single-repository-cargo-workspace.md) 把多仓库策略改为单一仓库（Cargo workspace）：§3 由「仓库架构」改为「工作区与组件架构」，依赖改为工作区内 path 依赖，删除 `compat.toml` 与 `repos/` 流程；§2.1 的依赖方向改由 `layering.rs`（B04）机械强制。ADR 0001 已由 ADR 0016 取代 |
 | 1.4 | 2026-10-17 | 按 [ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md) 记录锁屏界面已绘制到会话锁表面、登录界面已补全：§2.3 的 `ext-session-lock-v1` 行、§10 的锁屏条目与 §13 的 M5 交付出处随之修正。真实认证仍是 ADR 0015 的人类安全评审项，本修订不改变该边界 |
+| 1.5 | 2026-10-17 | ADR 0015 的人类安全评审项获得批准并按 [ADR 0029](docs/adr/0029-inox-authentication-boundary.md) 实施：新增 L2 组件 `inox-auth`（系统 PAM、`auth-v1` 私有契约、以账号身份启动会话），`inox-greet` 的默认路径成为真实登录路径，§2.3 增加认证契约行、§3.1 增加组件行、§13 的 M5 交付与未交付清单随之修正 |
+| 1.6 | 2026-10-17 | 按 [ADR 0031](docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`）登记私有协议 `inox-glass-v1`（桌面玻璃材质/背景模糊）：§2.3 增加该协议行、§9.2 增加 `[glass]` 材质令牌组与「组件不得硬编码 tint」的规则。合成器只在 headless 路径实现模糊，物理（DRM）路径报 0 并保持场景锐利；离屏像素证据已取得（`crates/inox-compositor/tests/glass_blur.rs`，pane 内 24 列过渡 vs 无玻璃对照 0 列），真机效果仍未取得（真机上菜单栏/dock 为纯半透明） |
+| 1.7 | 2026-10-23 | 按 [ADR 0037](docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 新增 L4 组件 `inox-host`（greeter 宿主、VT/seat 交接、开机登录链），§3.1 增加组件行；`inox-auth` 以会话负责人进程建立用户 logind 会话并把画面在注销后交回登录界面；`inox-greet` 在会话启动后驻留复位 |
 
 ---
 
@@ -30,7 +33,7 @@
 - 最大化利用 Rust 生态中成熟的合成器库与 GUI 框架。
 - 通过单一工作区内的单一职责 crate 实现清晰的模块边界，便于局部开发、局部测试与并行代理协作。
 - 建立以 GitHub Actions 为核心的持续集成流水线，作为唯一的构建验证途径。
-- 采用 BSD 3-Clause 许可证，保持开源友好。
+- 采用 LGPL-3.0 许可证（ADR 0034），保持开源友好并与 Qt 生态同族。
 
 ### 1.2 非目标
 
@@ -137,6 +140,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `zwp_primary_selection_device_manager_v1`（本表此前记作 `gtk-primary-selection`） | M3 必须 | 主选区（X11 中键粘贴兼容）；与 `wl_data_device_manager` 一并广告，见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xwayland-shell` | 计划 | XWayland 集成 |
 | `text-input-v3` / `input-method-v2` / `virtual-keyboard-v1` | 提前实现，待验收 | 管理器接口 v1；应用文本事务、受信输入法连接、键盘抓取、候选窗与锁屏隔离，见 [ADR 0023](docs/adr/0023-input-method-support.md)（proposed）。真实客户端与 Fcitx5 拼音测试交由 CI；GTK/Qt/XWayland 与其他引擎仍待逐项验收 |
+| `inox-glass-v1`（**私有 Inox 协议**，全局 `inox_glass_manager_v1` v1，非上游） | 实验性（私有、unstable） | 桌面玻璃材质（背景模糊）：客户端经 `get_glass(surface)` + `set_region`/`set_radius` 请求合成器模糊自己表面**背后**的区域，`capabilities` 报告半径上限；模糊像素不回传客户端，区域裁剪到该表面，每表面至多一个对象，仅 layer 角色表面生效，锁定会话报 0。见 [ADR 0031](docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`）。合成器已广告全局并在 **headless** 路径实现模糊 pass（E1 参数层测试 + E2 离屏像素判别性证据 `tests/glass_blur.rs`），**物理（DRM）路径报 0 且场景保持锐利**（未决项）；`inox-config` 的 `[glass]` 令牌、`inox-panel` 的菜单栏/dock 材质与协议腿（真实 `wlr-layer-shell` 表面 + `inox-glass-v1` 请求 + `capabilities = 0` 与 `blur = 0` 两种降级）均已实现，线级证据在 `crates/inox-panel/tests/protocol.rs`；真机效果**未验证**（物理路径报 0，真机上这两个表面目前是纯半透明） |
 
 > 新增协议必须先在 `inox-protocols` 定义或引用，并说明安全与生命周期约束；破坏性变更需 ADR。
 > `wlr-data-control`（全局、无焦点限制的剪贴板读取路径，供剪贴板管理器使用）不在 M3 范围内：开放它需要按客户端凭据做授权过滤，因此与剪贴板管理器一并推迟到 M5（[ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。
@@ -167,9 +171,12 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` |
 | `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` |
+| `inox-qml-prototype` | L3 | `crates/inox-qml-prototype` | QML+Qt Quick 迁移原型（ADR 0033/0035，cxx-qt 证据 crate，零内部依赖） | 证据 crate |
+| `inox-auth` | L2 | `crates/inox-auth` | 认证边界（PAM、`auth-v1` 私有契约、以账号身份启动会话） | 二进制 `inox-auth` |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` |
 | `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` |
+| `inox-host` | L4 | `crates/inox-host` | greeter 宿主：在裸 VT 上拉起登录界面的合成器与界面，监督并在退出时清理（ADR 0037） | 二进制 `inox-host` |
 | `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 |
 
 工作区之外还有两处非 crate 位置：
@@ -217,12 +224,14 @@ inox/
 ├── rust-toolchain.toml  # 固定 stable
 ├── AGENTS.md            # 根级 AI 约束（crate 级 AGENTS.md 只能追加/收紧）
 ├── PRD.md
-├── LICENSE              # BSD 3-Clause，全仓库一份
+├── LICENSE              # LGPL-3.0，全仓库一份
 ├── README.md
 ├── docs/
 │   ├── adr/             # 架构决策记录
 │   ├── quality/         # 验收规范与报告
 │   └── book/            # 用户与开发者文档站点（mdBook，无 Cargo.toml）
+├── data/
+│   └── wallpapers/      # 随发行版安装的壁纸与署名（CREDITS.md）；安装到 $XDG_DATA_DIRS/inox/wallpapers/
 ├── crates/
 │   └── inox-<component>/
 │       ├── Cargo.toml   # 字段一律 *.workspace = true
@@ -246,7 +255,7 @@ inox/
 | 输入后端 | Smithay `backend_libinput` | 输入设备抽象 |
 | 会话管理 | libseat | 无 root 权限设备访问 |
 | XWayland | xwayland-satellite | 无根 XWayland 集成 |
-| GUI 工具包 | Iced | Elm 架构，单向数据流 |
+| GUI 工具包 | QML + Qt Quick (cxx-qt) | 声明式 UI，领域逻辑留 Rust（ADR 0033/0035，自 Iced 迁移进行中） |
 | 配置格式 | TOML + serde | 人类可读，AI 友好 |
 | 日志 | tracing + tracing-subscriber | 结构化日志 |
 | 错误处理 | thiserror + anyhow | 库用 thiserror，应用用 anyhow |
@@ -254,7 +263,7 @@ inox/
 | 性能分析 | Tracy (tracy-client) | 帧分析与输入延迟 |
 | CI/CD | GitHub Actions | 唯一构建验证途径 |
 | 代码质量 | rustfmt, clippy, cargo-deny | 强制检查 |
-| 许可证 | BSD 3-Clause | 仓库根目录一份 LICENSE |
+| 许可证 | LGPL-3.0 | 仓库根目录一份 LICENSE |
 
 ---
 
@@ -433,11 +442,14 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 - 解析成功、保存成功与组件已生效分别报告；消费方先准备/应用再推进代次，并发旧结果不能覆盖新请求。显示试用 15 s 未确认由服务端恢复；不承诺跨进程全局原子提交，见 [ADR 0014](docs/adr/0014-configuration-apply-and-migration.md)。
 - 保存使用目标目录内的临时文件与原子替换/同步策略，检测外部编辑冲突；无屏/设备缺失不删除偏好。首次破坏性版本变更前必须有 schema 版本、历史 fixture、幂等迁移、备份及可复现回退。
 - 路径安全除词法校验外还需符号链接/安全打开策略与竞态测试；不能声称仅拒绝 `..` 即保证读取范围。
+- 随发行版安装的壁纸位于仓库根 `data/wallpapers/`，运行时从 `$XDG_DATA_DIRS/inox/wallpapers/` 读取
+  （`INOX_WALLPAPER_DIR` 可覆盖）。`wallpaper.image` 的取值是内置壁纸名称、`none`（主题背景）或图片路径；
+  键省略时为内置默认壁纸，显式选择但不可用则退到主题背景并报告。[ADR 0030](docs/adr/0030-bundled-wallpapers-and-the-default-background.md)。
 
 ### 9.2 主题系统
 
-- 主题由 `theme.toml` 定义设计令牌（design tokens）：颜色、排版、间距、圆角、动效时长。
-- Iced 组件只消费令牌，不得硬编码颜色/尺寸。
+- 主题由 `theme.toml` 定义设计令牌（design tokens）：颜色、排版、间距、圆角、动效时长，以及玻璃材质组 `[glass]`（`tint` / `tint_strong` / `highlight` / `shade` / `blur`）。
+- Iced 组件只消费令牌，不得硬编码颜色/尺寸；玻璃材质同样只有这一处来源，组件不得自带 tint。`blur` 是向合成器请求的背景模糊半径（逻辑像素，`0` = 只做半透明），实际能否磨砂由合成器经 `inox-glass-v1` 的 `capabilities` 回答（见 [ADR 0031](docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)）。
 - 支持浅色/深色与跟随系统；默认提供 `inox-light`、`inox-dark`。
 - 高对比、字体缩放与减少动态偏好从首个 Shell 阶段验证；自定义主题回退按所选外观匹配，不能以缺令牌为由产生不可读混色。涉及 ADR 0009 默认值语义的调整须先接受 ADR 0014 再迁移。
 
@@ -451,7 +463,7 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 - **特权能力**：输出管理、配置控制、捕获/注入和锁屏分别登记可信调用方、授权来源、撤销和版本范围；校验在服务端执行，不能用 app_id/PID 或同 UID 直接授予能力，见 S04。
 - **Portal**：通过 `inox-portal` 提供 `xdg-desktop-portal` 后端，覆盖截图、屏幕共享、文件选择、设置；前端应用通过标准 Portal 接口访问，避免合成器直接暴露特权接口。
 - `inox-portal` 仍是规划仓库，创建与后端方案须另有 ADR；未实现时明确披露，拒绝未经授权的捕获/注入，不能用默认开放私有接口替代。提供能力时须验证授权、拒绝、撤销和锁屏中止。
-- **依赖安全**：`cargo-deny` 强制许可证白名单（BSD/MIT/Apache-2.0/ISC/Zlib 等），禁止 GPL/AGPL 依赖进入核心；定期扫描 RUSTSEC 漏洞。
+- **依赖安全**：`cargo-deny` 强制许可证白名单（宽松 + LGPL），禁止 AGPL/SSPL 与 GPL-only 的 Qt 模块进入核心；定期扫描 RUSTSEC 漏洞。
 - **禁止项**：不得引入远程代码执行、不得默认开启网络监听、不得上传遥测。
 
 ---
@@ -487,6 +499,8 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 
 - 发布物由 CI 生成（`--all-features`、strip、校验和与 SBOM）。
 - 每个 Release 附带 `build-info`（commit、工具链版本、特性开关）。
+- 安装步骤把 `data/wallpapers/`（内置壁纸与其署名 `CREDITS.md`）复制到 `$XDG_DATA_DIRS/inox/wallpapers/`；
+  未安装时省略 `wallpaper.image` 会退到主题背景并记录警告，不影响其他功能（[ADR 0030](docs/adr/0030-bundled-wallpapers-and-the-default-background.md)）。
 
 ---
 
@@ -545,7 +559,7 @@ O02/O03 的虚拟拓扑、几何与像素证据由 `crates/inox-compositor/tests
 L4 首版实现边界见 [ADR 0021](docs/adr/0021-l4-session-services.md)：会话监督、标准空闲通知客户端、登录生命周期模型与阶段驱动的登录界面（`--preview`）已经提供——界面为六个阶段各有一幅画面，但 `--preview` 只显示本构建真实处于的阶段（没有认证边界，所以是不可用、不可输入的那一幅）。
 M5 的会话锁协议腿见 [ADR 0022](docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)（状态 `proposed`）：合成器广告 `ext_session_lock_manager_v1` v1 并以会话令牌默认拒绝授权，`inox-lock --take-lock` 真实取锁并覆盖每个输出，`inox-ipc` 升到 v2（`claim_lock_role` / `session_lock_state`），会话负责生成并只向可信锁屏客户端投递令牌；锁屏 UI 崩溃保持锁定且不支持接管。
 锁屏界面见 [ADR 0025](docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)（状态 `accepted`）：`inox-lock` 用一个输出一个离屏渲染器把 `app::view` 画成 configure 尺寸的 `wl_shm` 帧，协议腿改由 crate 自己的状态机驱动，锁表面承载的是真实控件树而非一块纯色；本构建没有经过评审的认证边界，因此状态里的事实是 `ServiceFailure::NotProvided`，界面呈现不可用画面，**并且不读键鼠**——输入路径与边界一起落地。
-**仍未交付、因此不能视为 M5 验收通过**：完整服务 ready、真实认证、logind 挂起、锁屏 UI 崩溃后的接管、锁屏的键盘输入路径、通知的 D-Bus 服务在真实会话总线上的名字所有权测试，以及 H02 的全部真机步骤。（通知的 D-Bus 服务 D06 已由 ADR 0022 的后续实现落地，见 §2.3 与 `inox-notifications`。）
+认证边界已由 [ADR 0029](docs/adr/0029-inox-authentication-boundary.md)（`accepted`）落地：`inox-auth` 经系统 PAM 认证、`auth-v1` 私有契约（规范文本 `crates/inox-protocols/protocol/auth-v1.md`）、凭据全程 `Secret`、成功后以该账号身份启动固定会话；`inox-greet` 的默认路径因此成为真实登录路径，`--preview` 仍是「没有边界时的界面」。**仍未交付、因此不能视为 M5 验收通过**：完整服务 ready、greeter 宿主（裸 VT 上的登录界面与两阶段交接）、真机登录验收、logind 挂起、锁屏 UI 崩溃后的接管、锁屏的键盘输入路径与解锁（尚未接本边界）、通知的 D-Bus 服务在真实会话总线上的名字所有权测试，以及 H02 的全部真机步骤。（通知的 D-Bus 服务 D06 已由 ADR 0022 的后续实现落地，见 §2.3 与 `inox-notifications`。）
 
 ## 14. 风险与缓解
 
@@ -567,17 +581,15 @@ M5 的会话锁协议腿见 [ADR 0022](docs/adr/0022-m5-session-lock-notificatio
 
 ## 15. 许可证
 
-本项目采用 **BSD 3-Clause** 许可证。仓库根目录包含 `LICENSE` 文件，版权归 Inox Desktop 贡献者所有；工作区内各 crate 不再各自复制一份。
+本项目采用 **LGPL-3.0** 许可证（ADR 0034）。仓库根目录包含 `LICENSE` 文件，版权归 Inox Desktop 贡献者所有；工作区内各 crate 不再各自复制一份。为采用 Qt 路线（ADR 0033）而将项目从 BSD 3-Clause 重许可为 LGPLv3，与 Qt 主体（LGPL）同族。
 
 ```
-BSD 3-Clause License
-
-Copyright (c) 2026, Inox Desktop Contributors
-All rights reserved.
+GNU LESSER GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
 ...
 ```
 
-依赖许可证白名单与校验由 `cargo-deny`（§6、§10）强制执行。
+依赖许可证白名单与校验由 `cargo-deny`（§6、§10）强制执行：允许宽松许可 + LGPL，禁止 AGPL/SSPL，禁止 GPL-only 的 Qt 模块（Qt Wayland Compositor、Qt Virtual Keyboard、Qt QML Compiler）。系统库许可由独立的 `license-audit` CI job 校验（`cargo-deny` 管不到系统 Qt `.so`）。
 
 ---
 

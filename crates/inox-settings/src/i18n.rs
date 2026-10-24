@@ -47,7 +47,15 @@ pub fn load(requested: &Locale) -> Result<Localizer, I18nError> {
 /// to [`crate::draft::Field`] brings its labels with it and `tests/catalog.rs`
 /// fails until both catalogs define them.
 pub fn message_ids() -> Vec<&'static str> {
-    crate::view_model::message_ids()
+    let mut ids = crate::view_model::message_ids();
+    ids.extend([
+        "settings-ctl-help",
+        "settings-ctl-applied",
+        "settings-ctl-absent",
+        "settings-ctl-failed",
+        "settings-ctl-incomplete",
+    ]);
+    ids
 }
 
 /// The `zh-CN` locale.

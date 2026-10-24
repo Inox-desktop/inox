@@ -1,14 +1,24 @@
-//! The panel binary: configuration, logging, catalogs, then the iced application.
+//! The panel binary: configuration, logging, catalogs, then the panel's layer
+//! surface.
 //!
-//! Two things about how this binary runs today are worth stating before the
-//! code, because they are deliberate and are logged at startup rather than
-//! implied:
+//! The binary is deliberately thin. Everything that decides anything lives in
+//! the library: [`inox_panel::app`] owns the state, [`inox_panel::placement`] the
+//! placement the surface asks for, and [`inox_panel::layer`] the protocol leg
+//! that applies it. This file loads the configuration, picks the surface,
+//! installs logging, and hands control to the leg.
 //!
-//! - **The surface is an ordinary window.** The panel is meant to be a
-//!   `wlr-layer-shell` surface; the compositor does not advertise that protocol
-//!   and `iced_layershell` has no release for iced 0.14, so the placement
-//!   computed by [`inox_panel::placement`] is not applied. ADR 0018 records the
-//!   decision and this binary names it in a warning.
+//! Three things are worth stating before the code, because they are deliberate:
+//!
+//! - **The surface is a real `wlr-layer-shell` surface.** The panel used to run
+//!   as an ordinary `xdg-shell` window with its computed placement unapplied, and
+//!   logged a warning saying so (ADR 0018). It no longer does: a compositor that
+//!   does not advertise `zwlr_layer_shell_v1` is a **readable error and a
+//!   non-zero exit**, because a panel that claims to reserve a strip while it is
+//!   really a floating window is a lie about the desktop's geometry.
+//! - **Which surface a process draws comes from `[panel] surface`, or from
+//!   `--surface`.** The flag overrides the file for this process only, which is
+//!   how one session runs a menu bar and a dock at once: they are two processes,
+//!   because they are two surfaces with different sizes and different placements.
 //! - **The window service is not reached yet.** No transport is implemented in
 //!   this milestone, so the panel starts in its connecting state and shows that
 //!   state honestly instead of inventing a task list.
@@ -17,33 +27,63 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
-use inox_config::{Appearance, ConfigPaths, InoxConfig};
-use tracing::{info, warn};
+use inox_config::{Appearance, ConfigPaths, InoxConfig, PanelSurface};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use inox_panel::app::{self, State};
-use inox_panel::placement::PanelPlacement;
-use inox_panel::{i18n, theme};
+use inox_panel::i18n;
+use inox_panel::layer::{self, Outcome};
 
-/// The width the panel's window is opened at while it is an ordinary window.
+/// What this binary accepts on the command line.
 ///
-/// A layer surface is sized by the compositor along the edge it is anchored to;
-/// a window is not, so the fallback starts at the width the acceptance snapshots
-/// use (Q02). It says nothing about the panel's behaviour.
-const REFERENCE_WIDTH: f32 = 1280.0;
+/// A CLI's own usage text is not a translated string: it names options, not
+/// user-facing prose (root AGENTS.md §7.3 covers what a person reads in the
+/// interface). It is logged like everything else this binary says.
+const USAGE: &str = "\
+inox-panel [OPTIONS]
+
+OPTIONS:
+    --surface <taskbar|menubar|dock>   Draw this surface instead of the one
+                                       `[panel] surface` names. A session that
+                                       wants a menu bar and a dock runs two
+                                       processes, one per surface.
+    -h, --help                         Print this help and exit
+";
+
+/// The exit status for a run that could not draw a placed panel.
+const EXIT_NO_SURFACE: i32 = 1;
+
+/// The exit status for a command line this binary cannot act on.
+const EXIT_BAD_ARGUMENTS: i32 = 2;
 
 fn main() -> Result<()> {
     initialise_logging()?;
 
+    let options = match Options::parse(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(reason) => {
+            error!("{reason}");
+            error!("{USAGE}");
+
+            std::process::exit(EXIT_BAD_ARGUMENTS);
+        }
+    };
+
+    if options.help {
+        info!("{USAGE}");
+
+        return Ok(());
+    }
+
     // ADR 0018 asks a component not to hand control to a third-party crate and
-    // harvest an internal panic. Without a display, iced's window creation walks
-    // straight into `winit`, which panics on Linux; this check turns that into a
-    // message a user can act on and a non-zero exit.
+    // harvest an internal panic. Without a display there is nothing to connect
+    // to, so the failure is reported here, in this process's own words, with a
+    // non-zero exit.
     let display = DisplayEnv::from_process();
     if !display.is_available() {
         anyhow::bail!(
-            "no display to draw the panel on: set WAYLAND_DISPLAY (and XDG_RUNTIME_DIR) or \
-             DISPLAY, and start the panel inside a session"
+            "no display to draw the panel on: set WAYLAND_DISPLAY (and XDG_RUNTIME_DIR), and \
+             start the panel inside a session"
         );
     }
 
@@ -53,50 +93,112 @@ fn main() -> Result<()> {
 
     let localizer =
         Rc::new(i18n::load(&config.locale).context("loading the panel's message catalogs")?);
+
+    // The flag is what lets one session run a menu bar and a dock at once; it
+    // overrides the file for this process and nothing else.
+    let mut shell = config.shell.clone();
+    if let Some(surface) = options.surface {
+        shell.panel.surface = surface;
+    }
+
     info!(
         locale = %config.locale.tag(),
         theme = %config.theme.name,
+        surface = ?shell.panel.surface,
         "starting the Inox panel"
     );
-
-    let panel = config.shell.panel.clone();
-    let height = panel.height;
-    let placement = PanelPlacement::derive(&panel);
     warn!(
-        reserved = placement.reserved_strip(),
-        autohide = ?placement.autohide,
-        "ADR 0018: no wlr-layer-shell host is available, so the panel runs as an \
-         ordinary window and its computed placement is not applied"
-    );
-    warn!(
-        "the window service transport (inox-ipc or D-Bus) is not implemented in \
-         this milestone: the panel will report that it is waiting for it"
+        "the window service transport (inox-ipc or D-Bus) is not implemented in this \
+         milestone: the panel will report that it is waiting for it"
     );
 
-    // iced asks for the initial state through a factory, so the panel's pieces
-    // are cloned into the closure rather than moved into a state it cannot
-    // build twice.
-    let tokens = config.theme.clone();
-    let boot = move || {
-        (
-            State::new(panel.clone(), tokens.clone(), Rc::clone(&localizer)),
-            iced::Task::none(),
-        )
-    };
+    match layer::run(shell, config.theme.clone(), localizer, paths) {
+        Ok(Outcome::Stopped) => {
+            info!("the panel stopped");
 
-    iced::application(boot, app::update, app::view)
-        .title(app::title)
-        .theme(|state: &State| theme::from_tokens(state.tokens()))
-        .subscription(app::subscription)
-        .window_size((REFERENCE_WIDTH, f32::from(height)))
-        .run()
-        .context("running the panel")
+            Ok(())
+        }
+        Ok(Outcome::ConnectionLost) => {
+            error!(
+                "the compositor connection was lost, so the panel's surface is gone; \
+                 stopping without a placed surface"
+            );
+
+            std::process::exit(EXIT_NO_SURFACE);
+        }
+        Err(failure) => {
+            // The leg's errors are the ones an operator has to act on — no
+            // layer-shell on this compositor, no display, a failed event loop —
+            // so they are reported in the panel's own log and the status says the
+            // run failed.
+            error!("{failure}");
+
+            std::process::exit(EXIT_NO_SURFACE);
+        }
+    }
+}
+
+/// The command line, as data.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Options {
+    /// The surface this process draws, overriding `[panel] surface`.
+    surface: Option<PanelSurface>,
+    /// Whether the usage text was asked for.
+    help: bool,
+}
+
+impl Options {
+    /// Parses the arguments after the program name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable reason for an argument this binary does not
+    /// understand, an unknown surface name, or a `--surface` with nothing after
+    /// it — never a silent default, because the surface decides where the panel
+    /// lands.
+    fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut arguments = arguments.into_iter();
+
+        while let Some(argument) = arguments.next() {
+            match argument.as_str() {
+                "--surface" => {
+                    let Some(value) = arguments.next() else {
+                        return Err("--surface needs a value: taskbar, menubar or dock".to_owned());
+                    };
+
+                    options.surface = Some(parse_surface(&value)?);
+                }
+                "-h" | "--help" => options.help = true,
+                other => return Err(format!("unrecognized argument: {other}")),
+            }
+        }
+
+        Ok(options)
+    }
+}
+
+/// The surface one spelling names.
+///
+/// # Errors
+///
+/// Returns the unknown spelling itself, with the accepted ones, so the message a
+/// user sees says what to type instead.
+fn parse_surface(value: &str) -> Result<PanelSurface, String> {
+    match value {
+        "taskbar" => Ok(PanelSurface::Taskbar),
+        "menubar" => Ok(PanelSurface::Menubar),
+        "dock" => Ok(PanelSurface::Dock),
+        other => Err(format!(
+            "unknown surface: {other} (expected taskbar, menubar or dock)"
+        )),
+    }
 }
 
 /// Starts logging, honouring `RUST_LOG`.
 ///
 /// The level defaults to `info` (root AGENTS.md §3.5): the panel logs what it
-/// started with, why its surface is what it is, and nothing per frame.
+/// started with, what surface it created, and nothing per frame.
 fn initialise_logging() -> Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
@@ -171,7 +273,7 @@ impl DisplayEnv {
 
 #[cfg(test)]
 mod tests {
-    use super::DisplayEnv;
+    use super::{DisplayEnv, Options, PanelSurface};
 
     fn env(wayland: Option<&str>, runtime: Option<&str>, x11: Option<&str>) -> DisplayEnv {
         DisplayEnv {
@@ -180,6 +282,10 @@ mod tests {
             runtime_dir: runtime.map(str::to_owned),
             x11_display: x11.map(str::to_owned),
         }
+    }
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
     }
 
     #[test]
@@ -232,5 +338,67 @@ mod tests {
         environment.wayland_socket = true;
 
         assert!(environment.is_available());
+    }
+
+    #[test]
+    fn every_surface_spelling_is_accepted() {
+        for (text, surface) in [
+            ("taskbar", PanelSurface::Taskbar),
+            ("menubar", PanelSurface::Menubar),
+            ("dock", PanelSurface::Dock),
+        ] {
+            let options = Options::parse(arguments(&["--surface", text])).expect("a surface");
+
+            assert_eq!(options.surface, Some(surface));
+            assert!(!options.help);
+        }
+    }
+
+    #[test]
+    fn no_argument_leaves_the_surface_to_the_configuration() {
+        let options = Options::parse(arguments(&[])).expect("nothing to parse");
+
+        assert_eq!(options.surface, None, "the file decides by default");
+        assert!(!options.help);
+    }
+
+    #[test]
+    fn the_last_surface_wins_when_one_is_given_twice() {
+        let options = Options::parse(arguments(&["--surface", "dock", "--surface", "menubar"]))
+            .expect("a surface");
+
+        assert_eq!(options.surface, Some(PanelSurface::Menubar));
+    }
+
+    #[test]
+    fn an_unknown_surface_is_refused_with_a_readable_reason() {
+        let failure =
+            Options::parse(arguments(&["--surface", "task"])).expect_err("task is not a surface");
+
+        assert!(failure.contains("task"), "{failure}");
+        assert!(
+            failure.contains("menubar"),
+            "it names what to type: {failure}"
+        );
+    }
+
+    #[test]
+    fn a_surface_flag_without_a_value_is_refused() {
+        let failure = Options::parse(arguments(&["--surface"])).expect_err("no value");
+
+        assert!(failure.contains("--surface"), "{failure}");
+    }
+
+    #[test]
+    fn help_is_accepted_in_both_spellings() {
+        assert!(Options::parse(arguments(&["--help"])).expect("help").help);
+        assert!(Options::parse(arguments(&["-h"])).expect("help").help);
+    }
+
+    #[test]
+    fn an_unknown_argument_is_refused() {
+        let failure = Options::parse(arguments(&["--takeover"])).expect_err("unknown");
+
+        assert!(failure.contains("--takeover"), "{failure}");
     }
 }

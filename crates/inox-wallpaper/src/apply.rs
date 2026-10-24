@@ -109,14 +109,18 @@ pub enum Preparation {
 /// [`update`](crate::app::update). Anything it cannot do comes back as a
 /// [`Preparation::Degraded`] with a reason, never as an error the caller has to
 /// turn into one — the degradation *is* the designed outcome.
+///
+/// `wallpaper_dirs` are the directories a bundled wallpaper is searched for, in
+/// order; a selection that names a file ignores them.
 #[must_use]
 pub fn prepare(
     output: OutputName,
     selection: &Selection,
     mode: WallpaperMode,
     size: Size,
+    wallpaper_dirs: &[PathBuf],
 ) -> Preparation {
-    let path = match source::resolve(selection) {
+    let path = match source::resolve(selection, wallpaper_dirs) {
         OutputSource::Image(path) => path,
         OutputSource::ThemeBackground => return Preparation::Nothing { output },
         OutputSource::Unavailable { path, reason } => {
@@ -245,6 +249,17 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+
+    /// [`prepare`] with no wallpaper search directories: every fixture here is a
+    /// path, and only a bundled wallpaper is searched for.
+    fn prepare(
+        output: OutputName,
+        selection: &Selection,
+        mode: WallpaperMode,
+        size: Size,
+    ) -> Preparation {
+        super::prepare(output, selection, mode, size, &[])
+    }
 
     const OUTPUT: Size = Size::new(1920, 1080);
     const MODE: WallpaperMode = WallpaperMode::Fill;
@@ -592,5 +607,56 @@ mod tests {
         assert!(removed(&mut snapshot, &output));
         assert!(!removed(&mut snapshot, &output));
         assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn a_bundled_default_wallpaper_is_prepared_from_its_directory() {
+        let wallpaper = inox_config::wallpapers::default_bundled().expect("shipped");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let file = dir.path().join(wallpaper.file);
+        image::RgbImage::from_pixel(320, 200, image::Rgb([3, 4, 5]))
+            .save(&file)
+            .expect("the fixture is written");
+
+        let preparation = super::prepare(
+            OutputName::from("HDMI-A-1"),
+            &Selection::Bundled {
+                wallpaper,
+                explicit: false,
+            },
+            MODE,
+            OUTPUT,
+            &[dir.path().to_path_buf()],
+        );
+
+        let Preparation::Ready(prepared) = preparation else {
+            panic!("expected the bundled wallpaper to be prepared, got {preparation:?}");
+        };
+        assert_eq!(prepared.path(), &file);
+        assert_eq!(prepared.frame().size(), Size::new(320, 200));
+    }
+
+    #[test]
+    fn the_default_wallpaper_absent_is_prepared_as_nothing_to_report() {
+        let wallpaper = inox_config::wallpapers::default_bundled().expect("shipped");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+
+        let preparation = super::prepare(
+            OutputName::from("eDP-1"),
+            &Selection::Bundled {
+                wallpaper,
+                explicit: false,
+            },
+            MODE,
+            OUTPUT,
+            &[dir.path().to_path_buf()],
+        );
+
+        assert_eq!(
+            preparation,
+            Preparation::Nothing {
+                output: OutputName::from("eDP-1")
+            }
+        );
     }
 }

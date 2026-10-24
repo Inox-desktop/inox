@@ -18,6 +18,7 @@ use std::{
     os::fd::OwnedFd,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
 
@@ -52,6 +53,12 @@ use smithay::{
 use tracing::{debug, info, warn};
 
 use crate::{InoxState, backend::frame::FrameToken, state::OutputDescriptor};
+
+/// Whether the "frosted glass is not implemented here" warning has been logged.
+///
+/// The limitation is a property of the backend, not of a frame, so it is reported
+/// once per process rather than on every frame a frosted pane is on screen.
+static GLASS_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// Errors that prevent a device from rendering or presenting.
 #[derive(Debug, thiserror::Error)]
@@ -368,6 +375,61 @@ impl GpuBackend {
         Ok(changed)
     }
 
+    /// Whether this device actually drives what `preferences` ask of it (ADR 0028).
+    ///
+    /// [`GpuBackend::rescan`] keeps a connector's current scanout when the requested
+    /// mode is unavailable, so a successful rescan is not evidence that the request
+    /// took effect. This reads the device state back and compares it with the
+    /// request:
+    ///
+    /// - every connected connector this device drives is visited in the order
+    ///   `rescan` visits it, and the preference `rescan` would apply to it must be
+    ///   matched by a scanout whose mode size, refresh and scale equal the request
+    ///   and whose recorded position equals the requested one;
+    /// - a connected connector that no preference covers at all is not checked:
+    ///   nothing was requested for it;
+    /// - a preference naming a connector that is not connected on this device is
+    ///   skipped, because another device may drive it — or nobody does, which
+    ///   `rescan` accepts as well;
+    /// - preferences without a name are positional (`rescan` takes them in order,
+    ///   per device), so at least as many of them must have been applied as were
+    ///   requested. A positional arrangement that spans devices is therefore
+    ///   checked per device; name the connectors to arrange them across GPUs.
+    ///
+    /// # Errors
+    /// Returns a reason naming the connector and the mode that did not take.
+    pub(crate) fn preferences_in_effect(&self, preferences: &[OutputConfig]) -> Result<(), String> {
+        if !self.device.is_active() {
+            return Err(format!("{}: the device is not active", self.card.display()));
+        }
+        let resources = self
+            .device
+            .resource_handles()
+            .map_err(|error| format!("{}: {error}", self.card.display()))?;
+        let mut handles = resources.connectors().to_vec();
+        handles.sort_by_key(|handle| u32::from(*handle));
+
+        let mut driven = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let connector = self
+                .device
+                .get_connector(handle, true)
+                .map_err(|error| format!("{}: {error}", self.card.display()))?;
+            if connector.state() != connector::State::Connected || connector.modes().is_empty() {
+                continue;
+            }
+            let name = connector.to_string();
+            let applied = self
+                .scanouts
+                .iter()
+                .find(|scanout| scanout.output.name() == name)
+                .map(applied_output);
+            driven.push((name, applied));
+        }
+
+        check_preferences(&driven, preferences)
+    }
+
     /// Build the scanout state for one connector on a free CRTC.
     fn create_scanout(
         &mut self,
@@ -500,13 +562,28 @@ impl GpuBackend {
             .find(|scanout| format!("{}:{}", card.display(), scanout.output.name()) == key)
             .ok_or_else(|| unavailable(format!("no active scanout for {key}")))?;
 
-        let elements = state.scene_elements(renderer, &scanout.output)?;
+        let scene = state.scene_elements(renderer, &scanout.output)?;
+        // Frosted glass is not implemented on this path: `OutputDamageTracker`
+        // derives the damage it queues from the elements' own damage snapshots,
+        // and a frosted passthrough has no honest damage description there yet.
+        // The scene stays sharp, and the protocol's `capabilities` event reports
+        // `max_radius = 0` on this backend so no client is promised a blur that
+        // would not be drawn (see `crate::glass` and `AGENTS.md`). Reported once,
+        // not once per frame.
+        if !scene.glass.is_empty() && !GLASS_WARNING_SHOWN.swap(true, Ordering::Relaxed) {
+            warn!(
+                panes = scene.glass.len(),
+                "a layer surface asked for frosted glass, which the DRM backend does not \
+                 implement yet: the scene is left sharp and capabilities reported no maximum"
+            );
+        }
+        let elements = &scene.elements;
         // Check scene changes independently of swapchain age. An unused buffer
         // needs a full redraw, but must not cause an unchanged scene to be submitted.
         if !state.frame_budget()
             && scanout
                 .scene_damage
-                .damage_output(1, &elements)
+                .damage_output(1, elements)
                 .map_err(unavailable)?
                 .0
                 .is_none()
@@ -528,7 +605,7 @@ impl GpuBackend {
                 renderer,
                 &mut target,
                 usize::from(age),
-                &elements,
+                elements,
                 state.background(),
             )
             .map_err(unavailable)?;
@@ -686,14 +763,10 @@ fn apply_scale_and_position(scanout: &mut Scanout, preference: Option<&OutputCon
 /// Integer-only clients are told the ceiling; `wp_fractional_scale_v1` carries
 /// the exact factor. Without a preference the output runs at 1:1.
 fn scale_of(preference: Option<&OutputConfig>) -> Scale {
-    let Some(scale) = preference.map(|preference| preference.scale) else {
+    let Some(preference) = preference else {
         return Scale::Integer(1);
     };
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
+    let scale = requested_scale(preference);
 
     Scale::Custom {
         advertised_integer: scale.ceil().clamp(1.0, f64::from(i32::MAX)) as i32,
@@ -742,6 +815,135 @@ fn choose_mode(
             )
         })
         .copied()
+}
+
+/// The applied state of one scanout, as the preference check reads it.
+#[derive(Debug, Clone, PartialEq)]
+struct AppliedOutput {
+    /// Physical width in pixels.
+    width: i32,
+    /// Physical height in pixels.
+    height: i32,
+    /// Refresh rate in hertz, as the DRM mode reports it.
+    refresh_hz: u32,
+    /// Fractional scale in force.
+    scale: f64,
+    /// Recorded position, or `None` when the configuration left it to the topology.
+    position: Option<(i32, i32)>,
+}
+
+/// Read the applied state off one scanout.
+fn applied_output(scanout: &Scanout) -> AppliedOutput {
+    // `create_scanout` and `apply_mode` both set the current mode from the DRM mode,
+    // so the advertised mode cannot drift from `scanout.mode`; the fallback only
+    // covers an output whose state was never changed.
+    let mode = match scanout.output.current_mode() {
+        Some(mode) => mode,
+        None => Mode::from(scanout.mode),
+    };
+    AppliedOutput {
+        width: mode.size.w,
+        height: mode.size.h,
+        // `choose_mode` matched the DRM vrefresh, while `Mode::refresh` is
+        // recomputed from the pixel clock and can differ by a fraction of a hertz.
+        refresh_hz: scanout.mode.vrefresh(),
+        scale: scanout.output.current_scale().fractional_scale(),
+        position: scanout.position.map(|position| (position.x, position.y)),
+    }
+}
+
+/// Check one device's driven connectors against the preferences that apply to them.
+///
+/// `driven` lists the connectors that are connected on the device, in the order
+/// `rescan` visits them; each entry pairs the name clients see with the state of
+/// the scanout driving it, or `None` when the connector is connected but no
+/// scanout could be built for it. Assignment mirrors `rescan` exactly, including
+/// the positional counter, so an entry that `rescan` skipped because its requested
+/// mode is unsupported is reported rather than passed over.
+fn check_preferences(
+    driven: &[(String, Option<AppliedOutput>)],
+    preferences: &[OutputConfig],
+) -> Result<(), String> {
+    let positional = || preferences.iter().filter(|entry| entry.name.is_none());
+    let requested = positional().count();
+    let mut applied = 0usize;
+
+    for (name, output) in driven {
+        let preference = match preferences
+            .iter()
+            .find(|entry| entry.name.as_deref() == Some(name.as_str()))
+        {
+            Some(preference) => Some(preference),
+            None => {
+                let picked = positional().nth(applied);
+                if picked.is_some() {
+                    applied += 1;
+                }
+                picked
+            }
+        };
+        let Some(preference) = preference else {
+            // Nothing was requested for this connector.
+            continue;
+        };
+        let Some(output) = output else {
+            return Err(format!(
+                "{name}: requested {}x{}@{}Hz could not be driven",
+                preference.width, preference.height, preference.refresh_hz
+            ));
+        };
+
+        let requested_refresh = preference.refresh_hz.max(1) as u32;
+        if output.width != preference.width
+            || output.height != preference.height
+            || output.refresh_hz != requested_refresh
+        {
+            return Err(format!(
+                "{name}: requested {}x{}@{}Hz but the output runs {}x{}@{}Hz",
+                preference.width,
+                preference.height,
+                preference.refresh_hz,
+                output.width,
+                output.height,
+                output.refresh_hz
+            ));
+        }
+        let requested_scale = requested_scale(preference);
+        if (output.scale - requested_scale).abs() > f64::EPSILON {
+            return Err(format!(
+                "{name}: requested scale {requested_scale} but the output runs {}",
+                output.scale
+            ));
+        }
+        let requested_position = preference.position.map(|position| (position.x, position.y));
+        if output.position != requested_position {
+            return Err(format!(
+                "{name}: requested position {requested_position:?} but the output is at {:?}",
+                output.position
+            ));
+        }
+    }
+
+    if applied < requested {
+        return Err(format!(
+            "{applied} of {requested} outputs named by position are driven"
+        ));
+    }
+
+    Ok(())
+}
+
+/// The scale factor a preference actually asks for.
+///
+/// [`scale_of`] replaces a non-positive or non-finite factor with 1:1, so the
+/// check has to do the same or it would report a state the compositor applied.
+fn requested_scale(preference: &OutputConfig) -> f64 {
+    let scale = preference.scale;
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
 }
 
 #[cfg(test)]
@@ -793,6 +995,130 @@ mod tests {
 
         assert_eq!(applied.integer_scale(), 1);
         assert!((applied.fractional_scale() - 1.0).abs() < f64::EPSILON);
+    }
+
+    fn applied(
+        width: i32,
+        height: i32,
+        refresh_hz: u32,
+        scale: f64,
+        position: Option<(i32, i32)>,
+    ) -> AppliedOutput {
+        AppliedOutput {
+            width,
+            height,
+            refresh_hz,
+            scale,
+            position,
+        }
+    }
+
+    fn named(name: &str, width: i32, height: i32, refresh_hz: i32, scale: f64) -> OutputConfig {
+        OutputConfig {
+            name: Some(name.to_owned()),
+            width,
+            height,
+            refresh_hz,
+            scale,
+            position: Some(inox_config::Position { x: 0, y: 0 }),
+        }
+    }
+
+    #[test]
+    fn a_pinned_preference_is_in_effect_only_when_every_field_matches() {
+        let preference = named("HDMI-A-1", 1920, 1080, 60, 1.5);
+        let driven = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1920, 1080, 60, 1.5, Some((0, 0)))),
+        )];
+
+        assert!(check_preferences(&driven, std::slice::from_ref(&preference)).is_ok());
+
+        let wrong_mode = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1280, 720, 60, 1.5, Some((0, 0)))),
+        )];
+        let error = check_preferences(&wrong_mode, std::slice::from_ref(&preference))
+            .expect_err("an unsupported mode must be reported");
+        assert!(error.contains("HDMI-A-1"), "{error}");
+        assert!(error.contains("1920x1080@60Hz"), "{error}");
+
+        let wrong_refresh = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1920, 1080, 30, 1.5, Some((0, 0)))),
+        )];
+        assert!(check_preferences(&wrong_refresh, std::slice::from_ref(&preference)).is_err());
+
+        let wrong_scale = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1920, 1080, 60, 1.0, Some((0, 0)))),
+        )];
+        let error = check_preferences(&wrong_scale, std::slice::from_ref(&preference))
+            .expect_err("a scale the device did not take must be reported");
+        assert!(error.contains("scale"), "{error}");
+
+        let wrong_position = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1920, 1080, 60, 1.5, Some((100, 0)))),
+        )];
+        let error = check_preferences(&wrong_position, std::slice::from_ref(&preference))
+            .expect_err("a position the device did not take must be reported");
+        assert!(error.contains("position"), "{error}");
+    }
+
+    #[test]
+    fn a_requested_connector_without_a_scanout_is_reported() {
+        let preference = named("HDMI-A-1", 1920, 1080, 60, 1.0);
+        let driven = vec![("HDMI-A-1".to_owned(), None)];
+
+        let error = check_preferences(&driven, std::slice::from_ref(&preference))
+            .expect_err("a connected connector that could not be driven must be reported");
+        assert!(error.contains("could not be driven"), "{error}");
+    }
+
+    #[test]
+    fn a_preference_for_another_device_is_ignored() {
+        let preference = named("DP-1", 2560, 1440, 60, 1.0);
+        let driven = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1920, 1080, 60, 1.0, None)),
+        )];
+
+        assert!(check_preferences(&driven, std::slice::from_ref(&preference)).is_ok());
+    }
+
+    #[test]
+    fn a_connector_no_preference_covers_is_not_checked() {
+        let driven = vec![(
+            "HDMI-A-1".to_owned(),
+            Some(applied(1024, 768, 50, 2.0, None)),
+        )];
+
+        assert!(check_preferences(&driven, &[]).is_ok());
+    }
+
+    #[test]
+    fn positional_preferences_are_counted_against_the_connectors_they_land_on() {
+        let positional = OutputConfig {
+            width: 1920,
+            height: 1080,
+            refresh_hz: 60,
+            scale: 1.0,
+            ..OutputConfig::default()
+        };
+        let driven = vec![
+            ("DP-1".to_owned(), Some(applied(1920, 1080, 60, 1.0, None))),
+            (
+                "HDMI-A-1".to_owned(),
+                Some(applied(1024, 768, 50, 1.0, None)),
+            ),
+        ];
+
+        assert!(check_preferences(&driven, std::slice::from_ref(&positional)).is_ok());
+
+        let error = check_preferences(&driven[..1], &[positional.clone(), OutputConfig::default()])
+            .expect_err("a positional preference with no output left must be reported");
+        assert!(error.contains("named by position"), "{error}");
     }
 
     proptest! {

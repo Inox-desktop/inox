@@ -18,12 +18,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use inox_common::i18n::Locale;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::paths::{COMPOSITOR_FILE, NOTIFICATIONS_FILE, SHELL_FILE};
 
 /// The top-level configuration file, `<config>/config.toml`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RootConfig {
     /// Environment variables the session exports to the components it starts.
@@ -46,7 +46,7 @@ pub struct RootConfig {
 /// [`crate::paths::ConfigPaths::file`], which
 /// [`crate::store::InoxConfig::load`] runs on all three of them. A file that is
 /// not parsed yet is therefore still checked at startup.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ComponentFiles {
     /// Compositor configuration file.
@@ -69,7 +69,7 @@ impl Default for ComponentFiles {
 }
 
 /// The theme the session should use (PRD §9.2).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ThemeSelection {
     /// Name of the theme: a built-in such as `inox-light`, or a directory below
@@ -81,7 +81,7 @@ pub struct ThemeSelection {
 }
 
 /// Light, dark, or whatever the session reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Appearance {
     /// Light colours.
@@ -105,7 +105,7 @@ pub enum Appearance {
 /// parse error naming `locale.language` rather than a session that quietly
 /// shows its strings in the wrong language — and resolved by
 /// [`LocaleConfig::resolve`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LocaleConfig {
     /// Language tag to run in, for example `en-US` or `zh-CN`. `None` — the

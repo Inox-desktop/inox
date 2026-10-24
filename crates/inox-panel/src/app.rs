@@ -33,7 +33,9 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 use iced::{Element, Subscription};
 use inox_common::i18n::Localizer;
-use inox_config::{PanelConfig, Theme as Tokens};
+use inox_config::{
+    DockConfig, MenubarConfig, PanelConfig, PanelSurface, ShellConfig, Theme as Tokens,
+};
 use tracing::debug;
 
 use crate::clock::{self, ClockLabel};
@@ -90,7 +92,7 @@ pub enum OutgoingCommand {
 pub struct State {
     localizer: Rc<Localizer>,
     tokens: Tokens,
-    config: PanelConfig,
+    shell: ShellConfig,
     tasks: TaskList,
     tray: Tray,
     service: ServiceState,
@@ -102,19 +104,63 @@ pub struct State {
 }
 
 impl State {
+    /// Applies validated preferences and catalogs without discarding tasks or tray items.
+    ///
+    /// This is the `[panel]` section alone. The menu bar's and the dock's own
+    /// sections are adopted by [`State::apply_shell`], which is what a live
+    /// reload of the whole file uses.
+    pub fn apply_configuration(
+        &mut self,
+        config: PanelConfig,
+        tokens: Tokens,
+        localizer: Rc<Localizer>,
+    ) {
+        self.shell.panel = config;
+        self.tokens = tokens;
+        self.localizer = localizer;
+        self.refresh_clock();
+    }
+
+    /// Adopts a reloaded `shell.toml` and a theme without discarding tasks or
+    /// tray items.
+    ///
+    /// The surface itself cannot change while the process runs — a different
+    /// surface is a different window with a different size and placement — so
+    /// the caller rejects that change before getting here; everything else in
+    /// the file, including the menu bar's and the dock's own sections, is
+    /// applied.
+    pub fn apply_shell(&mut self, shell: ShellConfig, tokens: Tokens, localizer: Rc<Localizer>) {
+        self.shell = shell;
+        self.tokens = tokens;
+        self.localizer = localizer;
+        self.refresh_clock();
+    }
+
     /// A panel with no data yet.
     ///
     /// It starts connected to nothing, and asks for a snapshot before anything
     /// can be shown: the first thing a window service will hear from the panel
     /// is the request for its current state (ADR 0013 decision 1).
     pub fn new(config: PanelConfig, tokens: Tokens, localizer: Rc<Localizer>) -> Self {
+        Self::with_shell(
+            ShellConfig {
+                panel: config,
+                ..ShellConfig::default()
+            },
+            tokens,
+            localizer,
+        )
+    }
+
+    /// A panel of the surface `shell.panel.surface` names.
+    pub fn with_shell(shell: ShellConfig, tokens: Tokens, localizer: Rc<Localizer>) -> Self {
         let mut outgoing = VecDeque::new();
         outgoing.push_back(OutgoingCommand::Snapshot);
 
         Self {
             localizer,
             tokens,
-            config,
+            shell,
             tasks: TaskList::new(SessionGeneration::default()),
             tray: Tray::new(),
             service: ServiceState::Connecting,
@@ -136,9 +182,29 @@ impl State {
         &self.tokens
     }
 
+    /// The whole shell configuration, of which [`State::config`] is one section.
+    pub fn shell(&self) -> &ShellConfig {
+        &self.shell
+    }
+
     /// The panel's configuration.
     pub fn config(&self) -> &PanelConfig {
-        &self.config
+        &self.shell.panel
+    }
+
+    /// The menu bar's configuration.
+    pub fn menubar(&self) -> &MenubarConfig {
+        &self.shell.menubar
+    }
+
+    /// The dock's configuration.
+    pub fn dock(&self) -> &DockConfig {
+        &self.shell.dock
+    }
+
+    /// Which surface this panel draws.
+    pub fn surface(&self) -> PanelSurface {
+        self.shell.panel.surface
     }
 
     /// The windows the panel currently believes in.
@@ -176,25 +242,62 @@ impl State {
 
     /// Projects the state into what the view draws.
     pub fn model(&self) -> PanelViewModel {
+        let config = self.projection_config();
+
         PanelInput {
             tasks: &self.tasks,
             tray: &self.tray,
             service: &self.service,
             clock: self.clock.clone(),
-            config: &self.config,
+            config: &config,
             focused: self.focused,
         }
         .project(&self.localizer)
     }
 
+    /// The panel configuration as *this surface* reads it.
+    ///
+    /// `show_clock` lives in `[panel]`, but a menu bar has one of its own and a
+    /// dock has no clock at all. The shared projection is handed the surface's
+    /// answer, so all three surfaces draw the same clock the same way and the
+    /// model never carries a clock the surface will not show.
+    fn projection_config(&self) -> PanelConfig {
+        let mut config = self.shell.panel.clone();
+        config.show_clock = self.shows_clock();
+
+        config
+    }
+
+    /// Whether the surface shows a clock at all.
+    fn shows_clock(&self) -> bool {
+        match self.shell.panel.surface {
+            PanelSurface::Taskbar => self.shell.panel.show_clock,
+            PanelSurface::Menubar => self.shell.menubar.show_clock,
+            PanelSurface::Dock => false,
+        }
+    }
+
+    /// The clock format this surface renders with, when it shows a clock.
+    fn clock_setting(&self) -> Option<&str> {
+        match self.shell.panel.surface {
+            PanelSurface::Taskbar if self.shell.panel.show_clock => {
+                Some(self.shell.panel.clock_format.as_str())
+            }
+            PanelSurface::Menubar if self.shell.menubar.show_clock => {
+                Some(self.shell.menubar.clock_format.as_str())
+            }
+            PanelSurface::Taskbar | PanelSurface::Menubar | PanelSurface::Dock => None,
+        }
+    }
+
     /// Re-renders the clock from the last reading.
     fn refresh_clock(&mut self) {
-        self.clock = match (&self.last_tick, self.config.show_clock) {
-            (Some(now), true) => {
-                clock::label_or_none(&self.config.clock_format, now, &self.localizer)
-            }
+        let label = match (&self.last_tick, self.clock_setting()) {
+            (Some(now), Some(format)) => clock::label_or_none(format, now, &self.localizer),
             _ => None,
         };
+
+        self.clock = label;
     }
 
     /// Adopts a snapshot, unless it describes a session the panel has left.
@@ -512,9 +615,13 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             state.pending.clear();
             state.outgoing.push_back(OutgoingCommand::Snapshot);
         }
-        Message::ConfigReloaded(config) => {
-            let show_clock_changed = state.config.show_clock != config.show_clock;
-            state.config = config;
+        Message::ConfigReloaded(mut config) => {
+            // A different surface is a different window, not a live restyle, so
+            // a reload of the `[panel]` section can never change it — the
+            // running surface wins whatever the candidate document says.
+            config.surface = state.surface();
+            let show_clock_changed = state.config().show_clock != config.show_clock;
+            state.shell.panel = config;
 
             if show_clock_changed || state.clock.is_none() {
                 state.refresh_clock();
@@ -529,9 +636,24 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
     iced::Task::none()
 }
 
-/// Draws the panel.
+/// Draws the surface the configuration asks for.
 pub fn view(state: &State) -> Element<'_, Message> {
-    view::panel(state.model(), &state.tokens, &state.config)
+    view::surface(state.model(), &state.tokens, &state.shell, &state.localizer)
+}
+
+/// The vertical extent the surface draws itself in: the bar's own height, or the
+/// dock's pane plus the margin below it.
+///
+/// The real surface is a layer surface, and `src/layer.rs` takes its size from
+/// [`crate::placement::PanelPlacement`]; this is the same extent as a plain
+/// number, which is what the offscreen render harness lays the widget tree out
+/// at (and what the placement's `height` is derived from).
+pub fn window_height(shell: &ShellConfig, tokens: &Tokens) -> f32 {
+    match shell.panel.surface {
+        PanelSurface::Taskbar => f32::from(shell.panel.height),
+        PanelSurface::Menubar => f32::from(shell.menubar.height) + f32::from(shell.menubar.margin),
+        PanelSurface::Dock => crate::dock::DockGeometry::new(tokens, &shell.dock).window_height(),
+    }
 }
 
 /// The title of the panel's own surface.
@@ -630,6 +752,27 @@ mod tests {
         );
 
         state
+    }
+
+    #[test]
+    fn live_configuration_preserves_windows_and_refreshes_clock_theme_and_locale() {
+        let mut state = connected();
+        let before = state.tasks().windows().count();
+        let locale = inox_common::i18n::Locale::parse("zh-CN").expect("locale");
+        let mut config = state.config().clone();
+        config.height = 48;
+        config.show_clock = false;
+        let tokens = Tokens::builtin_light();
+        state.apply_configuration(
+            config.clone(),
+            tokens.clone(),
+            Rc::new(crate::i18n::load(&locale).expect("catalog")),
+        );
+        assert_eq!(state.config(), &config);
+        assert_eq!(state.tokens(), &tokens);
+        assert_eq!(state.tasks().windows().count(), before);
+        assert!(state.clock().is_none());
+        assert_eq!(state.localizer().locale(), &locale);
     }
 
     #[test]
@@ -1099,6 +1242,265 @@ mod tests {
         let state = panel();
 
         assert_eq!(title(&state), "Inox Panel");
+    }
+
+    /// A panel of `mode` with the default sections.
+    fn surface_panel(mode: PanelSurface) -> State {
+        let locale = inox_common::i18n::Locale::default_locale();
+
+        State::with_shell(
+            ShellConfig {
+                panel: PanelConfig {
+                    surface: mode,
+                    ..PanelConfig::default()
+                },
+                ..ShellConfig::default()
+            },
+            Tokens::builtin_dark(),
+            Rc::new(crate::i18n::load(&locale).expect("the catalogs parse")),
+        )
+    }
+
+    fn catalog() -> Rc<Localizer> {
+        let locale = inox_common::i18n::Locale::default_locale();
+
+        Rc::new(crate::i18n::load(&locale).expect("the catalogs parse"))
+    }
+
+    #[test]
+    fn the_state_draws_the_surface_the_shell_configuration_names() {
+        for mode in [
+            PanelSurface::Taskbar,
+            PanelSurface::Menubar,
+            PanelSurface::Dock,
+        ] {
+            let state = surface_panel(mode);
+
+            assert_eq!(state.surface(), mode);
+            assert_eq!(state.config().surface, mode);
+        }
+    }
+
+    #[test]
+    fn the_three_sections_are_reachable_from_the_state() {
+        let mut shell = ShellConfig::default();
+        shell.menubar.height = 36;
+        shell.dock.icon_size = 64;
+        let state = State::with_shell(shell, Tokens::builtin_dark(), catalog());
+
+        assert_eq!(state.menubar().height, 36);
+        assert_eq!(state.dock().icon_size, 64);
+        assert_eq!(state.shell().dock, state.dock().clone());
+    }
+
+    #[test]
+    fn the_window_height_is_the_surfaces_own() {
+        let tokens = Tokens::builtin_dark();
+
+        let mut shell = ShellConfig::default();
+        assert!(
+            (window_height(&shell, &tokens) - f32::from(PanelConfig::default().height)).abs()
+                < f32::EPSILON,
+            "the taskbar's window is as tall as the strip"
+        );
+
+        shell.panel.surface = PanelSurface::Menubar;
+        assert!(
+            (window_height(&shell, &tokens)
+                - f32::from(shell.menubar.height)
+                - f32::from(shell.menubar.margin))
+            .abs()
+                < f32::EPSILON,
+            "the menu bar's window is its height plus the margin above it"
+        );
+
+        shell.panel.surface = PanelSurface::Dock;
+        let dock = crate::dock::DockGeometry::new(&tokens, &shell.dock);
+        assert!(
+            (window_height(&shell, &tokens) - dock.window_height()).abs() < f32::EPSILON,
+            "the dock's window is the pane plus the margin below it"
+        );
+        assert!(
+            window_height(&shell, &tokens) > f32::from(shell.dock.icon_size),
+            "and it is tall enough for a tile"
+        );
+    }
+
+    #[test]
+    fn each_surface_shows_the_clock_its_own_section_asks_for() {
+        let now = Local::now();
+
+        let mut taskbar = surface_panel(PanelSurface::Taskbar);
+        send(&mut taskbar, Message::Tick(now));
+        assert!(taskbar.model().clock.is_some());
+
+        let mut menubar = surface_panel(PanelSurface::Menubar);
+        send(&mut menubar, Message::Tick(now));
+        assert!(
+            menubar.model().clock.is_some(),
+            "a menu bar shows a clock by default"
+        );
+
+        // The menu bar's clock is `[menubar] show_clock`, not the panel's.
+        menubar.apply_shell(
+            ShellConfig {
+                panel: PanelConfig {
+                    surface: PanelSurface::Menubar,
+                    show_clock: false,
+                    ..PanelConfig::default()
+                },
+                menubar: MenubarConfig {
+                    show_clock: true,
+                    ..MenubarConfig::default()
+                },
+                ..ShellConfig::default()
+            },
+            Tokens::builtin_dark(),
+            catalog(),
+        );
+        assert!(
+            menubar.model().clock.is_some(),
+            "the panel section does not govern the menu bar's clock"
+        );
+
+        // ... and switching the menu bar's own clock off hides it.
+        menubar.apply_shell(
+            ShellConfig {
+                panel: PanelConfig {
+                    surface: PanelSurface::Menubar,
+                    ..PanelConfig::default()
+                },
+                menubar: MenubarConfig {
+                    show_clock: false,
+                    ..MenubarConfig::default()
+                },
+                ..ShellConfig::default()
+            },
+            Tokens::builtin_dark(),
+            catalog(),
+        );
+        assert_eq!(menubar.model().clock, None);
+        assert_eq!(menubar.clock(), None);
+
+        let mut dock = surface_panel(PanelSurface::Dock);
+        send(&mut dock, Message::Tick(now));
+        assert_eq!(dock.model().clock, None, "a dock has no clock");
+        assert_eq!(dock.clock(), None);
+    }
+
+    #[test]
+    fn the_menu_bar_renders_the_clock_with_its_own_format() {
+        let mut shell = ShellConfig::default();
+        shell.panel.surface = PanelSurface::Menubar;
+        shell.menubar.clock_format = "%Y".to_owned();
+        let mut state = State::with_shell(shell, Tokens::builtin_dark(), catalog());
+
+        send(&mut state, Message::Tick(Local::now()));
+
+        let clock = state
+            .clock()
+            .expect("the menu bar shows a clock by default");
+        assert_eq!(clock.text.len(), 4, "{:?}", clock.text);
+    }
+
+    #[test]
+    fn a_reloaded_panel_section_cannot_change_the_surface() {
+        let mut state = surface_panel(PanelSurface::Menubar);
+
+        send(
+            &mut state,
+            Message::ConfigReloaded(PanelConfig {
+                surface: PanelSurface::Dock,
+                height: 48,
+                ..PanelConfig::default()
+            }),
+        );
+
+        assert_eq!(
+            state.config().height,
+            48,
+            "the rest of the section is applied"
+        );
+        assert_eq!(
+            state.surface(),
+            PanelSurface::Menubar,
+            "a different surface is a different window, not a live restyle"
+        );
+    }
+
+    #[test]
+    fn a_reloaded_panel_section_keeps_the_other_surfaces_sections() {
+        let mut state = surface_panel(PanelSurface::Menubar);
+
+        send(
+            &mut state,
+            Message::ConfigReloaded(PanelConfig {
+                surface: PanelSurface::Menubar,
+                height: 40,
+                ..PanelConfig::default()
+            }),
+        );
+
+        assert_eq!(state.config().height, 40);
+        assert_eq!(state.menubar(), &MenubarConfig::default());
+        assert_eq!(state.dock(), &DockConfig::default());
+    }
+
+    #[test]
+    fn a_new_shell_configuration_reaches_the_menu_bar_and_the_dock() {
+        let mut state = panel();
+
+        state.apply_shell(
+            ShellConfig {
+                menubar: MenubarConfig {
+                    height: 36,
+                    ..MenubarConfig::default()
+                },
+                dock: DockConfig {
+                    icon_size: 64,
+                    ..DockConfig::default()
+                },
+                ..ShellConfig::default()
+            },
+            Tokens::builtin_dark(),
+            catalog(),
+        );
+
+        assert_eq!(state.menubar().height, 36);
+        assert_eq!(state.dock().icon_size, 64);
+    }
+
+    #[test]
+    fn a_dock_panel_still_reports_the_same_tasks_and_tray_as_a_taskbar() {
+        let mut dock = surface_panel(PanelSurface::Dock);
+        let mut taskbar = surface_panel(PanelSurface::Taskbar);
+        let windows = vec![
+            (key(1), window("firefox", "Inox")),
+            (key(2), window("terminal", "~/src")),
+        ];
+
+        for state in [&mut dock, &mut taskbar] {
+            send(
+                state,
+                Message::Snapshot {
+                    generation: generation(),
+                    windows: windows.clone(),
+                },
+            );
+        }
+
+        assert_eq!(
+            dock.model().tasks,
+            taskbar.model().tasks,
+            "the surfaces are presentations of one model, not two"
+        );
+        assert_eq!(dock.model().tray, taskbar.model().tray);
+        assert_eq!(dock.model().status, taskbar.model().status);
+        assert_eq!(dock.tasks().len(), taskbar.tasks().len());
+        assert_eq!(
+            dock.tray().visible().count(),
+            taskbar.tray().visible().count()
+        );
     }
 
     #[test]

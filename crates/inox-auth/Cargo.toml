@@ -1,0 +1,81 @@
+[package]
+name = "inox-auth"
+description = "The Inox authentication boundary: PAM, the private auth-v1 contract and the trusted greeter helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["server"]
+# The privileged half: the PAM conversation, the session launch and the socket
+# server that the `inox-auth` binary runs. `inox-greet` deliberately depends on
+# this crate with `default-features = false`, because a login *screen* must not
+# link `libpam` or contain the code that can start a session.
+server = [
+    "dep:pam",
+    "dep:users",
+    "dep:nix",
+    "dep:rustix",
+    "dep:tracing",
+    "dep:anyhow",
+    "dep:tracing-subscriber",
+    # The VT a session goes on belongs to logind (ADR 0037 §决策 2): the boundary
+    # asks `org.freedesktop.login1` which VTs are free and asks it to activate a
+    # session. A login screen must never contain this half, which is why it is
+    # behind `server` like PAM and the socket.
+    "dep:zbus",
+]
+
+[dependencies]
+# L1. The credential type (`Secret`) and the catalogs' loader.
+inox-common.workspace = true
+# The scratch buffer a decoded credential is copied out of, zeroed on every path.
+zeroize.workspace = true
+
+# The PAM conversation. `pam` is a *safe* wrapper: it contains the FFI, so this
+# crate keeps `#![forbid(unsafe_code)]` (root AGENTS.md §3.2) and ADR 0029
+# records the licence (MIT OR Apache-2.0) and the version choice.
+pam = { workspace = true, optional = true }
+# Account lookup for the uid, gid, home and shell the session is started with.
+# **Not** for its group listing: `users` 0.10 appends `root` to the groups it
+# returns (RUSTSEC-2025-0040), which is a privilege escalation if the result is
+# applied to a session. `nix` does that job below.
+users = { workspace = true, optional = true }
+# `getgrouplist`, with the count the kernel returns respected.
+nix = { workspace = true, optional = true }
+# `SO_PEERCRED`: the only thing that says *who* is on the other end of the
+# socket. `std`'s `peer_cred` is still unstable; `rustix` is already in the
+# workspace dependency table (`inox-session`, `inox-lock`). `fs` is for the
+# `chown` that puts the socket in the greeter's group; `thread` is for
+# `set_thread_groups` — the per-thread `setgroups` a session's supplementary
+# groups have to be set with (`std`'s `CommandExt::groups` is still unstable, and
+# `setgid` alone would leave the child with root's supplementary groups).
+rustix = { workspace = true, features = ["net", "process", "fs", "thread"], optional = true }
+# logind, as a D-Bus client: `Manager.GetSessionByVT`, `Manager.ActivateSession`,
+# the seat's `ActiveSession` and the session a pid belongs to. ADR 0037 §决策 2
+# keeps VT arbitration in logind; this crate only asks. The workspace feature set
+# (async client driven by `zbus::block_on`) is enough — no blocking transport and
+# no bus server are needed here.
+zbus = { workspace = true, optional = true }
+thiserror.workspace = true
+tracing = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+[[bin]]
+name = "inox-auth"
+required-features = ["server"]
+
+[dev-dependencies]
+# The integration tests ask the kernel who they are (`geteuid`) so that they can
+# admit themselves as a peer and skip the root-only paths.
+rustix.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

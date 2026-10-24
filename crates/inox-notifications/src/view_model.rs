@@ -21,16 +21,27 @@
 //!   [`Policy::content`], so a locked session's model holds
 //!   [`PopupContent::Withheld`] — a value with no field a body or an application
 //!   name could be in (ADR 0015).
+//! - **Urgency is a sentence as well as a colour.** Every popup carries
+//!   [`Popup::urgency_note`] — the localized name of its urgency, absent only for
+//!   the ordinary case — so that a critical notification is legible to a reader
+//!   who cannot tell the danger colour from any other, which is what
+//!   ui-guidelines §5 and §6 ask for.
+//! - **Automatic information is decided here too.** The tier of each action
+//!   button ([`ActionEmphasis`]) and the age of each popup ([`Popup::age`]) are
+//!   decisions about presentation, so they are made once, in the projection,
+//!   rather than in the drawing code.
 //!
 //! There is deliberately no focus order here: the stack never takes keyboard
 //! focus, which is a property of its placement
 //! ([`crate::placement::KeyboardInteractivity::None`]) rather than a list this
 //! module could forget to fill in.
 
+use std::time::Instant;
+
 use inox_common::i18n::Localizer;
 use inox_config::DisplayConfig;
 
-use crate::actions::ActionId;
+use crate::actions::{ActionId, Actions};
 use crate::markup::Span;
 use crate::policy::{Policy, PopupContent, Presentation, SessionState};
 use crate::protocol::Urgency;
@@ -52,6 +63,50 @@ pub const MAX_ACTION_CHARS: usize = 32;
 /// what a popup can usefully show is much less than what a client may legally
 /// send.
 pub const MAX_BODY_CHARS: usize = 512;
+
+/// The most action buttons one row of a card draws.
+///
+/// A client may legally send [`crate::actions::MAX_ACTIONS`] actions, and sixteen
+/// buttons side by side would run out of the card and off the surface
+/// (ui-guidelines §7 forbids horizontal overflow). The view therefore lays the
+/// actions out in rows of at most this many, each button filling its share of the
+/// card's width, so no label can ever push a button outside the card.
+pub const MAX_ACTIONS_PER_ROW: usize = 3;
+
+/// The action keys whose button is drawn as a dangerous one.
+///
+/// The wire protocol has no notion of a destructive action, so this is a
+/// conservative, exact-match list of keys that name an operation a user cannot
+/// undo. It decides **drawing only** — an action's key, label and invocation are
+/// untouched — and a key that is not on the list is simply not marked dangerous,
+/// which is the safe direction to be wrong in.
+pub const DESTRUCTIVE_ACTION_KEYS: &[&str] = &[
+    "destroy",
+    "delete",
+    "remove",
+    "discard",
+    "uninstall",
+    "erase",
+    "purge",
+    "forget",
+    "revoke",
+    "wipe",
+];
+
+/// How prominent one action's button is drawn.
+///
+/// ui-guidelines §5: the accent belongs to one primary action per surface, the
+/// danger colour marks the action a user cannot take back, and everything else is
+/// an ordinary control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionEmphasis {
+    /// The notification's first action that is not a dangerous one.
+    Primary,
+    /// Any further action.
+    Secondary,
+    /// An action whose key names something that cannot be undone.
+    Danger,
+}
 
 /// What the stack as a whole is doing (the states D05 asks for).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +130,8 @@ pub struct ActionButton {
     pub enabled: bool,
     /// Why it cannot be, in the user's language (D05). `None` when it can.
     pub disabled_reason: Option<String>,
+    /// How prominent the button is: accent, ordinary, or dangerous.
+    pub emphasis: ActionEmphasis,
 }
 
 /// One popup.
@@ -84,6 +141,15 @@ pub struct Popup {
     pub id: NotificationId,
     /// How urgent it is, which decides its colour.
     pub urgency: Urgency,
+    /// The sentence that says how urgent it is, in the user's language.
+    ///
+    /// ui-guidelines §5 and §6: urgency is a colour **and** a sentence. Normal
+    /// urgency is what a notification is unless it says otherwise, so it gets no
+    /// sentence; low and critical ones are named, which is what makes them
+    /// legible to someone who cannot tell the two colours apart.
+    pub urgency_note: Option<String>,
+    /// How long ago it arrived, in the user's language.
+    pub age: String,
     /// What it may show, after the session's policy.
     pub content: PopupContent,
     /// The actions it offers, as buttons.
@@ -144,6 +210,13 @@ pub struct StackInput<'a> {
     pub policy: &'a Policy,
     /// Whether the session is locked.
     pub session: SessionState,
+    /// The instant the projection is made at, which is what the age of each
+    /// notification is measured against.
+    ///
+    /// It is passed in rather than read here so that a projection is a function
+    /// of its input: a test can ask what the stack looked like at a given moment
+    /// without waiting for it.
+    pub now: Instant,
 }
 
 impl StackInput<'_> {
@@ -162,31 +235,27 @@ impl StackInput<'_> {
         let close = localizer.message("notifications-close");
         let disabled_reason = (!self.policy.show_actions())
             .then(|| localizer.message("notifications-action-disabled-policy"));
-        let shows_actions = self.policy.show_actions();
 
         let popups: Vec<Popup> = self
             .queue
             .newest(usize::from(self.display.max_visible))
             .into_iter()
-            .map(|notification| Popup {
-                id: notification.id,
-                urgency: notification.urgency(),
-                content: content(
-                    self.policy
-                        .content(notification, self.session, &generic_summary),
-                    localizer,
-                ),
-                actions: notification
-                    .actions
-                    .buttons()
-                    .map(|action| ActionButton {
-                        id: action.id.clone(),
-                        label: truncate(&action.label, MAX_ACTION_CHARS),
-                        enabled: shows_actions,
-                        disabled_reason: disabled_reason.clone(),
-                    })
-                    .collect(),
-                close: close.clone(),
+            .map(|notification| {
+                let urgency = notification.urgency();
+
+                Popup {
+                    id: notification.id,
+                    urgency,
+                    urgency_note: urgency_note(localizer, urgency),
+                    age: age(notification.arrived, self.now, localizer),
+                    content: content(
+                        self.policy
+                            .content(notification, self.session, &generic_summary),
+                        localizer,
+                    ),
+                    actions: actions(&notification.actions, disabled_reason.as_deref()),
+                    close: close.clone(),
+                }
             })
             .collect();
 
@@ -213,6 +282,79 @@ impl StackInput<'_> {
             notice,
         }
     }
+}
+
+/// The sentence that says how urgent a notification is, when it is not the
+/// ordinary case.
+fn urgency_note(localizer: &Localizer, urgency: Urgency) -> Option<String> {
+    match urgency {
+        Urgency::Low => Some(localizer.message("notifications-urgency-low")),
+        Urgency::Normal => None,
+        Urgency::Critical => Some(localizer.message("notifications-urgency-critical")),
+    }
+}
+
+/// How long ago a notification arrived, in the user's language.
+///
+/// Coarse on purpose: a popup says "just now" rather than a second count, which
+/// is both what a reader wants and what keeps two frames drawn a moment apart
+/// identical.
+fn age(arrived: Instant, now: Instant, localizer: &Localizer) -> String {
+    let seconds = now.saturating_duration_since(arrived).as_secs();
+
+    match seconds {
+        0..60 => localizer.message("notifications-age-just-now"),
+        60..3_600 => counted(localizer, "notifications-age-minutes", seconds / 60),
+        3_600..86_400 => counted(localizer, "notifications-age-hours", seconds / 3_600),
+        _ => counted(localizer, "notifications-age-days", seconds / 86_400),
+    }
+}
+
+/// A message with a whole-number `$count`.
+fn counted(localizer: &Localizer, id: &str, count: u64) -> String {
+    let count = u32::try_from(count).unwrap_or(u32::MAX);
+
+    localizer.message_with(id, &[("count", count.into())])
+}
+
+/// The buttons one notification's actions become.
+///
+/// `disabled_reason` is `Some` exactly when the policy turns actions off
+/// ([`Policy::show_actions`]), and it is what decides both whether a button can
+/// be pressed and what it says about it: an action can never be drawn
+/// unavailable without a reason (ui-guidelines §5).
+fn actions(actions: &Actions, disabled_reason: Option<&str>) -> Vec<ActionButton> {
+    let mut primary_taken = false;
+
+    actions
+        .buttons()
+        .map(|action| {
+            let emphasis = if is_destructive(action.id.as_str()) {
+                ActionEmphasis::Danger
+            } else if primary_taken {
+                ActionEmphasis::Secondary
+            } else {
+                primary_taken = true;
+
+                ActionEmphasis::Primary
+            };
+
+            ActionButton {
+                id: action.id.clone(),
+                label: truncate(&action.label, MAX_ACTION_CHARS),
+                enabled: disabled_reason.is_none(),
+                disabled_reason: disabled_reason.map(str::to_owned),
+                emphasis,
+            }
+        })
+        .collect()
+}
+
+/// Whether an action's key names something a user cannot take back.
+fn is_destructive(key: &str) -> bool {
+    DESTRUCTIVE_ACTION_KEYS
+        .iter()
+        .any(|candidate| key.eq_ignore_ascii_case(candidate))
 }
 
 /// Bounds the text a popup carries, and gives an image its alt text.
@@ -352,6 +494,7 @@ mod tests {
             display,
             policy,
             session: SessionState::Unlocked,
+            now: Instant::now(),
         }
     }
 
@@ -775,5 +918,296 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("exactly-ten", 11), "exactly-ten");
         assert_eq!(truncate("中文字符串", 3), "中文…");
+    }
+
+    /// A stack holding one notification, projected at `offset` seconds after it
+    /// arrived.
+    fn at_offset(queue: &Queue, offset: u64) -> PopupStack {
+        let display = display();
+        let policy = Policy::default();
+        let now = Instant::now() + std::time::Duration::from_secs(offset);
+
+        StackInput {
+            queue,
+            display: &display,
+            policy: &policy,
+            session: SessionState::Unlocked,
+            now,
+        }
+        .project(&localizer())
+    }
+
+    /// A queue holding one notification that arrived at `arrived`.
+    fn arriving_at(arrived: Instant) -> Queue {
+        let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
+        queue.notify(Draft::default(), arrived);
+
+        queue
+    }
+
+    #[test]
+    fn a_popup_says_how_long_ago_it_arrived_in_coarse_steps() {
+        let base = Instant::now();
+        let queue = arriving_at(base);
+        let display = display();
+        let policy = Policy::default();
+
+        let age = |offset: u64| {
+            StackInput {
+                queue: &queue,
+                display: &display,
+                policy: &policy,
+                session: SessionState::Unlocked,
+                now: base + std::time::Duration::from_secs(offset),
+            }
+            .project(&localizer())
+            .popups[0]
+                .age
+                .clone()
+        };
+
+        assert_eq!(age(0), "Just now");
+        assert_eq!(age(59), "Just now", "seconds are not counted");
+        assert_eq!(age(60), "1 min ago");
+        assert_eq!(age(3_599), "59 min ago");
+        assert_eq!(age(3_600), "1 h ago");
+        assert_eq!(age(86_399), "23 h ago");
+        assert_eq!(age(86_400), "1 d ago");
+        assert_ne!(
+            age(60),
+            age(120),
+            "the count is the whole point of the line"
+        );
+    }
+
+    #[test]
+    fn the_ordinary_urgency_is_the_only_one_without_a_sentence() {
+        for (urgency, expected) in [
+            (Urgency::Low, Some("Low priority")),
+            (Urgency::Normal, None),
+            (Urgency::Critical, Some("Critical")),
+        ] {
+            let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
+            queue.notify(
+                Draft {
+                    hints: crate::protocol::Hints {
+                        urgency,
+                        ..crate::protocol::Hints::default()
+                    },
+                    summary: "a summary".to_owned(),
+                    ..Draft::default()
+                },
+                Instant::now(),
+            );
+
+            let stack = input(&queue, &display(), &Policy::default()).project(&localizer());
+
+            assert_eq!(stack.popups[0].urgency, urgency);
+            assert_eq!(
+                stack.popups[0].urgency_note.as_deref(),
+                expected,
+                "ui-guidelines §5: urgency is a colour and a sentence, and                  `{urgency:?}` says the wrong one"
+            );
+        }
+    }
+
+    /// A queue holding one notification that offers `keys`.
+    fn offering(keys: &[(&str, &str)]) -> Queue {
+        let flat: Vec<String> = keys
+            .iter()
+            .flat_map(|(key, label)| [(*key).to_owned(), (*label).to_owned()])
+            .collect();
+        let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
+        queue.notify(
+            Draft {
+                actions: Actions::from_flat(&flat).expect("actions"),
+                ..Draft::default()
+            },
+            Instant::now(),
+        );
+
+        queue
+    }
+
+    #[test]
+    fn the_first_action_is_the_primary_one_and_the_rest_are_ordinary() {
+        let queue = offering(&[("open", "Open"), ("snooze", "Snooze"), ("later", "Later")]);
+        let stack = input(&queue, &display(), &Policy::default()).project(&localizer());
+        let tiers: Vec<ActionEmphasis> = stack.popups[0]
+            .actions
+            .iter()
+            .map(|action| action.emphasis)
+            .collect();
+
+        assert_eq!(
+            tiers,
+            [
+                ActionEmphasis::Primary,
+                ActionEmphasis::Secondary,
+                ActionEmphasis::Secondary
+            ],
+            "ui-guidelines §5: the accent belongs to one primary action"
+        );
+    }
+
+    #[test]
+    fn an_action_that_names_something_undone_is_a_dangerous_one() {
+        let queue = offering(&[("delete", "Delete"), ("open", "Open")]);
+        let stack = input(&queue, &display(), &Policy::default()).project(&localizer());
+        let tiers: Vec<ActionEmphasis> = stack.popups[0]
+            .actions
+            .iter()
+            .map(|action| action.emphasis)
+            .collect();
+
+        assert_eq!(
+            tiers,
+            [ActionEmphasis::Danger, ActionEmphasis::Primary],
+            "a dangerous action is not also the primary one"
+        );
+    }
+
+    #[test]
+    fn a_key_that_only_looks_dangerous_is_not_treated_as_one() {
+        for key in ["open", "Reply", "view", "deletion-report", "Remove-me-not"] {
+            assert!(
+                !is_destructive(key),
+                "`{key}` is only marked dangerous if it *is* the key"
+            );
+        }
+
+        for key in ["delete", "DELETE", "Remove", "purge", "wipe"] {
+            assert!(is_destructive(key), "`{key}` cannot be undone");
+        }
+
+        let queue = offering(&[("Reply", "Reply"), ("view", "View")]);
+        let stack = input(&queue, &display(), &Policy::default()).project(&localizer());
+
+        assert!(
+            stack.popups[0]
+                .actions
+                .iter()
+                .all(|action| action.emphasis != ActionEmphasis::Danger),
+            "a substring is not a danger"
+        );
+        assert_eq!(stack.popups[0].actions[0].emphasis, ActionEmphasis::Primary);
+    }
+
+    #[test]
+    fn every_action_gets_exactly_one_tier() {
+        let queue = offering(&[
+            ("delete", "Delete"),
+            ("snooze", "Snooze"),
+            ("open", "Open"),
+            ("discard", "Discard"),
+        ]);
+        let stack = input(&queue, &display(), &Policy::default()).project(&localizer());
+
+        assert_eq!(stack.popups[0].actions.len(), 4);
+        assert_eq!(
+            stack.popups[0]
+                .actions
+                .iter()
+                .filter(|action| action.emphasis == ActionEmphasis::Primary)
+                .count(),
+            1,
+            "exactly one primary action"
+        );
+        assert_eq!(
+            stack.popups[0]
+                .actions
+                .iter()
+                .filter(|action| action.emphasis == ActionEmphasis::Danger)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_disabled_action_keeps_its_tier_but_loses_nothing_else() {
+        let queue = offering(&[("delete", "Delete"), ("open", "Open")]);
+        let policy = Policy::from_config(&PolicyConfig {
+            show_actions: false,
+            ..PolicyConfig::default()
+        });
+        let stack = input(&queue, &display(), &policy).project(&localizer());
+
+        assert_eq!(stack.popups[0].actions[0].emphasis, ActionEmphasis::Danger);
+        assert!(!stack.popups[0].actions[0].enabled);
+        assert!(
+            stack.popups[0]
+                .actions
+                .iter()
+                .all(|action| action.disabled_reason.is_some()),
+            "every unavailable action says why"
+        );
+    }
+
+    #[test]
+    fn a_projection_at_one_instant_is_the_same_projection_twice() {
+        let queue = queue_with(&[("a", "1")]);
+        let display = display();
+        let policy = Policy::default();
+        let now = Instant::now();
+        let project = || {
+            StackInput {
+                queue: &queue,
+                display: &display,
+                policy: &policy,
+                session: SessionState::Unlocked,
+                now,
+            }
+            .project(&localizer())
+        };
+
+        assert_eq!(
+            project(),
+            project(),
+            "the age is a function of the instant it was given, not of the clock"
+        );
+    }
+
+    #[test]
+    fn a_notification_that_arrived_before_the_projection_is_never_a_negative_age() {
+        let base = Instant::now();
+        let queue = arriving_at(base);
+        let display = display();
+        let policy = Policy::default();
+        let stack = StackInput {
+            queue: &queue,
+            display: &display,
+            policy: &policy,
+            session: SessionState::Unlocked,
+            now: base - std::time::Duration::from_secs(30),
+        }
+        .project(&localizer());
+
+        assert_eq!(stack.popups[0].age, "Just now");
+    }
+
+    #[test]
+    fn a_locked_popup_still_says_how_long_ago_it_arrived() {
+        let queue = arriving_at(Instant::now());
+        let display = display();
+        let policy = Policy::default();
+        let stack = StackInput {
+            queue: &queue,
+            display: &display,
+            policy: &policy,
+            session: SessionState::Locked,
+            now: Instant::now(),
+        }
+        .project(&localizer());
+
+        assert!(stack.popups[0].content.is_withheld());
+        assert_eq!(stack.popups[0].age, "Just now");
+    }
+
+    #[test]
+    fn at_offset_projects_the_age_the_same_way() {
+        let queue = arriving_at(Instant::now());
+
+        assert_eq!(at_offset(&queue, 0).popups[0].age, "Just now");
+        assert_eq!(at_offset(&queue, 60).popups[0].age, "1 min ago");
     }
 }

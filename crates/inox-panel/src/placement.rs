@@ -6,18 +6,32 @@
 //! acceptance D01 is about: *the strip must not cover things, and ordinary
 //! display must not take focus*.
 //!
-//! **This module computes that placement; nothing applies it yet.** The Inox
-//! compositor does not advertise `zwlr_layer_shell_v1`, and `iced_layershell`
-//! 0.19 does not compile against iced 0.14's winit generation (ADR 0018), so the
-//! panel currently runs as an ordinary window. Keeping the policy here, as data
-//! with tests, is what makes the switch to a layer surface a change of host
-//! rather than a change of behaviour: `main.rs` logs exactly one warning naming
-//! ADR 0018 and the fact that the placement below is not applied.
+//! Each surface asks for its own placement: [`PanelPlacement::derive`] is the
+//! taskbar's strip, [`PanelPlacement::menubar`] is the full-width bar along the
+//! top edge, and [`PanelPlacement::dock`] is the floating pane above the bottom
+//! edge — anchored to the bottom only, so the compositor centres it, and sized
+//! from its own content.
+//!
+//! **[`crate::layer`] applies these placements.** The policy lives here, as data
+//! with tests, so that the protocol leg only has to turn it into requests: which
+//! anchors, which layer, how much exclusive zone and which size are decided here
+//! and nowhere else. The leg commits a placement, and asks for a new one when a
+//! reload or a growing task list changes it — the dock's width follows its tiles.
+//!
+//! Three of the values are what make the panel a panel rather than a window:
+//! the exclusive zone keeps maximized windows from slipping under the strip
+//! (D01), the keyboard interactivity is `None` so ordinary display never takes
+//! the keyboard away from a person, and the layer puts the strip above ordinary
+//! windows. A surface anchored to both horizontal edges is given the output's
+//! width by the compositor; a dock, anchored to the bottom only, asks for
+//! [`PanelPlacement::width`] of its own — the width of everything it will draw,
+//! which is what [`DockContent`] describes.
 
 use std::collections::BTreeSet;
 
-use inox_config::{PanelConfig, PanelPosition};
+use inox_config::{DockConfig, MenubarConfig, PanelConfig, PanelPosition, Theme as Tokens};
 
+use crate::dock::{DockContent, DockGeometry};
 use crate::tasks::OutputId;
 
 /// An edge a layer surface can be anchored to.
@@ -124,6 +138,14 @@ pub struct PanelPlacement {
     pub margin: u16,
     /// Thickness of the panel along the anchored edge.
     pub height: u16,
+    /// Width the surface asks for when it is not stretched between two opposite
+    /// anchors. `None` is a bar, which spans the output; `Some` is the floating
+    /// dock, which is as wide as the tiles it holds.
+    ///
+    /// A layer surface anchored to only one horizontal edge is centred on that
+    /// axis, which is exactly what a dock asks for, so no separate "centred"
+    /// flag is needed.
+    pub width: Option<u16>,
     /// Keyboard interactivity, `None` for an ordinary panel.
     pub keyboard_interactivity: KeyboardInteractivity,
     /// Layer the panel belongs to.
@@ -133,7 +155,7 @@ pub struct PanelPlacement {
 }
 
 impl PanelPlacement {
-    /// Derives the placement `config` asks for.
+    /// Derives the placement the taskbar `config` asks for.
     ///
     /// A top or bottom panel is anchored to that edge and to both left and right,
     /// so it spans the output regardless of its width. The exclusive zone is the
@@ -158,6 +180,78 @@ impl PanelPlacement {
             },
             margin: config.margin,
             height: config.height,
+            width: None,
+            keyboard_interactivity: KeyboardInteractivity::None,
+            layer: Layer::Top,
+            autohide: if config.autohide {
+                Autohide::EdgeHover
+            } else {
+                Autohide::Never
+            },
+        }
+    }
+
+    /// Derives the placement the menu bar `config` asks for.
+    ///
+    /// The bar is anchored to the top, left and right edges, so it spans the
+    /// output and only its configured height is its own; when it reserves its
+    /// strip the exclusive zone is that height plus the margin. It never takes
+    /// keyboard focus, and it does not autohide: the schema has no such field
+    /// for a bar that lives on the screen edge.
+    pub fn menubar(config: &MenubarConfig) -> Self {
+        let mut anchors = Anchors::new();
+        anchors.insert(Anchor::Top);
+        anchors.insert(Anchor::Left);
+        anchors.insert(Anchor::Right);
+
+        Self {
+            anchors,
+            exclusive_zone: if config.exclusive {
+                u32::from(config.height) + u32::from(config.margin)
+            } else {
+                0
+            },
+            margin: config.margin,
+            height: config.height,
+            width: None,
+            keyboard_interactivity: KeyboardInteractivity::None,
+            layer: Layer::Top,
+            autohide: Autohide::Never,
+        }
+    }
+
+    /// Derives the placement the dock `config` asks for, sized for `content`.
+    ///
+    /// The dock is anchored to the bottom edge only. Anchoring to no horizontal
+    /// edge is what centres a layer surface on that axis, which is the floating
+    /// placement a dock asks for; its width is its content's, derived from
+    /// `dock.icon_size`, its tiles, its tray group and its own sentence
+    /// ([`DockContent`]) — never below [`DockGeometry::minimum_width`], so a dock
+    /// that has nothing to show but its state still has room to say it. The tray
+    /// group is text and how wide text is depends on the font, so its width is
+    /// the estimate [`DockGeometry::tray_width`] makes and the layout keeps the
+    /// last word.
+    ///
+    /// A dock floats *over* windows, so it asks for no exclusive zone unless
+    /// `dock.exclusive` says otherwise.
+    pub fn dock(config: &DockConfig, tokens: &Tokens, content: DockContent) -> Self {
+        let geometry = DockGeometry::new(tokens, config);
+        let height = saturating(geometry.pane_height());
+        let width = saturating(geometry.surface_width(content));
+
+        let mut anchors = Anchors::new();
+        anchors.insert(Anchor::Bottom);
+
+        Self {
+            anchors,
+            exclusive_zone: if config.exclusive {
+                u32::from(height) + u32::from(config.margin)
+            } else {
+                0
+            },
+            margin: config.margin,
+            height,
+            width: Some(width),
             keyboard_interactivity: KeyboardInteractivity::None,
             layer: Layer::Top,
             autohide: if config.autohide {
@@ -177,6 +271,35 @@ impl PanelPlacement {
     pub const fn takes_keyboard_focus(&self) -> bool {
         !matches!(self.keyboard_interactivity, KeyboardInteractivity::None)
     }
+
+    /// Whether the surface is sized from its content rather than stretched
+    /// between two opposite anchors.
+    pub const fn is_content_sized(&self) -> bool {
+        self.width.is_some()
+    }
+
+    /// The width the pane is drawn at on an output `output_width` logical pixels
+    /// wide.
+    ///
+    /// A layer surface's size is a *request*: the compositor clamps it to the
+    /// room the output has before it configures the surface, so what is drawn is
+    /// `min(requested, output)`. An Inox session does exactly that — see
+    /// `inox-compositor`'s `layers::axis`, `requested.clamp(1, available)` — and
+    /// so does every other `wlr-layer-shell` host. This is that arithmetic as
+    /// data, so that a test can ask the question the property is about:
+    /// *whatever the dock holds, the pane that is drawn fits the output.* A bar
+    /// asks for no width of its own and is given the whole output.
+    pub fn drawn_width(&self, output_width: u16) -> u16 {
+        match self.width {
+            Some(requested) => requested.min(output_width),
+            None => output_width,
+        }
+    }
+}
+
+/// A logical size, rounded and bounded so it can be a layer-surface dimension.
+fn saturating(size: f32) -> u16 {
+    size.round().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
 /// The panel to create for one output.
@@ -214,6 +337,25 @@ pub fn assign(config: &PanelConfig, outputs: &[OutputId]) -> Vec<OutputAssignmen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dock's content with `tiles` tiles, a tray group `tray_width` wide and
+    /// no sentence of its own.
+    fn content(tiles: usize, tray_width: f32) -> DockContent {
+        DockContent {
+            tiles,
+            tray_width,
+            notice_width: 0.0,
+        }
+    }
+
+    /// The same, with a sentence (and its action) to show.
+    fn notice_content(tiles: usize, tray_width: f32, notice_width: f32) -> DockContent {
+        DockContent {
+            tiles,
+            tray_width,
+            notice_width,
+        }
+    }
 
     #[test]
     fn a_bottom_panel_spans_the_output_from_the_bottom() {
@@ -308,6 +450,282 @@ mod tests {
     fn the_panel_lands_on_the_panel_layer() {
         let placement = PanelPlacement::derive(&PanelConfig::default());
 
+        assert_eq!(placement.layer, Layer::Top);
+    }
+
+    #[test]
+    fn a_taskbar_spans_the_output_and_is_not_content_sized() {
+        let placement = PanelPlacement::derive(&PanelConfig::default());
+
+        assert_eq!(placement.width, None);
+        assert!(!placement.is_content_sized());
+    }
+
+    #[test]
+    fn the_menu_bar_spans_the_top_of_the_output() {
+        let placement = PanelPlacement::menubar(&MenubarConfig::default());
+
+        assert!(placement.anchors.contains(Anchor::Top));
+        assert!(placement.anchors.contains(Anchor::Left));
+        assert!(placement.anchors.contains(Anchor::Right));
+        assert!(!placement.anchors.contains(Anchor::Bottom));
+        assert_eq!(placement.anchors.len(), 3);
+        assert_eq!(placement.height, 28);
+        assert_eq!(placement.margin, 0);
+        assert_eq!(
+            placement.exclusive_zone, 28,
+            "an exclusive bar reserves its own height"
+        );
+        assert_eq!(
+            placement.reserved_strip(),
+            placement.exclusive_zone,
+            "what is reserved is what the compositor keeps free"
+        );
+        assert_eq!(placement.width, None, "the bar spans the output");
+        assert_eq!(placement.layer, Layer::Top);
+        assert_eq!(placement.autohide, Autohide::Never);
+        assert!(!placement.takes_keyboard_focus());
+    }
+
+    #[test]
+    fn a_menu_bar_that_does_not_reserve_its_strip_keeps_no_zone() {
+        let placement = PanelPlacement::menubar(&MenubarConfig {
+            height: 40,
+            margin: 6,
+            exclusive: false,
+            ..MenubarConfig::default()
+        });
+
+        assert_eq!(placement.height, 40);
+        assert_eq!(placement.margin, 6);
+        assert_eq!(placement.exclusive_zone, 0);
+        assert_eq!(placement.reserved_strip(), 0);
+    }
+
+    #[test]
+    fn the_dock_is_anchored_to_the_bottom_edge_only_so_it_is_centred() {
+        let tokens = Tokens::builtin_dark();
+        let placement = PanelPlacement::dock(&DockConfig::default(), &tokens, content(0, 0.0));
+
+        assert!(placement.anchors.contains(Anchor::Bottom));
+        assert_eq!(
+            placement.anchors.len(),
+            1,
+            "with no left or right anchor the compositor centres the pane"
+        );
+        assert!(!placement.anchors.contains(Anchor::Top));
+        assert!(!placement.anchors.contains(Anchor::Left));
+        assert!(!placement.anchors.contains(Anchor::Right));
+        assert!(placement.is_content_sized());
+    }
+
+    #[test]
+    fn the_dock_is_sized_from_its_content_and_its_icon_size() {
+        let tokens = Tokens::builtin_dark();
+        let geometry = DockGeometry::new(&tokens, &DockConfig::default());
+        let empty = PanelPlacement::dock(&DockConfig::default(), &tokens, content(0, 0.0));
+        let two = PanelPlacement::dock(&DockConfig::default(), &tokens, content(2, 0.0));
+        let twelve = PanelPlacement::dock(&DockConfig::default(), &tokens, content(12, 0.0));
+
+        assert_eq!(empty.height, saturating(geometry.pane_height()));
+        assert_eq!(
+            empty.width,
+            Some(saturating(geometry.surface_width(content(0, 0.0))))
+        );
+        assert_eq!(
+            twelve.width,
+            Some(saturating(geometry.surface_width(content(12, 0.0))))
+        );
+        assert_eq!(
+            two.width,
+            Some(saturating(geometry.surface_width(content(2, 0.0)))),
+            "every request is exactly the row the dock draws"
+        );
+        assert!(
+            two.width > empty.width && twelve.width > two.width,
+            "a dock is as wide as the tiles it holds: {:?}, {:?}, {:?}",
+            empty.width,
+            two.width,
+            twelve.width
+        );
+
+        let bigger = PanelPlacement::dock(
+            &DockConfig {
+                icon_size: 96,
+                ..DockConfig::default()
+            },
+            &tokens,
+            content(12, 0.0),
+        );
+        assert!(
+            bigger.height > twelve.height && bigger.width > twelve.width,
+            "a bigger tile is a bigger pane"
+        );
+    }
+
+    #[test]
+    fn an_empty_dock_still_asks_for_room_to_show_its_own_sentence() {
+        let tokens = Tokens::builtin_dark();
+        let geometry = DockGeometry::new(&tokens, &DockConfig::default());
+        let notice = "The window service is not available";
+        let empty = PanelPlacement::dock(
+            &DockConfig::default(),
+            &tokens,
+            notice_content(0, 0.0, geometry.notice_width(notice, Some("Retry"))),
+        );
+        let width = u32::from(empty.width.expect("a dock is content-sized"));
+
+        assert_eq!(
+            empty.width,
+            Some(saturating(geometry.minimum_width)),
+            "a dock with nothing but its own sentence asks for exactly the documented minimum"
+        );
+        assert!(
+            u32::from(empty.width.unwrap_or(0))
+                >= geometry.notice_width(notice, Some("Retry")).ceil() as u32,
+            "the requested width holds the whole sentence and its retry, not a fragment"
+        );
+        assert!(
+            width > 16,
+            "the old empty dock was 16 logical pixels wide, which is not a pane"
+        );
+    }
+
+    #[test]
+    fn a_tray_group_makes_the_dock_wider_by_its_own_labels() {
+        let tokens = Tokens::builtin_dark();
+        let geometry = DockGeometry::new(&tokens, &DockConfig::default());
+        let config = DockConfig::default();
+        let plate = PanelPlacement::dock(&config, &tokens, content(2, 0.0));
+        let one = PanelPlacement::dock(&config, &tokens, content(2, geometry.tray_width(["Mail"])));
+        let two = PanelPlacement::dock(
+            &config,
+            &tokens,
+            content(2, geometry.tray_width(["Mail", "Music"])),
+        );
+        let longer = PanelPlacement::dock(
+            &config,
+            &tokens,
+            content(2, geometry.tray_width(["Mail", "Music and podcasts"])),
+        );
+
+        assert!(
+            one.width > plate.width,
+            "a tray group widens the pane instead of being clipped by it"
+        );
+        assert!(two.width > one.width, "more items are more width");
+        assert!(longer.width > two.width, "longer labels are more width");
+    }
+
+    #[test]
+    fn the_dock_grows_with_its_tiles_and_never_shrinks() {
+        let tokens = Tokens::builtin_dark();
+        let config = DockConfig::default();
+        let widths: Vec<u16> = (0..12)
+            .map(|tiles| {
+                PanelPlacement::dock(&config, &tokens, content(tiles, 0.0))
+                    .width
+                    .expect("a dock is content-sized")
+            })
+            .collect();
+
+        for pair in widths.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "one more tile never makes the pane narrower: {widths:?}"
+            );
+        }
+        assert!(
+            widths[11] > widths[0],
+            "and enough tiles make it wider: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn the_drawn_pane_never_exceeds_the_output_it_is_placed_on() {
+        // The size the panel asks for is a *request*: the compositor clamps it to
+        // the room the output has before it configures the surface, so what is
+        // drawn is `min(requested, output)` (inox-compositor's `layers::axis`).
+        // Whatever the dock holds, the pane that reaches the screen fits.
+        let tokens = Tokens::builtin_dark();
+        let geometry = DockGeometry::new(&tokens, &DockConfig::default());
+        let config = DockConfig::default();
+        let contents = [
+            content(0, 0.0),
+            content(0, geometry.tray_width(["Mail", "Music and podcasts"])),
+            content(12, geometry.tray_width(["Mail", "Music"])),
+            content(12, 0.0),
+            notice_content(
+                12,
+                0.0,
+                geometry.notice_width("The window service is not available", Some("Retry")),
+            ),
+        ];
+
+        for output in [320u16, 640, 1280, 3840] {
+            for content in contents {
+                let placement = PanelPlacement::dock(&config, &tokens, content);
+                let drawn = placement.drawn_width(output);
+
+                assert!(
+                    drawn <= output,
+                    "a pane wider than the screen cannot be centred on it: {drawn} > {output}"
+                );
+                assert!(drawn > 0, "and a pane with no width draws nothing at all");
+            }
+        }
+
+        // A request that fits is not cut down, and a bar takes the whole output.
+        let fits = PanelPlacement::dock(&config, &tokens, content(0, 0.0));
+        let requested = fits.width.expect("a dock is content-sized");
+        assert_eq!(fits.drawn_width(3840), requested);
+        assert_eq!(
+            PanelPlacement::derive(&PanelConfig::default()).drawn_width(1920),
+            1920,
+            "a surface anchored to both horizontal edges is given the output's width"
+        );
+    }
+
+    #[test]
+    fn a_dock_floats_over_windows_unless_it_is_asked_to_reserve_its_strip() {
+        let tokens = Tokens::builtin_dark();
+        let floating = PanelPlacement::dock(&DockConfig::default(), &tokens, content(3, 0.0));
+        let reserved = PanelPlacement::dock(
+            &DockConfig {
+                exclusive: true,
+                ..DockConfig::default()
+            },
+            &tokens,
+            content(3, 0.0),
+        );
+
+        assert_eq!(
+            floating.exclusive_zone, 0,
+            "a dock floats over windows by default"
+        );
+        assert_eq!(floating.margin, 8, "the margin still applies to the pane");
+        assert_eq!(
+            reserved.exclusive_zone,
+            u32::from(reserved.height) + u32::from(reserved.margin)
+        );
+    }
+
+    #[test]
+    fn the_dock_carries_its_margin_and_autohide_as_data() {
+        let tokens = Tokens::builtin_dark();
+        let placement = PanelPlacement::dock(
+            &DockConfig {
+                margin: 24,
+                autohide: true,
+                ..DockConfig::default()
+            },
+            &tokens,
+            content(1, 0.0),
+        );
+
+        assert_eq!(placement.margin, 24);
+        assert_eq!(placement.autohide, Autohide::EdgeHover);
+        assert!(!placement.takes_keyboard_focus());
         assert_eq!(placement.layer, Layer::Top);
     }
 

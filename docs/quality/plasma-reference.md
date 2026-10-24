@@ -8,7 +8,7 @@
 
 该仓库的 [README](https://invent.kde.org/plasma/plasma-desktop/-/blob/90f507b7e2fe8a8a02e9000c6a3c8adfd9bde94a/README.md) 明确区分桌面专属组件与其他 Plasma 仓库。不能从这里推导 KWin 的 DRM、输入、合成性能或会话锁安全实现；这些领域的 Inox 决策仍需 Smithay/协议依据与自身验证。`design/` 包含历史提案与 future work，不应当作当前产品保证。
 
-参考的是行为、边界和验证方法。Inox 继续遵守 Rust + Smithay + calloop + Iced、Fluent 与 BSD 3-Clause 的既有约束。本次未复制上游代码、测试或资源；上游各文件许可证不同，引用不构成引入依赖或再许可。
+参考的是行为、边界和验证方法。Inox 在本计划快照期遵守 Rust + Smithay + calloop + Iced、Fluent 与 BSD 3-Clause 的既有约束；随后的 ADR 0033/0034 决定 Shell GUI 迁往 QML + Qt Quick 并将项目重许可为 LGPL-3.0（见 [ADR 0033](../adr/0033-qml-qt-quick-shell-evaluation.md)、[ADR 0034](../adr/0034-lgplv3-relicensing-evaluation.md)）。本次未复制上游代码、测试或资源；上游各文件许可证不同，引用不构成引入依赖或再许可。
 
 ## 可核实的对照
 
