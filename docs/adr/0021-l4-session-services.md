@@ -5,6 +5,7 @@
 - 决策者：架构组与安全审查者（待人类评审）
 - 批准记录：待补
 - 关系：细化 ADR 0013、0015、0018；不改变分层、配置格式、协议 XML 或认证机制。0019/0020 为已合入主线的多输出/缩放工作。
+- 后继：**«greeter 宿主» 未决项已由 [ADR 0037](./0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 关闭（2026-10-23）**——宿主是 L4 `inox-host`，VT/seat 由 logind + libseat 仲裁，用户会话由 `inox-auth` 的会话负责人建立。本 ADR 正文与其他未决项（真实认证/锁屏/挂起的 E4、AT-SPI、waydriver）保持不变，仍待人工验收。
 
 ## 背景与备选
 
