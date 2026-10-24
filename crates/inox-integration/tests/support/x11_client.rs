@@ -39,7 +39,7 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use super::POLL_INTERVAL;
+use super::{CASE_TIMEOUT, POLL_INTERVAL};
 
 /// Re-exported so the tests can name window handles without depending on
 /// `x11rb` themselves.
@@ -208,10 +208,35 @@ pub struct X11Client {
 
 impl X11Client {
     /// Connect to `display` (for example `:97`) and intern the atoms.
+    ///
+    /// The service's readiness file is written only after its own connection
+    /// setup completed, but that proves the socket answered *then* — it does not
+    /// promise the next client finds it connectable. Xwayland accepts a limited
+    /// number of clients and re-creates its listening socket around client
+    /// teardown, so a connect issued immediately after the readiness write can
+    /// still be refused with `ECONNREFUSED`. Retrying inside a bounded deadline is
+    /// therefore about the transport, not about tolerating a broken session: a
+    /// display that never accepts reports every attempt it made and fails.
     pub fn connect(display: &str, name: &str) -> Self {
-        let (conn, screen) = RustConnection::connect(Some(display)).unwrap_or_else(|error| {
-            panic!("{name}: cannot connect to X display {display}: {error}")
-        });
+        let deadline = Instant::now() + CASE_TIMEOUT;
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            match RustConnection::connect(Some(display)) {
+                Ok((conn, screen)) => return Self::from_connection(conn, screen, name),
+                Err(error) if Instant::now() >= deadline => {
+                    panic!(
+                        "{name}: cannot connect to X display {display} after {attempts} attempts \
+                         over {CASE_TIMEOUT:?}: {error}"
+                    );
+                }
+                Err(_) => std::thread::sleep(POLL_INTERVAL),
+            }
+        }
+    }
+
+    /// Build the client around an established connection.
+    fn from_connection(conn: RustConnection, screen: usize, name: &str) -> Self {
         let root = conn.setup().roots[screen].root;
 
         let mut client = Self {
