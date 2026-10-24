@@ -1,9 +1,9 @@
 # ADR 0036: Phase 2d — L3 Shell 组件与 inox-greet 从 Iced 迁移到 QML + Qt Quick 的实施计划
 
-- 状态：proposed
+- 状态：accepted
 - 日期：2026-10-23
 - 决策者：架构组（项目所有者 rownix101）
-- 批准记录：待补（人类评审 PR / 评论与日期；本文件为实施计划，批准后按计划逐个 PR 迁移）
+- 批准记录：2026-10-23 项目所有者在本开发会话明确批准本实施计划（「我已批准 docs/adr/0036-component-migration-plan.md，开始实现，可以并行」），并指示按计划**并行**启动各组件迁移 PR；批准记录随首个实施 PR 链接补全。本记录是架构/实施顺序批准，不表示任何迁移步骤的 CI 验收已通过。
 - 关系：补充 [ADR 0033](./0033-qml-qt-quick-shell-evaluation.md)（Shell GUI 迁移 QML + Qt Quick）与 [ADR 0035](./0035-cxx-qt-binding.md)（采用 cxx-qt 绑定）。ADR 0033/0034/0035 已批准决策方向；本 ADR 记录**实施顺序与每步验收**，不重复已批准的选型结论。
 
 ## 背景
@@ -68,14 +68,16 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 所有证据以 CI 为准（根级 §3.1）；waydriver 属于真实宿主级证据。复合迁移验收：
 
+本 ADR 的验收 ID 使用 **`M`（migration）前缀**，与 `docs/quality/acceptance.md` 中既有的 `D01–D06`（Shell 与设置的用户任务）**刻意分开**：两者编号体系不同，本文件的 `M02`（waydriver 宿主）与 §6 的 `D02`（`inox-launcher`）是不同项，引用时必须带前缀。
+
 | 验收 ID / 场景 | 责任仓库 | E0–E4 等级 | 测试与失败注入 | 通过条件 / 证据位置 |
 |----------------|----------|------------|----------------|----------------------|
-| D01 合成器 layer-shell（已在位） | `inox-compositor` | E1 | 真实客户端在进程内合成器上覆盖四层像素/独占区/焦点/隔离 | `tests/layer_shell.rs` 通过（已提交、CI 已验证） |
-| D02 基座：waydriver 宿主可启动 L3 Qt 表面 | `inox-*`（宿主 job） | E1/E2 | waydriver 在真实合成器宿主启动 L3 Qt 表面，截图、断言 | opt-in E2 job 截图断言通过 |
-| D03 greet 迁移端到端 | `inox-greet` | E1 | 迁移后 headless 测试（登录预览、键盘导航）通过；非测试路径无显式 `unsafe` | `cargo test -p inox-greet` + `cargo clippy -D warnings` + release build 全绿 |
-| D04 每个 layer-shell 组件迁移 | 对应 crate | E1/E2 | waydriver 截图断言 + 该 crate 单测 | 该 crate CI（test/clippy/doc/build）全绿；放置策略在真实 layer 表面生效 |
-| D05 锁表面边界保持 | `inox-lock` | E1/E2 | 锁表面非普通窗口；认证仍由 `inox-auth`；QML 不暴露敏感态 | lock 单测 + 安全审查（ADR 0015 前提） |
-| D06 收尾移除 Iced | 工作区 | E0 | 依赖图无 Iced；`cargo deny` / `license-audit` 全绿 | 移除后全工作区 CI 全绿，无 `iced*` 依赖 |
+| M01 合成器 layer-shell（已在位） | `inox-compositor` | E1 | 真实客户端在进程内合成器上覆盖四层像素/独占区/焦点/隔离 | `tests/layer_shell.rs` 通过（已提交、CI 已验证） |
+| M02 基座：waydriver 宿主可启动 L3 Qt 表面 | `inox-*`（宿主 job） | E1/E2 | waydriver 在真实合成器宿主启动 L3 Qt 表面，截图、断言 | opt-in E2 job 截图断言通过 |
+| M03 greet 迁移端到端 | `inox-greet` | E1 | 迁移后 headless 测试（登录预览、键盘导航）通过；非测试路径无显式 `unsafe` | `cargo test -p inox-greet` + `cargo clippy -D warnings` + release build 全绿 |
+| M04 每个 layer-shell 组件迁移 | 对应 crate | E1/E2 | waydriver 截图断言 + 该 crate 单测 | 该 crate CI（test/clippy/doc/build）全绿；放置策略在真实 layer 表面生效 |
+| M05 锁表面边界保持 | `inox-lock` | E1/E2 | 锁表面非普通窗口；认证仍由 `inox-auth`；QML 不暴露敏感态 | lock 单测 + 安全审查（ADR 0015 前提） |
+| M06 收尾移除 Iced | 工作区 | E0 | 依赖图无 Iced；`cargo deny` / `license-audit` 全绿 | 移除后全工作区 CI 全绿，无 `iced*` 依赖 |
 
 > 以 ADR 0033/0035 的复审条件与 docs/quality/acceptance.md 为准；上表为新迁移行为补充的验收 ID，随具体 PR 细化。未实现前只列证据计划，不虚构结果。
 
@@ -88,9 +90,9 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 | 未决项 | 责任角色 | 最迟阶段 |
 |--------|----------|----------|
-| waydriver 宿主选型（`labwc` / `sway` / `inox-compositor` 自身）与 E2 job 接线 | 合成器维护者 + 人类审查 | D02 基座 PR |
-| waydriver 测试基座实现（仓库当前无该基础设施） | Shell/集成维护者 | D02 基座 PR |
-| `inox-lock` / `inox-greet` 安全审查通过迁移边界（ADR 0015 前提） | 锁屏/登录维护者 + 安全审查者 | D05 前 |
+| waydriver 宿主选型（`labwc` / `sway` / `inox-compositor` 自身）与 E2 job 接线 | 合成器维护者 + 人类审查 | M02 基座 PR |
+| waydriver 测试基座实现（仓库当前无该基础设施） | Shell/集成维护者 | M02 基座 PR |
+| `inox-lock` / `inox-greet` 安全审查通过迁移边界（ADR 0015 前提） | 锁屏/登录维护者 + 安全审查者 | M05 前 |
 
 ## 后果
 
@@ -102,4 +104,4 @@ Phase 1（LGPLv3 重许可，ADR 0034）、ADR 0035 与 headless 原型（`crate
 
 **复审触发**：若迁移中发现某组件与 layer-shell/QML 的接合在真实合成器上无法成立，或某个安全边界在绑定层出现绕行可能，须停下该组件并回退到上一稳定点，向人类报告，再决定是否另写 ADR。
 
-*本 ADR 为 Phase 2d 实施计划（proposed），pending 人类评审；不虚构已验证结果。*
+*本 ADR 为 Phase 2d 实施计划（accepted，2026-10-23 项目所有者批准）。表中 E0–E4 证据在对应 PR 的 CI 运行前保持未验证；不虚构已验证结果。*
