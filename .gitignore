@@ -16,3 +16,7 @@ target/
 
 # Local Iced→QML migration probes (not part of the crate tree)
 .probe-qtbridge/
+
+# Local per-agent build trees and CI log scratch (never committed).
+/.targets/
+/.ci-logs/

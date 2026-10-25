@@ -40,12 +40,39 @@
 //! with them), and the reader in
 //! [`a_signal_reaches_the_wire_with_what_the_client_is_waiting_for`] blocks on a
 //! connection the test still holds.
+//!
+//! # Nothing in here waits without a bound
+//!
+//! A hang is worse than a failure: a failing job reports in minutes, a wedged one
+//! burns the run until somebody cancels it. So every wait in this file is bounded,
+//! and every one of them says what happened when it ends:
+//!
+//! - a **call** is bounded by the client connection's `method_timeout`
+//!   ([`CALL_DEADLINE`]), which is many times the deadline the daemon owes a reply
+//!   ([`crate::bus::REPLY_DEADLINE`]) — so it is never the daemon being slow, it is
+//!   the transport having stopped;
+//! - the **one-daemon-at-a-time lock** is taken with a deadline and names its
+//!   holder ([`serial`]), so a wedged sibling is a failure that points at it
+//!   instead of three tests queued behind it;
+//! - **joins** — the peer-to-peer handshake and the daemon thread this file owns —
+//!   are bounded ([`finished_within`]), and a thread that will not stop is
+//!   abandoned loudly instead of joined forever;
+//! - a **pause** is acknowledged by the pump, so a test cannot race its own pause;
+//! - and every test that drives a daemon arms a [`Watchdog`]: if it is still
+//!   running long after the slowest healthy test, the binary stops with that
+//!   test's name rather than sitting there.
+//!
+//! The watchdog is a net under those bounds, not a replacement for them. What it
+//! covers is the shape that actually wedged CI — one stalled thread, with libtest
+//! printing "has been running for over 60 seconds" and then nothing at all for
+//! forty minutes.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -57,7 +84,7 @@ use zbus::{Connection, MessageStream};
 
 use crate::actions::ActionId;
 use crate::app::{self, Inbox, Message as AppMessage, State};
-use crate::bus::{Counts, Service};
+use crate::bus::{Counts, Reading, Service, Tick, next_message_within};
 use crate::contract::{Outgoing, Signal};
 use crate::policy::SessionState;
 use crate::protocol::{self, CloseReason, HINT_CATEGORY, HINT_URGENCY, Urgency};
@@ -71,6 +98,38 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a call waits for the daemon in the test that is about the timeout
 /// rather than about the daemon.
 const SHORT_DEADLINE: Duration = Duration::from_millis(300);
+
+/// How long a *client* waits for a reply before its own call gives up.
+///
+/// This is not the transport's deadline arriving a second time: [`REPLY_DEADLINE`] is
+/// [`Duration::from_secs(5)`] and every call a test makes is owed a reply within it, either the
+/// daemon's answer or an error the service sends. A wait this far out is therefore not a slow
+/// daemon — it is a transport that has stopped answering altogether, and the call has to fail with
+/// a name instead of parking the test thread in `block_on` for as long as CI keeps the job alive.
+const CALL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long a test may wait for the one-daemon-at-a-time lock before it says who is holding it.
+///
+/// The slowest healthy test in this file is the ten-second burst; anything still holding the lock
+/// after this is not slow, it is stuck, and the test behind it must fail rather than queue.
+const SERIAL_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long a peer-to-peer handshake may take before the pair is declared unusable.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long the daemon thread of a harness may take to stop when the test is over.
+const STOP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long one bus test may run before the whole binary is stopped with its name.
+///
+/// Every healthy test here finishes well inside this: the slowest is the ten-second burst, and the
+/// watchdog exists for the case where a test cannot finish at all. A wedged test is not a slow one
+/// — a `join` or a `block_on` with nothing above it would hold the CI job until it is cancelled,
+/// which is the failure mode this file has to make impossible rather than unlikely.
+const WEDGED: Duration = Duration::from_secs(180);
+
+/// The exit code a watchdog uses, distinct from libtest's own 101 so the log says which happened.
+const EXIT_WEDGED: i32 = 70;
 
 /// How often the daemon's pump thread looks for work.
 ///
@@ -218,8 +277,9 @@ enum Command {
     /// one over.
     Reload(NotificationsConfig),
     /// Stop answering calls, so that the transport's deadline can be reached
-    /// without waiting for a slow machine.
-    Pause(bool),
+    /// without waiting for a slow machine. The sender is answered once the flag
+    /// has been set, so a test cannot race its own pause.
+    Pause(bool, Sender<()>),
     /// Report what the daemon holds, and answer on the sender.
     Probe(Sender<Snapshot>),
     /// Stop.
@@ -231,13 +291,178 @@ enum Command {
 /// Each test drives a real connection with its own threads, and libtest runs a
 /// file's tests on as many threads as the machine has cores. A dozen
 /// peer-to-peer connections at once is not a shape this daemon ever has — a
-/// session runs one notification daemon — and the transport underneath it (zbus
-/// on async-io, through the blocking API) is not driven that way in production
-/// either: with eighteen connections in one process a blocked call can be left
-/// waiting on a wake-up that never comes. The tests take a lock and say so
-/// rather than hide it, and the daemon's own concurrency — one connection, two
-/// transport threads — is what the rest of the file exercises.
+/// session runs one notification daemon — and the transport underneath it is not
+/// driven that way in production either: with eighteen connections in one
+/// process a blocked call can be left waiting on a wake-up that never comes. The
+/// tests take a lock and say so rather than hide it, and the daemon's own
+/// concurrency — one connection, two transport threads — is what the rest of the
+/// file exercises.
+///
+/// The wait for it is bounded ([`SERIAL_DEADLINE`]) and the failure names the
+/// test that holds it ([`HOLDER`]): a lock with no bound turns one wedged test
+/// into a binary that never reports again, which is the shape the CI job hung in.
+/// Failing here instead says *which* test to look at.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+/// The test holding [`ONE_AT_A_TIME`] right now, for the message a test that cannot take it
+/// prints. Written only by the holder, read only by a test that is about to fail.
+static HOLDER: Mutex<String> = Mutex::new(String::new());
+
+/// Writes one line to the process's own stderr, past libtest's output capture.
+///
+/// The messages that use this are the ones that have to survive to a CI log: a test that could not
+/// be failed in the ordinary way (the [`Watchdog`], reporting from a thread libtest does not own)
+/// and a thread that was abandoned at the end of a test that will still pass. `eprintln!` goes
+/// through libtest's capture, so it is dropped when the test passes and lost outright when another
+/// thread ends the process.
+fn shout(line: &str) {
+    let mut stderr = std::io::stderr();
+
+    let _ = writeln!(stderr, "{line}");
+}
+
+/// The name libtest gave the calling test's thread, which is the test's own name.
+fn test_name() -> String {
+    thread::current().name().unwrap_or("a bus test").to_owned()
+}
+
+/// The right to run one daemon, held for the length of a test.
+struct Serial {
+    /// The lock itself; released when this is dropped.
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for Serial {
+    fn drop(&mut self) {
+        // The lock is still held here, so no other test can be the one that set this.
+        *HOLDER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = String::new();
+    }
+}
+
+/// Takes the one-daemon-at-a-time lock, naming `what` as its holder.
+///
+/// Waits at most [`SERIAL_DEADLINE`]: a test that cannot have the lock is not a test that is
+/// running, and one that waits for it without a bound is one that cannot fail.
+fn serial(what: &str) -> Serial {
+    let deadline = Instant::now() + SERIAL_DEADLINE;
+
+    loop {
+        match ONE_AT_A_TIME.try_lock() {
+            Ok(guard) => {
+                *HOLDER
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = what.to_owned();
+
+                return Serial { _guard: guard };
+            }
+            // A sibling test panicked while it held the lock. Its assertions already reported the
+            // panic; what it was guarding is a fresh connection, so the lock is still usable.
+            Err(TryLockError::Poisoned(poisoned)) => {
+                *HOLDER
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = what.to_owned();
+
+                return Serial {
+                    _guard: poisoned.into_inner(),
+                };
+            }
+            Err(TryLockError::WouldBlock) => {
+                let holder = HOLDER
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+
+                assert!(
+                    Instant::now() < deadline,
+                    "`{what}` could not take the one-daemon-at-a-time lock within {} s: `{holder}` \
+                     holds it and has not finished, so it is wedged rather than slow. That test is \
+                     the one to look at — the transport it drives waits for a reply the daemon \
+                     owes it (`crate::bus::REPLY_DEADLINE`) and for the next call \
+                     (`crate::bus::READ_TICK`), and a bus thread that is stuck is a client that \
+                     never hears back",
+                    SERIAL_DEADLINE.as_secs()
+                );
+
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+}
+
+/// Waits up to `bound` for `thread` to finish, and says whether it did.
+///
+/// A `join` that has no bound is a test that hangs instead of failing, which is the one thing a
+/// wedged CI job must never be: a failure reports in minutes, a hang burns the run.
+fn finished_within<T>(thread: &JoinHandle<T>, bound: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+
+    while !thread.is_finished() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    true
+}
+
+/// Stops the whole binary if the test that started it is still running long after it should have
+/// finished.
+///
+/// This is a net under the fixes rather than one of them: every wait in this file is bounded on its
+/// own, and this is what makes a *future* unbounded one loud. It cannot panic the stuck test — the
+/// thread that would receive the panic is the one that is stuck — so it reports the test's name on
+/// stderr, which libtest does not capture from a thread it did not start, and ends the process with
+/// a non-zero code. A job that fails in three minutes with a name is worth more than one that is
+/// cancelled after forty, which is exactly what the transport tests did on CI.
+struct Watchdog {
+    /// Dropped when the test ends, which is how the thread below learns it need not fire.
+    running: Option<Sender<()>>,
+}
+
+impl Watchdog {
+    /// Arms the watchdog for the calling test, named as libtest names its thread.
+    fn start() -> Self {
+        let what = test_name();
+        let (running, stopped) = mpsc::channel();
+
+        let _armed = thread::Builder::new()
+            .name(format!("watchdog: {what}"))
+            .spawn(move || {
+                if matches!(
+                    stopped.recv_timeout(WEDGED),
+                    Err(RecvTimeoutError::Timeout)
+                ) {
+                    // Written past libtest's capture: this thread is the only one left that can
+                    // report anything, and what it says has to be readable in a CI log.
+                    shout(&format!(
+                        "\n*** `{what}` has been running for {} s and has not finished. Every wait \
+                         in this file is bounded, so a test this old is wedged: a transport thread \
+                         is not answering a client that is waiting for it. Stopping the process \
+                         here (exit code {EXIT_WEDGED}) instead of letting the job be cancelled. ***\n",
+                        WEDGED.as_secs()
+                    ));
+
+                    std::process::exit(EXIT_WEDGED);
+                }
+            });
+
+        Self {
+            running: Some(running),
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        // Dropping the sender wakes the thread out of its wait, so a finished test costs no
+        // watchdog thread for the rest of the binary's life.
+        self.running.take();
+    }
+}
 
 /// A connected pair of peer-to-peer connections: the serving end, and a client.
 ///
@@ -246,7 +471,21 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 /// the same time. Building one end to completion before the other is a deadlock,
 /// which is why the serving end is built on its own thread: the daemon under
 /// test really does connect, it is only the *bus* that is missing.
+///
+/// The handshake is a wait for another thread like any other, so it is bounded:
+/// [`HANDSHAKE_DEADLINE`] is thirty seconds for two local socket ends, and a pair
+/// that has not come up by then is a failure with a name rather than a `join` that
+/// never returns.
 fn connected_pair() -> (Connection, Connection) {
+    connected_pair_with(CALL_DEADLINE)
+}
+
+/// The same pair, with the client's own deadline for a call.
+///
+/// [`connected_pair`] uses [`CALL_DEADLINE`], which is what every test in this file wants; the
+/// test that is *about* the client's bound asks for a short one so that it can watch the bound
+/// arrive.
+fn connected_pair_with(call_deadline: Duration) -> (Connection, Connection) {
     let (server, client) = UnixStream::pair().expect("a socket pair");
     let guid = zbus::Guid::generate();
 
@@ -266,8 +505,24 @@ fn connected_pair() -> (Connection, Connection) {
             .expect("the connecting thread starts")
     };
 
-    let client = zbus::block_on(zbus::connection::Builder::unix_stream(client).p2p().build())
-        .expect("the client end of the connection");
+    // The client's own deadline for a call: this is the end a test drives, and a reply that never
+    // arrives has to be an error the test can assert on rather than a `block_on` that never
+    // returns.
+    let client = zbus::block_on(
+        zbus::connection::Builder::unix_stream(client)
+            .p2p()
+            .method_timeout(call_deadline)
+            .build(),
+    )
+    .expect("the client end of the connection");
+
+    assert!(
+        finished_within(&serving, HANDSHAKE_DEADLINE),
+        "the peer-to-peer handshake did not finish within {} s: both ends of the pair are needed \
+         and this is the first wait in the file that needs another thread to finish",
+        HANDSHAKE_DEADLINE.as_secs()
+    );
+
     let server = serving
         .join()
         .expect("the connecting thread does not panic")
@@ -283,7 +538,9 @@ struct Harness {
     signals: Arc<Mutex<Vec<Signal>>>,
     pump: Option<JoinHandle<()>>,
     /// Held for the life of the harness: see [`ONE_AT_A_TIME`].
-    _serial: std::sync::MutexGuard<'static, ()>,
+    _serial: Serial,
+    /// The net under this test: see [`Watchdog`].
+    _watchdog: Watchdog,
 }
 
 impl Harness {
@@ -295,9 +552,8 @@ impl Harness {
 
     /// The same, with a shorter deadline than the daemon's own.
     fn start_with_deadline(deadline: Option<Duration>) -> Self {
-        let serial = ONE_AT_A_TIME
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let serial = serial(&test_name());
+        let watchdog = Watchdog::start();
 
         let (server, client) = connected_pair();
 
@@ -311,6 +567,7 @@ impl Harness {
 
         let (commands, command_queue) = mpsc::channel();
         let signals = Arc::new(Mutex::new(Vec::new()));
+        let (reading, reads) = mpsc::channel();
 
         let pump = {
             let inbox = inbox.clone();
@@ -318,9 +575,19 @@ impl Harness {
 
             thread::Builder::new()
                 .name("the daemon under test".to_owned())
-                .spawn(move || pump(inbox, service, command_queue, signals))
+                .spawn(move || pump(inbox, service, command_queue, signals, reading))
                 .expect("the daemon thread starts")
         };
+
+        // The daemon reads its inbox before the test can call it. The transport waits up to
+        // `REPLY_DEADLINE` for a reader to appear, so a call that arrives before the pump has
+        // installed its stream is a call that spends that whole grace being patient — and a test
+        // whose own wait is `TIMEOUT` would then fail for a reason that has nothing to do with
+        // what it is testing. This is the same shape as the daemon owning its bus name before the
+        // Qt host pumps, and it is waited for the same way: in bounded time, and out loud.
+        reads
+            .recv_timeout(TIMEOUT)
+            .expect("the daemon started reading its calls before the test calls it");
 
         Self {
             client,
@@ -328,10 +595,15 @@ impl Harness {
             signals,
             pump: Some(pump),
             _serial: serial,
+            _watchdog: watchdog,
         }
     }
 
     /// Sends one method call and returns what came back.
+    ///
+    /// Bounded by the client connection's own `method_timeout` ([`CALL_DEADLINE`]): a call no
+    /// transport answers comes back as a `zbus` error naming the wait, instead of parking this
+    /// thread — and, through it, the one-daemon-at-a-time lock — for as long as the process lives.
     ///
     /// The `Serialize` bound is zbus's own re-export of serde: this crate does
     /// not depend on serde itself, and a body it can put on the wire is exactly
@@ -403,10 +675,20 @@ impl Harness {
     }
 
     /// Stops the daemon answering calls, or lets it answer again.
+    ///
+    /// Answered by the pump once the flag is set: a test that paused the daemon and then called it
+    /// would otherwise be racing its own pause, and "the call was answered before the pause took
+    /// effect" is a failure that says nothing about the transport.
     fn pause(&self, paused: bool) {
+        let (applied, acknowledged) = mpsc::channel();
+
         self.commands
-            .send(Command::Pause(paused))
+            .send(Command::Pause(paused, applied))
             .expect("the daemon is running");
+
+        acknowledged
+            .recv_timeout(TIMEOUT)
+            .unwrap_or_else(|error| panic!("the daemon did not apply pause({paused}): {error}"));
     }
 
     /// The signals the daemon decided to send, in the order it decided them.
@@ -476,7 +758,18 @@ impl Drop for Harness {
         let _ = self.commands.send(Command::Stop);
 
         if let Some(pump) = self.pump.take() {
-            let _ = pump.join();
+            // A join with no bound is the hang itself: the daemon thread is the one thing this
+            // test owns, and waiting for it forever would hold the one-daemon lock forever. If it
+            // does not stop, it is abandoned and the test's own assertions report what state it
+            // left behind.
+            if !finished_within(&pump, STOP_DEADLINE) {
+                shout(&format!(
+                    "*** the daemon thread of this bus test did not stop within {} s and is being \
+                     abandoned: its state is not trustworthy, and whatever it was doing when this \
+                     test ended is worth a `gdb -p` ***",
+                    STOP_DEADLINE.as_secs()
+                ));
+            }
         }
     }
 }
@@ -487,6 +780,7 @@ fn pump(
     service: Service,
     commands: Receiver<Command>,
     signals: Arc<Mutex<Vec<Signal>>>,
+    reading: Sender<()>,
 ) {
     let mut state = State::new(
         NotificationsConfig::default(),
@@ -495,6 +789,9 @@ fn pump(
     );
 
     let requests = inbox.stream();
+    // Told before anything else: from here on a call has somewhere to go, which is what the
+    // harness waits for before it hands the daemon to a test.
+    let _ = reading.send(());
     let mut paused = false;
     let mut running = true;
 
@@ -517,7 +814,12 @@ fn pump(
                     state.apply_configuration(config, tokens, localizer);
                     drain(&mut state, &service, &signals);
                 }
-                Command::Pause(now_paused) => paused = now_paused,
+                Command::Pause(now_paused, applied) => {
+                    paused = now_paused;
+                    // Answered only once the flag is set: a test that pauses and then calls has to
+                    // know the pause is in force, or it is testing the scheduler.
+                    let _ = applied.send(());
+                }
                 Command::Probe(reply) => {
                     let _ = reply.send(snapshot(&state, &service, &inbox));
                 }
@@ -1130,9 +1432,8 @@ fn a_call_the_daemon_does_not_answer_in_time_is_refused_with_an_error() {
 
 #[test]
 fn a_call_nobody_is_reading_is_refused_rather_than_left_unanswered() {
-    let _serial = ONE_AT_A_TIME
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _watchdog = Watchdog::start();
+    let _serial = serial(&test_name());
 
     let (server, client) = connected_pair();
 
@@ -1158,6 +1459,130 @@ fn a_call_nobody_is_reading_is_refused_rather_than_left_unanswered() {
         "org.freedesktop.Notifications.Error.Unavailable"
     );
     assert_eq!(service.counts().unavailable, 1);
+}
+
+#[test]
+fn a_call_no_transport_answers_fails_in_bounded_time_and_says_so() {
+    // The client end's bound, tested on its own: a peer that reads the call and answers nothing is
+    // the shape of a transport that has stopped, and the call has to come back as an error rather
+    // than parking the thread — and the one-daemon lock behind it — forever. This is the wait that
+    // turned one wedged job into forty minutes of silence.
+    let _watchdog = Watchdog::start();
+    let _serial = serial(&test_name());
+
+    let (server, client) = connected_pair_with(SHORT_DEADLINE);
+    let mut messages = MessageStream::from(&server);
+    let (_alive, stopping) = mpsc::channel();
+
+    let silent = thread::Builder::new()
+        .name("a peer that answers nothing".to_owned())
+        .spawn(move || {
+            let tick = Tick::start().expect("the silent peer's tick starts");
+
+            loop {
+                match next_message_within(&mut messages, &tick, &stopping) {
+                    // Read and ignored: this is a peer that heard the call and never replied.
+                    Reading::Message(_) | Reading::Idle => {}
+                    Reading::Stopping | Reading::Closed => return,
+                }
+            }
+        })
+        .expect("the silent peer starts");
+
+    let started = Instant::now();
+
+    let error = zbus::block_on(client.call_method(
+        None::<()>,
+        protocol::OBJECT_PATH,
+        Some(protocol::INTERFACE),
+        "GetCapabilities",
+        &(),
+    ))
+    .expect_err("a call nobody answers must not be waited on forever");
+
+    assert!(
+        matches!(&error, zbus::Error::InputOutput(source) if source.kind() == std::io::ErrorKind::TimedOut),
+        "the client's own deadline is what ends this call: {error:?}"
+    );
+    assert!(
+        started.elapsed() < CALL_DEADLINE,
+        "the call came back on its own bound ({:?}), not on something else's",
+        started.elapsed()
+    );
+
+    // The peer ends when the connection does, which is when `client` goes: nothing here joins it,
+    // and nothing here needs to.
+    drop(silent);
+}
+
+#[test]
+fn a_read_with_nothing_behind_it_ends_in_a_tick_and_leaves_the_stream_usable() {
+    // The bound under every reply this file waits for. A `MessageStream` nothing has written to is
+    // the exact state an unbounded read parked in: it must come back empty-handed, and it must not
+    // eat the stream while doing so.
+    let _watchdog = Watchdog::start();
+    let _serial = serial(&test_name());
+
+    let (server, client) = connected_pair();
+    let mut messages = MessageStream::from(&server);
+    let tick = Tick::start().expect("the read tick starts");
+    let (_alive, stopping) = mpsc::channel();
+
+    let started = Instant::now();
+
+    assert!(
+        matches!(
+            next_message_within(&mut messages, &tick, &stopping),
+            Reading::Idle
+        ),
+        "a connection with nothing on it has to end the read, not hold it"
+    );
+    assert!(
+        started.elapsed() < crate::bus::READ_TICK * 4,
+        "the read is bounded by one tick, not by the next thing that happens on the wire: it took \
+         {:?}",
+        started.elapsed()
+    );
+
+    // The message that arrives next is still read, so the bound did not cost the connection
+    // anything: this is the same stream, polled again after an empty read.
+    zbus::block_on(client.emit_signal(
+        None::<()>,
+        protocol::OBJECT_PATH,
+        protocol::INTERFACE,
+        "NotificationClosed",
+        &(7_u32, CloseReason::Expired.code()),
+    ))
+    .expect("a signal to the peer");
+
+    let received = loop {
+        match next_message_within(&mut messages, &tick, &stopping) {
+            Reading::Message(Ok(message)) => break message,
+            Reading::Message(Err(error)) => panic!("reading the signal failed: {error}"),
+            Reading::Idle => continue,
+            Reading::Closed => panic!("the stream ended before the signal arrived"),
+            Reading::Stopping => panic!("nothing stopped this read"),
+        }
+    };
+
+    assert_eq!(
+        received.header().member().map(|member| member.as_str()),
+        Some("NotificationClosed"),
+        "the message after an empty read is the next one on the wire"
+    );
+
+    // And a service that goes away ends a read that is already waiting, rather than parking until
+    // the next client happens to call.
+    let (stopping_soon, stopped) = mpsc::channel();
+    drop(stopping_soon);
+
+    assert!(
+        matches!(
+            next_message_within(&mut messages, &tick, &stopped),
+            Reading::Stopping
+        ),
+        "a stopped service ends the read on its first poll"
+    );
 }
 
 // --- the two signals, on the wire -------------------------------------------
@@ -1241,7 +1666,10 @@ enum OnTheWire {
 /// Reads every notification signal the connection carries, from its own thread.
 ///
 /// The thread blocks on the connection, which the test holds for as long as it
-/// asserts, so it parks when the test ends; the test process ends with it.
+/// asserts, so it parks when the test ends; the test process ends with it. What it
+/// does *not* do is block with no bound: the read is the same bounded one the
+/// transport uses, so a connection that has gone quiet is a thread that keeps
+/// taking turns rather than one that can never be counted again.
 fn watch_signals(client: &Connection) -> Receiver<OnTheWire> {
     let rule = zbus::MatchRule::builder()
         .msg_type(Type::Signal)
@@ -1261,9 +1689,18 @@ fn watch_signals(client: &Connection) -> Receiver<OnTheWire> {
     thread::Builder::new()
         .name("the client's signal reader".to_owned())
         .spawn(move || {
-            while let Some(message) = crate::bus::next_message(&mut messages) {
-                let Ok(message) = message else {
-                    return;
+            // Held for the thread's life: it is the *test* that ends this reader, so nothing here
+            // is ever told to stop reading.
+            let (_alive, stopping) = mpsc::channel();
+            let tick = Tick::start().expect("the reader's tick thread starts");
+
+            loop {
+                let message = match next_message_within(&mut messages, &tick, &stopping) {
+                    Reading::Message(Ok(message)) => message,
+                    Reading::Message(Err(_)) | Reading::Closed => return,
+                    Reading::Idle => continue,
+                    // Unreachable: `_alive` outlives this loop.
+                    Reading::Stopping => return,
                 };
 
                 let member = message

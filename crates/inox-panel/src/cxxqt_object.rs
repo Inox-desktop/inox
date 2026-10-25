@@ -45,5 +45,11 @@ pub mod qobject {
         /// non-zero exit.
         #[cxx_name = "lastError"]
         fn last_error(self: &Offscreen) -> QString;
+        /// Whether the frame's alpha had to be reconstructed from two opaque
+        /// grabs, because this Qt's offscreen backing store has no alpha
+        /// channel. A diagnostic: it names the pixel path the last frame came
+        /// from, which is what lets a test prove both paths run.
+        #[cxx_name = "alphaReconstructed"]
+        fn alpha_reconstructed(self: &Offscreen) -> bool;
     }
 }

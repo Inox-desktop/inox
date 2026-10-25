@@ -12,8 +12,17 @@
 //! window.
 //!
 //! The bytes `frame` returns are RGBA8, premultiplied, in the order
-//! `QImage::Format_RGBA8888_Premultiplied` uses. [`crate::layer`] reorders them
-//! into the `Argb8888` `wl_shm` wants; nothing here unpacks or blends.
+//! `QImage::Format_RGBA8888_Premultiplied` uses, **and they carry the real
+//! alpha channel**. [`crate::layer`] reorders them into the `Argb8888` `wl_shm`
+//! wants; nothing here unpacks or blends.
+//!
+//! The alpha is not free: on a Qt whose offscreen backing store is
+//! `QImage::Format_RGB32` (6.4, and anything else before the platform learned
+//! to honour a translucent window) a single grab is opaque. The C++ host
+//! detects that on the first frame and reconstructs the channel from a black and
+//! a white pass instead — see `reconstruct_alpha` in `src/offscreen.cpp`. Either
+//! way the bytes `frame` returns describe the same frame, which is what lets
+//! [`crate::layer`] stay unaware of the Qt version it is running on.
 
 use cxx_qt_lib::QString;
 
@@ -135,6 +144,19 @@ impl Host {
         }
 
         Ok(bytes)
+    }
+
+    /// Whether the frame's alpha had to be reconstructed from two opaque grabs,
+    /// because this Qt's offscreen backing store has no alpha channel.
+    ///
+    /// A diagnostic, not a control: the frame is the same either way. It says
+    /// which pixel path the last frame came from, which is what lets a test
+    /// prove the reconstruction runs (and draws the same pixels) on a Qt that
+    /// would never need it. `false` before the first frame.
+    pub fn reconstructs_alpha(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|host| host.alpha_reconstructed())
     }
 }
 

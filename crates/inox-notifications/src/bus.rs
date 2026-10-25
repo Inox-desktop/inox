@@ -32,6 +32,25 @@
 //! flight, and a reply that is late anyway becomes a D-Bus error the client can
 //! act on rather than silence.
 //!
+//! # Every wait has a bound, and a wait that ends says why
+//!
+//! Two deadlines bound the bus thread's work: [`REPLY_DEADLINE`] for the answer
+//! a call is owed, and [`READ_TICK`] for the connection read itself. The second
+//! one is not a timeout — a daemon with nothing to do waits forever, by design —
+//! it is a *bound*: reading the next message returns at least once per tick so
+//! that the loop above it can see the service being dropped, and so that no
+//! interleaving can park this thread with nothing above it. A read with no bound
+//! was the one wait in this crate that could not report anything: not a closed
+//! connection, not a stopped service, not that it had been parked for an hour.
+//!
+//! Every read says how it ended: [`Reading::Idle`] loops, [`Reading::Closed`]
+//! warns that no client will be answered any more, and [`Reading::Stopping`] is
+//! the service going away. A call that is read and cannot be answered is refused
+//! with `.Timeout` or `.Unavailable`, never dropped: the deadline a client is told
+//! about and the deadline the answer is written under are the same
+//! [`REPLY_DEADLINE`], so there is no path where a client waits on this service
+//! and nothing on this side is coming.
+//!
 //! # What crosses the wire, and what does not
 //!
 //! - **Call identity is the message serial.** `CallId` is the serial of the
@@ -86,9 +105,10 @@
 //! shutdown path.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::task::Waker;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -123,11 +143,35 @@ pub const MAX_HINTS: usize = 64;
 /// it is unanswered.
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(5);
 
+/// How long the bus thread waits for the next message before it looks at the service again.
+///
+/// This is a bound on the *read*, not a deadline on a call: a daemon with nothing to do is
+/// supposed to wait for a client, and this does not change that — the read simply returns once a
+/// tick so that the loop above it gets a turn. There are two things it must be able to see, and an
+/// unbounded read saw neither:
+///
+/// - **the service going away.** [`Service`] is the only owner of the stopping channel; when it is
+///   dropped the bus thread ends on its next tick instead of parking until some client happens to
+///   call a connection the service no longer serves;
+/// - **that nothing above it is running.** A wait that ends cannot be a thread that has silently
+///   stopped making progress: every tick is a point where the loop is known to be alive, and the
+///   connection's own readiness wakes it long before a tick in the ordinary case.
+///
+/// Four wakes a second, each one a park and a poll, is the whole cost: the thread is outside
+/// `block_on` for microseconds per tick and the reactor is not busy-waited. The same bound is what
+/// makes the transport tests unable to hang: they wait for a reply the daemon owes them within
+/// [`REPLY_DEADLINE`], and a bus thread that cannot read is now a bus thread that is *seen* to be
+/// running rather than one that is inferred to be.
+pub const READ_TICK: Duration = Duration::from_millis(250);
+
 /// The thread the connection and every reply are handled on.
 const BUS_THREAD: &str = "inox-notifications bus";
 
 /// The thread the two signals are emitted from.
 const SIGNAL_THREAD: &str = "inox-notifications signals";
+
+/// The thread that ends a bounded read once per [`READ_TICK`].
+const TICK_THREAD: &str = "inox-notifications tick";
 
 /// Why the service could not be started.
 #[derive(Debug, thiserror::Error)]
@@ -267,8 +311,10 @@ impl Stats {
 
 /// The running notification service.
 ///
-/// Held by `main` for the life of the daemon. Dropping it stops the signals
-/// thread (its senders go with it); the bus thread ends when the connection does.
+/// Held by `main` for the life of the daemon. Dropping it stops both threads: the signals
+/// thread when its senders go with it, and the bus thread on its next read tick, because the
+/// read is bounded — a service that is dropped does not leave a bus thread parked until some
+/// client happens to call a connection nobody serves any more.
 #[derive(Debug)]
 pub struct Service {
     replies: Sender<Reply>,
@@ -277,6 +323,10 @@ pub struct Service {
     stats: Arc<Stats>,
     bus: JoinHandle<()>,
     writer: JoinHandle<()>,
+    /// Held only to be dropped: the bus thread owns the other end, so nothing is ever sent here.
+    /// The drop *is* the message, and the read tick is what makes it one that is heard.
+    #[allow(dead_code)]
+    stopping: Sender<()>,
 }
 
 impl Service {
@@ -313,8 +363,10 @@ impl Service {
     pub fn serve_on(connection: Connection, inbox: Inbox) -> Result<Self, BusError> {
         let (replies, reply_queue) = std::sync::mpsc::channel();
         let (signals, signal_queue) = std::sync::mpsc::channel();
+        let (stopping, stop) = std::sync::mpsc::channel();
         let deadline = Arc::new(AtomicU64::new(millis(REPLY_DEADLINE)));
         let stats = Arc::new(Stats::default());
+        let tick = Tick::start()?;
 
         let bus = {
             let connection = connection.clone();
@@ -324,7 +376,9 @@ impl Service {
 
             thread::Builder::new()
                 .name(BUS_THREAD.to_owned())
-                .spawn(move || bus_loop(connection, inbox, reply_queue, deadline, stats))
+                .spawn(move || {
+                    bus_loop(connection, inbox, reply_queue, deadline, stats, tick, stop)
+                })
                 .map_err(BusError::Spawn)?
         };
 
@@ -344,6 +398,7 @@ impl Service {
             stats,
             bus,
             writer,
+            stopping,
         })
     }
 
@@ -445,16 +500,26 @@ fn bus_loop(
     replies: Receiver<Reply>,
     deadline: Arc<AtomicU64>,
     stats: Arc<Stats>,
+    tick: Tick,
+    stopping: Receiver<()>,
 ) {
     let mut messages = MessageStream::from(&connection);
 
-    while let Some(message) = next_message(&mut messages) {
-        let message = match message {
-            Ok(message) => message,
-            Err(error) => {
+    loop {
+        let message = match next_message_within(&mut messages, &tick, &stopping) {
+            Reading::Message(Ok(message)) => message,
+            Reading::Message(Err(error)) => {
                 warn!(%error, "reading from the session bus failed");
                 break;
             }
+            // Nothing in this tick. The read is bounded, so this is a turn the loop gets rather
+            // than a wait that never ends; a daemon with nothing to do simply takes it again.
+            Reading::Idle => continue,
+            Reading::Stopping => {
+                debug!("the bus thread stopped: the service is going away");
+                return;
+            }
+            Reading::Closed => break,
         };
 
         if message.header().message_type() != Type::MethodCall {
@@ -470,20 +535,150 @@ fn bus_loop(
     );
 }
 
-/// The next message the connection carries, or `None` once it is gone.
+/// What one bounded read of the connection found.
 ///
-/// zbus 6's `MessageStream` is a `Stream`, and reading it incrementally used to
-/// come from `futures-util`'s `StreamExt` — which this crate no longer depends on
-/// now that `iced` is gone. `zbus::export::futures_core` is the same trait zbus
-/// itself implements, and `poll_fn` over it is the whole of what `.next()`
-/// elsewhere would do, so no async runtime and no extra dependency is needed.
-pub(crate) fn next_message(stream: &mut MessageStream) -> Option<zbus::Result<Message>> {
+/// Every variant is a wait that ended, which is the point: the caller has to decide what to do next
+/// rather than inheriting a thread that is parked with nobody above it.
+#[derive(Debug)]
+pub(crate) enum Reading {
+    /// The connection carried a message, or failed while carrying one.
+    Message(zbus::Result<Message>),
+    /// Nothing arrived within [`READ_TICK`]. Call again.
+    Idle,
+    /// The service is going away: stop reading.
+    Stopping,
+    /// The connection is gone. Nothing can arrive any more.
+    Closed,
+}
+
+/// The clock of a bounded read: one thread that wakes a waiting reader once per [`READ_TICK`].
+///
+/// [`next_message_within`] still reads the connection through `zbus::block_on`, because that is
+/// what drives the connection's runtime; the tick only decides when that call is allowed to return
+/// empty-handed. It wakes nobody while nobody is reading, so an idle daemon costs a wake per tick
+/// and nothing else.
+#[derive(Debug)]
+pub(crate) struct Tick {
+    /// Counts ticks, so a reader that was already waiting knows this wait is the one that ended.
+    generation: Arc<AtomicU64>,
+    /// Whoever is inside a read right now, woken once per tick.
+    wakers: Arc<Mutex<Vec<Waker>>>,
+    /// Dropped with the [`Tick`], which is what ends the thread below.
+    stop: Sender<()>,
+}
+
+impl Tick {
+    /// Starts the thread that ends a read once per [`READ_TICK`].
+    ///
+    /// # Errors
+    ///
+    /// [`BusError::Spawn`] when the thread cannot be started.
+    pub(crate) fn start() -> Result<Self, BusError> {
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let generation = Arc::new(AtomicU64::new(0));
+        let wakers: Arc<Mutex<Vec<Waker>>> = Arc::new(Mutex::new(Vec::new()));
+
+        {
+            let generation = Arc::clone(&generation);
+            let wakers = Arc::clone(&wakers);
+
+            thread::Builder::new()
+                .name(TICK_THREAD.to_owned())
+                .spawn(move || {
+                    loop {
+                        // A tick, or the wait ending because the tick is being dropped: either way
+                        // the readers waiting under this one get their turn before it ends, so a
+                        // reader never waits on a tick that will not come.
+                        let stopping = !matches!(
+                            stopped.recv_timeout(READ_TICK),
+                            Err(RecvTimeoutError::Timeout)
+                        );
+
+                        generation.fetch_add(1, Ordering::Release);
+
+                        let waiting = std::mem::take(
+                            &mut *wakers
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+
+                        for waker in waiting {
+                            waker.wake();
+                        }
+
+                        if stopping {
+                            return;
+                        }
+                    }
+                })
+                .map_err(BusError::Spawn)?;
+        }
+
+        Ok(Self {
+            generation,
+            wakers,
+            stop,
+        })
+    }
+
+    /// Registers `waker`, so that the next tick ends the read it belongs to.
+    fn arm(&self, waker: &Waker) {
+        let mut wakers = self
+            .wakers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if !wakers.iter().any(|armed| armed.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
+    }
+
+    /// The tick this read started in, so that a tick that lands later is not mistaken for one that
+    /// had already landed when the read began.
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Whether a tick has landed since `seen`.
+    fn ticked_since(&self, seen: u64) -> bool {
+        self.generation() != seen
+    }
+}
+
+/// The next message the connection carries, or why there is none this tick.
+///
+/// Bounded by [`READ_TICK`] and by the service's stopping channel, both of which are checked inside
+/// the one future that is polled: a read cannot start after the service has gone away without
+/// noticing, because the stopping check is the first thing every poll does.
+pub(crate) fn next_message_within(
+    stream: &mut MessageStream,
+    tick: &Tick,
+    stopping: &Receiver<()>,
+) -> Reading {
     use std::future::poll_fn;
     use std::pin::Pin;
+    use std::task::Poll;
 
     use zbus::export::futures_core::Stream as _;
 
-    zbus::block_on(poll_fn(|context| Pin::new(&mut *stream).poll_next(context)))
+    let seen = tick.generation();
+
+    zbus::block_on(poll_fn(|context| {
+        // A `Sender` that has been dropped is the service going away; anything sent on it is the
+        // same request, made out loud.
+        if !matches!(stopping.try_recv(), Err(TryRecvError::Empty)) {
+            return Poll::Ready(Reading::Stopping);
+        }
+
+        tick.arm(context.waker());
+
+        match Pin::new(&mut *stream).poll_next(context) {
+            Poll::Ready(Some(message)) => Poll::Ready(Reading::Message(message)),
+            Poll::Ready(None) => Poll::Ready(Reading::Closed),
+            Poll::Pending if tick.ticked_since(seen) => Poll::Ready(Reading::Idle),
+            Poll::Pending => Poll::Pending,
+        }
+    }))
 }
 
 /// Answers one method call, from the wire to the wire.
@@ -515,7 +710,10 @@ fn answer(
     };
 
     // The whole budget for this call: what is left after waiting for the
-    // application is what is left for its answer.
+    // application is what is left for its answer. Both halves are bounded, and a
+    // budget that has run out is a call that is already too late — never one with
+    // no bound left: [`await_reply`] reads a zero budget as `Timeout` on its first
+    // turn rather than as "wait forever".
     let budget = Duration::from_millis(deadline.load(Ordering::Relaxed));
     let started = Instant::now();
 
@@ -1222,6 +1420,38 @@ mod tests {
                 Err(Failed::Timeout)
             ),
             "another call's answer is not this call's answer"
+        );
+    }
+
+    #[test]
+    fn a_budget_that_has_run_out_is_a_timeout_and_never_an_unbounded_wait() {
+        // The call was delivered late enough that nothing was left for its answer. That has to
+        // mean "already expired" — the one reading that would be a hang is "no bound".
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let started = Instant::now();
+
+        assert!(matches!(
+            await_reply(&receiver, CallId::new(7), Duration::ZERO),
+            Err(Failed::Timeout)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a spent budget returns at once, it does not wait"
+        );
+    }
+
+    #[test]
+    fn the_tick_ticks_so_that_a_read_can_end() {
+        // The clock under the bounded read: a reader that armed itself before this moment is
+        // woken by the next tick, which is the only thing that lets the wait end by itself.
+        let tick = Tick::start().expect("the tick thread starts");
+        let before = tick.generation();
+
+        thread::sleep(READ_TICK * 2);
+
+        assert!(
+            tick.ticked_since(before),
+            "the tick thread bumps the generation a reader waits on"
         );
     }
 }

@@ -23,7 +23,7 @@
 //!   a login screen that makes people type their password into a broken machine
 //!   forever.
 //!
-//! # Two PAM transactions, two processes 
+//! # Two PAM transactions, two processes
 //!
 //! [`PamBoundary`] authenticates — it runs `pam_authenticate` and `pam_acct_mgmt`
 //! for the account the login screen named and then ends the transaction. The

@@ -100,10 +100,10 @@ mod tests {
             localizer.message_with("lock-start-blocked", &[("reason", Arg::from(reason))]);
 
         // The block is the *authentication boundary*, not the protocol: the
-        // compositor offers `ext-session-lock-v1` from the session-lock and notification bus work onwards, so a
-        // message that still blamed the protocol would be telling the operator to
-        // look in the wrong place.
-        assert!(message.contains, "{message}");
+        // compositor offers `ext-session-lock-v1` from the session-lock and
+        // notification bus work onwards, so a message that still blamed the
+        // protocol would be telling the operator to look in the wrong place.
+        assert!(message.contains("security review"), "{message}");
         assert!(message.contains("authentication"), "{message}");
         assert!(message.contains("--take-lock"), "{message}");
         assert!(

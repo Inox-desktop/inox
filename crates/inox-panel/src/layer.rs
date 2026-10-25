@@ -549,6 +549,16 @@ impl Interface {
         &self.input
     }
 
+    /// Whether the renderer had to reconstruct the frame's alpha from two
+    /// opaque grabs, because this Qt's offscreen backing store carries none.
+    ///
+    /// A diagnostic: the bytes are the same either way, and this leg never
+    /// branches on it. It names the pixel path the last frame came from, so a
+    /// test can prove both paths draw what they are supposed to.
+    pub fn reconstructs_alpha(&self) -> bool {
+        self.renderer.reconstructs_alpha()
+    }
+
     /// Feeds one pointer event to the interface and applies what it produced.
     pub fn pointer(&mut self, state: &mut State, event: Pointer) -> Produced {
         self.input.pointer(state, event)

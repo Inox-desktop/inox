@@ -1,6 +1,7 @@
 //! logind: which VT a session goes on, and which session gets the display back.
 //!
-//! the boot login chain
+//! The boot login chain gives VT arbitration to logind rather than to this
+//! project.
 //! The session leader's `pam_open_session` creates the logind session (through
 //! `pam_systemd`), and `Manager.ActivateSession` is what puts it — and the display
 //! — on a VT. Nothing here performs a VT ioctl, takes a DRM fd or owns a seat: the
@@ -14,7 +15,7 @@
 //!   that "skip the active session", "skip an occupied VT" and "the range can be
 //!   exhausted" are unit tests.
 //! - **What the display falls back to.** [`hand_back_at_startup`] is the self-heal
-//!   the boot login chain
+//!   the boot login chain asks for: a helper that died between "the session
 //!   ended" and "the display was handed back" leaves a seat with no active
 //!   session, and the greeter's own session is then put back.
 //!
@@ -161,7 +162,7 @@ pub struct VtRange {
 }
 
 impl Default for VtRange {
-    /// `2..=6`: the boot login chain
+    /// `2..=6`: the boot login chain's default.
     fn default() -> Self {
         Self {
             min: DEFAULT_VT_MIN,

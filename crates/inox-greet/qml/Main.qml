@@ -379,8 +379,12 @@ Window {
                                 }
 
                                 Accessible.role: Accessible.StaticText
+                                // The head announces the account the way the name
+                                // line below does — the display label the
+                                // projection draws — because `ui.selected` carries
+                                // the drawn values and not the login name.
                                 Accessible.name: root.ui.selected !== null
-                                        ? root.ui.selected.name : ""
+                                        ? root.ui.selected.label : ""
                             }
 
                             Text {
