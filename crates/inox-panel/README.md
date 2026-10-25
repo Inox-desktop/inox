@@ -38,7 +38,7 @@ calloop 主循环（layer.rs）
 - `src/reload.rs` —— 会话 D-Bus（`org.inox.Panel`）与 `SIGHUP` 的重载主机；候选文档在另一个线程读取解析，经通道 + `calloop::ping` 交给 `layer.rs` 应用。`[panel] surface` 不采用候选值（那是另一个进程；`--surface` 已覆盖文件），保留运行中的表面并记一条 `warn!`，其余摆放字段热改并在下一个 commit 生效。
 - `src/view.rs`、`src/view_model.rs`、`src/theme.rs`、`src/app.rs` —— 状态 → 视图模型 → **Qt-free 的 JSON 场景**（`{ font_family, background, items: [ ] }` + `entries`）、Elm 更新循环，以及设计令牌 → 场景颜色/尺寸的唯一转换处（`#AARRGGBB` 字符串与数值）。
 - `qml/Main.qml` —— 纯渲染器：只读 `modelJson`，按 `items` 的绝对坐标画矩形与文本。没有颜色字面量、像素字面量或用户可见英文字符串（迁移契约 §4）。
-- `src/cxxqt_object.rs`、`src/offscreen.rs`、`src/offscreen.cpp` —— 唯一的 QML↔Rust 边界：`load(url)` / `setModel(json)` / `render(w, h)`，以及 `QGuiApplication` + `QQmlApplicationEngine` + `QQuickWindow::grabWindow()` 的 C++ 薄宿主。
+- `src/cxxqt_object.rs`、`src/offscreen.rs`、`src/offscreen.cpp` —— 唯一的 QML↔Rust 边界：`load(url)` / `setModel(json)` / `render(w, h)`，以及 `QGuiApplication` + `QQmlApplicationEngine` + `QQuickWindow::grabWindow()` 的 C++ 薄宿主。**帧必须带真实 alpha**：Qt 6.8 之前的 offscreen 插件 backing store 是 `QImage::Format_RGB32`，单次抓帧必然不透明，所以宿主首帧探测一次，之后用黑/白两次清屏抓帧按 `a = 255 - max(white - black)` 重建 alpha（预乘颜色取黑底那一帧），两条路径输出同一帧；`INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 是强制走重建路径的测试钩子。
 - `src/headless_tests/` —— 原本的 `tests/*.rs`（crate 只能有 bin target，见迁移契约 §2.1）：`binary`（子进程跑本面板入口）、`catalog`（目录一致性 Q03）、`projection`（投影逐值断言）、`protocol`（真实 `wayland-server` 扮演合成器，E2）、`qml`（经离屏宿主渲染一帧真实像素）。
 - `i18n/en-US/panel.ftl`、`i18n/zh-CN/panel.ftl` —— 全部用户可见文案。
 - `src/main.rs` —— 日志、配置与目录装配、`--surface <taskbar|menubar|dock>` 与 `--help`（经 `tracing` 输出），以及启动自检：没有可用的 Wayland 显示时以可读错误与非零退出结束，然后把控制权交给 `layer::run`。

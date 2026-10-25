@@ -26,13 +26,29 @@ Window {
 
     readonly property var vm: JSON.parse(root.modelJson)
 
+    // The colour the window is *cleared* with. It is a host input rather than a
+    // drawing: the projection's own background is painted by the canvas below,
+    // so a host may swap the clear colour (the alpha reconstruction in
+    // `src/offscreen.cpp` clears over black and over white) without the panel
+    // losing anything it draws. `transparent` is the structural "no colour"
+    // sentinel (`theme::TRANSPARENT`), not a design colour; the host replaces it
+    // before every grab.
+    property color hostBackdrop: "transparent"
+
     visible: true
-    color: root.vm.background
+    color: root.hostBackdrop
 
     Item {
         id: canvas
         width: root.width
         height: root.height
+
+        // The projection's background, as content: it has to survive the host
+        // swapping the clear colour, so it is a rectangle and not `color:`.
+        Rectangle {
+            anchors.fill: parent
+            color: root.vm.background
+        }
 
         Repeater {
             model: root.vm.items
