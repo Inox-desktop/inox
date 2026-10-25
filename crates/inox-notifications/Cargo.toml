@@ -13,36 +13,46 @@ categories.workspace = true
 [dependencies]
 calloop.workspace = true
 anyhow.workspace = true
-# The D-Bus service itself (M5, acceptance D06). ADR 0022 §5 records the choice,
+# The D-Bus service itself (M5, acceptance D06). records the choice,
 # the licence (MIT); ADR 0027 migrates to the async API driven by block_on.
 zbus.workspace = true
 # The session lock state the daemon needs to withhold notification bodies while
 # the session is locked: the compositor is the authority and publishes it over
-# the private `inox-ipc` protocol (ADR 0022 §4). This is an L3 -> L2 dependency,
-# which ADR 0002 rule 1 allows (it is downward) and ADR 0022 §7 records.
+# the private `inox-ipc` protocol. This is an L3 -> L2 dependency,
+# which rule 1 allows (it is downward) and records.
 inox-protocols.workspace = true
 wayland-client.workspace = true
-# ADR 0003 fixes Iced for every shell component; the workspace entry selects the
-# tiny-skia renderer, which is what the headless render tests draw through.
-iced.workspace = true
+# : the popup stack is a QML + Qt Quick window, bound into Rust with
+# cxx-qt. The UI is one JSON projection computed in Rust (`src/view.rs`) and
+# handed over as a single `modelJson` property, so QML holds no second
+# definition of the interface and no colour, size or string of its own.
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+serde_json.workspace = true
 # L1: the shared Fluent loader and the design tokens. L3 components take no
-# same-layer dependency and none on the compositor (ADR 0013, 0018).
+# same-layer dependency and none on the compositor.
 inox-common.workspace = true
 inox-config.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[build-dependencies]
+cxx-qt-build.workspace = true
+
 [dev-dependencies]
-# The headless render harness: `iced` re-exports neither `UserInterface` nor the
-# tiny-skia renderer, so the three crates are named directly (ADR 0018).
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
-# `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02).
-image.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe` (root AGENTS.md §3.2), but the
+# `#[cxx_qt::bridge]` macro (see `src/cxxqt_object.rs`) emits
+# `unsafe extern "C++"` blocks without an `#[allow]` wrapper, so the generated
+# FFI glue cannot compile under `forbid`. Override it to `allow` here; Inox-authored code stays
+# unsafe-free.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

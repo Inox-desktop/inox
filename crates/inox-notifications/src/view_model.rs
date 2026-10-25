@@ -1,7 +1,6 @@
 //! What the popup stack draws, derived from what the daemon knows.
-//!
 //! The view is not allowed to make decisions (ADR 0013, and the same rule the
-//! other L3 components follow). Every choice a user could notice — which
+//! The view is not allowed to make decisions. Every choice a user could notice — which
 //! notifications are drawn, in what order, what each one says, which actions are
 //! offered and **why one of them is disabled**, whether there are more waiting
 //! than can be shown — is made here, once, from the queue, the display
@@ -20,7 +19,7 @@
 //! - **A locked session cannot leak.** The content of every popup comes from
 //!   [`Policy::content`], so a locked session's model holds
 //!   [`PopupContent::Withheld`] — a value with no field a body or an application
-//!   name could be in (ADR 0015).
+//!   name could be in.
 //! - **Urgency is a sentence as well as a colour.** Every popup carries
 //!   [`Popup::urgency_note`] — the localized name of its urgency, absent only for
 //!   the ordinary case — so that a critical notification is legible to a reader

@@ -1,29 +1,34 @@
-//! The Elm loop: state, messages, and `update`.
+//! The state machine: state, messages, and `update`.
 //!
 //! The shape is the one ADR 0003 fixes for every shell component and ADR 0013
 //! repeats for interactions: a message goes in, the state changes, and the
 //! interesting work comes back as a task. Nothing here draws, and nothing here
 //! blocks: the two slow things a launcher does — reading the desktop files and
 //! waiting for a launched process — both happen on other threads and come back
-//! as messages, which is what keeps `update` a pure state transition.
+//! as messages ([`crate::runtime`]), which is what keeps `update` a pure state
+//! transition.
+//!
+//! The Qt side reaches this module through exactly two doors, and both are
+//! narrow (docs/qml-migration-contract.md §3): a [`Message`] parsed from the JSON
+//! a QML control dispatched (`crate::cxxqt_object`), and the serial
+//! [`focus_search`] bumps, which is how "the caret belongs in the search field"
+//! survives without the toolkit handing the state a widget to poke.
 //!
 //! The launch decision itself is the part with the requirements in it. An
 //! activation is keyed by [`State::selection_generation`], which changes
 //! whenever the selection could have changed, so pressing Enter repeatedly
 //! before the first press has a result produces exactly one launch (acceptance
-//! D02); and the result of that launch is `Requested` until evidence arrives
+//! D02); and the result that launch is `Requested` until evidence arrives
 //! (`crate::activation`), so the launcher never claims a success it has not
 //! seen.
 
 use std::rc::Rc;
 
-use iced::Task;
-use iced::futures::StreamExt;
-use iced::keyboard::Key;
-use iced::keyboard::key::Named;
 use inox_common::i18n::Localizer;
 use inox_config::{LauncherConfig, Theme as Tokens};
 use tracing::{debug, info, warn};
+
+use crate::runtime::Task;
 
 use crate::activation::{
     self, Activation, Activator, LaunchOutcome, LaunchRequest, Observation, READINESS_GRACE,
@@ -36,7 +41,7 @@ use crate::view_model::{self, Projection, ViewModel};
 
 /// The widget id the search field is focused under.
 ///
-/// Deliberately not shaped like a Fluent message id: `tests/catalog.rs` reads
+/// Deliberately not shaped like a Fluent message id: `crate::catalog_tests` reads
 /// every `launcher-…` literal in the sources as a message the code asks for, and
 /// an interface identifier is not one.
 pub const SEARCH_INPUT_ID: &str = "inox-launcher-search-field";
@@ -103,6 +108,12 @@ pub struct State {
     pub activation: Option<Activation>,
     /// Whether the launcher has been asked to close.
     pub close_requested: bool,
+    /// How many times the launcher has asked for the caret in the search field.
+    ///
+    /// Focus is a QML-side widget state, so the request is a number the bridge
+    /// publishes: QML moves the caret whenever it changes. Bumping it is what
+    /// [`focus_search`] does, and what a test asserts instead of poking a widget.
+    pub focus_serial: u64,
     /// What the view draws.
     ///
     /// Projected after every message rather than on every frame: the projection
@@ -161,6 +172,7 @@ impl State {
             activator: Activator::new(),
             activation: None,
             close_requested: false,
+            focus_serial: 0,
             model: empty_model(),
         }
     }
@@ -168,9 +180,9 @@ impl State {
     /// A state over an index the caller supplies.
     ///
     /// [`State::new`] reads the XDG directories; this is the same state for a
-    /// caller that already has an index — the render tests in `tests/render.rs`,
-    /// which need a fixed list of applications to compare pixels against, and
-    /// any future preview or embedding of the launcher.
+    /// caller that already has an index — the projection tests in
+    /// `crate::headless_tests`, which need a fixed list of applications to
+    /// assert against, and any future preview or embedding of the launcher.
     pub fn with_index(prepared: &Prepared, index: AppIndex, generation: u64) -> Self {
         let mut state = Self::blank(prepared);
         state.scan_generation = generation;
@@ -290,51 +302,40 @@ pub enum Message {
 
 /// The message a key press maps to.
 ///
-/// Pure, and tested on its own: the subscription below is a two-line adapter,
-/// so "Enter activates and Escape closes" is a property of this function rather
-/// than of a running window.
-pub fn key_binding(key: &Key) -> Option<Message> {
+/// Pure, and tested on its own: QML reports the key it saw as one of the four
+/// names below (`dispatch`'s `press` action), so "Enter activates and Escape
+/// closes" stays a property of this function rather than of a running window.
+///
+/// Key repeat is ignored: holding Enter is a person leaning on a key, not a
+/// request to launch the same application again.
+pub fn key_binding(key: &str, repeat: bool) -> Option<Message> {
+    if repeat {
+        return None;
+    }
     match key {
-        Key::Named(Named::ArrowUp) => Some(Message::SelectionMoved(Step::Previous)),
-        Key::Named(Named::ArrowDown) => Some(Message::SelectionMoved(Step::Next)),
-        Key::Named(Named::Enter) => Some(Message::Activated),
-        Key::Named(Named::Escape) => Some(Message::Dismissed),
+        "up" | "arrowup" => Some(Message::SelectionMoved(Step::Previous)),
+        "down" | "arrowdown" => Some(Message::SelectionMoved(Step::Next)),
+        "enter" | "return" => Some(Message::Activated),
+        "escape" | "esc" => Some(Message::Dismissed),
         _ => None,
     }
 }
 
-/// The task that puts the caret in the search field.
+/// Puts the caret in the search field.
 ///
-/// `Operation` is Iced's only mechanism for reaching into a widget's state, and
-/// `task::operate` is the only way to run one; iced 0.14 exposes both through
-/// the `advanced` feature this crate enables for exactly this call.
-pub fn focus_search() -> Task<Message> {
-    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::focus(
-        iced::widget::Id::new(SEARCH_INPUT_ID),
-    ))
+/// The launcher is a thing you type into, so the field is focused before the
+/// first frame: without this the window would open with nothing focused and the
+/// first keystroke would go nowhere. Focus itself belongs to QML now, so what
+/// this does is record the request as [`State::focus_serial`], which the bridge
+/// publishes and the QML tree reacts to.
+pub fn focus_search(state: &mut State) {
+    state.focus_serial += 1;
+    state.refresh_model();
 }
 
 /// The window title.
 pub fn title(state: &State) -> String {
     state.localizer.message("launcher-window-title")
-}
-
-/// The window theme, from the theme tokens.
-pub fn theme(state: &State) -> iced::Theme {
-    crate::theme::iced_theme(&state.tokens)
-}
-
-/// The keys the launcher handles.
-///
-/// Key repeat is ignored: holding Enter is a person leaning on a key, not a
-/// request to launch the same application again.
-pub fn subscription(_state: &State) -> iced::Subscription<Message> {
-    iced::keyboard::listen().filter_map(|event| match event {
-        iced::keyboard::Event::KeyPressed {
-            key, repeat: false, ..
-        } => key_binding(&key),
-        _ => None,
-    })
 }
 
 /// Applies one message.
@@ -344,8 +345,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
     task
 }
 
-/// The plan the update returns when it draws nothing, for `State::new` only.
-fn empty_model() -> ViewModel {
+/// The view model before anything has been projected.
+///
+/// `State::blank` and the bridge's fallback projection both need a total value
+/// here rather than an `Option` every renderer would have to unwrap.
+pub(crate) fn empty_model() -> ViewModel {
     ViewModel {
         title: String::new(),
         placeholder: String::new(),
@@ -400,7 +404,7 @@ fn handle(state: &mut State, message: Message) -> Task<Message> {
         Message::Dismissed => {
             state.close_requested = true;
             info!("the launcher was dismissed");
-            iced::exit()
+            Task::none()
         }
         Message::IndexRetried => retry_index(state),
         Message::IndexLoaded(generation, index) => {
@@ -583,47 +587,32 @@ fn retry_launch(state: &mut State) -> Task<Message> {
 
 /// Reads the index off the update loop.
 fn scan_task(options: IndexOptions, generation: u64) -> Task<Message> {
-    Task::perform(
-        async move { index::scan(&options, generation) },
-        move |index| Message::IndexLoaded(generation, index),
-    )
+    Task::perform(move || index::scan(&options, generation))
+        .map(move |index| Message::IndexLoaded(generation, index))
 }
 
 /// Starts a process and reports what became of it.
 ///
-/// The blocking part runs on a thread of its own — never on the update loop and
-/// never on the executor's worker — and the evidence comes back through a
-/// stream, which is the shape ADR 0004's "long tasks go to calloop's threads"
-/// has for an Iced component (ADR 0018 keeps Iced's own executor for the same
-/// reason).
+/// The blocking part runs on a thread of its own — never on the UI thread — and
+/// the evidence comes back through the message queue [`crate::runtime`] owns,
+/// which is the shape the "long tasks go to calloop's threads" has for a
+/// Qt component: the Qt event loop stays in charge of the UI thread, and
+/// `pump` turns the evidence into a state transition.
 fn probe(request: LaunchRequest, helper: Option<std::path::PathBuf>) -> Task<Message> {
     let selection = request.selection;
-    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
-
-    let started = std::thread::Builder::new()
-        .name("inox-launcher-probe".to_owned())
-        .spawn(move || {
-            let observation = activation::spawn_and_probe_with_helper(
+    Task::attempt(
+        move || {
+            activation::spawn_and_probe_with_helper(
                 &request.argv,
                 READINESS_GRACE,
                 helper.as_deref(),
-            );
-            if sender.unbounded_send(observation).is_err() {
-                debug!("the launcher closed before the launch could be verified");
-            }
-        });
-
-    match started {
-        Ok(_handle) => Task::stream(
-            receiver.map(move |observation| Message::LaunchObserved(selection, observation)),
-        ),
-        Err(error) => Task::done(Message::LaunchObserved(
-            selection,
-            Observation::SpawnFailed {
-                detail: error.to_string(),
-            },
-        )),
-    }
+            )
+        },
+        |error| Observation::SpawnFailed {
+            detail: error.to_string(),
+        },
+    )
+    .map(move |observation| Message::LaunchObserved(selection, observation))
 }
 
 /// The failure that stands for "there is no index".
@@ -681,8 +670,8 @@ mod tests {
         drop(update(state, message));
     }
 
-    fn press(state: &mut State, key: Named) {
-        let message = key_binding(&Key::Named(key)).expect("the key is bound");
+    fn press(state: &mut State, key: &str) {
+        let message = key_binding(key, false).expect("the key is bound");
         send(state, message);
     }
 
@@ -704,23 +693,29 @@ mod tests {
     #[test]
     fn the_four_handled_keys_map_to_their_messages() {
         assert_eq!(
-            key_binding(&Key::Named(Named::ArrowUp)),
+            key_binding("up", false),
             Some(Message::SelectionMoved(Step::Previous))
         );
         assert_eq!(
-            key_binding(&Key::Named(Named::ArrowDown)),
+            key_binding("down", false),
             Some(Message::SelectionMoved(Step::Next))
         );
-        assert_eq!(
-            key_binding(&Key::Named(Named::Enter)),
-            Some(Message::Activated)
-        );
-        assert_eq!(
-            key_binding(&Key::Named(Named::Escape)),
-            Some(Message::Dismissed)
-        );
-        assert_eq!(key_binding(&Key::Character("a".into())), None);
-        assert_eq!(key_binding(&Key::Named(Named::Tab)), None);
+        assert_eq!(key_binding("enter", false), Some(Message::Activated));
+        assert_eq!(key_binding("escape", false), Some(Message::Dismissed));
+        assert_eq!(key_binding("a", false), None);
+        assert_eq!(key_binding("tab", false), None);
+        assert_eq!(key_binding("", false), None);
+    }
+
+    #[test]
+    fn a_repeated_key_is_ignored() {
+        for key in ["up", "down", "enter", "escape"] {
+            assert_eq!(
+                key_binding(key, true),
+                None,
+                "holding {key} is one press, not a stream of them",
+            );
+        }
     }
 
     #[test]
@@ -733,11 +728,32 @@ mod tests {
     }
 
     #[test]
-    fn the_window_theme_is_built_from_the_tokens() {
-        let state = state();
-        assert_eq!(theme(&state).palette().background, {
-            crate::theme::colour(state.tokens.colors.background)
-        });
+    fn the_launcher_focuses_the_search_field_before_the_first_frame() {
+        // `main` boots the state and then asks for the caret; the QML tree moves
+        // it when the serial changes. A launcher that opens with nothing focused
+        // cannot be typed into, so this is the startup contract.
+        let mut state = state();
+        assert_eq!(state.focus_serial, 0, "nothing has asked for focus yet");
+
+        focus_search(&mut state);
+        assert_eq!(state.focus_serial, 1);
+
+        focus_search(&mut state);
+        assert_eq!(state.focus_serial, 2, "every request is a new serial");
+    }
+
+    #[test]
+    fn the_projection_names_the_field_the_caret_belongs_in() {
+        let mut state = state();
+        focus_search(&mut state);
+        let projected = crate::view::project(&state);
+
+        assert_eq!(
+            projected["focus"]["field"].as_str(),
+            Some(SEARCH_INPUT_ID),
+            "the projection tells QML which control the caret belongs in",
+        );
+        assert_eq!(projected["focus"]["serial"].as_u64(), Some(1));
     }
 
     #[test]
@@ -759,7 +775,7 @@ mod tests {
         assert_eq!(state.model.rows[0].id, "example.desktop");
 
         let selection = state.selection_generation;
-        press(&mut state, Named::Enter);
+        press(&mut state, "enter");
         assert!(state.activator.is_tracked(selection));
         assert_eq!(state.activator.tracked(), 1);
         assert!(matches!(
@@ -768,8 +784,8 @@ mod tests {
         ));
 
         // The finger reaches Enter again before the first launch has a result.
-        press(&mut state, Named::Enter);
-        press(&mut state, Named::Enter);
+        press(&mut state, "enter");
+        press(&mut state, "enter");
         assert_eq!(
             state.activator.tracked(),
             1,
@@ -780,7 +796,7 @@ mod tests {
     #[test]
     fn a_new_selection_is_a_new_launch() {
         let mut state = state();
-        press(&mut state, Named::Enter);
+        press(&mut state, "enter");
         assert_eq!(state.activator.tracked(), 1);
 
         send(&mut state, Message::RowChosen("second.desktop".to_owned()));
@@ -796,23 +812,23 @@ mod tests {
         let mut state = state();
         let started = state.selection_generation;
 
-        press(&mut state, Named::ArrowUp);
+        press(&mut state, "up");
         assert_eq!(
             state.selection_generation, started,
             "the first row is already selected",
         );
 
-        press(&mut state, Named::ArrowDown);
+        press(&mut state, "down");
         assert_eq!(state.selection_generation, started + 1);
 
         // Down to the last row, then one press too many.
         while state.selected < state.model.rows.len() - 1 {
-            press(&mut state, Named::ArrowDown);
+            press(&mut state, "down");
         }
         let at_the_end = state.selection_generation;
         assert_eq!(at_the_end, started + (state.model.rows.len() - 1) as u64);
 
-        press(&mut state, Named::ArrowDown);
+        press(&mut state, "down");
         assert_eq!(
             state.selection_generation, at_the_end,
             "the last row is a wall, so it is not a new selection",
@@ -823,11 +839,11 @@ mod tests {
     fn the_selection_does_not_wrap_around() {
         let mut state = state();
         for _ in 0..5 {
-            press(&mut state, Named::ArrowUp);
+            press(&mut state, "up");
         }
         assert_eq!(state.selected, 0);
         for _ in 0..9 {
-            press(&mut state, Named::ArrowDown);
+            press(&mut state, "down");
         }
         assert_eq!(state.selected, state.model.rows.len() - 1);
     }
@@ -836,7 +852,7 @@ mod tests {
     fn escape_asks_to_close() {
         let mut state = state();
         assert!(!state.close_requested());
-        press(&mut state, Named::Escape);
+        press(&mut state, "escape");
         assert!(state.close_requested());
     }
 
@@ -917,7 +933,7 @@ mod tests {
     #[test]
     fn evidence_updates_the_reported_outcome() {
         let mut state = state();
-        press(&mut state, Named::Enter);
+        press(&mut state, "enter");
         let selection = state.selection_generation;
 
         send(
@@ -948,7 +964,7 @@ mod tests {
     #[test]
     fn a_failed_launch_can_be_retried() {
         let mut state = state();
-        press(&mut state, Named::Enter);
+        press(&mut state, "enter");
         let selection = state.selection_generation;
         send(
             &mut state,

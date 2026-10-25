@@ -4,14 +4,14 @@
 
 ## 职责
 
-Shell 主框架：入口之间的导航规则（ADR 0013 的「桌面交互协调、跨入口的导航规则」）与各入口共同遵循的跨进程服务状态契约。所属层级：**L3**。本 crate **不绘制任何内容**，因此没有 Iced 依赖、没有 view、也没有截图测试。
+Shell 主框架：入口之间的导航规则（ADR 0013 的「桌面交互协调、跨入口的导航规则」）与各入口共同遵循的跨进程服务状态契约。所属层级：**L3**。本 crate **不绘制任何内容**，因此没有 GUI 依赖（既没有 Iced，也没有 Qt/cxx-qt）、没有 view、也没有截图测试。
 
 ## crate 特有约束
 
 - 默认禁止 `unsafe`：继承根 `Cargo.toml` 的 `[workspace.lints]`（`unsafe_code = "forbid"`）；本 crate 无例外。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`；`--help` 的用法文本也走 `tracing::info!`，不打印到标准输出。
-- **不得引入 Iced、事件循环或任何绘制依赖**：本 crate 的职责是规则与契约，不是界面。界面属于各入口组件。
+- **不得引入 GUI、事件循环或任何绘制依赖**（Iced、Qt/cxx-qt 都不行）：本 crate 的职责是规则与契约，不是界面。界面属于各入口组件。
 - **不得新增到其他 L3 crate 或 `inox-compositor` 的 Cargo 依赖**（ADR 0002 规则 1/3、ADR 0013）：入口之间只通过协议协作，本条由 `cargo test -p inox-integration --test layering`（B04）机械断言。
 - **不实现第三方插件加载**：ADR 0013 要求通用插件平台另写 ADR。`src/registry.rs` 只负责内部入口注册表，新增动态加载、路径搜索或第三方清单前必须先有 ADR。
 - **用户可见文案一律走 Fluent**：`src/` 里不得出现硬编码句子，只能出现 `crate::i18n::id` 中的消息 ID 与占位符（`src/diagnostic.rs`）。新增消息必须同时登记到 `id::ALL` 与两个目录；`tests/catalog.rs` 会在任一侧缺失时失败。
@@ -22,7 +22,7 @@ Shell 主框架：入口之间的导航规则（ADR 0013 的「桌面交互协�
 - 上游 Inox crate：`inox-common`（Fluent 目录装配与语言协商）、`inox-config`（`InoxConfig`、`ConfigPaths`、`ComponentFiles`）。
 - 第三方：`anyhow`（二进制入口）、`thiserror`（库错误类型）、`tracing`、`tracing-subscriber`。
 - 测试：`proptest`（`[dev-dependencies]`）。
-- **不依赖 `iced` / `iced_core` / `iced_runtime` / `iced_tiny_skia`**：本 crate 没有视图，故没有 `tests/render.rs` 与 `tests/support/mod.rs`，`image` 也不需要。
+- **不依赖任何 GUI 库**（迁移前是 `iced` 系，迁移后是 `cxx-qt` 系，两者都不引入，ADR 0039）：本 crate 没有视图，故没有渲染测试装置，`image` 也不需要。
 
 ## 命令
 

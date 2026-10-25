@@ -17,9 +17,10 @@
 //!
 //! The loading itself is [`inox_common::i18n::Localizer`]'s job — this module
 //! only says which catalogs the daemon ships and which ids the code names. The
-//! parity check that keeps the two locales in step runs in `tests/catalog.rs`
-//! through [`inox_common::i18n::compare_catalogs`] (acceptance Q03), together
-//! with a two-way check that [`MESSAGES`] and the catalogs agree.
+//! parity check that keeps the two locales in step runs in
+//! `crate::headless_tests` through [`inox_common::i18n::compare_catalogs`]
+//! (acceptance Q03), together with a two-way check that [`MESSAGES`] and the
+//! catalogs agree.
 
 use inox_common::i18n::{I18nError, Locale, Localizer};
 
@@ -32,8 +33,8 @@ pub const ZH_CN: &[&str] = &[include_str!("../i18n/zh-CN/notifications.ftl")];
 /// Every message id this crate names, so that a renaming cannot leave a popup
 /// showing a raw id.
 ///
-/// `tests/catalog.rs` asserts both directions: every id here is in the catalogs,
-/// and every id in the catalogs is here.
+/// `crate::headless_tests` asserts both directions: every id here is in the
+/// catalogs, and every id in the catalogs is here.
 pub const MESSAGES: &[&str] = &[
     "notifications-window-title",
     "notifications-empty",

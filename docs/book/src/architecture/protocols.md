@@ -15,7 +15,7 @@
 | `wl_data_device`（`wl_data_device_manager` v3） | 必须 | 剪贴板与拖放；读取权跟随键盘焦点 | 已支持（M3；Smithay `wayland::selection`） |
 | `xdg-shell` | 必须 | 标准窗口 | 已支持（toplevel 作为窗口） |
 | `xdg-decoration` | 必须 | 服务端/客户端装饰协商；M3 不广告，X11 窗口标题栏由 satellite 自绘 | 尚未实现 |
-| `wlr-layer-shell-unstable-v1` v4 | 必须 | 面板/壁纸等普通桌面层；不用于安全锁屏 | 合成器已接入，真实客户端测试纳入 CI；L3 的 Iced 客户端接线未完成 |
+| `wlr-layer-shell-unstable-v1` v4 | 必须 | 面板等桌面层；不用于安全锁屏 | 合成器已接入（真实客户端测试纳入 CI）；`inox-panel` 是真实 layer 客户端，界面由离屏 QML 渲染进 `wl_shm` 帧（ADR 0038）；启动器、通知与壁纸按 ADR 0038 是普通窗口。真实宿主截图证据（waydriver）仍未接线 |
 | `viewporter`（`wp_viewporter`） | 必须 | 缩放与裁剪；`xwayland-satellite` 的宿主硬前提（缺失即启动失败） | 已支持（M3；Smithay `wayland::viewporter`） |
 | `linux-dmabuf` | 必须 | GPU 缓冲零拷贝 | 尚未实现 |
 | `presentation-time` | 必须 | 帧同步反馈 | 尚未实现 |
@@ -28,7 +28,7 @@
 | `zwp_primary_selection_device_manager_v1` | 必须 | 主选区（X11 中键粘贴兼容） | 已支持（M3；与 `wl_data_device_manager` 一并广告） |
 | `xwayland-shell` | 计划 | XWayland 集成 | 尚未实现 |
 | `text-input-v3` / `input-method-v2` / `virtual-keyboard-v1` | 提前实现 | 输入法与候选窗 | 管理器接口 v1，受信连接与锁屏隔离已接入；新增 CI 用例待运行，见[输入法](../usage/input-methods.md) |
-| `inox-glass-v1`（**私有 Inox 协议**，全局 `inox_glass_manager_v1` v1） | 实验性（私有、unstable，非上游） | 桌面玻璃材质（背景模糊）：客户端请求合成器模糊自己表面背后的区域，`capabilities` 报半径上限，模糊像素不回传、区域裁剪到该表面、仅 layer 角色生效、锁定会话报 0 | 绑定与真实 socket 往返（`inox-protocols`，E0+E1）、`[glass]` 令牌、面板的菜单栏/dock 材质，以及合成器在 **headless** 路径的模糊 pass（E1 参数层测试 + E2 离屏像素判别性证据 `tests/glass_blur.rs`）均已实现；**物理（DRM）路径报 0 且场景保持锐利**（未决项），面板尚未绑定本协议，真机效果未验证。见 [ADR 0031](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`） |
+| `inox-glass-v1`（**私有 Inox 协议**，全局 `inox_glass_manager_v1` v1） | 实验性（私有、unstable，非上游） | 桌面玻璃材质（背景模糊）：客户端请求合成器模糊自己表面背后的区域，`capabilities` 报半径上限，模糊像素不回传、区域裁剪到该表面、仅 layer 角色生效、锁定会话报 0 | 绑定与真实 socket 往返（`inox-protocols`，E0+E1）、`[glass]` 令牌、面板的菜单栏/dock 材质，以及合成器在 **headless** 路径的模糊 pass（E1 参数层测试 + E2 离屏像素判别性证据 `tests/glass_blur.rs`）均已实现；**物理（DRM）路径报 0 且场景保持锐利**（未决项）。面板已绑定本协议，按 `frost` 的决策发请求（`glass.blur == 0` 时根本不创建对象），但真实合成器上的磨砂效果未验证。见 [ADR 0031](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`） |
 
 「当前状态」依据本仓库 `crates/inox-compositor/` 的实现：它在 headless 路径上向客户端广告的全局为 `wl_compositor`（v6）/ `wl_subcompositor`（Smithay `CompositorState`）、`wl_shm`、`wl_seat`、`wl_output`（每个输出一个）与 `xdg_wm_base`；M4 起新增 `wp_fractional_scale_manager_v1`（v1），M3 新增 `wp_viewporter`（Smithay `wayland::viewporter`）、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`（后两者来自 Smithay `wayland::selection`），随本分支合入，决策见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)（状态仍为 `proposed`）。L2 后续补齐 `zwlr_layer_shell_v1` v4：四层合成与输入命中、锚点/边距/独占区、configure/ack、空缓冲卸载与重映射、销毁和断连清理；键盘焦点覆盖 None、Exclusive、OnDemand，选择权限仍跟随实际焦点。其余标为未实现的行尚无对应实现。
 
@@ -47,13 +47,13 @@
 
 `inox-protocols` 已实现，分两半：`standard` 把 Inox 目标的标准协议**再导出**（只再导出，不包裹、不重写上游绑定）—— 核心 `wl_*`、`xdg-shell`/`xdg-decoration`/`xdg-output`、`viewporter`、`linux-dmabuf`、`presentation-time`、`idle-inhibit`、`ext-idle-notify-v1`、`ext-session-lock-v1`（staging）与 `wlr-layer-shell`；`ipc` 与 `glass` 用 `wayland-scanner` 在编译期分别从 `protocol/inox-ipc.xml` 与 `protocol/inox-glass-v1.xml` 生成私有协议的客户端与服务端绑定。
 
-`tests/standard_bindings.rs` 断言每个再导出的接口名与版本，并断言客户端/服务端两半都可到达；`tests/ipc_roundtrip.rs` 在真实连接上跑一次 `inox_ipc` 的版本查询、配置重载、锁屏角色认领与锁状态事件的往返；`tests/glass_roundtrip.rs` 在真实 Unix socket pair 上驱动 `inox_glass_manager_v1`：断言 `capabilities` 先于任何效果到达、半径与区域逐字到达服务端、非正尺寸原样过线（由合成器读作清空），且除整数半径外没有像素跨回客户端。注意「有绑定」不等于「有实现」：`wlr-layer-shell` 已由合成器广告，但 L3 的 Iced 客户端尚未接入真实 layer 表面（见[组件清单](./components.md)）。
+`tests/standard_bindings.rs` 断言每个再导出的接口名与版本，并断言客户端/服务端两半都可到达；`tests/ipc_roundtrip.rs` 在真实连接上跑一次 `inox_ipc` 的版本查询、配置重载、锁屏角色认领与锁状态事件的往返；`tests/glass_roundtrip.rs` 在真实 Unix socket pair 上驱动 `inox_glass_manager_v1`：断言 `capabilities` 先于任何效果到达、半径与区域逐字到达服务端、非正尺寸原样过线（由合成器读作清空），且除整数半径外没有像素跨回客户端。注意「有绑定」不等于「有实现」：`wlr-layer-shell` 已由合成器广告，`inox-panel` 也确实在自己的 `layer.rs` 里创建真实 layer 表面（界面是离屏 QML 渲染的帧），但**真实合成器宿主上的截图断言仍缺**；`ext-session-lock-v1` 的客户端是 `inox-lock`，它同样自己建表面（见[组件清单](./components.md)）。
 
 ## Inox 私有协议（`inox-ipc` 与 `inox-glass-v1`）
 
 除标准协议外，Inox 定义了自己的私有协议。`inox-ipc` 用于合成器与 Shell 之间传递标准协议不覆盖的信息（配置重载通知、可信锁屏角色的认领与锁状态广播），接口版本为 **2**（v2 新增 `claim_lock_role` 与 `session_lock_state`，见 [ADR 0022](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)）；消费者必须通过 `version` 事件协商，不得假定固定版本。
 
-`inox-glass-v1` 让客户端请求合成器模糊自己表面背后的区域（桌面玻璃材质）：`inox_glass_manager_v1.get_glass(surface)` 创建每表面一个的 `inox_glass_v1`，`set_radius`/`set_region` 描述效果，唯一事件 `capabilities` 报告合成器接受的最大半径。模糊像素**不**回传客户端，区域裁剪到该表面，半径被钳制到上限，普通（非 layer 角色）表面与锁定会话都得到 `max_radius = 0`。合成器已广告全局并在 **headless** 路径实现模糊 pass（`tests/glass_blur.rs` 用无 glass 对象的对照帧做判别性像素断言）；**物理（DRM）路径报 0 且把场景保持锐利**（它还没有诚实的 damage 描述）。决策、安全与生命周期见 [ADR 0031](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`）；**面板尚未绑定本协议**，因此它还不能被读作「桌面上的磨砂已可用」。
+`inox-glass-v1` 让客户端请求合成器模糊自己表面背后的区域（桌面玻璃材质）：`inox_glass_manager_v1.get_glass(surface)` 创建每表面一个的 `inox_glass_v1`，`set_radius`/`set_region` 描述效果，唯一事件 `capabilities` 报告合成器接受的最大半径。模糊像素**不**回传客户端，区域裁剪到该表面，半径被钳制到上限，普通（非 layer 角色）表面与锁定会话都得到 `max_radius = 0`。合成器已广告全局并在 **headless** 路径实现模糊 pass（`tests/glass_blur.rs` 用无 glass 对象的对照帧做判别性像素断言）；**物理（DRM）路径报 0 且把场景保持锐利**（它还没有诚实的 damage 描述）。决策、安全与生命周期见 [ADR 0031](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`）；面板已经在 `layer.rs` 里绑定该协议、按 `frost.rs` 的决策请求（半径按 `capabilities` 钳制，`blur = 0` 时不创建对象），但合成器只在 headless 路径真的画模糊，因此它仍不能被读作「桌面上的磨砂已可用」。
 
 - 私有协议状态为 **unstable**：破坏性变更必须版本化，并同步更新 PRD 的协议矩阵。
 - 新增或改动私有协议同样属于「引入新的协议策略」，需要 ADR（PRD §5.4）。

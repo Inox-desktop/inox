@@ -18,7 +18,7 @@ Inox 采用 **AI-first** 工作流：AI 编写绝大部分代码、测试与文�
 ## 一次改动的完整流程
 
 1. **读约束**：根级 `AGENTS.md` + 目标 crate 的 `AGENTS.md` + 相关的 PRD 章节与 ADR。
-2. **判断是否需要 ADR**：新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay / Iced / calloop）、配置或 IPC 格式的破坏性变更，都**必须先写 ADR**（见[架构决策记录](../architecture/decisions.md)）。
+2. **判断是否需要 ADR**：新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay / QML + Qt Quick 与 cxx-qt / calloop）、配置或 IPC 格式的破坏性变更，都**必须先写 ADR**（见[架构决策记录](../architecture/decisions.md)）。
 3. **在功能分支上改动**：只动必要的文件，不顺手重构无关代码。
 4. **同步补齐测试与文档**：新增或修改行为必须同时新增/更新测试；用户可见文案必须同步 `en-US`。
 5. **本地只做轻量自检**（可选）：`cargo fmt`、`cargo check`、`cargo clippy`。这些结果**不作为验收依据**；环境没有工具链时直接跳过。

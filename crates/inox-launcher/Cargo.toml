@@ -12,7 +12,7 @@ categories.workspace = true
 
 # ADR 0002: `inox-launcher` is L3. It depends on L1 only — the index, the search
 # and the activation state machine are this crate's own, and no other L3
-# component or the compositor is linked in (ADR 0013, ADR 0018). The layer table
+# component or the compositor is linked in. The layer table
 # in the root `Cargo.toml` is enforced by
 # `cargo test -p inox-integration --test layering`.
 [dependencies]
@@ -29,31 +29,34 @@ inox-common.workspace = true
 # every colour and size in `view.rs` and `theme.rs` comes from.
 inox-config.workspace = true
 
-# ADR 0003/0018: Iced, tiny-skia only (no GPU needed, and no `wgpu` renderer no
-# configuration selects).
-#
-# `advanced` is this member's own addition (root AGENTS.md §8 lets a member add
-# features): it is the only thing that exposes
-# `iced::advanced::task::operate`, without which an `Operation` — the sole way to
-# focus the search field at startup — cannot be turned into a `Task`. Without it
-# the launcher opens with nothing focused and cannot be typed into.
-iced = { workspace = true, features = ["advanced"] }
+# : the window is Qt Quick, reached through the cxx-qt bridge in
+# `src/cxxqt_object.rs`. `cxx` is the FFI layer the bridge macro expands into,
+# `cxx-qt-lib` wraps the Qt value type the projection publishes (QString), and
+# `cxx-qt-build` (a build dependency) registers the bundled QML module.
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+
+# The projection is one JSON document (docs/qml-migration-contract.md §3): the
+# bridge hands QML a `model_json` string, and QML parses it once per change.
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+cxx-qt-build.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
 
-# The headless render harness (`tests/support/mod.rs`): it lays the real widget
-# tree out and draws it through the same tiny-skia renderer the binary uses.
-# `iced` re-exports neither `UserInterface` nor the renderer, so the three
-# crates are named directly.
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
+# The workspace forbids `unsafe` (root AGENTS.md §3.2), but the
+# `#[cxx_qt::bridge]` macro (see `src/cxxqt_object.rs`) emits
+# `unsafe extern "C++"` blocks without an `#[allow]` wrapper, so the generated
+# FFI glue cannot compile under `forbid`. Override it to `allow` here; Inox-authored code stays
+# unsafe-free.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
 
-# Screenshots as CI artifacts (acceptance Q02), written only when
-# `INOX_SCREENSHOT_DIR` is set.
-image.workspace = true
-
-[lints]
-workspace = true
+[lints.clippy]
+all = "warn"

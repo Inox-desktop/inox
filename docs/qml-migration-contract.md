@@ -140,3 +140,16 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
 - `git show feat/greet-qml:crates/inox-greet/src/{main.rs,cxxqt_object.rs,view.rs,headless_tests.rs}` 与 `.../qml/main.qml`：窗口 + cxx-qt + JSON/属性投影 + headless 自检的完整样本（注意它是 origin/main 线的「预览版」greet，不含登录链的 auth；当前分支的 greet 必须保留 `inox-auth` 与 ADR 0029 边界）。
 - `crates/inox-qml-prototype`：最小 bridge/QML 模块/headless 测试。
 - panel/lock 的离屏 C++ 宿主参考 `.probe-qtbridge/`（探针，不提交）：`src/offscreen.h` / `src/offscreen.cpp` 的形态可复制到 crate 内，改成 QML 模块 URL 与尺寸参数。
+
+## 11. 收尾状态（2026-10-24）
+
+迁移已进入收尾：七个组件全部改为 QML + Qt Quick（cxx-qt 绑定），根 `Cargo.toml` 不再声明
+`iced` / `iced_layershell` / `iced_core` / `iced_runtime` / `iced_tiny_skia`，`Cargo.lock` 中不再有
+`iced*` 包。收尾的判据、私有 ABI 与私有协议的授权边界、以及每条验收 ID 记录在
+[ADR 0039](../adr/0039-qml-migration-completion-and-private-abi.md)。
+
+- §1–§10 仍是本迁移的实施契约；收尾不改变任何一条实现约束。
+- 新增授权（ADR 0039）：允许在**局部**使用 Qt 私有 ABI 与 Inox 私有合成器协议，前提是产物保持原生
+  Qt Quick、私有 ABI 的范围在 crate 级 `AGENTS.md` 记录、GPL-only Qt 模块仍然禁止。
+- 已知缺口（不得在文档里声称已解决）：panel/lock 的离屏表面没有 AT-SPI 语义桥；真实合成器宿主上的
+  waydriver 截图断言（ADR 0039 的 M10）仍未接线；QML 侧每次状态变化整体重发 JSON 投影。

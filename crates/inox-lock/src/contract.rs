@@ -1,5 +1,5 @@
+//! The two boundaries this component talks across.
 //! The two boundaries this component talks across (ADR 0013, ADR 0015).
-//!
 //! A lock screen has no state of its own that matters: the compositor owns the
 //! lock, and a privileged authentication boundary owns the answer to "is this
 //! the user?". What is left for `inox-lock` is to be an honest client of both,
@@ -243,7 +243,7 @@ impl AuthOutcome {
     }
 }
 
-/// What the authentication boundary last said (ADR 0013 decision 2).
+/// What the authentication boundary last said.
 ///
 /// `Sent`, `Accepted` and `Answered` are the distinguishable fates of one
 /// request. `Answered` carries the outcome, so "the boundary answered" and "the
@@ -369,7 +369,7 @@ impl BoundaryState {
 /// attempt is queued for the transport, the lock screen's own state no longer
 /// holds it. `Debug` is derived, which is safe only because
 /// [`Secret`]'s is redacted — that is what keeps `tracing::debug!(?command)` from
-/// printing a password (ADR 0015, acceptance S03).
+/// printing a password.
 #[derive(Debug)]
 pub struct AuthAttempt {
     generation: Generation,

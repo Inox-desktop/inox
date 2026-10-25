@@ -1,13 +1,15 @@
 //! The settings application: state, messages and the Elm update loop.
 //!
-//! The shape is iced's, and ADR 0003 makes it mandatory: a [`State`], a
-//! [`Message`] for everything that can happen, one [`update`] that is the only
-//! place state changes, and a [`view()`] that only reads.
+//! The shape is Elm's, and it survives the move to QML: a [`State`], a
+//! [`Message`] for everything that can happen, and one [`update`] that is the
+//! only place state changes. What used to be `view()` is now
+//! [`crate::view::project`] — a Qt-free value the QML tree renders — so the
+//! update loop still knows nothing about how the window is drawn.
 //!
 //! **`update` performs no I/O.** Writing a file is a side effect, so it leaves
 //! the loop as an [`OutgoingCommand`]: what to write, where, and which
-//! [`Guard`] says the file has not changed since it was read. `main.rs` performs
-//! those commands and hands the outcome back as [`Message::SaveSettled`], which
+//! [`Guard`] says the file has not changed since it was read. `runtime.rs`
+//! performs those commands and hands the outcome back as [`Message::SaveSettled`], which
 //! is why every rule below — "a save writes only the fields the user touched",
 //! "the window may claim success only after a readback", "a stale answer
 //! changes nothing" — is a state transition a test can drive without touching a
@@ -18,7 +20,7 @@
 //! | command | what the runtime does | answer |
 //! |---|---|---|
 //! | [`OutgoingCommand::Save`] | [`crate::persist::save`] | [`Message::SaveSettled`] |
-//! | [`OutgoingCommand::Apply`] | ask the component to apply the generation | [`Message::ComponentApplied`] and friends |
+//! | [`OutgoingCommand::Apply`] | ask the component to apply the generation | [`Message::LiveConfigured`] and friends |
 //! | [`OutgoingCommand::Reload`] | read the files and the configuration again | [`Message::Reloaded`] |
 //! | [`OutgoingCommand::ConfirmDisplay`] | tell the compositor to keep a display trial | [`Message::DisplayConfirmed`] |
 //! | [`OutgoingCommand::RollbackDisplay`] | ask the compositor to put the previous display settings back | [`Message::DisplayReverted`] |
@@ -29,7 +31,7 @@
 //! reports that the change is saved but not in effect — which is exactly the
 //! distinction ADR 0014 asks it to show.
 //!
-//! **A display change is a question** (ADR 0028). Mode, scale and position are
+//! **A display change is a question**. Mode, scale and position are
 //! applied live but only for as long as the user does not answer: the compositor
 //! keeps a trial for [`DISPLAY_TRIAL_SECONDS`] and reverts it itself, and this
 //! window counts the same seconds down, asks in a dialog, and restores the
@@ -42,7 +44,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use iced::{Element, Subscription};
 use inox_common::i18n::Localizer;
 use inox_config::{InoxConfig, Theme as Tokens};
 use tracing::debug;
@@ -53,7 +54,7 @@ use crate::draft::{Control, Draft, Field, Settings, Value, ValueKind};
 use crate::pages::PageId;
 use crate::persist::{Guard, SaveOutcome};
 use crate::validate::{is_valid, validate};
-use crate::view;
+use crate::view::KeyName;
 use crate::view_model::{
     Action, DisplayTrialNotice, FocusTarget, SettingsInput, SettingsViewModel, TrialChoice,
     TrialInput,
@@ -62,14 +63,18 @@ use crate::view_model::{
 /// How long a display change stays provisional.
 ///
 /// The compositor holds the same interval and reverts on its own when it runs
-/// out (ADR 0028), so a window that disappears mid-countdown cannot leave the
+/// out, so a window that disappears mid-countdown cannot leave the
 /// display on a mode nobody confirmed. The two counters are deliberately the
 /// same number: the sentence the user reads is this countdown, and the safety net
 /// behind it is the compositor's.
 pub const DISPLAY_TRIAL_SECONDS: u32 = 30;
 
 /// How often the countdown above is decremented, as a duration.
-const TRIAL_TICK: Duration = Duration::from_secs(1);
+/// applies provisionally and reverts unless it is confirmed (ADR 0028).
+/// One [`Message::TrialTick`] a second: the runtime owns the clock
+/// (`crate::runtime::UiRuntime::pump`), the state machine owns what a second
+/// means.
+pub const TRIAL_TICK: Duration = Duration::from_secs(1);
 
 /// A write the runtime has been asked to perform.
 ///
@@ -104,7 +109,7 @@ pub enum OutgoingCommand {
     /// trial rather than the user: the compositor has already reverted, so this
     /// only has to make the file agree with it, and it must be able to do so even
     /// while another consumer is still answering the request the trial came in
-    /// with (ADR 0028).
+    /// with.
     Restore(Box<SaveRequest>),
     /// Ask one component to apply a generation and report what it finds.
     Apply {
@@ -113,7 +118,7 @@ pub enum OutgoingCommand {
         /// The component to ask.
         component: Component,
         /// Whether the change carries a display trial, which the compositor
-        /// applies provisionally and reverts unless it is confirmed (ADR 0028).
+        /// applies provisionally and reverts unless it is confirmed.
         trial: bool,
     },
     /// Tell the compositor to keep the display change it is holding provisionally.
@@ -184,12 +189,11 @@ impl DisplayTrial {
 }
 
 /// Everything the settings window knows.
-///
-/// The localizer is shared rather than owned because iced asks for the initial
-/// state through a factory it may call more than once, and a catalog cannot be
-/// cloned: it is parsed once and read for the life of the process. A plain
-/// [`Rc`] is enough — the window is one thread, and `FluentBundle` is neither
-/// `Send` nor `Sync`.
+/// same validator every other save uses (ADR 0014: 只写用户改过的键).
+/// The localizer is shared rather than owned because it is re-loaded when a
+/// consumer reports a new locale, and a catalog cannot be cloned: it is parsed
+/// once and read for the life of the process. A plain [`Rc`] is enough — the
+/// window is one thread, and `FluentBundle` is neither `Send` nor `Sync`.
 pub struct State {
     localizer: Rc<Localizer>,
     tokens: Tokens,
@@ -273,6 +277,14 @@ impl State {
         self.focused
     }
 
+    /// Whether a display change is on trial.
+    /// The compositor has a display change in effect provisionally (ADR 0028).
+    /// The runtime counts the seconds down only while this is true, so an idle
+    /// window wakes up for nothing.
+    pub fn trial_open(&self) -> bool {
+        self.trial.is_some()
+    }
+
     /// Takes the commands waiting for the runtime.
     ///
     /// Whatever is returned is the caller's to perform; an empty queue is the
@@ -313,7 +325,7 @@ impl State {
         .project(&self.localizer);
         if self.trial.is_some() {
             // A trial is a question: nothing but its own two answers is drawn as
-            // usable, and the walk is exactly the two answers (ADR 0028).
+            // usable, and the walk is exactly the two answers.
             model.focused = model
                 .focused
                 .filter(|target| model.focus_order.contains(target));
@@ -501,7 +513,7 @@ impl State {
     ///
     /// The restore a display trial ends with does **not** come through here: it
     /// answers a question rather than making a request, and it has to be able to
-    /// run while another consumer is still answering this one (ADR 0028).
+    /// run while another consumer is still answering this one.
     fn apply(&mut self) {
         if self.is_busy() {
             return;
@@ -516,7 +528,7 @@ impl State {
         {
             // A retry is the same request asked again: a display change that was
             // refused or unreachable is still a display change, so the trial
-            // intent follows the new generation (ADR 0028).
+            // intent follows the new generation.
             if let Some(pending) = self.pending_trial.as_mut() {
                 pending.generation = generation;
             }
@@ -538,7 +550,7 @@ impl State {
         }
 
         // Only a change that carries the display page's own field is provisional;
-        // every other page applies the way it always has (ADR 0028).
+        // every other page applies the way it always has.
         let display = edits.iter().any(|edit| edit.field() == Field::Outputs);
 
         let files = self.draft.files();
@@ -636,7 +648,7 @@ impl State {
                 generation,
                 component,
                 // Only the compositor consumes a display change, and only the
-                // request that carries one asks it for a trial (ADR 0028).
+                // request that carries one asks it for a trial.
                 trial: trial && component == Component::Compositor,
             });
         }
@@ -695,7 +707,7 @@ impl State {
     ///
     /// The same request the countdown makes when it runs out: whether the user
     /// gives up or time gives up, the compositor is asked for the same rollback
-    /// and the files are restored the same way (ADR 0028).
+    /// and the files are restored the same way.
     fn revert_display(&mut self) {
         let Some(trial) = self.trial.as_mut() else {
             return;
@@ -777,7 +789,7 @@ impl State {
     /// confirmed. The restore is its own write — not a new application request —
     /// because the compositor has already reverted, and because a consumer that
     /// is still answering the original request must not be able to hold the files
-    /// on a mode the user did not confirm (ADR 0028).
+    /// on a mode the user did not confirm.
     fn display_reverted(&mut self, generation: Generation, failure: Option<String>) {
         let Some(trial) = self.trial.take() else {
             debug!(
@@ -826,7 +838,7 @@ impl State {
     /// The write that puts the display fields back the way the files held them.
     ///
     /// Only that one key is rewritten, through the same document patch and the
-    /// same validator every other save uses (ADR 0014: 只写用户改过的键).
+    /// same validator every other save uses (只写用户改过的键).
     fn restore_request(
         &self,
         generation: Generation,
@@ -993,7 +1005,7 @@ pub enum Message {
         config: Box<InoxConfig>,
     },
 
-    /// The compositor has a display change in effect provisionally (ADR 0028).
+    /// The compositor has a display change in effect provisionally.
     ///
     /// This is the compositor's own words, not the write's: the countdown starts
     /// only here.
@@ -1155,7 +1167,13 @@ pub enum Message {
 }
 
 /// The Elm update: the only place [`State`] changes.
-pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
+///
+/// It returns nothing. The two things the widget toolkit used to be asked to do
+/// — move the keyboard onto a control and scroll it into view — are values in
+/// [`crate::view`] now (`focus.id` and `focus.scroll`), so the QML tree reveals
+/// what the model says is focused without the update loop knowing that scrolling
+/// exists.
+pub fn update(state: &mut State, message: Message) {
     if state.is_busy()
         && matches!(
             &message,
@@ -1170,15 +1188,8 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
                 | Message::Reload
         )
     {
-        return iced::Task::none();
+        return;
     }
-    let previous_page = state.page;
-    let page_changed = matches!(&message, Message::PageSelected(_));
-    let move_focus = matches!(
-        &message,
-        Message::FocusNext | Message::FocusPrevious | Message::Activate | Message::Back
-    );
-
     match message {
         Message::RowAdded(field) => {
             if let Value::Collection(mut rows) = state.draft.field(field) {
@@ -1222,7 +1233,7 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             state.page = page;
             // A display trial keeps the keyboard where it is: the question is
             // still the thing to answer, and looking at another page must not
-            // move the focus off it (ADR 0028).
+            // move the focus off it.
             if state.trial.is_none() {
                 state.focused = None;
             }
@@ -1239,12 +1250,12 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             let control = field.control();
             let Some(range) = control.range else {
                 debug!(field = %field, "the field is not a number, so it does not step");
-                return iced::Task::none();
+                return;
             };
 
             let Value::Number(current) = state.draft.field(field) else {
                 debug!(field = %field, "the field does not hold a number");
-                return iced::Task::none();
+                return;
             };
 
             if let Err(error) = state.set(
@@ -1349,7 +1360,7 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
         }
         Message::Reloaded { config, documents } => {
             if state.is_busy() {
-                return iced::Task::none();
+                return;
             }
             match crate::i18n::load(&config.locale) {
                 Ok(localizer) => state.localizer = Rc::new(localizer),
@@ -1384,12 +1395,12 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             // Esc unwinds one level of the window: from a control back to the
             // page list, and from the page list to no focus at all. There is no
             // level above this one — closing an ordinary window is the
-            // compositor's decision, not the window's (ADR 0013). A display trial
+            // compositor's decision, not the window's. A display trial
             // is the bottom level while it is open: Esc does not answer it, so a
-            // stray key cannot take a working mode away (ADR 0028).
+            // stray key cannot take a working mode away.
             if state.trial.is_some() {
                 debug!("a display trial is open; Esc answers nothing");
-                return iced::Task::none();
+                return;
             }
             state.focused = match state.focused {
                 Some(FocusTarget::Page(_)) | None => None,
@@ -1397,25 +1408,6 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             };
         }
     }
-
-    if page_changed || state.page != previous_page {
-        return iced::Task::batch([
-            iced::widget::operation::snap_to(
-                "settings-content",
-                iced::widget::operation::RelativeOffset::START,
-            ),
-            crate::focus::reveal(Some(FocusTarget::Page(state.page))),
-        ]);
-    }
-    if move_focus {
-        return crate::focus::reveal(state.focused);
-    }
-    iced::Task::none()
-}
-
-/// Draws the settings window.
-pub fn view(state: &State) -> Element<'_, Message> {
-    view::settings(state.model(), &state.tokens)
 }
 
 /// The title of the window.
@@ -1423,76 +1415,40 @@ pub fn title(state: &State) -> String {
     state.localizer.message("settings-window-title")
 }
 
-/// The window's subscription: the keyboard, and the display trial's clock.
+/// One press of one key, as the QML tree reports it.
 ///
-/// The window performs no other I/O of its own, so there is no subscription for
-/// a service: what [`update`] queues is performed by the runtime in `main.rs`.
-/// The one timer is the countdown the user is reading — it exists only while a
-/// display trial is open, so an idle window wakes up for nothing (ADR 0028).
-pub fn subscription(state: &State) -> Subscription<Message> {
-    let keyboard = iced::keyboard::listen().filter_map(key_message);
-    if state.trial.is_none() {
-        return keyboard;
-    }
-
-    Subscription::batch([keyboard, Subscription::run(trial_ticks)])
-}
-
-/// A stream that produces one [`Message::TrialTick`] a second, for as long as a
-/// display trial is open.
-///
-/// The thread ends when the runtime drops the receiver — which happens the
-/// moment the trial is answered or the window exits (the same shape the panel's
-/// clock uses, because iced's `thread-pool` executor ships no timer of its own).
-fn trial_ticks() -> iced::futures::channel::mpsc::Receiver<Message> {
-    let (mut sender, receiver) = iced::futures::channel::mpsc::channel(1);
-
-    std::thread::spawn(move || {
-        loop {
-            match sender.try_send(Message::TrialTick) {
-                Ok(()) => {}
-                // The window has not read the last second yet; skipping this one
-                // is better than blocking the clock.
-                Err(error) if error.is_full() => {}
-                Err(_) => break,
-            }
-
-            std::thread::sleep(TRIAL_TICK);
-        }
-    });
-
-    receiver
+/// The window answers a handful of keys itself; every other key is left to the
+/// control that holds the text cursor, which is why this is a value the tree
+/// sends rather than a stream the toolkit interprets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyPress {
+    /// Which key.
+    pub name: KeyName,
+    /// Whether shift was held down.
+    pub shift: bool,
+    /// Whether the key is being held down and this is a repeat.
+    pub repeat: bool,
 }
 
 /// The message a key press means, if any.
 ///
 /// Only the keys the window itself answers are named; everything else is left
-/// for a widget that can use it, which is why the stream this maps sends only
-/// events no widget consumed.
-pub fn key_message(event: iced::keyboard::Event) -> Option<Message> {
-    use iced::keyboard::{Event, Key, key};
-
-    let Event::KeyPressed {
-        key,
-        modifiers,
-        repeat,
-        ..
-    } = event
-    else {
-        return None;
-    };
-
-    if repeat && !matches!(key, Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)) {
+/// for a control that can use it (a text field's own cursor movement), which is
+/// why the QML tree reports every press and the window answers the few it owns.
+pub fn key_message(press: KeyPress) -> Option<Message> {
+    // A held key must not walk the window faster than a person can read it —
+    // except an arrow, which is meant to repeat.
+    if press.repeat && !matches!(press.name, KeyName::ArrowDown | KeyName::ArrowUp) {
         return None;
     }
 
-    match key.as_ref() {
-        Key::Named(key::Named::Tab) if modifiers.shift() => Some(Message::FocusPrevious),
-        Key::Named(key::Named::Tab | key::Named::ArrowDown) => Some(Message::FocusNext),
-        Key::Named(key::Named::ArrowUp) => Some(Message::FocusPrevious),
-        Key::Named(key::Named::Enter) => Some(Message::Activate),
-        Key::Named(key::Named::Escape) => Some(Message::Back),
-        _ => None,
+    match press.name {
+        KeyName::Tab if press.shift => Some(Message::FocusPrevious),
+        KeyName::Tab | KeyName::ArrowDown => Some(Message::FocusNext),
+        KeyName::ArrowUp => Some(Message::FocusPrevious),
+        KeyName::Enter => Some(Message::Activate),
+        KeyName::Escape => Some(Message::Back),
+        KeyName::Other => None,
     }
 }
 
@@ -1528,7 +1484,7 @@ mod tests {
     }
 
     fn send(state: &mut State, message: Message) {
-        let _ = update(state, message);
+        update(state, message);
     }
 
     /// A window with one change, and the write it queued for it.
@@ -2336,70 +2292,55 @@ mod tests {
 
     #[test]
     fn a_key_the_window_answers_becomes_a_message() {
-        use iced::keyboard::{Event, Key, Modifiers, key};
-
-        let pressed = |key: Key, modifiers: Modifiers| Event::KeyPressed {
-            key: key.clone(),
-            modified_key: key,
-            physical_key: key::Physical::Code(key::Code::Escape),
-            location: iced::keyboard::Location::Standard,
-            modifiers,
-            text: None,
+        let pressed = |name| KeyPress {
+            name,
+            shift: false,
             repeat: false,
         };
 
         assert!(matches!(
-            key_message(pressed(Key::Named(key::Named::Tab), Modifiers::default())),
+            key_message(pressed(KeyName::Tab)),
             Some(Message::FocusNext)
         ));
         assert!(matches!(
-            key_message(pressed(Key::Named(key::Named::Tab), Modifiers::SHIFT)),
+            key_message(KeyPress {
+                name: KeyName::Tab,
+                shift: true,
+                repeat: false,
+            }),
             Some(Message::FocusPrevious)
         ));
         assert!(matches!(
-            key_message(pressed(
-                Key::Named(key::Named::Escape),
-                Modifiers::default()
-            )),
+            key_message(pressed(KeyName::Escape)),
             Some(Message::Back)
         ));
         assert!(matches!(
-            key_message(pressed(Key::Named(key::Named::Enter), Modifiers::default())),
+            key_message(pressed(KeyName::Enter)),
             Some(Message::Activate)
         ));
-        assert!(key_message(pressed(Key::Character("x".into()), Modifiers::default())).is_none());
-        assert!(key_message(Event::ModifiersChanged(Modifiers::default())).is_none());
+        assert!(key_message(pressed(KeyName::Other)).is_none());
     }
 
     #[test]
     fn a_key_held_down_does_not_walk_the_window_faster() {
-        use iced::keyboard::{Event, Key, Modifiers, key};
-
-        let held = Event::KeyPressed {
-            key: Key::Named(key::Named::Tab),
-            modified_key: Key::Named(key::Named::Tab),
-            physical_key: key::Physical::Code(key::Code::Escape),
-            location: iced::keyboard::Location::Standard,
-            modifiers: Modifiers::default(),
-            text: None,
+        let held = |name| KeyPress {
+            name,
+            shift: false,
             repeat: true,
         };
 
-        assert!(key_message(held).is_none());
-
-        let arrow = Event::KeyPressed {
-            key: Key::Named(key::Named::ArrowDown),
-            modified_key: Key::Named(key::Named::ArrowDown),
-            physical_key: key::Physical::Code(key::Code::Escape),
-            location: iced::keyboard::Location::Standard,
-            modifiers: Modifiers::default(),
-            text: None,
-            repeat: true,
-        };
+        assert!(key_message(held(KeyName::Tab)).is_none());
         assert!(
-            matches!(key_message(arrow), Some(Message::FocusNext)),
+            matches!(
+                key_message(held(KeyName::ArrowDown)),
+                Some(Message::FocusNext)
+            ),
             "an arrow is meant to repeat"
         );
+        assert!(matches!(
+            key_message(held(KeyName::ArrowUp)),
+            Some(Message::FocusPrevious)
+        ));
     }
 
     #[test]

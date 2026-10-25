@@ -105,48 +105,19 @@ smithay = { version = "0.7.0", default-features = false, features = [
     "backend_session_libseat",
 ] }
 
-# --- L3 shell stack (ADR 0003 fixes Iced; see ADR 0018) -------------------
-# Software rendering only: the components run under `tiny-skia`, which needs no
-# GPU and is what the headless CI host can actually present. `wgpu` is
-# deliberately not enabled — it would add a second renderer that no Inox
-# configuration selects.
-# `image-without-codecs` and not `image`: the latter turns on `image/default`,
-# which drags in an AV1/EXR/AVIF codec zoo (rav1e, exr, ravif). The obvious
-# problem is build time; the blocking one is that rav1e's build pulls
-# libfuzzer-sys, whose `(MIT OR Apache-2.0) AND NCSA` licence is not on the
-# allow-list in `deny.toml`, so `cargo deny check` fails on the whole graph.
-# Between this crate's features and the `image` entry below, the unified
-# feature set is exactly PNG and JPEG — what the wallpaper and the test
-# snapshots need.
-iced = { version = "0.14", default-features = false, features = [
-    "tiny-skia",
-    "wayland",
-    "thread-pool",
-    "crisp",
-    "image-without-codecs",
-] }
-# `wlr-layer-shell` is how the panel, launcher, notification popups and the
-# wallpaper become real desktop surfaces; `iced` itself only knows xdg-shell.
-# Same iced 0.14 generation as the entry above (ADR 0018).
-iced_layershell = { version = "0.19", default-features = false }
-
-# The offscreen half of iced, named directly because `iced` re-exports neither
-# `UserInterface` nor the tiny-skia renderer. Every L3 component's
-# `tests/render.rs` draws its real widget tree through them, and `inox-lock`
-# also *ships* on them: a lock surface is not a window, so the frame the lock
-# client commits is drawn here rather than by iced's windowing backend
-# (ADR 0025). Dev-dependency everywhere else, a dependency in `inox-lock`.
-iced_core = "0.14"
-iced_runtime = "0.14"
-iced_tiny_skia = { version = "0.14", features = ["image"] }
+# --- L3 shell stack: QML + Qt Quick (ADR 0033 / ADR 0035 / ADR 0036) -------
+# The L3 shell components are QML + Qt Quick bound into Rust through cxx-qt;
+# the Iced entries (iced, iced_layershell, iced_core, iced_runtime,
+# iced_tiny_skia) are gone from the graph as of the completed migration
+# (ADR 0036 §决策 5, contract §5). The Qt side is declared below.
 
 # Credential buffers that zero themselves on drop (M5 lock screen work, but the
 # buffer type belongs with the state machine that owns it). MIT/Apache-2.0.
 zeroize = "1"
 
 # --- QML + Qt Quick binding (ADR 0033 / ADR 0035) -------------------------
-# The L3 shell migrates from Iced to QML + Qt Quick, bound into Rust through
-# cxx-qt (KDAB, MIT OR Apache-2.0). cxx-qt is the Rust→QML bridge selected in
+# The L3 shell was migrated from Iced to QML + Qt Quick (completed, ADR 0039),
+# bound into Rust through cxx-qt (KDAB, MIT OR Apache-2.0). cxx-qt is the Rust→QML bridge selected in
 # ADR 0035: a `#[cxx_qt::bridge]` module defines a Rust QObject exposed to QML
 # as a normal QObject, with cxx-qt generating the C++ glue. The workspace keeps
 # the LGPL route clean: only LGPL/permissive modules are pulled (never GPL-only

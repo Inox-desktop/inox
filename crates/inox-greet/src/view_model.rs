@@ -32,7 +32,7 @@
 //! `Debug`, and every test prints it on failure) can never carry a password into a
 //! log, a panic message or a screenshot.
 //!
-//! The module is pure: state in, value out. No iced, no clock, no I/O, so every
+//! The module is pure: state in, value out. No Qt, no clock, no I/O, so every
 //! lifecycle above is a unit test.
 
 use inox_common::i18n::Localizer;

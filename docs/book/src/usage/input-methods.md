@@ -37,7 +37,7 @@ Fcitx5 中的键盘组布局应与 Inox 的键盘配置一致；不要在 Inox �
 
 | 应用 | 输入路径 |
 |------|----------|
-| Iced 0.14 的普通文本框、支持 v3 的原生 Wayland 应用 | 通过 `text-input-v3`；无需额外 Inox 客户端代码 |
+| 支持 `text-input-v3` 的原生 Wayland 应用 | 通过 `text-input-v3`；无需额外 Inox 客户端代码 |
 | GTK 3/4 的 Wayland 应用 | 使用 GTK 内置 Wayland 输入上下文；按应用检查已有 `GTK_IM_MODULE` 覆盖 |
 | 较旧的 Qt 或不支持 v3 的应用 | 安装发行版的 Fcitx5 工具包模块，并按应用设置 `QT_IM_MODULE=fcitx` |
 | XWayland 应用 | 使用引擎的 XIM/工具包模块，设置 `XMODIFIERS=@im=fcitx`，并确保引擎能连接对应 `DISPLAY` |

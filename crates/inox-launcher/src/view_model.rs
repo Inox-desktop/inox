@@ -8,7 +8,7 @@
 //! is what keeps a colour or a message out of the widget tree.
 //!
 //! The module is pure: it reads the index, the service state, the newest search
-//! result and the launch in progress, and returns a value. No I/O, no Iced, no
+//! result and the launch in progress, and returns a value. No I/O, no Qt, no
 //! clock, so every state above is a unit test.
 
 use inox_common::i18n::{Arg, Localizer};

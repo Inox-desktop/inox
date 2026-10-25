@@ -11,14 +11,20 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# The window is QML on top of a Rust state machine: cxx-qt is the
+# only QML↔Rust boundary, and the crate is bin-only because the bridge's generated
+# initializers have to live in the target that declares the bridge
+# (`docs/qml-migration-contract.md` §2.1, KDAB/cxx-qt#770).
 [dependencies]
-zbus.workspace = true
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
 anyhow.workspace = true
-# ADR 0003 fixes Iced for every shell component; the workspace entry selects
-# the tiny-skia renderer, which is what the headless render tests draw through.
-iced = { workspace = true, features = ["advanced"] }
+serde.workspace = true
+serde_json.workspace = true
+zbus.workspace = true
 # L1: the shared Fluent loader and the design tokens. L3 components take no
-# same-layer dependency and no dependency on the compositor (ADR 0013, 0018).
+# same-layer dependency and no dependency on the compositor.
 inox-common.workspace = true
 inox-config.workspace = true
 toml.workspace = true
@@ -27,16 +33,21 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[build-dependencies]
+cxx-qt-build.workspace = true
+
 [dev-dependencies]
-# The headless render harness: `iced` re-exports neither `UserInterface` nor the
-# tiny-skia renderer, so the three crates are named directly (ADR 0018).
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
-# `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02).
-image.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe` (root AGENTS.md §3.2), but the
+# `#[cxx_qt::bridge]` macro (see `src/cxxqt_object.rs`) emits
+# `unsafe extern "C++"` blocks without an `#[allow]` wrapper, so the generated
+# FFI glue cannot compile under `forbid`. Override it to `allow` here; Inox-authored code stays
+# unsafe-free.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

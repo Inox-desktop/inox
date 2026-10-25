@@ -75,7 +75,8 @@ L4  inox-session, inox-idle, inox-greet, inox-host
 - 必须使用 **Smithay** 抽象实现合成器，直接操作 DRM/KMS 之外的底层接口需 ADR 批准。
 - 必须使用 **calloop** 作为主事件循环；禁止自建线程轮询循环处理核心事件。
 - 渲染与输入处理不得阻塞事件循环；耗时任务放入 calloop 的异步/线程机制。
-- Shell 组件基于 **QML + Qt Quick**（ADR 0033，自 Iced 迁移，经 Rust 绑定；迁移进行中）。领域模型与逻辑留在 Rust，UI 交给声明式 QML；合成器始终是 **Smithay**，绝不使用 Qt Wayland Compositor（GPL-only）。
+- Shell 组件基于 **QML + Qt Quick**（ADR 0033、ADR 0035，经 cxx-qt 绑定；Iced 已从依赖图移除，见 ADR 0036、ADR 0039）。领域模型与逻辑留在 Rust，UI 交给声明式 QML；合成器始终是 **Smithay**，绝不使用 Qt Wayland Compositor（GPL-only）。
+- 迁移后允许在**局部**使用 Qt 私有 ABI 与 Inox 私有合成器协议（ADR 0039），前提是产物保持原生 Qt Quick、私有 ABI 的范围在 crate 级 `AGENTS.md` 记录，且 GPL-only Qt 模块仍然禁止。
 - 有 Qt 窗口的 Shell 组件由 Qt 事件循环驱动；`inox-panel` 与 `inox-lock` 保留自己的 calloop 主循环，QML 仅做离屏渲染（ADR 0038），这两处不得退化为普通窗口。
 - 只消费主题令牌（design tokens），**禁止在组件中硬编码颜色/尺寸**（见 PRD §9）。
 - 新增 Wayland 协议前，必须先在 `inox-protocols` 定义/引用，并说明安全与生命周期约束。
@@ -221,7 +222,7 @@ L4  inox-session, inox-idle, inox-greet, inox-host
 - **新增一个组件 crate**：先写 ADR（新增 crate 属破坏性架构变更）→ 在 `crates/<name>` 建骨架（`Cargo.toml`、`src/`、`README.md`、`AGENTS.md`，manifest 字段一律 `*.workspace = true`）→ **在根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]` 登记层级**（不登记则 `layering.rs` 失败）→ 更新根 `AGENTS.md` §2 与 PRD §3.1。
 - **在 crate 之间新增依赖**：先确认方向合法（§2）→ 在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明 → 成员 `{ workspace = true }` 引用 → 跑 `cargo test -p inox-integration --test layering`。
 - **升级依赖版本**：改根 `Cargo.toml` 的 `[workspace.dependencies]` 一处 → 跑 CI。工作区内部不再有 tag 升级流程。
-- **新增 UI 功能**：Iced 组件 → 走 Fluent 文案 → 用主题令牌 → waydriver 截图测试。
+- **新增 UI 功能**：Rust 投影（`view.rs`）+ QML 组件（`qml/`）→ 走 Fluent 文案 → 用主题令牌 → 投影断言 + `QT_QPA_PLATFORM=offscreen` 的 QML 加载测试；需要真实宿主时用 waydriver 截图测试。
 
 ---
 

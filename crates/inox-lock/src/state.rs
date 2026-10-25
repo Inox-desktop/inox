@@ -1,5 +1,5 @@
+//! The lock state machine.
 //! The lock state machine (ADR 0015).
-//!
 //! ADR 0015 puts the lock state in the compositor and makes `inox-lock` its
 //! trusted client. What this module owns is the part that has to hold whatever
 //! the two sides are: the *state*, its transitions, and the invariants that must
@@ -86,7 +86,7 @@ pub enum LockReason {
     Suspend,
 }
 
-/// Where the lock is in its lifecycle (ADR 0015 names all five of these).
+/// Where the lock is in its lifecycle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Phase {
     /// The session is available to ordinary clients.
@@ -431,7 +431,7 @@ impl LockMachine {
         match self.phase {
             // The lock screen's UI is not the lock: the session stays held, with
             // whatever is already covered still covered, and the session restarts
-            // the UI in a bounded loop (ADR 0015).
+            // the UI in a bounded loop.
             Phase::Locking | Phase::Locked | Phase::Covering => {
                 self.move_to(Phase::LockedWithoutUi)
             }

@@ -1,7 +1,7 @@
 //! Searching the index: a bounded query, a deterministic ranking, and the
 //! request generations that keep a stale result from overwriting a newer one.
-//!
 //! Three of ADR 0013's requirements land here.
+//! Three requirements land here.
 //!
 //! **Bounded.** The query is truncated to `launcher.max_query_chars` and the
 //! result list to `launcher.max_results`, so a paste cannot make one keystroke
@@ -127,7 +127,7 @@ impl SearchEngine {
     ///
     /// Returns whether the result was applied. A result from an older
     /// generation, or from a generation that has not been asked for, is
-    /// discarded (ADR 0013 decision 4): it cannot overwrite the newest view.
+    /// discarded: it cannot overwrite the newest view.
     pub fn apply(&mut self, result: SearchResult) -> bool {
         let newest = self.next.saturating_sub(1);
         if result.generation != newest || result.generation <= self.applied {

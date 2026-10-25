@@ -2,9 +2,9 @@
 //!
 //! [`update`] is a pure function over the state plus the tasks it returns. It
 //! does no I/O and blocks on nothing: a request that needs the filesystem
-//! returns a [`Task::perform`], which the runtime runs on its thread pool, and
-//! the answer comes back as another message (ADR 0013: image decoding must not
-//! block the interaction loop). That is also what keeps the whole state
+//! returns a [`Task::perform`], which [`crate::runtime`] runs on a thread of its
+//! own, and the answer comes back as another message (image decoding
+//! must not block the interaction loop). That is also what keeps the whole state
 //! testable: a message is data, so a test can feed one in and read the state out.
 //!
 //! The state itself is small because the interesting parts live elsewhere: what
@@ -16,13 +16,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use iced::Task;
 use inox_common::i18n::Localizer;
 use inox_config::{Theme, WallpaperConfig, WallpaperMode};
 
 use crate::apply::{self, Preparation};
 use crate::contract::{CommandResult, Generation, ServiceState, Snapshot};
 use crate::model::{OutputName, Selection, Size, Unusable};
+use crate::runtime::Task;
 
 /// The output name the preview uses when the configuration names none.
 pub const PREVIEW_OUTPUT: &str = "preview";
@@ -225,16 +225,6 @@ impl State {
         &self.localizer
     }
 
-    /// The tokens, shared with the widget tree.
-    ///
-    /// A handle rather than a reference because a style closure outlives the
-    /// view call that built the tree, and keeps reading the tokens on every
-    /// frame.
-    #[must_use]
-    pub fn theme_handle(&self) -> Arc<Theme> {
-        Arc::clone(&self.theme)
-    }
-
     /// The output the preview stands in for, and what it draws it with.
     #[must_use]
     pub fn preview(&self) -> &Preview {
@@ -274,7 +264,7 @@ impl State {
     /// Whether a request is queued or being worked on.
     ///
     /// What is on screen stays on screen while this is true: a reload never
-    /// blanks the output, which is the whole of the "no gap" rule (ADR 0014).
+    /// blanks the output, which is the whole of the "no gap" rule.
     #[must_use]
     pub const fn is_busy(&self) -> bool {
         self.queued.is_some() || self.in_flight.is_some()
@@ -323,8 +313,7 @@ impl State {
     /// so the older request's answer arrives as [`CommandResult::Stale`] and is
     /// dropped rather than shown. That is what makes asking twice safe — the
     /// user gets the newest answer, never an older one on top of it — and it is
-    /// why a request in flight is not a reason to refuse (ADR 0013, acceptance
-    /// C02).
+    /// why a request in flight is not a reason to refuse.
     ///
     /// Nothing to draw is the one case that queues nothing: there is no image to
     /// load, and the interface says so instead of offering a control that would
@@ -348,7 +337,7 @@ impl State {
     fn accept(&mut self, generation: Generation, preparation: Preparation) {
         // A result from a request the user has already replaced is dropped
         // rather than applied: it would show them something they have asked to
-        // move on from (ADR 0013, acceptance C02).
+        // move on from.
         if generation < self.generation {
             self.last = Some(CommandResult::Stale {
                 generation,
@@ -438,23 +427,20 @@ fn load(
     // state that the runtime's thread would have to keep alive.
     let wallpaper_dirs = wallpaper_dirs.to_vec();
 
-    Task::perform(
-        async move {
-            let preparation = apply::prepare(
-                request.output,
-                &request.selection,
-                mode,
-                size,
-                &wallpaper_dirs,
-            );
+    Task::perform(move || {
+        let preparation = apply::prepare(
+            request.output,
+            &request.selection,
+            mode,
+            size,
+            &wallpaper_dirs,
+        );
 
-            Message::FramePrepared {
-                generation,
-                preparation,
-            }
-        },
-        std::convert::identity,
-    )
+        Message::FramePrepared {
+            generation,
+            preparation,
+        }
+    })
 }
 
 #[cfg(test)]

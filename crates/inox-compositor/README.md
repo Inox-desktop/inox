@@ -29,7 +29,7 @@ top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应�
 安全锁屏走 `ext_session_lock_manager_v1` v1（ADR 0015、ADR 0022）：只有先在 `inox_ipc` 上以会话令牌认领角色的连接才能取锁，锁定期间只合成锁表面（无锁表面时为不透明底色）、键盘与选区焦点清空、指针只命中锁表面、快捷键不再拦截，`locked` 只在每个输出都渲染过一帧锁定帧之后发送；客户端死亡不解除锁定。见 `tests/session_lock.rs`。
 
 `tests/layer_shell.rs` 用真实客户端与 shm 缓冲断言像素、指针、焦点、frame callback、
-独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 Iced 客户端宿主，
+独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 L3 客户端宿主（Iced 已由 QML + Qt Quick 取代，ADR 0039；合成器侧不参与该迁移），
 L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完整 M4 已验收。
 
 ### 毛玻璃（私有 `inox-glass-v1`）

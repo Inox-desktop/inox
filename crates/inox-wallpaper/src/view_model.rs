@@ -1,7 +1,7 @@
 //! The projection from state to what the window shows.
 //!
 //! A view model exists here for the same reason it exists in every Inox shell
-//! component (ADR 0013): the widget tree should be a transcription, not a place
+//! component: the widget tree should be a transcription, not a place
 //! where decisions are made. Everything a user can see is decided in
 //! [`project`] — which strings are used, whether the retry control is enabled
 //! and *why not* when it is not, which phase the component is in, and whether
@@ -31,12 +31,12 @@
 //! configured. It is omitted in one case only: while the first load runs the
 //! notice card already says so, and the same sentence twice is noise.
 
-use iced::widget::image::Handle;
 use inox_common::i18n::{Arg, Localizer};
 use inox_config::WallpaperMode;
 
 use crate::app::State;
 use crate::contract::{OutputStatus, Showing};
+use crate::decode::FrameHandle;
 use crate::model::{PathKind, Unusable};
 use crate::scaling::Placement;
 
@@ -55,6 +55,138 @@ pub struct WallpaperViewModel {
     pub footer: Option<String>,
     /// The order the keyboard visits the interactive controls in.
     pub focus_order: Vec<Focus>,
+}
+
+/// The type role a projected line is drawn in.
+///
+/// The role, not the colour: [`crate::view`] turns it into a token conversion,
+/// so "this line is a heading" is decided where the copy is chosen, and "a
+/// heading is 20 px" stays in [`crate::theme`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineRole {
+    /// The status card's headline.
+    Title,
+    /// A notice's headline, in ordinary text.
+    Heading,
+    /// A notice's headline when it reports a problem: the warning colour.
+    WarningHeading,
+    /// Prose.
+    Body,
+    /// Secondary text: a path, a mode, a state sentence, an explanation.
+    Caption,
+    /// A phase sentence, coloured to agree with the phase.
+    Phase(PhaseKind),
+}
+
+/// One line of a card, and the role it is drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectedLine<'a> {
+    /// How the line is drawn.
+    pub role: LineRole,
+    /// The finished sentence, in the session's language.
+    pub text: &'a str,
+}
+
+impl StatusCard {
+    /// The lines of this card, in the order they are read.
+    ///
+    /// One function rather than two transcriptions: [`crate::view`] draws these
+    /// lines and [`WallpaperViewModel::accessible_items`] counts them, so a line
+    /// cannot be drawn without being counted, or counted without being drawn.
+    pub fn lines(&self) -> impl Iterator<Item = ProjectedLine<'_>> {
+        let summary = self.summary.iter().map(|text| ProjectedLine {
+            role: LineRole::Body,
+            text: text.as_str(),
+        });
+        let source = self.source.iter().map(|text| ProjectedLine {
+            role: LineRole::Caption,
+            text: text.as_str(),
+        });
+        let scaling = std::iter::once(ProjectedLine {
+            role: LineRole::Caption,
+            text: self.scaling.as_str(),
+        });
+        let phase = self.phase.iter().map(|phase| ProjectedLine {
+            role: LineRole::Phase(phase.kind),
+            text: phase.text.as_str(),
+        });
+        let hint = self.hint.iter().map(|text| ProjectedLine {
+            role: LineRole::Caption,
+            text: text.as_str(),
+        });
+
+        std::iter::once(ProjectedLine {
+            role: LineRole::Title,
+            text: self.heading.as_str(),
+        })
+        .chain(summary)
+        .chain(source)
+        .chain(scaling)
+        .chain(phase)
+        .chain(hint)
+    }
+}
+
+impl Notice {
+    /// The lines of this notice's story, above the control that answers it.
+    pub fn lines(&self) -> impl Iterator<Item = ProjectedLine<'_>> {
+        let heading_role = match self.kind {
+            NoticeKind::Problem => LineRole::WarningHeading,
+            NoticeKind::Loading => LineRole::Heading,
+        };
+        let subject = self.subject.iter().map(|text| ProjectedLine {
+            role: LineRole::Caption,
+            text: text.as_str(),
+        });
+        let reason = self.reason.iter().map(|text| ProjectedLine {
+            role: LineRole::Body,
+            text: text.as_str(),
+        });
+        let remedy = self.remedy.iter().map(|text| ProjectedLine {
+            role: LineRole::Caption,
+            text: text.as_str(),
+        });
+
+        std::iter::once(ProjectedLine {
+            role: heading_role,
+            text: self.heading.as_str(),
+        })
+        .chain(subject)
+        .chain(reason)
+        .chain(remedy)
+    }
+}
+
+impl WallpaperViewModel {
+    /// The number of items in `qml/Main.qml` that expose an accessibility role
+    /// and are visible for this model.
+    ///
+    /// The QML tree counts the same thing — walking its visible children and
+    /// adding one for every role — and reports it back through `reportReady`.
+    /// A mismatch fails the headless self-check, which is how a control that
+    /// lost its `Accessible.role` is caught instead of passing silently (root
+    /// AGENTS.md §7.4).
+    ///
+    /// The count is derived from the same line iterators [`crate::view`] draws
+    /// from, so adding a line in one place cannot leave the other behind.
+    #[must_use]
+    pub fn accessible_items(&self) -> i32 {
+        // The content pane.
+        let mut count = 1;
+        count += i32::try_from(self.card.lines().count()).unwrap_or(i32::MAX);
+        // The footer strip.
+        count += i32::from(self.footer.is_some());
+
+        if let Some(notice) = &self.notice {
+            count += i32::try_from(notice.lines().count()).unwrap_or(i32::MAX);
+            // The control that answers the notice.
+            count += 1;
+            // The reason that control is disabled, under it.
+            count += i32::from(notice.action.reason.is_some());
+        }
+
+        count
+    }
 }
 
 /// What the previewed output is doing, one field per line of its card.
@@ -104,8 +236,8 @@ pub enum PhaseKind {
 /// The image to draw and where its copies go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wallpaper {
-    /// The pixels, in the renderer's own refcounted buffer.
-    pub image: Handle,
+    /// The pixels, in their refcounted handle (with the QML data URL).
+    pub image: FrameHandle,
     /// The destination rectangle of every copy.
     pub placement: Placement,
 }

@@ -23,6 +23,8 @@
 - bridge 宏内部的条目（`unsafe extern "C++"` / `extern "RustQt"` 里的类型、函数）**不能写 `///` 文档注释**：cxx 解析器会报 `error[cxx]: unsupported attribute`。文档注释集中在 `MyObjectRust` 结构体、`impl qobject::MyObject` 块与 `pub mod qobject` 之上。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()`；headless 测试用 `assert!` / `assert_eq!`。测试中设置的 `QT_QPA_PLATFORM` 属测试专用 `unsafe` 环境写，属允许范围。
 - 日志统一 `tracing`（`debug!`），禁止 `println!`（测试除外）。
+- **令牌规则的适用范围**：根级 §4「只消费设计令牌、禁止硬编码颜色/尺寸」约束的是交付组件；本 crate 是绑定链路的验证样本，`qml/main.qml` 里的 `#2b2b2b`/`#cccccc` 两个字面量是有意为之的最小示例，不构成产品界面。迁移完成后不要再往这里加界面代码——真正的组件在 `inox-<component>` 里。
+- **私有 ABI**：本 crate 只使用 Qt 公开 API，没有使用 ADR 0039 授权的私有 ABI。
 
 ## 主要依赖
 

@@ -1,6 +1,6 @@
 # 简介
 
-Inox 是一个用 Rust（stable，2024 edition）编写、基于 Smithay 与 Iced 的模块化 Wayland 桌面环境，采用 AI-first 方式开发，CI（GitHub Actions）是唯一的构建与测试验证途径。
+Inox 是一个用 Rust（stable，2024 edition）编写、基于 Smithay 与 QML + Qt Quick 的模块化 Wayland 桌面环境，采用 AI-first 方式开发，CI（GitHub Actions）是唯一的构建与测试验证途径。合成器是 Smithay；桌面 Shell 的界面是 QML + Qt Quick，经 cxx-qt 绑定到 Rust，领域模型、文案与设计令牌仍留在 Rust。
 
 本站点是 Inox 的架构说明、组件职责、配置参考与开发约定入口，源文件位于 `docs/book/`，使用 mdBook 构建，CI 通过 `mdbook build` 验证。
 

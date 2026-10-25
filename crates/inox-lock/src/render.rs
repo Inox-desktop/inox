@@ -1,22 +1,34 @@
-//! The lock screen's own renderer: this crate's widget tree, drawn offscreen.
+//! The lock screen's frames: QML, drawn offscreen into a lock surface's buffer.
 //!
 //! [ADR 0015] puts the lock state in the compositor and makes this crate the
 //! trusted client of `ext-session-lock-v1`. [`crate::session`] is the client half
 //! of that; this module is what puts an *interface* on the frames it commits.
-//! Until it existed the protocol leg could cover an output with a colour and
-//! nothing else, because the interface was only ever drawn by the test harness.
 //!
-//! # Why there is no window here
+//! # Why there is no Qt window here
 //!
-//! A lock surface is not a window. `iced`'s own Wayland support creates
-//! `xdg-shell` surfaces, and there is no way to ask it for a session-lock
-//! surface — an interface drawn through `iced`'s runtime would be a *second*
-//! surface, not a lock surface, which is the layer-shell-shaped mistake ADR 0015
-//! refuses. What `iced` does expose is the pair the harness in `tests/render.rs`
-//! already uses: [`iced_runtime::UserInterface`] lays a widget tree out and
-//! routes events to it, and the `tiny-skia` renderer draws it into pixels. Those
-//! pixels are what `wl_shm` wants, so the lock surface carries the same widget
-//! tree the tests assert on — not a reimplementation of it.
+//! A lock surface is not a window. Qt has no `ext-session-lock-v1` client, and
+//! `LayerShellQt` is not an option for exactly the reason ADR 0015 gives: a Qt
+//! window would be a *second* surface, not a lock surface — the layer-shell-shaped
+//! mistake the ADR refuses. So the crate keeps the protocol leg and makes QML a
+//! pure renderer: [`crate::cxxqt_object`] holds a C++ `QGuiApplication` on the
+//! **offscreen** platform with Qt Quick's **software** scene graph, renders
+//! [`crate::view`]'s projection into a `QQuickWindow`, and grabs the frame. That
+//! frame is what `wl_shm` wants.
+//!
+//! Before the migration this module drew the widget tree itself through
+//! `iced_core`, `iced_runtime` and `iced_tiny_skia`. Those dependencies are gone
+//! (migration contract §5): the pixels now come from Qt Quick, and the only part
+//! of the old renderer left is the byte translation into the `Argb8888` frame
+//! `wl_shm` takes.
+//!
+//! One [`Interface`] per lock surface. Each holds its own
+//! `QQmlApplicationEngine` + `QQuickWindow`, so several outputs can be rendered at
+//! their own sizes in the same process — a session with a laptop panel and a 4K
+//! monitor gets two different frames, and neither has to be scaled to the other.
+//! The process-wide `QGuiApplication` is created once, on the first `Interface`;
+//! that is the only piece of Qt state the surfaces share.
+//!
+//! [ADR 0015]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0015-session-lock-and-failure-boundaries.md
 //!
 //! The consequence worth stating: this module draws, and does nothing else. It
 //! does not read the keyboard, it does not decide anything, and it hands no
@@ -27,31 +39,38 @@
 //!
 //! - **It must not draw a frame of the wrong size.** The protocol makes the
 //!   committed buffer's size an exact requirement of the configure it answers, so
-//!   the size is set from the configure and nothing else.
+//!   the size is set from the configure and nothing else, and a grab that comes
+//!   back at another size is refused rather than written out.
 //! - **It must not draw an unbounded amount.** A size a compositor asks for is
 //!   data from outside this process; a frame larger than any display Inox
 //!   supports is refused rather than allocated.
-//!
-//! [ADR 0015]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0015-session-lock-and-failure-boundaries.md
 
 use std::time::Instant;
 
-use iced_core::renderer::{Headless, Style};
-use iced_core::{Color, Event, Font, Pixels, Size, clipboard, mouse, window};
-use iced_runtime::UserInterface;
-use iced_runtime::user_interface::Cache;
-use tracing::debug;
+use tracing::{debug, warn};
 
-use crate::app::{self, State};
-use crate::theme;
+use crate::app::State;
+use crate::cxxqt_object::qobject::{self, Offscreen};
+use crate::view;
+
+/// The resource URL of the crate's QML module window.
+///
+/// cxx-qt registers `qml/Main.qml` under the module's import path and keeps the
+/// file's own relative path as its resource alias, so the module URI
+/// `com.inox.lock.qml` (path segments `com/inox/lock/qml`) plus the alias
+/// `qml/Main.qml` give the doubled `qml` below (contract §2.2; the same shape
+/// `inox-greet` and the offscreen probe use).
+pub const QML_URL: &str = "qrc:/qt/qml/com/inox/lock/qml/qml/Main.qml";
 
 /// The scale factor a lock frame is drawn at.
 ///
-/// One, and the reason is what the number *means*: iced multiplies every logical
-/// coordinate by it to get a pixel, so anything but one would draw the interface at
-/// an arbitrary size of this component's own choosing. The size to draw at comes
-/// from the compositor's configure, and how large the text should be comes from the
+/// One, and the reason is what the number *means*: the frame is grabbed at the
+/// surface's own pixels, so anything but one would draw the interface at an
+/// arbitrary size of this component's own choosing. The size to draw at comes from
+/// the compositor's configure, and how large the text should be comes from the
 /// design tokens' `typography.scale` — this component does not get a third say.
+/// The offscreen platform reports a device pixel ratio of one, which is what makes
+/// the grab's size equal the configure's; a grab that disagrees is refused below.
 pub const SCALE_FACTOR: f32 = 1.0;
 
 /// The largest frame this component will draw, in bytes.
@@ -59,41 +78,32 @@ pub const SCALE_FACTOR: f32 = 1.0;
 /// An 8K frame is about 132 MiB, so this leaves room for the widest display Inox
 /// claims to support while still refusing a size nothing could have meant. It is a
 /// statement about supported outputs, and **not** the bound on this process's
-/// memory: drawing one frame costs several times these bytes, because iced's
-/// offscreen path allocates the frame again (an offscreen buffer, a clip mask and
-/// the returned bytes) while the previous frame is still held, and a caller may be
-/// holding a few frames the compositor has not released. What it refuses is a
-/// *single* frame larger than any display this project claims, which is the case
-/// where "draw it anyway" would allocate whatever two integers asked for.
+/// memory: drawing one frame costs several times these bytes, because Qt's
+/// offscreen path allocates the window's backing store and the grabbed image while
+/// the previous frame is still held, and a caller may be holding a few frames the
+/// compositor has not released. What it refuses is a *single* frame larger than any
+/// display this project claims, which is the case where "draw it anyway" would
+/// allocate whatever two integers asked for.
 pub const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 
-/// The text size the renderer starts from, before any widget asks for its own.
-///
-/// Every text this crate draws takes its size from [`crate::theme`]'s type scale;
-/// this is only what iced falls back to for a widget that names none, which the
-/// lock screen's tree does not contain.
-fn default_text_size() -> Pixels {
-    iced::Settings::default().default_text_size
-}
-
-/// A lock surface's interface: a renderer, the widget tree's cache, and its size.
+/// A lock surface's interface: an offscreen QML host, its size, and its last frame.
 ///
 /// One per output, because each output has its own configured size and its own
-/// widget state to lay out.
+/// scene to draw.
 pub struct Interface {
-    renderer: iced_tiny_skia::Renderer,
-    /// The widget tree carried between frames. Rebuilt only in identity: keeping
-    /// it is what lets `iced` match the new tree against the old one instead of
-    /// treating every frame as a brand new screen.
-    cache: Option<Cache>,
+    /// The C++ host: the QML engine and window this surface renders through.
+    ///
+    /// Not `Send`: Qt objects belong to the thread that made them, and the whole
+    /// crate is single-threaded around its calloop loop.
+    host: cxx::UniquePtr<Offscreen>,
     /// The surface's size in pixels, kept as the integers the configure delivered.
     ///
-    /// Not as `Size<f32>`: `f32` cannot represent every `u32` exactly, so a
-    /// dimension past 2^24 would round on the way in and the frame would be drawn
-    /// with different dimensions from the ones the buffer is created for — a
-    /// declared size larger than the memory that was written. The compositor's
-    /// configure is the one number in this component that comes from outside, and
-    /// it is kept exactly.
+    /// Not as `f32`: `f32` cannot represent every `u32` exactly, so a dimension
+    /// past 2^24 would round on the way in and the frame would be drawn with
+    /// different dimensions from the ones the buffer is created for — a declared
+    /// size larger than the memory that was written. The compositor's configure is
+    /// the one number in this component that comes from outside, and it is kept
+    /// exactly.
     width: u32,
     height: u32,
     /// The last frame drawn, in RGBA order.
@@ -103,14 +113,37 @@ pub struct Interface {
 impl Interface {
     /// An interface for a surface of `width` × `height`.
     ///
-    /// `None` when the size is one this component will not draw: a zero-sized
-    /// surface (nothing to draw on) or a frame past [`MAX_FRAME_BYTES`].
+    /// `None` when the size is one this component will not draw (a zero-sized
+    /// surface, or a frame past [`MAX_FRAME_BYTES`]), and — for the same reason —
+    /// when the QML module cannot be loaded. Both leave the output on the
+    /// compositor's own locked blank, which is a covering frame: a
+    /// surface that cannot draw is not a hole in the lock.
     pub fn new(width: u32, height: u32) -> Option<Self> {
         let (width, height) = frame_size(width, height)?;
 
+        let mut host = qobject::new_offscreen();
+        if host.is_null() {
+            warn!(
+                "the offscreen Qt host could not be created; this output keeps the compositor's blank"
+            );
+            return None;
+        }
+
+        let url = cxx_qt_lib::QString::from(QML_URL);
+        let loaded = host
+            .as_mut()
+            .map(|host| host.load(&url, dimension(width), dimension(height)))
+            .unwrap_or(false);
+
+        if !loaded {
+            warn!(
+                "the lock screen's QML module did not load; this output keeps the compositor's blank"
+            );
+            return None;
+        }
+
         Some(Self {
-            renderer: iced_tiny_skia::Renderer::new(Font::DEFAULT, default_text_size()),
-            cache: None,
+            host,
             width,
             height,
             pixels: Vec::new(),
@@ -124,11 +157,6 @@ impl Interface {
     /// rounding is exactly the way to lose that.
     pub const fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
-    }
-
-    /// The size this interface draws at, as layout bounds want it.
-    pub fn size(&self) -> Size<f32> {
-        Size::new(self.width as f32, self.height as f32)
     }
 
     /// Resizes the interface for a new configure.
@@ -174,62 +202,55 @@ impl Interface {
         &self.pixels
     }
 
-    /// Lays the widget tree out and draws it.
+    /// Projects the state, hands the projection to QML, and grabs the frame.
     fn draw(&mut self, state: &State) {
-        let theme = theme::from_tokens(state.tokens());
-        let cache = self.cache.take().unwrap_or_default();
-        let mut ui = UserInterface::build(app::view(state), self.size(), cache, &mut self.renderer);
-        let mut produced = Vec::new();
+        // The whole document is rebuilt every frame (contract §3). It is a handful
+        // of strings and numbers, and the correctness of "the frame shows the state"
+        // is worth more than the diffing a hundred fields would need.
+        let document = view::screen_json(state.model(), state.tokens(), self.width, self.height);
+        let json = cxx_qt_lib::QString::from(document.as_str());
 
-        // The redraw a real runtime delivers once per frame. `iced`'s widgets work
-        // out their interaction status while handling it and store it for the next
-        // draw, and a control that has never seen one is drawn disabled
-        // (`iced_widget::button`, `Widget::update`). Without it every lock frame
-        // would show a screen whose controls all look unavailable, which is a lie
-        // about what the projection said.
-        let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
-
-        ui.update(
-            &[redraw],
-            mouse::Cursor::Unavailable,
-            &mut self.renderer,
-            &mut clipboard::Null,
-            &mut produced,
-        );
-
-        // A redraw produces no messages in this crate — nothing here reacts to
-        // being drawn — so this is a diagnostic rather than a queue something
-        // drains. It is logged rather than dropped silently because a widget that
-        // started producing one would be a widget whose state this module is
-        // quietly discarding.
-        if !produced.is_empty() {
-            debug!(
-                messages = produced.len(),
-                "drawing the lock screen produced messages, which nothing consumes"
-            );
+        if let Some(host) = self.host.as_mut() {
+            host.set_model(&json);
+        } else {
+            warn!("the offscreen host is gone; the frame on the surface is left alone");
+            return;
         }
 
-        ui.draw(
-            &mut self.renderer,
-            &theme,
-            &Style::default(),
-            mouse::Cursor::Unavailable,
+        let started = Instant::now();
+        let frame = self
+            .host
+            .as_mut()
+            .map(|host| host.render(dimension(self.width), dimension(self.height)))
+            .unwrap_or_default();
+        let bytes = frame.as_slice();
+        let expected = (self.width as usize)
+            .saturating_mul(self.height as usize)
+            .saturating_mul(4);
+
+        if bytes.len() != expected {
+            // A frame of the wrong length is a protocol error waiting to happen
+            // (`wl_shm` would map the declared size over these bytes), so it is
+            // discarded and the previous covering frame stays on the surface.
+            warn!(
+                expected,
+                drawn = bytes.len(),
+                width = self.width,
+                height = self.height,
+                "the offscreen QML host did not return a frame of the configured size; \
+                 not committing it"
+            );
+            return;
+        }
+
+        self.pixels.clear();
+        self.pixels.extend_from_slice(bytes);
+        debug!(
+            width = self.width,
+            height = self.height,
+            elapsed = ?started.elapsed(),
+            "drew the lock screen through the offscreen QML host"
         );
-
-        self.cache = Some(ui.into_cache());
-
-        // Composited over white on the way out: the screen's own background is
-        // opaque, so this only decides what a frame would look like if it were
-        // not — which is why the tests assert the frame is opaque rather than
-        // relying on this.
-        let mut frame = Headless::screenshot(
-            &mut self.renderer,
-            Size::new(self.width, self.height),
-            SCALE_FACTOR,
-            Color::WHITE,
-        );
-
-        std::mem::swap(&mut self.pixels, &mut frame);
     }
 }
 
@@ -246,12 +267,23 @@ fn frame_size(width: u32, height: u32) -> Option<(u32, u32)> {
     (bytes <= MAX_FRAME_BYTES).then_some((width, height))
 }
 
+/// A dimension as the `int` Qt takes, or `None` when it cannot be represented.
+///
+/// [`frame_size`] bounds the area, so every dimension that gets here is far below
+/// `i32::MAX`; the conversion is still checked rather than cast, because a
+/// dimension is data from outside this process.
+fn dimension(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 /// The bytes of a `wl_shm` `Argb8888` frame, from an RGBA screenshot.
 ///
 /// `wl_shm` names the *words* rather than the bytes, and on little-endian — every
 /// architecture Inox supports — a word of `Argb8888` is `B, G, R, A` in memory.
-/// The compositor's own read-back tests assert on that order, so this is the same
-/// translation `src/session.rs` used to do for its flat colour.
+/// `Argb8888` is also the *premultiplied* format, which is why the pixels are
+/// grabbed as `QImage::Format_RGBA8888_Premultiplied` and copied without an
+/// un-premultiply step. The compositor's own read-back tests assert on that order,
+/// so this is the same translation `src/session.rs` used to do for its flat colour.
 fn write_argb(rgba: &[u8], out: &mut Vec<u8>) {
     out.clear();
     out.reserve(rgba.len());
@@ -264,164 +296,27 @@ fn write_argb(rgba: &[u8], out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Message;
-    use inox_common::i18n::Locale;
-    use inox_config::Theme as Tokens;
-
-    fn state() -> State {
-        let localizer = crate::i18n::load(&Locale::default_locale()).expect("the catalogs parse");
-
-        State::new(std::rc::Rc::new(localizer), Tokens::builtin_dark())
-    }
-
-    /// A lock screen that is locked, with its one output covered.
-    fn locked() -> State {
-        let mut state = state();
-
-        for message in [
-            Message::ProtocolPresent,
-            Message::OutputAdded(crate::state::OutputId::new("eDP-1")),
-            Message::LockRequested(crate::state::LockReason::User),
-            Message::OutputCovered(crate::state::OutputId::new("eDP-1")),
-        ] {
-            let _ = app::update(&mut state, message);
-        }
-
-        state
-    }
-
-    #[test]
-    fn a_frame_is_the_size_it_was_configured_to() {
-        let interface = Interface::new(320, 240).expect("a drawable size");
-
-        assert_eq!(interface.dimensions(), (320, 240));
-    }
 
     #[test]
     fn a_size_nothing_could_have_meant_is_refused_rather_than_allocated() {
-        assert!(Interface::new(0, 240).is_none(), "a surface with no width");
-        assert!(Interface::new(320, 0).is_none(), "a surface with no height");
+        assert!(frame_size(0, 240).is_none(), "a surface with no width");
+        assert!(frame_size(320, 0).is_none(), "a surface with no height");
         assert!(
-            Interface::new(65_536, 65_536).is_none(),
+            frame_size(65_536, 65_536).is_none(),
             "16 GiB of frame is not a display"
         );
         assert!(
-            Interface::new(3840, 2160).is_some(),
+            frame_size(3840, 2160).is_some(),
             "and a real 4K output is not refused"
         );
-    }
-
-    #[test]
-    fn a_configure_that_does_not_change_the_size_says_so() {
-        let mut interface = Interface::new(320, 240).expect("a drawable size");
-
-        assert!(!interface.resize(320, 240), "the same size");
-        assert!(interface.resize(640, 480), "a real resize");
-        assert_eq!(interface.dimensions(), (640, 480));
         assert!(
-            !interface.resize(u32::MAX, u32::MAX),
-            "a size that cannot be drawn leaves the frame that is already there"
-        );
-        assert_eq!(interface.dimensions(), (640, 480));
-    }
-
-    #[test]
-    fn a_lock_frame_is_the_projection_drawn_and_is_fully_opaque() {
-        let state = locked();
-        let mut interface = Interface::new(320, 240).expect("a drawable size");
-
-        let pixels = interface.render(&state).to_vec();
-
-        assert_eq!(pixels.len(), 320 * 240 * 4, "one RGBA quad per pixel");
-        assert!(
-            pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .all(|pixel| pixel[3] == 0xff),
-            "a lock frame that is not opaque would show what it is covering"
-        );
-
-        // The interface, and not a flat colour: a covering frame is exactly the
-        // thing ADR 0022 decision 6 used to describe, and this is what replaces it.
-        let first = &pixels[..4];
-        assert!(
-            pixels.as_chunks::<4>().0.iter().any(|pixel| pixel != first),
-            "the lock frame is a single colour, so nothing was drawn on it"
+            frame_size(7680, 4320).is_some(),
+            "an 8K output is inside the bound this constant is about"
         );
     }
 
     #[test]
-    fn two_faces_of_the_same_state_draw_two_different_frames() {
-        let mut interface = Interface::new(320, 240).expect("a drawable size");
-        let prompt_free = interface.render(&locked()).to_vec();
-
-        let mut other = locked();
-        let _ = app::update(
-            &mut other,
-            Message::AuthUnavailable(crate::contract::ServiceFailure::NotProvided),
-        );
-        let unavailable = interface.render(&other).to_vec();
-
-        assert_ne!(
-            prompt_free, unavailable,
-            "a screen that says it cannot run must not look like a screen that asks \
-             for a password"
-        );
-    }
-
-    #[test]
-    fn the_frame_carries_the_theme_background_in_the_byte_order_wl_shm_wants() {
-        // The one assertion that catches a swapped channel. A screenshot gives
-        // RGBA and `wl_shm`'s `Argb8888` wants B, G, R, A in memory, so writing the
-        // screenshot straight into the frame renders a lock screen whose background
-        // is the wrong colour — and nothing else notices: it is still opaque, still
-        // the configured size, and still not uniform. Pinning it against the token
-        // rather than against a literal is what makes the expectation the theme's.
-        let state = locked();
-        let mut interface = Interface::new(160, 120).expect("a drawable size");
-        let mut argb = Vec::new();
-
-        interface.render_argb(&state, &mut argb);
-
-        let background = state.tokens().colors.background;
-        let expected = [background.b, background.g, background.r, background.a];
-        let dominant = argb
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .fold(([0u8; 4], 0usize), |(best, count), pixel| {
-                let same = argb
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .filter(|other| *other == pixel)
-                    .count();
-
-                if same > count {
-                    (*pixel, same)
-                } else {
-                    (best, count)
-                }
-            })
-            .0;
-
-        assert_ne!(
-            expected,
-            [background.r, background.g, background.b, background.a],
-            "the theme's background has equal red and blue, so this test cannot \
-             tell a swapped channel from a correct one; pin it against a token \
-             whose channels differ instead of weakening this"
-        );
-        assert_eq!(
-            dominant, expected,
-            "the frame's dominant colour is the screen's background token, in the \
-             byte order `wl_shm` names"
-        );
-    }
-
-    #[test]
-    fn a_dimension_f32_cannot_hold_exactly_still_frames_the_declared_size() {
+    fn a_dimension_f32_cannot_hold_exactly_is_kept_exactly() {
         // `f32` has 24 bits of mantissa, so a dimension past 2^24 rounds on the way
         // in. A frame drawn at the rounded size would be handed to a buffer created
         // for the real one — the compositor mapping bytes nobody wrote. The
@@ -434,22 +329,25 @@ mod tests {
             "this test is about a dimension `f32` cannot represent exactly"
         );
 
-        let state = locked();
-        let mut interface = Interface::new(width, 1).expect("within the frame bound");
-        let mut argb = Vec::new();
+        let (kept, height) = frame_size(width, 1).expect("within the frame bound");
 
-        interface.render_argb(&state, &mut argb);
-
+        assert_eq!(kept, width, "the configure is kept exactly, not rounded");
+        assert_eq!(height, 1);
         assert_eq!(
-            interface.dimensions(),
-            (width, 1),
-            "the configure is kept exactly, not as the size it would round to"
-        );
-        assert_eq!(
-            argb.len(),
+            kept as usize * height as usize * 4,
             width as usize * 4,
-            "and the frame is that many pixels, which is what the buffer will \
-             declare"
+            "and the frame is that many pixels, which is what the buffer declares"
+        );
+    }
+
+    #[test]
+    fn a_dimension_is_handed_to_qt_as_the_integer_it_is() {
+        assert_eq!(dimension(1), 1);
+        assert_eq!(dimension(3840), 3840);
+        assert_eq!(
+            dimension(u32::MAX),
+            i32::MAX,
+            "a dimension Qt cannot hold is clamped rather than wrapped"
         );
     }
 
@@ -480,13 +378,11 @@ mod tests {
 
     #[test]
     fn the_argb_frame_is_exactly_as_long_as_the_rgba_one() {
-        let state = locked();
-        let mut interface = Interface::new(160, 120).expect("a drawable size");
-        let rgba = interface.render(&state).len();
+        let rgba = [0x11u8, 0x22, 0x33, 0xff].repeat(64);
         let mut out = Vec::new();
 
-        interface.render_argb(&state, &mut out);
+        write_argb(&rgba, &mut out);
 
-        assert_eq!(out.len(), rgba);
+        assert_eq!(out.len(), rgba.len());
     }
 }

@@ -1,15 +1,16 @@
 //! The panel application: state, messages and the Elm update loop.
-//!
 //! The shape is iced's and ADR 0003 makes it mandatory: a [`State`], a
-//! [`Message`] per thing that can happen, one [`update`] that is the only place
-//! state changes, and a [`view()`] that only reads. Nothing in `update` performs
-//! I/O — it records what the UI decided and hands it to the transport that will
-//! carry it, which is [`OutgoingCommand`].
-//!
+//! The shape is Elm's, and keep it while the toolkit moves:
+//! a [`State`], a [`Message`] per thing that can happen, one [`update`] that is
+//! the only place state changes, and a projection ([`crate::view::scene`]) that
+//! only reads. Nothing in `update` performs I/O — it records what the UI decided
+//! and hands it to the transport that will carry it, which is
+//! [`OutgoingCommand`]. The widgets are QML now, which changes
+//! who *draws* the state and nothing about who *owns* it.
+//! milestone (ADR 0018 records the scope: domain models, service contract and
 //! **The transport does not exist yet.** The window service the panel subscribes
 //! to is reached over `inox-ipc`/D-Bus, neither of which is implemented in this
-//! milestone (ADR 0018 records the scope: domain models, service contract and
-//! Iced UI, no protocol legs). So the panel starts in
+//! milestone. So the panel starts in
 //! [`ServiceState::Connecting`], queues exactly one
 //! [`OutgoingCommand::Snapshot`], and shows the starting state until a transport
 //! feeds it a [`Message::Snapshot`]. `main.rs` says so at startup, and the tests
@@ -20,7 +21,7 @@
 //!
 //! - **A second click is not a second request.** [`PendingRequests`] holds one
 //!   request per window; a click on a window that already has one in flight is
-//!   dropped (ADR 0013 decision 4, acceptance D05).
+//!   dropped.
 //! - **Explicit navigation has one focus, and Esc unwinds it.** The focus moves
 //!   over the entries the view can actually activate, wraps at both ends, and is
 //!   cleared by [`Message::FocusCleared`] — the panel's own focus, which is what
@@ -31,7 +32,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
-use iced::{Element, Subscription};
 use inox_common::i18n::Localizer;
 use inox_config::{
     DockConfig, MenubarConfig, PanelConfig, PanelSurface, ShellConfig, Theme as Tokens,
@@ -42,7 +42,6 @@ use crate::clock::{self, ClockLabel};
 use crate::contract::{CommandState, PendingRequests, RequestId, ServiceFailure, ServiceState};
 use crate::tasks::{Applied, SessionGeneration, TaskList, WindowKey, WindowState};
 use crate::tray::{Tray, TrayItem, TrayItemId, TrayItemUpdate};
-use crate::view;
 use crate::view_model::{PanelInput, PanelViewModel};
 
 /// How often the panel re-reads the clock.
@@ -84,8 +83,8 @@ pub enum OutgoingCommand {
 
 /// Everything the panel knows.
 ///
-/// The localizer is shared rather than owned because iced asks for the initial
-/// state through a factory it may call more than once, and a catalog cannot be
+/// The localizer is shared rather than owned because the protocol leg, the
+/// reload host and the state all read the same catalog, and a catalog cannot be
 /// cloned — it is parsed once and read for the life of the process. A plain
 /// [`Rc`] is enough: the panel is one thread, and `FluentBundle` is neither
 /// `Send` nor `Sync`.
@@ -140,7 +139,7 @@ impl State {
     ///
     /// It starts connected to nothing, and asks for a snapshot before anything
     /// can be shown: the first thing a window service will hear from the panel
-    /// is the request for its current state (ADR 0013 decision 1).
+    /// is the request for its current state.
     pub fn new(config: PanelConfig, tokens: Tokens, localizer: Rc<Localizer>) -> Self {
         Self::with_shell(
             ShellConfig {
@@ -448,7 +447,7 @@ pub enum Message {
     /// The window service answered with the windows of a session generation.
     ///
     /// A snapshot of a session the panel has already left is dropped: the view
-    /// only ever moves forward (ADR 0013 decision 1).
+    /// only ever moves forward.
     Snapshot {
         /// The generation the service is on.
         generation: SessionGeneration,
@@ -535,7 +534,7 @@ pub enum Message {
 }
 
 /// The Elm update: the only place [`State`] changes.
-pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
+pub fn update(state: &mut State, message: Message) {
     match message {
         Message::Snapshot {
             generation,
@@ -632,13 +631,6 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             state.refresh_clock();
         }
     }
-
-    iced::Task::none()
-}
-
-/// Draws the surface the configuration asks for.
-pub fn view(state: &State) -> Element<'_, Message> {
-    view::surface(state.model(), &state.tokens, &state.shell, &state.localizer)
 }
 
 /// The vertical extent the surface draws itself in: the bar's own height, or the
@@ -661,50 +653,17 @@ pub fn title(state: &State) -> String {
     state.localizer.message("panel-window-title")
 }
 
-/// The panel's subscriptions: the clock, and nothing else yet.
-///
-/// The window service is reached by a transport this milestone does not have, so
-/// there is no subscription for it — the panel would otherwise be listening to a
-/// connection nobody opened.
-pub fn subscription(_state: &State) -> Subscription<Message> {
-    Subscription::run(tick)
-}
-
-/// A stream that produces one [`Message::Tick`] a second, for as long as the
-/// subscription is alive.
-///
-/// The thread ends when the runtime drops the receiver, which is what stops the
-/// timer when the panel exits.
-fn tick() -> iced::futures::channel::mpsc::Receiver<Message> {
-    let (mut sender, receiver) = iced::futures::channel::mpsc::channel(1);
-
-    std::thread::spawn(move || {
-        loop {
-            match sender.try_send(Message::Tick(Local::now())) {
-                Ok(()) => {}
-                // The runtime has not read the last tick yet; skipping this one
-                // is better than blocking the timer thread.
-                Err(error) if error.is_full() => {}
-                Err(_) => break,
-            }
-
-            std::thread::sleep(TICK);
-        }
-    });
-
-    receiver
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::contract::RejectionReason;
     use crate::tasks::WindowId;
 
-    /// Feeds a message to the update loop, dropping the task the runtime would
-    /// run: this crate's `update` never returns anything but `Task::none()`.
+    /// Feeds a message to the update loop. `update` returns nothing: the clock
+    /// is the `calloop` timer in [`crate::layer`], and no message starts
+    /// asynchronous work.
     fn send(state: &mut State, message: Message) {
-        let _ = update(state, message);
+        update(state, message);
     }
 
     fn panel() -> State {
@@ -1037,7 +996,7 @@ mod tests {
         );
 
         // The rejection is not treated as an achieved action: the panel's truth
-        // is still whatever the service reports (ADR 0013 decision 2).
+        // is still whatever the service reports.
         assert!(state.tasks().contains(key(1)));
     }
 
@@ -1504,15 +1463,23 @@ mod tests {
     }
 
     #[test]
-    fn a_tick_stream_carries_tick_messages() {
-        use iced::futures::StreamExt;
+    fn the_clock_ticks_once_a_second_and_a_tick_changes_the_projection() {
+        // The tick is the `calloop` timer's `Message::Tick` (see
+        // `crate::layer`), not a subscription. What matters here is that the
+        // interval is the second hand's and that a tick is what moves it.
+        assert_eq!(TICK.as_secs(), 1);
 
-        let mut stream = Box::pin(tick());
-        let candidate = iced::futures::executor::block_on(stream.next());
+        let mut state = panel();
+        let before = state.model();
+        send(&mut state, Message::Tick(Local::now()));
 
         assert!(
-            matches!(candidate, Some(Message::Tick(_))),
-            "the clock subscription produces readings"
+            state.clock().is_some(),
+            "the clock is projected after a tick"
+        );
+        assert!(
+            state.model() != before,
+            "a tick is a reason to draw, not a silent update"
         );
     }
 }

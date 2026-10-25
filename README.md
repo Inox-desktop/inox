@@ -1,6 +1,6 @@
 # Inox Desktop
 
-**Inox** 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + Iced** 的模块化 Wayland 桌面环境。
+**Inox** 是一个用 **Rust (stable, 2024 edition)** 编写、基于 **Smithay + QML/Qt Quick** 的模块化 Wayland 桌面环境。
 
 名称取自「不锈钢」(Inox)，与 Rust 的「锈」形成反差，寓意坚固、耐腐蚀、长期可维护。
 
@@ -22,7 +22,7 @@ Inox 是一个现代 Wayland 桌面环境，目标是构建模块化、可维护
 ### 目标
 
 - 构建一个模块化、可维护、高性能的 Wayland 桌面环境。
-- 最大化利用 Rust 生态中成熟的合成器库与 GUI 框架（Smithay / Iced / calloop）。
+- 最大化利用 Rust 生态中成熟的合成器库与 GUI 框架（Smithay / calloop / Qt Quick，经 cxx-qt 绑定）。
 - 通过单一职责的 crate 实现清晰的模块边界，既能局部开发与局部测试（`cargo test -p <crate>`），又允许跨 crate 的改动在一个 PR 内原子完成。
 - 建立以 GitHub Actions 为核心的持续集成流水线，作为唯一的构建验证途径。
 - 采用 LGPL-3.0 许可证，保持开源友好并与 Qt 生态同族。
@@ -71,7 +71,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 - **Layer 1**：配置解析、通用类型、日志、工具函数，被所有上层依赖。`inox-common` 是叶子节点，不得依赖任何其他 Inox crate。
 - **Layer 2**：核心 Wayland 合成器，基于 Smithay，处理 DRM/KMS、输入、渲染、窗口管理与 XWayland 集成。
-- **Layer 3**：桌面 Shell，使用 Iced 构建面板、启动器、通知、设置等用户界面组件。
+- **Layer 3**：桌面 Shell，使用 **QML + Qt Quick**（cxx-qt 绑定，领域逻辑留 Rust）构建面板、启动器、通知、设置等用户界面组件；Iced 已从依赖图移除（[ADR 0039](./docs/adr/0039-qml-migration-completion-and-private-abi.md)）。
 - **Layer 4**：会话管理、显示管理器、空闲管理等系统级服务。
 
 全部 L1–L4 组件都是本仓库 `crates/` 下的工作区成员。文档站点 `inox-docs` 不属于任何层：它是 `docs/book/` 下的 mdBook，无 `Cargo.toml`，不参与依赖图。
@@ -155,9 +155,11 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 **M3**（[ADR 0017](./docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)，状态 `proposed`）在 Inox 自己的合成器上完成 X11/数据互通：合成器广告 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`，剪贴板的读取权**跟随键盘焦点**（`set_data_device_focus`），Wayland↔Wayland 拖放与 X11 内部拖放可用，每次渲染后发送 frame callback，`inox-xwayland` 的就绪判定改为真实的 X11 连接建立往返；E3 用例移入 `inox-integration`，以子进程方式驱动工作区构建的二进制，不新增依赖边。**跨 X11/Wayland 边界的拖放被上游阻塞**（`xwayland-satellite` v0.8.3 未实现 XDND），X02 的锁屏剪贴板断言与 `wlr-data-control` 推迟到 M5，`-listenfd` 按需激活仍不在范围内 —— 因此 M3 不是 X03 的完整通过。
 
-**M4 部分交付**（[ADR 0018](./docs/adr/0018-l3-component-architecture.md)，状态 `proposed`）：L3 的七个组件首次有了实现，`inox-config` 的 `shell.toml`、`notifications.toml` 与 `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1 加离屏渲染**：纯逻辑与不变量的单元/属性测试，加上用 iced 自己的运行时与 tiny-skia 渲染器在固定尺寸下绘制的**真实控件树**的像素与事件断言 —— 后者不需要合成器，也不需要 GPU。**E2/E3 未取得**，合成器的 `zwlr_layer_shell_v1` v4 宿主现已补齐，真实协议客户端测试纳入合成器 CI 分片；L3 的 Iced 客户端接线与 GUI 驱动仍未完成。此前 `iced_layershell` 0.19.1 与 0.19.0 都无法编译（其 `iced_exdevtools` 对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。因此 W05、O02–O03、D01–D05 与 Q01–Q03 的宿主侧证据均未取得，M4 的 DoD 不成立：这些组件目前以普通窗口运行，layer-shell 放置策略只被建模和测试，未被应用。锁屏的协议腿按 [ADR 0022](./docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md) 已经落地（见下一段），通知的 D-Bus 服务按 PRD §13 属 M5。
+**M4 部分交付（迁移前记录）**（[ADR 0018](./docs/adr/0018-l3-component-architecture.md)，状态 `proposed`）：L3 的七个组件首次有了实现，`inox-config` 的 `shell.toml`、`notifications.toml` 与 `config.toml` 的 `[locale]` 随各自的消费者落地。证据等级为 **E0/E1 加离屏渲染**：纯逻辑与不变量的单元/属性测试，加上用 iced 自己的运行时与 tiny-skia 渲染器在固定尺寸下绘制的**真实控件树**的像素与事件断言 —— 后者不需要合成器，也不需要 GPU。**E2/E3 未取得**，合成器的 `zwlr_layer_shell_v1` v4 宿主现已补齐，真实协议客户端测试纳入合成器 CI 分片；L3 的 Iced 客户端接线与 GUI 驱动仍未完成。此前 `iced_layershell` 0.19.1 与 0.19.0 都无法编译（其 `iced_exdevtools` 对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。因此 W05、O02–O03、D01–D05 与 Q01–Q03 的宿主侧证据均未取得，M4 的 DoD 不成立：这些组件目前以普通窗口运行，layer-shell 放置策略只被建模和测试，未被应用。锁屏的协议腿按 [ADR 0022](./docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md) 已经落地（见下一段），通知的 D-Bus 服务按 PRD §13 属 M5。
 
-**M5 进行中**（[ADR 0022](./docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)，状态 `proposed`）：会话锁的**协议腿两侧**有了实现与证据 —— 合成器广告 `ext_session_lock_manager_v1`（v1），并以「会话生成的一次性令牌 + `inox_ipc` 上的 `claim_lock_role` 认领」默认拒绝授权；锁定期间只合成锁表面（没有锁表面时输出不透明底色），键盘与选区焦点清空、指针只命中锁表面、合成器快捷键不再拦截，`locked` 只在每个输出都渲染过一帧锁定帧之后发送，锁屏 UI 崩溃保持锁定。`inox-lock --take-lock` 真实取锁、遮蔽每个输出、把锁屏界面画上去、**没有解锁路径**（信号不解锁，释放靠注销）；默认不带该开关时行为不变，仍以非零退出说明认证边界尚未评审。`inox-ipc` 升到 v2，新增 `claim_lock_role` 与 `session_lock_state`；`inox-session` 生成令牌并只向可信锁屏客户端投递（`INOX_SESSION_TAKE_LOCK=1` 时才启动它）。证据等级为 **E1+E2**（两侧各自的真实客户端/真实服务端 peer 用例）加一条 **E3** 会话用例。通知守护进程现在真的提供 `org.freedesktop.Notifications`（D06）：`zbus` 阻塞 API + 独立传输线程，一次只服务一个调用（有界等待），能力集、脱敏、有界队列与动作至多一次沿用既有模型，锁屏脱敏由 `inox_ipc` 的锁状态事件驱动；证据为 p2p 连接上 18 个真实 D-Bus 用例（含每秒 100 条持续 10 s）。**锁屏界面**由 [ADR 0025](./docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)（状态 `accepted`）落地：`inox-lock` 用 `iced_runtime::UserInterface` + `iced_tiny_skia` 把 `app::view` 画到 configure 尺寸并提交为 `wl_shm` 帧，协议腿第一次由 crate 自己的状态机驱动（`take_outgoing` 是唯一出口，不再有第二份覆盖簿记）；本构建没有经过评审的认证边界，因此状态里的真话是 `ServiceFailure::NotProvided`，屏幕上出现的是「这里没法校验任何东西」而不是请人输密码 —— 键鼠路径与认证边界一起落地。**仍未交付**：真实认证、logind 挂起、完整会话 ready 握手、锁屏 UI 崩溃后的接管、会话总线上的名字所有权测试、idle 侧的锁状态订阅，以及 H02 的全部真机步骤 —— M5 的 DoD 尚不成立。
+**M5 进行中（迁移前记录）**（[ADR 0022](./docs/adr/0022-m5-session-lock-notification-bus-and-first-privilege-boundary.md)，状态 `proposed`）：会话锁的**协议腿两侧**有了实现与证据 —— 合成器广告 `ext_session_lock_manager_v1`（v1），并以「会话生成的一次性令牌 + `inox_ipc` 上的 `claim_lock_role` 认领」默认拒绝授权；锁定期间只合成锁表面（没有锁表面时输出不透明底色），键盘与选区焦点清空、指针只命中锁表面、合成器快捷键不再拦截，`locked` 只在每个输出都渲染过一帧锁定帧之后发送，锁屏 UI 崩溃保持锁定。`inox-lock --take-lock` 真实取锁、遮蔽每个输出、把锁屏界面画上去、**没有解锁路径**（信号不解锁，释放靠注销）；默认不带该开关时行为不变，仍以非零退出说明认证边界尚未评审。`inox-ipc` 升到 v2，新增 `claim_lock_role` 与 `session_lock_state`；`inox-session` 生成令牌并只向可信锁屏客户端投递（`INOX_SESSION_TAKE_LOCK=1` 时才启动它）。证据等级为 **E1+E2**（两侧各自的真实客户端/真实服务端 peer 用例）加一条 **E3** 会话用例。通知守护进程现在真的提供 `org.freedesktop.Notifications`（D06）：`zbus` 阻塞 API + 独立传输线程，一次只服务一个调用（有界等待），能力集、脱敏、有界队列与动作至多一次沿用既有模型，锁屏脱敏由 `inox_ipc` 的锁状态事件驱动；证据为 p2p 连接上 18 个真实 D-Bus 用例（含每秒 100 条持续 10 s）。**锁屏界面**由 [ADR 0025](./docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)（状态 `accepted`）落地：`inox-lock` 用 `iced_runtime::UserInterface` + `iced_tiny_skia` 把 `app::view` 画到 configure 尺寸并提交为 `wl_shm` 帧，协议腿第一次由 crate 自己的状态机驱动（`take_outgoing` 是唯一出口，不再有第二份覆盖簿记）；本构建没有经过评审的认证边界，因此状态里的真话是 `ServiceFailure::NotProvided`，屏幕上出现的是「这里没法校验任何东西」而不是请人输密码 —— 键鼠路径与认证边界一起落地。**仍未交付**：真实认证、logind 挂起、完整会话 ready 握手、锁屏 UI 崩溃后的接管、会话总线上的名字所有权测试、idle 侧的锁状态订阅，以及 H02 的全部真机步骤 —— M5 的 DoD 尚不成立。
+
+**技术栈变更（2026-10-24，[ADR 0033](./docs/adr/0033-qml-qt-quick-shell-evaluation.md) / [ADR 0035](./docs/adr/0035-cxx-qt-binding.md) / [ADR 0036](./docs/adr/0036-component-migration-plan.md) / [ADR 0039](./docs/adr/0039-qml-migration-completion-and-private-abi.md)）**：L3/L4 的七个 GUI 组件（panel、launcher、notifications、settings、lock、wallpaper、greet）已从 Iced 全量迁移到 **QML + Qt Quick**，经 **cxx-qt** 把 Rust 的领域逻辑与 JSON 投影接到声明式 QML；`inox-panel` 与 `inox-lock` 保留真实的 `zwlr-layer-shell` / `ext_session_lock` 表面，Qt Quick 只做离屏渲染（[ADR 0038](./docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)）。`iced` / `iced_layershell` / `iced_core` / `iced_runtime` / `iced_tiny_skia` 已从依赖图移除。上文 M4/M5 段落保留为**当时的证据记录**，其中「Iced 控件树离屏渲染」「`iced_runtime::UserInterface` 绘制锁表面」描述的是迁移前的实现，不再是当前架构。已知缺口：panel/lock 的离屏表面没有 AT-SPI 语义桥；真实合成器宿主上的截图断言（ADR 0039 的 M10）仍未接线。
 
 **L4 首版**（[ADR 0021](./docs/adr/0021-l4-session-services.md)，状态 `proposed`）：会话管理器通过真实 Wayland 往返启动并监督桌面子进程，支持重启限流、故障隔离和限时注销；空闲组件消费标准通知并提供锁前挂起策略；可选登录组件提供有代次/限流的状态机和阶段驱动的登录界面：界面为六个生命周期阶段各有一幅画面，键盘与禁用原因都已建模并有测试覆盖，但 `--preview` 只能到达本构建真实处于的那一个阶段——没有认证边界，所以它显示的是「无法登录」、身份字段不可输入（见 [ADR 0025](./docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。真实认证、greeter 宿主、logind 挂起和完整服务 ready 尚待审查/接线，M5 未完成。
 
@@ -171,7 +173,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | 合成器框架 | Smithay |
 | 事件循环 | calloop |
 | XWayland | xwayland-satellite |
-| GUI 工具包 | Iced（Elm 架构，单向数据流） |
+| GUI 工具包 | QML + Qt Quick（经 cxx-qt 绑定；Rust 持有领域模型与状态，QML 声明式渲染） |
 | 配置格式 | TOML + serde |
 | 日志 | tracing + tracing-subscriber |
 | 错误处理 | thiserror（库）+ anyhow（应用） |
@@ -187,7 +189,7 @@ Inox 采用 **AI-first** 工作流，贡献流程如下：
 
 1. 阅读根级 [`AGENTS.md`](./AGENTS.md)，以及目标 crate 目录下的 `AGENTS.md`（crate 级规则只能收紧、不得放宽根级硬性规则）。
 2. 涉及架构变更时，先在本仓库 `docs/adr/` 提交 ADR（状态 `proposed` → `accepted`）：
-   新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay/Iced/calloop）、改变 IPC 或配置格式的破坏性变更**必须先写 ADR**。
+   新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay/Qt/calloop）、改变 IPC 或配置格式的破坏性变更**必须先写 ADR**。
 3. 在功能分支（`feat/xxx`、`fix/xxx`、`chore/xxx`、`docs/xxx`）上改动，提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)：`<type>(<scope>): <subject>`。
 4. 创建 PR，描述包含：动机、改动、受影响的 crate、测试方式、性能影响（如有）；涉及架构变更时链接对应 ADR。
 5. 等待 **CI 全绿 + 至少 1 名人类审查**；不自行合并到 `main`，不使用 `--no-verify` 绕过 CI。

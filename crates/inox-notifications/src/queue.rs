@@ -179,7 +179,7 @@ impl Notification {
     ///
     /// This daemon does not decode either yet; the reference is carried so that
     /// the popup can show that an icon exists, and so that a locked session can
-    /// withhold it (ADR 0015).
+    /// withhold it.
     pub fn icon_reference(&self) -> Option<&str> {
         self.app_icon
             .as_deref()

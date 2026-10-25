@@ -1,10 +1,13 @@
 //! The daemon's application: state, messages, and the Elm update loop.
 //!
-//! The shape is Iced's and ADR 0003 makes it mandatory: a [`State`], a
+//! The shape is the one ADR 0003 fixes for every shell component: a [`State`], a
 //! [`Message`] per thing that can happen, one [`update`] that is the only place
-//! state changes, and a [`view()`] that only reads. Nothing in `update` performs
-//! I/O — the daemon decides, and hands what it decided to the transport that will
-//! carry it, which is [`Outgoing`].
+//! state changes, and a projection ([`crate::view`]) that only reads. Nothing in
+//! `update` performs I/O — the daemon decides, and hands what it decided to the
+//! transport that will carry it, which is [`Outgoing`]. The Qt host drives this
+//! through [`crate::runtime::Runtime::pump`], which is the only caller of
+//! [`update`] in production and the only place a background thread's message
+//! crosses into the interface.
 //!
 //! **The transport is [`crate::bus`]**, and the seam between it and this module
 //! is two channels: [`Inbox`] is how a call (or the session lock state) gets in,
@@ -25,18 +28,18 @@
 //!   notification *and* the notification is closed, so a second click finds
 //!   nothing to invoke: it is counted as a rejection and no second signal is
 //!   emitted.
-//! - **Do not disturb is the daemon's, and survives a reload.** The
-//!   configuration's `do_not_disturb` is the value the next session starts with;
-//!   [`Message::ConfigReloaded`] deliberately does not touch the running one.
+//! - **Do not disturb is the daemon's.** The configuration's `do_not_disturb` is
+//!   the value the next session starts with; a reload only overrides the running
+//!   one when the file's value actually changed
+//!   ([`State::apply_configuration`]).
 
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use iced::{Element, Subscription};
 use inox_common::i18n::Localizer;
 use inox_config::{NotificationsConfig, Theme as Tokens};
 use tracing::debug;
@@ -46,16 +49,8 @@ use crate::contract::{Calls, Outgoing, Reply, ReplyBody, Request, RequestBody, S
 use crate::policy::{Policy, SessionState};
 use crate::protocol::{CAPABILITIES, CloseReason, SERVER_INFORMATION};
 use crate::queue::{NotificationId, Queue};
-use crate::view;
+use crate::runtime::Task;
 use crate::view_model::{PopupStack, StackInput};
-
-/// How often the daemon sweeps for notifications that have run out of time.
-///
-/// A quarter of a second is far below the shortest lifetime a popup is given by
-/// default (five seconds) and well above the point where the wake-up matters; the
-/// subscription is only alive while something is held, so an idle daemon is not
-/// woken at all.
-pub const TICK: Duration = Duration::from_millis(250);
 
 /// How many things the daemon may have to tell the transport at once.
 ///
@@ -105,13 +100,11 @@ pub enum Message {
     DoNotDisturbToggled,
     /// The session was locked or unlocked (ADR 0015: the compositor owns this).
     SessionLockChanged(SessionState),
-    /// The configuration was reloaded.
-    ConfigReloaded(NotificationsConfig),
 }
 
 /// How many messages the transports may hand the application at once.
 ///
-/// The application drains this channel once per frame. The depth is what a burst
+/// The application drains this channel on every pump. The depth is what a burst
 /// of a hundred calls a second fits into while a frame is being drawn: a
 /// transport that finds it full is told so and refuses the call on the wire
 /// rather than waiting for an unbounded queue to drain.
@@ -120,8 +113,8 @@ pub const INBOX_DEPTH: usize = 256;
 /// Why a transport could not hand the application a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Undelivered {
-    /// Nothing is reading: the application has not subscribed yet, or it
-    /// replaced its subscription and the new stream has not been installed.
+    /// Nothing is reading: the application has not started pumping yet, or the
+    /// reader was replaced and the new one is not installed.
     #[error("no stream is reading the daemon's messages")]
     Detached,
     /// The application has not drained [`INBOX_DEPTH`] messages yet.
@@ -131,54 +124,34 @@ pub enum Undelivered {
 
 /// The transports' end of the daemon's message channel.
 ///
-/// Iced asks for a [`Subscription`]'s stream through a factory function that
-/// cannot be handed the running daemon (see [`Inbox::subscription`]), so the two
-/// ends meet here instead: [`Inbox::subscription`] is what the application
-/// subscribes with, and [`Inbox::deliver`] is what the bus thread and the
-/// lock-state watcher push into. Nothing else in the daemon needs to know how
-/// the two are wired, and a transport that cannot deliver is told so rather than
-/// assuming it was heard.
+/// The daemon owns its bus name before the Qt host has drained its first message,
+/// so the two ends of the channel meet here: [`Inbox::stream`] is the reader the
+/// host installs on the Qt thread, and [`Inbox::deliver`] is what the bus thread
+/// and the lock-state watcher push into. A bounded `std::sync::mpsc` channel is
+/// the whole mechanism — no async runtime, no futures — which is what
+/// docs/qml-migration-contract.md §5 asks for now that the framework's
+/// subscription model is gone. A transport that cannot deliver is told so rather
+/// than assuming it was heard.
 #[derive(Debug, Clone)]
 pub struct Inbox(Arc<InboxInner>);
 
 /// The shared half of an [`Inbox`].
 #[derive(Debug, Default)]
 struct InboxInner {
-    /// Where the running subscription's stream is fed, once it exists.
-    sink: Mutex<Option<iced::futures::channel::mpsc::Sender<Message>>>,
-    /// Signalled when a stream is installed, so that a transport with a call in
+    /// Where the reader's stream is fed, once it exists.
+    sink: Mutex<Option<SyncSender<Message>>>,
+    /// Signalled when a reader is installed, so that a transport with a call in
     /// hand can wait for the application instead of refusing it.
     attached: Condvar,
-    /// Messages no stream could take, so that "undeliverable" is a number a
-    /// test can assert rather than a claim.
+    /// Messages no reader could take, so that "undeliverable" is a number a test
+    /// can assert rather than a claim.
     lost: AtomicU64,
-}
-
-/// One daemon has one transport channel, and iced identifies a subscription by
-/// the hash of what it was built from: hashing the contents would make the
-/// identity change when the first message is delivered, and iced would tear the
-/// stream down and build a new one.
-impl Hash for InboxInner {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u8(0);
-    }
 }
 
 impl Inbox {
     /// An inbox nobody is reading yet.
     pub fn new() -> Self {
         Self(Arc::new(InboxInner::default()))
-    }
-
-    /// The application's end: a subscription that carries what the transports
-    /// deliver as ordinary [`Message`]s.
-    ///
-    /// The stream this builds installs itself as the inbox's sink, so a
-    /// transport is never left pushing into a channel nobody reads. A second
-    /// stream replaces the first, which is what makes the wiring survive iced
-    /// building the subscription again.
-    pub fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(Arc::clone(&self.0), subscribed)
     }
 
     /// Hands a message to the application.
@@ -194,15 +167,15 @@ impl Inbox {
         self.deliver_within(message, Duration::ZERO)
     }
 
-    /// Hands a message to the application, waiting up to `grace` for a stream
-    /// to appear.
+    /// Hands a message to the application, waiting up to `grace` for a reader to
+    /// appear.
     ///
-    /// The daemon owns its bus name before iced has built the subscription that
-    /// reads it, so a call that arrives during startup would otherwise be
-    /// refused for a reason the client can do nothing about — an application
-    /// started at the same time as the session loses its first notification.
-    /// Waiting for a reader is bounded and ends either way: a daemon with no
-    /// application at all is still told `Detached`, and says so on the wire.
+    /// The daemon owns its bus name before the Qt host is pumping, so a call that
+    /// arrives during startup would otherwise be refused for a reason the client
+    /// can do nothing about — an application started at the same time as the
+    /// session loses its first notification. Waiting for a reader is bounded and
+    /// ends either way: a daemon with no application at all is still told
+    /// `Detached`, and says so on the wire.
     ///
     /// # Errors
     ///
@@ -216,13 +189,13 @@ impl Inbox {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let outcome = loop {
-            match sink.as_mut() {
+            match sink.as_ref() {
                 Some(stream) => match stream.try_send(message) {
                     Ok(()) => break Ok(()),
-                    Err(error) if error.is_full() => break Err(Undelivered::Full),
+                    Err(TrySendError::Full(_)) => break Err(Undelivered::Full),
                     // The message went with the failed send; the caller is told
                     // rather than it being silently dropped on the floor.
-                    Err(_) => break Err(Undelivered::Detached),
+                    Err(TrySendError::Disconnected(_)) => break Err(Undelivered::Detached),
                 },
                 None => {
                     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -249,31 +222,27 @@ impl Inbox {
         outcome
     }
 
-    /// How many messages no stream could take.
+    /// How many messages no reader could take.
     pub fn lost(&self) -> u64 {
         self.0.lost.load(Ordering::Relaxed)
     }
 
-    /// The stream this inbox feeds, installing it as the one reader.
+    /// The reader the host installs on the Qt thread.
     ///
-    /// [`Inbox::subscription`] is this stream wrapped so that iced runs it;
-    /// taking it directly is for a host that drives its own loop — the
-    /// transport's tests do, and a future non-iced host would. There is one
-    /// reader at a time: taking the stream again replaces the previous one,
-    /// which then ends.
-    pub fn stream(&self) -> iced::futures::channel::mpsc::Receiver<Message> {
-        subscribed(&self.0)
+    /// There is one reader at a time: taking the stream again replaces the
+    /// previous one, whose sender is dropped, so the old receiver ends instead of
+    /// waiting on messages that will go to the new one.
+    pub fn stream(&self) -> Receiver<Message> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(INBOX_DEPTH);
+        self.0.install(sender);
+
+        receiver
     }
 }
 
 impl InboxInner {
-    /// Replaces the stream the application reads with `sink`.
-    ///
-    /// The sender that was there is dropped, which closes the channel the
-    /// previous stream was reading: an inbox never has two live readers, and a
-    /// replaced stream ends instead of being left waiting on messages that will
-    /// never arrive.
-    fn install(&self, sink: iced::futures::channel::mpsc::Sender<Message>) {
+    /// Replaces the reader with `sink`.
+    fn install(&self, sink: SyncSender<Message>) {
         let mut slot = self
             .sink
             .lock()
@@ -293,26 +262,13 @@ impl Default for Inbox {
     }
 }
 
-/// The stream an [`Inbox`] subscription runs.
-///
-/// It installs itself and then does nothing but hold the channel open: the
-/// messages travel straight from the transports' `deliver` call into the
-/// application, so there is no second queue between them and no thread to
-/// stop.
-fn subscribed(inbox: &Arc<InboxInner>) -> iced::futures::channel::mpsc::Receiver<Message> {
-    let (sender, receiver) = iced::futures::channel::mpsc::channel(INBOX_DEPTH);
-    inbox.install(sender);
-
-    receiver
-}
-
 /// Everything the daemon knows.
 ///
-/// The localizer is shared rather than owned because Iced asks for the initial
-/// state through a factory it may call more than once, and a catalog cannot be
-/// cloned — it is parsed once and read for the life of the process. A plain
-/// [`Rc`] is enough: the daemon is one thread, and `FluentBundle` is neither
-/// `Send` nor `Sync`.
+/// The localizer is shared rather than owned because the projection borrows it
+/// while a reload may hand the state a new one, and a catalog cannot be cloned —
+/// it is parsed once and read for the life of the process. A plain [`Rc`] is
+/// enough: the daemon is one thread, and `FluentBundle` is neither `Send` nor
+/// `Sync`.
 pub struct State {
     localizer: Rc<Localizer>,
     tokens: Tokens,
@@ -434,7 +390,7 @@ impl State {
     ///
     /// The instant is read here, once per projection, because the age of each
     /// notification is part of what the view draws and the projection is the only
-    /// place allowed to decide what the view draws (ADR 0013).
+    /// place allowed to decide what the view draws.
     pub fn model(&self) -> PopupStack {
         StackInput {
             queue: &self.queue,
@@ -610,7 +566,7 @@ impl State {
 }
 
 /// The Elm update: the only place [`State`] changes.
-pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
+pub fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Request(request) => state.answer(request),
         Message::Tick(now) => {
@@ -645,57 +601,14 @@ pub fn update(state: &mut State, message: Message) -> iced::Task<Message> {
             debug!(do_not_disturb = on, "do not disturb was toggled");
         }
         Message::SessionLockChanged(session) => state.session = session,
-        Message::ConfigReloaded(config) => state.reload(config),
     }
 
-    iced::Task::none()
-}
-
-/// Draws the popup stack.
-pub fn view(state: &State) -> Element<'_, Message> {
-    view::stack(state.model(), &state.tokens, &state.config.display)
+    Task::none()
 }
 
 /// The title of the daemon's own surface.
 pub fn title(state: &State) -> String {
     state.localizer.message("notifications-window-title")
-}
-
-/// The daemon's subscriptions: the expiry sweep, while anything is held.
-///
-/// An empty daemon subscribes to nothing at all, which is what keeps an idle
-/// session from waking four times a second for nothing.
-pub fn subscription(state: &State) -> Subscription<Message> {
-    if state.queue.is_empty() {
-        return Subscription::none();
-    }
-
-    Subscription::run(ticks)
-}
-
-/// A stream that produces one [`Message::Tick`] every [`TICK`], for as long as
-/// the subscription is alive.
-///
-/// The thread ends when the runtime drops the receiver, which is what stops the
-/// timer when the daemon exits or the stack empties.
-fn ticks() -> iced::futures::channel::mpsc::Receiver<Message> {
-    let (mut sender, receiver) = iced::futures::channel::mpsc::channel(1);
-
-    std::thread::spawn(move || {
-        loop {
-            match sender.try_send(Message::Tick(Instant::now())) {
-                Ok(()) => {}
-                // The runtime has not read the last tick yet; skipping one is
-                // better than blocking the timer.
-                Err(error) if error.is_full() => {}
-                Err(_) => break,
-            }
-
-            std::thread::sleep(TICK);
-        }
-    });
-
-    receiver
 }
 
 #[cfg(test)]
@@ -719,6 +632,17 @@ mod tests {
 
     fn send(state: &mut State, message: Message) {
         let _ = update(state, message);
+    }
+
+    /// Applies a reload the way the host does.
+    ///
+    /// The Qt host calls `State::apply_configuration` with the tokens and the
+    /// catalogues the file names; these tests keep the ones the daemon was built
+    /// with, which is the same code path with the same rules.
+    fn reload(state: &mut State, config: NotificationsConfig) {
+        let tokens = state.tokens.clone();
+        let localizer = Rc::clone(&state.localizer);
+        state.apply_configuration(config, tokens, localizer);
     }
 
     fn notify(call: u64, summary: &str) -> Message {
@@ -1183,21 +1107,32 @@ mod tests {
     }
 
     #[test]
-    fn a_reload_keeps_the_running_do_not_disturb() {
+    fn a_reload_only_overrides_do_not_disturb_when_the_file_changed_it() {
         let mut state = daemon();
-        send(&mut state, Message::DoNotDisturbSet(true));
+        send(&mut state, Message::DoNotDisturbToggled);
+        assert!(state.policy().do_not_disturb(), "the daemon was muted");
 
-        let mut config = NotificationsConfig::default();
-        config.policy.do_not_disturb = false;
-        config.policy.show_actions = false;
-        send(&mut state, Message::ConfigReloaded(config));
+        // The panel muted the session; the file still says "not muted", which is
+        // the value it was built with. Nothing changed in the file, so nothing
+        // overrides the running state.
+        let mut unchanged = NotificationsConfig::default();
+        unchanged.policy.show_actions = false;
+        reload(&mut state, unchanged);
 
         assert!(
             state.policy().do_not_disturb(),
-            "the file is the next session's starting value"
+            "a reload that does not change the preference keeps the daemon's own state"
         );
         assert!(!state.policy().show_actions());
         assert!(!state.config().policy.show_actions);
+
+        // A file that now says "muted" is an explicit change, and it wins.
+        let mut muted = NotificationsConfig::default();
+        muted.policy.do_not_disturb = true;
+        reload(&mut state, muted);
+
+        assert!(state.policy().do_not_disturb());
+        assert!(state.config().policy.do_not_disturb);
     }
 
     #[test]
@@ -1211,7 +1146,7 @@ mod tests {
 
         let mut config = NotificationsConfig::default();
         config.queue.max_pending = 2;
-        send(&mut state, Message::ConfigReloaded(config));
+        reload(&mut state, config);
 
         assert_eq!(state.queue().len(), 2);
         let signals: Vec<Outgoing> = state.take_outgoing();
@@ -1256,7 +1191,7 @@ mod tests {
         let mut state = daemon();
         let mut config = NotificationsConfig::default();
         config.queue.max_pending = 2;
-        send(&mut state, Message::ConfigReloaded(config));
+        reload(&mut state, config);
         let _ = state.take_outgoing();
 
         admitted(&mut state, 1, "one");
@@ -1339,7 +1274,7 @@ mod tests {
         // one D06 injects: a hundred a second for ten seconds.
         let mut config = NotificationsConfig::default();
         config.queue.max_pending = 32;
-        send(&mut state, Message::ConfigReloaded(config));
+        reload(&mut state, config);
         let _ = state.take_outgoing();
 
         for index in 0..1_000u32 {
@@ -1401,7 +1336,7 @@ mod tests {
     #[test]
     fn a_message_a_transport_delivers_reaches_the_update_loop() {
         let inbox = Inbox::new();
-        let mut stream = inbox.stream();
+        let stream = inbox.stream();
 
         inbox
             .deliver(Message::DoNotDisturbSet(true))
@@ -1416,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn the_subscription_is_what_makes_the_inbox_readable() {
+    fn the_reader_is_what_makes_the_inbox_readable() {
         let inbox = Inbox::new();
 
         assert_eq!(
@@ -1428,17 +1363,13 @@ mod tests {
 
         let _stream = inbox.stream();
         assert!(inbox.deliver(Message::DoNotDisturbToggled).is_ok());
-
-        // Smoke: the subscription itself is buildable without a running
-        // runtime, which is all `main.rs` needs from it at boot.
-        let _subscription = inbox.subscription();
     }
 
     #[test]
     fn a_replaced_stream_ends_rather_than_keeping_a_dead_channel_open() {
         let inbox = Inbox::new();
-        let mut first = inbox.stream();
-        let mut second = inbox.stream();
+        let first = inbox.stream();
+        let second = inbox.stream();
 
         inbox
             .deliver(Message::DoNotDisturbToggled)
@@ -1447,9 +1378,10 @@ mod tests {
         let ended = first
             .try_recv()
             .expect_err("the replaced stream has nothing to read");
-        assert!(
-            ended.is_closed(),
-            "the replaced stream is closed, so iced is not left running one: {ended:?}"
+        assert_eq!(
+            ended,
+            std::sync::mpsc::TryRecvError::Disconnected,
+            "the replaced stream is closed, so nothing is left reading a dead channel"
         );
         assert!(matches!(
             second.try_recv(),
@@ -1475,7 +1407,7 @@ mod tests {
         reader_started.send(()).expect("the reader thread is there");
 
         let outcome = inbox.deliver_within(Message::DoNotDisturbSet(true), Duration::from_secs(2));
-        let mut stream = reader.join().expect("the reader thread does not panic");
+        let stream = reader.join().expect("the reader thread does not panic");
 
         assert_eq!(
             outcome,
@@ -1507,7 +1439,7 @@ mod tests {
     #[test]
     fn a_full_channel_is_reported_rather_than_grown() {
         let inbox = Inbox::new();
-        let (sender, _receiver) = iced::futures::channel::mpsc::channel(1);
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
         inbox.0.install(sender);
 
         let mut delivered = 0;
@@ -1538,11 +1470,10 @@ mod tests {
     // --- the projection and the frame ---------------------------------------
 
     #[test]
-    fn the_view_and_the_title_read_the_state() {
+    fn the_title_and_the_tokens_read_the_state() {
         let mut state = daemon();
         admitted(&mut state, 1, "one");
 
-        let _element = view(&state);
         assert_eq!(title(&state), "Inox Notifications");
         assert_eq!(state.localizer().locale().tag(), "en-US");
         assert!(state.tokens().colors.background.a > 0);
@@ -1669,7 +1600,7 @@ mod tests {
         let mut config = NotificationsConfig::default();
         config.queue.max_pending = 3;
         config.display.max_visible = 2;
-        send(&mut state, Message::ConfigReloaded(config));
+        reload(&mut state, config);
 
         for (index, op) in ops.iter().enumerate() {
             now += Duration::from_millis(50);

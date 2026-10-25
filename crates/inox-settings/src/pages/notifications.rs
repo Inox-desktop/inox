@@ -12,12 +12,7 @@
 //! per-field message ids and the status line are where that is told to the
 //! user, rather than a value that silently does nothing.
 
-use iced::Element;
-use inox_config::Theme as Tokens;
-
-use crate::app::Message;
 use crate::draft::Field;
-use crate::view_model::{FieldView, PageView};
 
 /// The fields this page edits, in the order the page draws them: where a popup
 /// appears and how big it is, how long each urgency stays, what the queue does
@@ -38,8 +33,3 @@ pub const FIELDS: &[Field] = &[
     Field::NotificationsShowActions,
     Field::NotificationsHideBodyWhenLocked,
 ];
-
-/// Draws the page: its title, its cards and the fields listed above, in order.
-pub fn view<'a>(page: &PageView, fields: &[FieldView], tokens: &'a Tokens) -> Element<'a, Message> {
-    crate::view::page_section(page, fields, tokens)
-}

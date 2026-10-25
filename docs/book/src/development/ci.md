@@ -14,7 +14,7 @@
 | `doc` | `cargo doc --workspace --no-deps --all-features` | 配合 `RUSTDOCFLAGS=-D warnings`，缺失文档注释会失败 |
 | `build` | `cargo build --workspace --release --all-features` | 发布构建（安装链接所需系统库） |
 | `plan` | 由层级表推导测试矩阵 | 覆盖不全或矩阵为空即失败 |
-| `test` | `cargo test -p <crate> --all-features`，**每 crate 一个分片** | 失败可归因、可局部复现 |
+| `test` | `cargo test -p <crate> --all-features`，**每 crate 一个分片**；作业级 `QT_QPA_PLATFORM=offscreen` | 失败可归因、可局部复现；QML 分片另装 Qt 6 与字体 |
 | `xwayland-e2e` | `INOX_XWAYLAND_E2E=1 cargo test -p inox-xwayland --test headless_x11_mapping` | X11 映射端到端（宿主为第三方 headless 合成器，仅 E2 等级） |
 | `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
 | `book` | `mdbook build docs/book` | 本站点构建 |
@@ -29,11 +29,13 @@
 
 ## 需要系统库的分片
 
-只有 manifest 中声明了 `smithay` 的 crate 才安装系统库（当前是 `inox-compositor`），其余分片保持廉价。合成器分片需要：
+分片按 manifest 声明决定装什么，而不是靠手工名单：声明了 `smithay` 的分片装图形依赖，声明了 `cxx-qt` 的分片装 Qt 6 开发包与字体，声明了 `pam` 的分片装 `libclang`（`pam-sys` 的构建脚本用 `bindgen`）。其余分片保持廉价。
 
-- **系统包**：`libxkbcommon-dev`（Smithay 的 `wayland_frontend` 在链接期需要 `-lxkbcommon`）、`xkb-data`（合成器用它提供的 rules 文件编译确定性的 `evdev`/`us` keymap）、`libegl1` 与 `libgl1-mesa-dri`（EGL 由 Smithay 在运行时 `dlopen`，llvmpipe 软件光栅化来自 Mesa 的 DRI 驱动），以及 M2.5 真实后端的 `libseat-dev` / `libdrm-dev` / `libgbm-dev` / `libinput-dev` / `libudev-dev`（链接需要，因 runner 无 DRM master，只做编译检查）。
-- **软件渲染**：工作流级环境变量 `LIBGL_ALWAYS_SOFTWARE=1`。runner 没有 GPU，headless 集成测试通过 llvmpipe 渲染。
-- **headless 集成测试**：验证输出创建、渲染（以离屏像素读回断言）、输入事件与干净退出；测试进程需要随时可用的私有 `XDG_RUNTIME_DIR`。
+- **合成器分片（`graphics`）**：
+  - **系统包**：`libxkbcommon-dev`（Smithay 的 `wayland_frontend` 在链接期需要 `-lxkbcommon`）、`xkb-data`（合成器用它提供的 rules 文件编译确定性的 `evdev`/`us` keymap）、`libegl1` 与 `libgl1-mesa-dri`（EGL 由 Smithay 在运行时 `dlopen`，llvmpipe 软件光栅化来自 Mesa 的 DRI 驱动），以及 M2.5 真实后端的 `libseat-dev` / `libdrm-dev` / `libgbm-dev` / `libinput-dev` / `libudev-dev`（链接需要，因 runner 无 DRM master，只做编译检查）。
+  - **软件渲染**：工作流级环境变量 `LIBGL_ALWAYS_SOFTWARE=1`。runner 没有 GPU，headless 集成测试通过 llvmpipe 渲染。
+  - **headless 集成测试**：验证输出创建、渲染（以离屏像素读回断言）、输入事件与干净退出；测试进程需要随时可用的私有 `XDG_RUNTIME_DIR`。
+- **QML 分片（`ui` / `qt`）**：`qt6-base-dev`、`qt6-declarative-dev`、`qml6-module-qtquick*` 一组运行时模块、`qt6-wayland-dev` 与 `lld`，外加 `fonts-dejavu-core`、`fonts-noto-cjk`。原因有两个：`cxx-qt` 的**构建脚本**要能解析到 Qt（只做类型检查的 job 也一样），而 QML 加载测试要在运行时 import 真实模块、Qt 还要用系统字体排版。作业级环境变量 `QT_QPA_PLATFORM=offscreen` 让这些测试在无显示环境下建 `QQuickWindow` 并取帧。包清单只在 `.github/actions/system-deps` 里维护一份，细节见[依赖管理](./dependencies.md)的「系统依赖：Qt 6」一节。
 
 各 crate 的 `AGENTS.md` 记录该 crate 特有的 CI 依赖与命令，以它们为准。
 

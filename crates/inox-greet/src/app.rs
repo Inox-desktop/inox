@@ -1,13 +1,13 @@
 //! The Elm loop: state, messages, and `update`.
-//!
 //! ADR 0003 fixes this shape for every component and ADR 0013 repeats it for
-//! interactions: a message goes in, the state changes, and anything slow comes
-//! back as a task. Nothing here draws and nothing here blocks: the two things a
-//! greeter asks of other processes — check this account, start that session — come
-//! out of the model as [`Command`]s, and [`update`] turns each one into a task that
-//! speaks `auth-v1` to the boundary and comes back as a
-//! [`Message::TransportAnswered`]. The state transition itself is still pure, which
-//! is what lets every rule below be a unit test rather than a race.
+//! ADR 0003 fixes this shape for every component and ADR 0013 repeats it for
+//! interactions: a message goes in, the state changes, and anything slow leaves as
+//! a command. Nothing here draws and nothing here blocks: the two things a greeter
+//! asks of other processes — check this account, start that session — come out of
+//! the model as [`Command`]s, and [`update`] hands them back to the caller, which
+//! is the QML bridge (`crate::cxxqt_object`) and, behind it, the transport in
+//! [`crate::runtime`]. The state transition itself is still pure, which is what lets
+//! every rule below be a unit test rather than a race.
 //!
 //! Three rules the handler exists to keep.
 //!
@@ -24,30 +24,25 @@
 //! - **The clock only moves when a tick says so.** The reply deadline and the
 //!   rolling allowance are computed from the instant the state holds, not from
 //!   `Instant::now()`, so a test can drive an hour of a login in a microsecond.
+//!
+//! Since the interface is QML the keyboard arrives as
+//! [`KeyPress`] — a key name or one typed character, reported by the QML tree —
+//! not as a widget toolkit event. What it maps to is still this module's decision,
+//! and it is still a pure function with a test.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::{Element, Subscription, Task};
 use inox_common::i18n::Localizer;
 use inox_config::Theme as Tokens;
 use tracing::{debug, info, warn};
 
 use crate::accounts::Accounts;
-use crate::boundary::{self, Report};
+use crate::boundary::Report;
 use crate::state::{AttemptId, AuthReply, Command, Event, Greeter, Phase};
 use crate::view_model::{self, FocusTarget, GreeterViewModel, Projection};
-
-/// How often the login screen re-reads its clock.
-///
-/// The only things it is for are the reply deadline and a spent allowance
-/// expiring while nobody is typing: every other state change is caused by a
-/// message. It is a policy period rather than a design token, because nothing is
-/// drawn with it.
-const TICK: Duration = Duration::from_secs(1);
 
 /// Everything the login screen can be told.
 ///
@@ -77,8 +72,14 @@ pub enum Message {
     /// Operate whatever the keyboard focus is on.
     Activate,
     /// The boundary answered the attempt.
+    /// itself — the boundary hears about it (ADR 0029).
+    /// The transport answers with [`Message::TransportAnswered`] and this is what
+    /// that becomes once the wire's identifier is the model's again; the tests drive
+    /// it directly, which is why a release build has no constructor for it.
+    #[cfg_attr(not(test), allow(dead_code))]
     AuthAnswered(AttemptId, AuthReply),
     /// The display manager finished launching the session.
+    #[cfg_attr(not(test), allow(dead_code))]
     SessionAnswered(AttemptId, bool),
     /// The transport finished one request.
     TransportAnswered {
@@ -127,7 +128,7 @@ pub struct State {
 impl State {
     /// A login screen with no reviewed authentication transport connected.
     ///
-    /// This is the `--preview` path (ADR 0015, ADR 0021), and the first model is
+    /// This is the `--preview` path, and the first model is
     /// projected from the same state as every later one, so there is no frame in
     /// which the screen shows something the projection would not have produced.
     pub fn new(localizer: Rc<Localizer>, tokens: Tokens, roster: Accounts) -> Self {
@@ -186,17 +187,16 @@ impl State {
         }
     }
 
-    /// The catalogs.
-    pub fn localizer(&self) -> &Localizer {
-        &self.localizer
-    }
-
     /// The design tokens.
     pub const fn tokens(&self) -> &Tokens {
         &self.tokens
     }
 
     /// The login lifecycle model.
+    ///
+    /// Kept for the tests that assert what the model did with a message; a release
+    /// build has no caller, and the allowance says so rather than hiding it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn greeter(&self) -> &Greeter {
         &self.greeter
     }
@@ -207,68 +207,29 @@ impl State {
     }
 
     /// Where the keyboard focus is.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn focus(&self) -> Option<FocusTarget> {
         self.focus
+    }
+
+    /// The instant the model's deadlines are measured from.
+    ///
+    /// Only the tests read it; the runtime advances it with a tick.
+    ///
+    /// It only moves when a [`Message::Ticked`] says so, which is what lets a test
+    /// (and a runtime with a slow timer) drive an hour of a login in a microsecond.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn clock(&self) -> Instant {
+        self.clock
     }
 
     /// Takes what the login screen has asked for since this was last called.
     ///
     /// The interface a transport implements, and in the shipped binary the only
-    /// caller is `State::transport_tasks`, which turns each command into the task
-    /// that speaks `auth-v1`. Nothing accumulates in the queue: every turn of the
-    /// update loop drains it.
+    /// caller is [`update`], which hands the commands to the QML bridge. Nothing
+    /// accumulates in the queue: every turn of the update loop drains it.
     pub fn take_outgoing(&mut self) -> Vec<Command> {
         self.outgoing.drain(..).collect()
-    }
-
-    /// One task per command the model queued, for [`crate::boundary`] to carry out.
-    ///
-    /// The tasks are independent because the requests are: each one opens its own
-    /// connection, sends one request and reports what came back. That is what lets a
-    /// cancellation be a real request rather than a decision the client keeps to
-    /// itself — the boundary hears about it (ADR 0029).
-    fn transport_tasks(&mut self) -> Task<Message> {
-        let socket = self.socket.clone();
-        let mut tasks = Vec::new();
-
-        for command in self.take_outgoing() {
-            // A preview has nowhere to send anything, and nothing to send: the model
-            // only queues an `Authenticate` while a boundary is connected.
-            let Some(socket) = socket.clone() else {
-                debug!("no authentication boundary is connected; the request is dropped");
-                continue;
-            };
-
-            match command {
-                Command::None => {}
-                Command::Authenticate {
-                    id,
-                    username,
-                    credential,
-                } => {
-                    let attempt = id.raw();
-                    tasks.push(Task::perform(
-                        boundary::authenticate(socket, attempt, username, credential),
-                        move |report| Message::TransportAnswered { attempt, report },
-                    ));
-                }
-                Command::StartSession(id) => {
-                    let attempt = id.raw();
-                    tasks.push(Task::perform(
-                        boundary::start_session(socket, attempt),
-                        move |report| Message::TransportAnswered { attempt, report },
-                    ));
-                }
-                Command::Cancel(id) => {
-                    let attempt = id.raw();
-                    tasks.push(Task::perform(boundary::cancel(socket, attempt), |()| {
-                        Message::TransportFinished
-                    }));
-                }
-            }
-        }
-
-        Task::batch(tasks)
     }
 
     /// The window title.
@@ -276,20 +237,13 @@ impl State {
         self.model.title.clone()
     }
 
-    /// The window theme, from the theme tokens.
-    pub fn theme(&self) -> iced::Theme {
-        crate::theme::from_tokens(&self.tokens)
-    }
-
-    /// A task that puts the keyboard focus where the projection says it is.
+    /// Where the boundary is, when this build has one.
     ///
-    /// There is nothing for iced's own focus to hold: this screen has no text box
-    /// (the credential is a mask, ADR 0015) and iced 0.14 has no focusable buttons,
-    /// so the ring the person sees is the projection's alone. The method stays
-    /// because it is the one place that would have to change if that stopped being
-    /// true, and it says so.
-    pub fn focus_task(&self) -> Task<Message> {
-        Task::none()
+    /// `None` is the `--preview` path: the screen is drawn in the state a build
+    /// with no boundary is in, and every command the model would queue is dropped
+    /// rather than attempted.
+    pub fn socket(&self) -> Option<&PathBuf> {
+        self.socket.as_ref()
     }
 
     /// Recomputes what the view draws, and moves the focus and the account list
@@ -351,136 +305,83 @@ fn project(
     })
 }
 
-/// The keys the login screen handles, and the clock.
+/// A key press the QML tree reported.
 ///
-/// Enter operates whatever is focused and Escape clears the credential — or closes
-/// the account list, when that is what is open; **Space is deliberately not a
-/// binding**, because it is a character someone may want in their own password and
-/// a keyboard shortcut that eats it would be a shortcut against the field. Key
-/// repeat is ignored for the same reason: holding a key down is a person leaning on
-/// it, not a second request.
-pub fn subscription(_state: &State) -> Subscription<Message> {
-    Subscription::batch([
-        iced::keyboard::listen().filter_map(|event| match event {
-            iced::keyboard::Event::KeyPressed {
-                key,
-                modifiers,
-                repeat: false,
-                ..
-            } => key_binding(&key, modifiers),
-            _ => None,
-        }),
-        Subscription::run(tick),
-    ])
+/// The tree has no text field to hand a password to: it forwards what
+/// the keyboard produced and Rust decides what that means. This is the whole
+/// vocabulary it may forward — five keys with a meaning of their own, and one
+/// character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyPress {
+    /// Tab: move the focus to the next operable control.
+    Tab,
+    /// Shift+Tab: move the focus to the previous one.
+    BackTab,
+    /// Enter or Return: operate what the focus is on.
+    Enter,
+    /// Escape: clear the credential, or close the account list.
+    Escape,
+    /// Backspace: remove the last character of the credential.
+    Backspace,
+    /// One character someone typed.
+    Character(char),
 }
 
 /// The message a key press maps to.
 ///
-/// Pure, and tested on its own: the subscription above is a two-line adapter, so
-/// "Tab moves, Shift+Tab moves back, Enter operates, Escape clears, printable
-/// characters belong to the field" is a property of this function rather than of a
-/// running window (acceptance Q01).
+/// Pure, and tested on its own: the bridge is a two-line adapter, so "Tab moves,
+/// Shift+Tab moves back, Enter operates, Escape clears, printable characters
+/// belong to the field" is a property of this function rather than of a running
+/// window (acceptance Q01).
 ///
-/// **Space is a character here, not an operation.** A password may contain one, and
-/// the credential field is not a text box iced could handle it in (ADR 0015: iced's
-/// editor keeps a `String` this crate cannot zeroize), so the unprintable keys are
-/// the only shortcuts and everything a person can type is data.
+/// **Space is a character here, not an operation.** A password may contain one,
+/// and the credential field is a mask rather than a text box, so the
+/// unprintable keys are the only shortcuts and everything a person can type is
+/// data.
 ///
 /// Character messages are produced whatever has the focus and *applied* only while
 /// the ring is on the credential field: no other control on this screen takes text,
 /// so a character that arrives anywhere else was not typed into anything.
-pub fn key_binding(key: &Key, modifiers: Modifiers) -> Option<Message> {
-    match key {
-        Key::Named(Named::Tab) if modifiers.shift() => Some(Message::FocusPrevious),
-        Key::Named(Named::Tab) => Some(Message::FocusNext),
-        Key::Named(Named::Enter) => Some(Message::Activate),
-        Key::Named(Named::Escape) => Some(Message::Cancelled),
-        Key::Named(Named::Backspace) => Some(Message::Backspace),
-        // One printable character, and nothing else: a multi-character `Key::Character`
-        // is an input-method commit rather than a keystroke, and a control character
-        // is not text.
-        Key::Character(text) => {
-            let mut characters = text.chars();
-            match (characters.next(), characters.next()) {
-                (Some(character), None) if !character.is_control() => {
-                    Some(Message::Credential(character))
-                }
-                _ => None,
-            }
-        }
-        _ => None,
+pub fn key_binding(press: KeyPress) -> Option<Message> {
+    match press {
+        KeyPress::Tab => Some(Message::FocusNext),
+        KeyPress::BackTab => Some(Message::FocusPrevious),
+        KeyPress::Enter => Some(Message::Activate),
+        KeyPress::Escape => Some(Message::Cancelled),
+        KeyPress::Backspace => Some(Message::Backspace),
+        // A control character is not text.
+        KeyPress::Character(character) if character.is_control() => None,
+        KeyPress::Character(character) => Some(Message::Credential(character)),
     }
 }
 
-/// A stream that produces one [`Message::Ticked`] a second, for as long as the
-/// subscription is alive.
+/// Applies one message, and hands back what the boundary should be asked for.
 ///
-/// The thread ends when the runtime drops the receiver, which is what stops the
-/// timer when the window closes.
-fn tick() -> iced::futures::channel::mpsc::Receiver<Message> {
-    let (mut sender, receiver) = iced::futures::channel::mpsc::channel(1);
-
-    std::thread::spawn(move || {
-        loop {
-            match sender.try_send(Message::Ticked(Instant::now())) {
-                Ok(()) => {}
-                // The runtime has not read the last tick yet; skipping this one
-                // is better than blocking the timer thread.
-                Err(error) if error.is_full() => {}
-                Err(_) => break,
-            }
-
-            std::thread::sleep(TICK);
-        }
-    });
-
-    receiver
-}
-
-/// The login screen's widget tree, from the projection.
-pub fn view(state: &State) -> Element<'_, Message> {
-    crate::view::view(state)
-}
-
-/// Applies one message.
-pub fn update(state: &mut State, message: Message) -> Task<Message> {
-    let focus_before = state.focus;
-    let task = handle(state, message);
+/// The commands are returned rather than sent: this module stays free of the
+/// transport and of threads, which is what lets every rule it holds be a unit test.
+/// [`crate::runtime::Host`] is the caller that queues them, and
+/// [`crate::cxxqt_object`] is what calls *it*.
+///
+/// There is deliberately no "the session started, so this window is finished"
+/// branch: the session runs on a VT this process cannot see, and
+/// the screen that has to be in front of the person when that session ends is this
+/// one — closing the window would mean the host starting a fresh client to replace
+/// it, with nobody able to say when. The started face is a dwell in the model
+/// instead (§决策 4), which is why this loop is still just messages in and a
+/// projection out.
+pub fn update(state: &mut State, message: Message) -> Vec<Command> {
+    handle(state, message);
     state.refresh_model();
 
-    // iced is told where the focus went only when it went somewhere. Re-issuing a
-    // focus request on every message is not harmless: focusing a text input moves
-    // its caret, so the message that says "a character arrived" would also say
-    // "start again from the end", and somebody editing the middle of a name would
-    // watch the caret jump on every keystroke.
-    let focus = if state.focus == focus_before {
-        Task::none()
-    } else {
-        state.focus_task()
-    };
-
-    // Whatever the model asked the outside world for, once, at the end of the turn:
-    // the requests come from the same queue a transport drains.
-    let transport = state.transport_tasks();
-
-    // There is deliberately no "the session started, so this window is finished"
-    // branch here. The session runs on a VT this process cannot see (ADR 0037
-    // §决策 3), and the screen that has to be in front of the person when that
-    // session ends is this one — closing the window would mean the host starting a
-    // fresh client to replace it, with nobody able to say when. The started face is
-    // a dwell in the model instead (§决策 4), which is why this loop is still just
-    // messages in and a projection out.
-    Task::batch([task, focus, transport])
+    state.take_outgoing()
 }
 
 /// The message handler, without the projection step.
-fn handle(state: &mut State, message: Message) -> Task<Message> {
-    let task = dispatch(state, message);
+fn handle(state: &mut State, message: Message) {
+    dispatch(state, message);
 
     // Whatever the message was, it may have been the one that started a session.
     remember_started(state);
-
-    task
 }
 
 /// Records the account a session was started for: once for that session, and only
@@ -493,7 +394,7 @@ fn handle(state: &mut State, message: Message) -> Task<Message> {
 ///
 /// It is recorded for the *session*, not for the process. The screen now stays up
 /// after a session starts and becomes a login screen again when the dwell is over
-/// (ADR 0037 §决策 4), so the same process can start a second session — and that one
+///, so the same process can start a second session — and that one
 /// is recorded when it starts, not when the first one did. Returning to the prompt
 /// is not a login and records nothing, which is what the flag is cleared for.
 fn remember_started(state: &mut State) {
@@ -517,7 +418,7 @@ fn remember_started(state: &mut State) {
 }
 
 /// The message handler itself.
-fn dispatch(state: &mut State, message: Message) -> Task<Message> {
+fn dispatch(state: &mut State, message: Message) {
     let now = state.clock;
 
     match message {
@@ -532,14 +433,13 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
                 .any(|account| account.name == name)
             {
                 debug!(%name, "an account the screen did not offer");
-                return Task::none();
+                return;
             }
 
             let command = state.greeter.apply(Event::SelectAccount(name), now);
             state.queue(command, "another account was chosen");
             // The list has answered the question it was opened for.
             state.choosing = false;
-            Task::none()
         }
         Message::SwitchUser => {
             // "Is there anything to switch to" is the projection's answer, not this
@@ -547,38 +447,33 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
             // message, and a screen that is checking a login draws none either.
             if state.model.switch_user.is_none() {
                 debug!("the screen offers no other account to log in as");
-                return Task::none();
+                return;
             }
 
             state.choosing = true;
             // The rows are what the keyboard can reach now, and which row it lands
             // on is the projection's decision rather than this one's.
             state.focus = None;
-            Task::none()
         }
         Message::Credential(character) => {
             // "The ring is on the credential field" is the condition, and the ring is
-            // the projection's answer rather than iced's: it is the same fact the
-            // person sees.
+            // the projection's answer rather than the toolkit's: it is the same fact
+            // the person sees.
             if state.model.focus != Some(FocusTarget::Credential) {
                 debug!("a character arrived while the credential field was not focused");
-                return Task::none();
+                return;
             }
 
             let command = state.greeter.apply(Event::Credential(character), now);
             state.queue(command, "the credential changed");
-
-            Task::none()
         }
         Message::Backspace => {
             if state.model.focus != Some(FocusTarget::Credential) {
-                return Task::none();
+                return;
             }
 
             let command = state.greeter.apply(Event::Backspace, now);
             state.queue(command, "the credential changed");
-
-            Task::none()
         }
         Message::Submitted => {
             let command = state.greeter.apply(Event::Submit, now);
@@ -590,14 +485,12 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
                 _ => debug!("the submission was refused by the model"),
             }
             state.queue(command, "the identity was submitted");
-            Task::none()
         }
         Message::Cancelled if state.model.choosing => {
             // With the account list open, the key that leaves what is open leaves
             // the list: nothing is cleared, because nothing has been typed.
             state.choosing = false;
             state.focus = None;
-            Task::none()
         }
         Message::Cancelled => {
             let command = state.greeter.apply(Event::Cancel, now);
@@ -607,15 +500,12 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
             // than the credential field directly: the projection knows which
             // controls survived the change, and this does not.
             state.focus = None;
-            Task::none()
         }
         Message::FocusNext => {
             move_focus(state, true);
-            Task::none()
         }
         Message::FocusPrevious => {
             move_focus(state, false);
-            Task::none()
         }
         Message::Activate => {
             // The focused control is the one that is operated. There is no
@@ -634,7 +524,7 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
                         .map(|account| account.name.clone())
                     else {
                         debug!(index, "the account row is not one the screen drew");
-                        return Task::none();
+                        return;
                     };
 
                     handle(state, Message::AccountChosen(name))
@@ -645,7 +535,6 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
                 }
                 None => {
                     debug!("nothing is focused, so nothing was activated");
-                    Task::none()
                 }
             }
         }
@@ -662,7 +551,6 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
             }
 
             state.queue(command, "the boundary answered");
-            Task::none()
         }
         Message::SessionAnswered(id, success) => {
             let before = state.greeter.phase();
@@ -675,7 +563,6 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
             }
 
             state.queue(command, "the display manager answered");
-            Task::none()
         }
         Message::TransportAnswered { attempt, report } => {
             // The wire's identifier becomes the model's again here, and nowhere else:
@@ -706,17 +593,15 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
             }
 
             state.queue(command, "the boundary answered");
-
-            Task::none()
         }
-        Message::TransportFinished => Task::none(),
+        Message::TransportFinished => {}
         Message::Ticked(now) => {
             let before = state.greeter.phase();
             state.clock = now;
             // The deadline, the rolling allowance and the started face's dwell are
             // the model's, and this is the only thing that advances them. The dwell
             // is why a message that started a session no longer ends this window: a
-            // tick is what ends the started face instead (ADR 0037 §决策 4).
+            // tick is what ends the started face instead.
             let command = state.greeter.apply(Event::Tick, now);
 
             if before == Phase::SessionStarted && state.greeter.phase() != Phase::SessionStarted {
@@ -724,7 +609,6 @@ fn dispatch(state: &mut State, message: Message) -> Task<Message> {
             }
 
             state.queue(command, "the reply deadline passed");
-            Task::none()
         }
     }
 }
@@ -762,6 +646,7 @@ mod tests {
     use crate::accounts::Account;
     use crate::state::SESSION_STARTED_DWELL;
     use inox_common::i18n::Locale;
+    use std::time::Duration;
 
     /// The accounts a test offers: two ordinary accounts, in uid order.
     fn roster() -> Accounts {
@@ -782,14 +667,14 @@ mod tests {
         State::with_boundary(Rc::new(localizer), Tokens::builtin_dark(), true, roster())
     }
 
-    /// One message through the handler, without the transport.
+    /// One message through the handler, without a transport.
     ///
-    /// The tests drive the state machine rather than the tasks: what they are about
-    /// is which event a message turns into, and `update` deliberately drains the
-    /// queue into tasks that need a boundary to run. The end-to-end path over a real
-    /// socket is `tests/boundary.rs`.
+    /// The tests drive the state machine rather than the queue: what they are about
+    /// is which event a message turns into, and `update` hands the queue to a
+    /// boundary that these tests do not have. The end-to-end path over a real socket
+    /// is `crate::headless_tests::boundary`.
     fn send(state: &mut State, message: Message) {
-        let _ = handle(state, message);
+        handle(state, message);
         state.refresh_model();
     }
 
@@ -1117,7 +1002,7 @@ mod tests {
 
         // The window does not go away: the screen says the session started and
         // operates nothing, which is a face rather than the end of the login screen
-        // (ADR 0037 §决策 4).
+        //.
         assert_eq!(state.greeter().phase(), Phase::SessionStarted);
         assert!(matches!(
             state.model().face,
@@ -1602,10 +1487,10 @@ mod tests {
     }
 
     #[test]
-    fn update_drains_the_queue_into_transport_tasks() {
-        // The queue is an interface, not storage: every turn of the loop takes what
-        // the model asked for and turns it into a task (or drops it, in a preview
-        // where there is nowhere to send it).
+    fn update_hands_the_queue_to_the_transport_and_leaves_nothing_behind() {
+        // The queue is an interface, not storage: every turn of the loop gives what
+        // the model asked for to the caller, which is the transport. Nothing is left
+        // in the state once it has been handed over.
         let localizer = crate::i18n::load(&Locale::default_locale()).expect("the catalogs parse");
         let mut state = State::connected(
             Rc::new(localizer),
@@ -1614,59 +1499,40 @@ mod tests {
             roster(),
         );
 
-        let _ = update(&mut state, Message::Submitted);
+        let commands = update(&mut state, Message::Submitted);
 
+        assert!(
+            matches!(commands.as_slice(), [Command::Authenticate { .. }]),
+            "{commands:?}"
+        );
         assert!(state.take_outgoing().is_empty());
     }
 
     #[test]
     fn the_keyboard_bindings_are_the_whole_keyboard_interface() {
-        let plain = Modifiers::default();
-        let shift = Modifiers::SHIFT;
-
-        assert_eq!(
-            key_binding(&Key::Named(Named::Tab), plain),
-            Some(Message::FocusNext)
-        );
-        assert_eq!(
-            key_binding(&Key::Named(Named::Tab), shift),
-            Some(Message::FocusPrevious)
-        );
-        assert_eq!(
-            key_binding(&Key::Named(Named::Enter), plain),
-            Some(Message::Activate)
-        );
-        assert_eq!(
-            key_binding(&Key::Named(Named::Escape), plain),
-            Some(Message::Cancelled)
-        );
-        assert_eq!(
-            key_binding(&Key::Named(Named::Backspace), plain),
-            Some(Message::Backspace)
-        );
+        assert_eq!(key_binding(KeyPress::Tab), Some(Message::FocusNext));
+        assert_eq!(key_binding(KeyPress::BackTab), Some(Message::FocusPrevious));
+        assert_eq!(key_binding(KeyPress::Enter), Some(Message::Activate));
+        assert_eq!(key_binding(KeyPress::Escape), Some(Message::Cancelled));
+        assert_eq!(key_binding(KeyPress::Backspace), Some(Message::Backspace));
 
         // Space is a password character: a shortcut on it would eat a character
         // somebody may type into their own password.
         assert_eq!(
-            key_binding(&Key::Character(" ".into()), plain),
+            key_binding(KeyPress::Character(' ')),
             Some(Message::Credential(' '))
         );
         assert_eq!(
-            key_binding(&Key::Character("a".into()), plain),
+            key_binding(KeyPress::Character('a')),
             Some(Message::Credential('a'))
         );
         assert_eq!(
-            key_binding(&Key::Character("在".into()), plain),
+            key_binding(KeyPress::Character('在')),
             Some(Message::Credential('在')),
             "a password is not ASCII"
         );
-        assert_eq!(
-            key_binding(&Key::Character("ab".into()), plain),
-            None,
-            "a multi-character key is an input-method commit, not a keystroke"
-        );
-        assert_eq!(key_binding(&Key::Character("\u{7}".into()), plain), None);
-        assert_eq!(key_binding(&Key::Named(Named::Space), plain), None);
+        // A control character is not text.
+        assert_eq!(key_binding(KeyPress::Character('\u{7}')), None);
     }
 
     #[test]

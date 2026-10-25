@@ -1,6 +1,6 @@
 //! The state contract of ADR 0013, as data.
 //!
-//! That ADR asks every L3 component to model the same four things, so that a
+//! The contract asks every L3 component to model the same four things, so that a
 //! component that is restarted, replaced or reconnected behaves like one that is
 //! merely busy. Three of them have a shape here:
 //!
@@ -29,8 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use iced::widget::image::Handle;
-
+use crate::decode::FrameHandle;
 use crate::model::{OutputName, Size, Unusable};
 use crate::scaling::Placement;
 
@@ -146,12 +145,12 @@ pub enum Showing {
         path: String,
         /// The image's own size, before the placement scales it.
         size: Size,
-        /// The pixels, in the renderer's own refcounted buffer.
+        /// The pixels, in a refcounted frame handle.
         ///
-        /// A [`Handle`] rather than a byte slice because that is what draws a
-        /// frame without copying it: it is built once, when the frame is
+        /// A [`FrameHandle`] rather than a byte slice because that is what draws
+        /// a frame without copying it: it is built once, when the frame is
         /// applied, and cloned (a reference count) every time it is drawn.
-        image: Handle,
+        image: FrameHandle,
         /// The geometry the image is drawn with.
         placement: Placement,
     },
@@ -164,7 +163,7 @@ pub enum Showing {
 impl Showing {
     /// The image on this output, if there is one.
     #[must_use]
-    pub const fn image(&self) -> Option<&Handle> {
+    pub const fn image(&self) -> Option<&FrameHandle> {
         match self {
             Self::Image { image, .. } => Some(image),
             Self::Background => None,
@@ -189,15 +188,6 @@ impl Showing {
         }
     }
 
-    /// Where the image goes, if there is one.
-    #[must_use]
-    pub const fn placement(&self) -> Option<&Placement> {
-        match self {
-            Self::Image { placement, .. } => Some(placement),
-            Self::Background => None,
-        }
-    }
-
     /// Whether this output is drawing the theme background.
     #[must_use]
     pub const fn is_background(&self) -> bool {
@@ -209,7 +199,7 @@ impl Showing {
 ///
 /// Kept beside what the output is drawing rather than replacing it, because the
 /// two are independent: a wallpaper that is already up stays up while the
-/// interface explains why the *new* one did not load (ADR 0014, acceptance D05).
+/// interface explains why the *new* one did not load.
 /// Replacing a working frame with a blank one to report a failure would be the
 /// worse outcome of the two, and it is the outcome this shape is chosen to make
 /// impossible.
@@ -252,7 +242,7 @@ impl OutputStatus {
 
     /// The image on this output, if there is one.
     #[must_use]
-    pub const fn image(&self) -> Option<&Handle> {
+    pub const fn image(&self) -> Option<&FrameHandle> {
         self.showing.image()
     }
 
@@ -375,7 +365,13 @@ mod tests {
             showing: Showing::Image {
                 path: "/walls/wall.png".to_owned(),
                 size: Size::new(width, height),
-                image: Handle::from_rgba(width, height, vec![0; (width * height * 4) as usize]),
+                image: crate::decode::Frame::new(
+                    width,
+                    height,
+                    vec![0; (width * height * 4) as usize],
+                )
+                .expect("a well-formed frame")
+                .into_handle(),
                 placement: crate::scaling::place(
                     inox_config::WallpaperMode::Fill,
                     Size::new(width, height),

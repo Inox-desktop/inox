@@ -9,19 +9,18 @@
 
 [advisories]
 yanked = "warn"
-# Both entries are `unmaintained` advisories — neither is a vulnerability, and
-# neither has a safe upgrade. Each is reachable only through a core dependency
-# that an accepted ADR fixes, so "upgrade away from it" is not an option this
+# The entry below is an `unmaintained` advisory, not a vulnerability, and it has
+# no safe upgrade from here: it is reachable only through a core dependency that
+# an accepted ADR fixes, so "upgrade away from it" is not an option this
 # repository has on its own; the alternative would be to drop the toolkit.
 #
 # `cgmath` (RUSTSEC-2026-0196) is an unavoidable transitive dependency of
 # Smithay v0.7.0 (ADR 0003). Revisit when Smithay drops it.
 #
-# `ttf-parser` (RUSTSEC-2026-0192) is cosmic-text's font parser, reached
-# through `iced_graphics` -> `cosmic-text` -> `fontdb`. Iced 0.14 (ADR 0003)
-# lays out all text through cosmic-text, so every L3 component depends on it.
-# The advisory's suggested replacement (`skrifa`) is a change upstream has to
-# make first; track it, and drop this entry once iced moves off ttf-parser.
+# `ttf-parser` (RUSTSEC-2026-0192) used to be here and has been dropped from
+# this list: it left the graph with Iced. The QML shell components lay text out
+# in Qt Quick, not cosmic-text, so `iced_graphics -> cosmic-text -> fontdb` no
+# longer exists (ADR 0036).
 #
 # The three `users` entries are **not** that shape: two of them are real defects
 # in the crate, and they are ignored because no code in this workspace reaches
@@ -44,7 +43,6 @@ yanked = "warn"
 # it (ADR 0029 §3 records the same reasoning, and the removal plan).
 ignore = [
     "RUSTSEC-2026-0196",
-    "RUSTSEC-2026-0192",
     "RUSTSEC-2023-0040",
     "RUSTSEC-2023-0059",
     "RUSTSEC-2025-0040",

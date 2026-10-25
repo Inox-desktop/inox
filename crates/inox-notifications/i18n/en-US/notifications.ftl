@@ -2,7 +2,7 @@
 #
 # Every string the daemon can put on screen lives here; the code only ever holds
 # message ids (root AGENTS.md §7.3, PRD §11.2). `zh-CN` must define exactly the
-# same ids with the same placeholders -- `tests/catalog.rs` asserts it with
+# same ids with the same placeholders -- `src/headless_tests.rs` asserts it with
 # `inox_common::i18n::compare_catalogs` (acceptance Q03).
 #
 # Application names, notification summaries, bodies and action labels are *data*

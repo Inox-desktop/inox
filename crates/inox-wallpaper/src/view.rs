@@ -1,385 +1,453 @@
-//! The widget tree.
+//! The QML projection: one JSON document, decided in Rust.
 //!
-//! This module draws and decides nothing: every string, every enabled state and
-//! the geometry of every copy of the image were settled in
-//! [`crate::view_model`], and every colour, size and radius comes from
-//! [`crate::theme`]. What is left is the one thing a view is for — building the
-//! tree.
+//! The QML tree is only allowed to *render*. Which strings are used, whether the
+//! retry control is enabled and why not when it is not, which phase the
+//! component is in, which colour and type role each line takes, and the geometry
+//! of the wallpaper were all decided in [`crate::view_model`]; the tokens and
+//! their QML conversion live in [`crate::theme`]. This module flattens those two
+//! projections into the single document the bridge publishes as `modelJson`
+//! (`docs/qml-migration-contract.md` §3).
 //!
-//! # The shape of the window
+//! # Why one document and not a property per field
 //!
-//! One column at the top-left holds the status card, and the problem card under
-//! it when there is one; the windowed-preview notice is a strip at the foot. Both
-//! are inset by the same `xl` window padding, so the cards and the strip line up
-//! on one edge, and both are drawn with the same card style, radius and inset —
-//! a second class of element in the same place with different geometry is what
-//! makes a surface look assembled rather than designed (`docs/quality/ui-guidelines.md`
-//! §3, §4).
+//! A property per field would make the QML↔Rust boundary a second UI
+//! definition, updated by hand every time a line is added. Instead QML parses
+//! one value and binds to its paths; Rust republishes the whole document
+//! whenever the state changes. The trade-off is accepted deliberately — a bigger
+//! message per change in exchange for one place that decides everything.
 //!
-//! # Using the tokens without growing a second design system
+//! # Why the geometry is not in QML
 //!
-//! Every literal a widget would otherwise take — a size, a colour, a radius, a
-//! padding, an interactive height — is asked of [`crate::theme`], which asks the
-//! token set. The one deliberate exception is geometry that the wallpaper's own
-//! placement decided ([`crate::scaling`]): a copy of the image is as large as its
-//! rectangle says, because that rectangle *is* the answer the component exists to
-//! compute.
+//! A copy of the wallpaper is as large as the rectangle [`crate::scaling`]
+//! computed, because that rectangle *is* the answer this component exists to
+//! give. The projection hands QML one rectangle and a `tiled` flag: Qt tiles the
+//! image for `tile` and stretches it to the rectangle for every other mode, so
+//! the QML side never scales an image to a shape the geometry did not choose.
 //!
-//! # How the image is positioned without a custom widget
+//! # The image
 //!
-//! A copy of the image is drawn one rectangle at a time ([`crate::scaling`]),
-//! and a rectangle that starts at a positive coordinate is reached with padding,
-//! while one that starts before the origin is a copy *larger* than the output and
-//! is reached by centring it — which is the same thing, since the rectangle it
-//! describes is exactly centred on the output. Nothing here ever scales a copy to
-//! a rectangle of a different shape than the copy itself: that would distort the
-//! image rather than crop it, and the surface clips whatever runs over its edge.
+//! QML cannot be handed a pixel buffer without a `QQuickImageProvider` or a file
+//! on disk, so a decoded frame carries a PNG `data:` URL
+//! ([`crate::decode::FrameHandle`]). The encode happens once per committed frame
+//! on the worker that decoded it; the cost is recorded as a known gap in the
+//! crate `README.md`.
 
-use iced::alignment::{Horizontal, Vertical};
-use iced::widget::text::Wrapping;
-use iced::widget::{Column, Row, Space, Stack, button, container, image, text};
-use iced::{Color, ContentFit, Element, Length, Padding};
 use inox_config::Theme;
-use std::sync::Arc;
+use serde_json::{Value, json};
 
-use crate::app::{Message, State};
+use crate::app::{Message, PREVIEW_SIZE, State};
 use crate::scaling::Rect;
-use crate::theme;
+use crate::theme::{self, ButtonRole, ButtonState};
 use crate::view_model::{
-    self, Action, Notice, NoticeKind, Phase, PhaseKind, StatusCard, Wallpaper, WallpaperViewModel,
+    self, Action, LineRole, Notice, NoticeKind, PhaseKind, ProjectedLine, Wallpaper,
+    WallpaperViewModel,
 };
 
-/// The title of the preview window, in the session's language.
-#[must_use]
-pub fn title(state: &State) -> String {
-    state.localizer().message("wallpaper-window-title")
+/// One projection of the state.
+///
+/// Besides the document QML parses, a projection carries the two values the
+/// readiness report is checked against, and whether it draws a wallpaper at all
+/// (a report that claims a loaded image when the projection has none is not
+/// evidence of anything).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Projection {
+    json: String,
+    title: String,
+    accessible_items: i32,
+    has_wallpaper: bool,
 }
 
-/// The whole window.
-///
-/// The element borrows nothing from the state — everything in it is owned, and
-/// the tokens are held through an [`Arc`] — but its lifetime is tied to the
-/// state's anyway, because a widget tree is not something a caller gets to keep
-/// after the state that produced it has gone.
-pub fn view<'a>(state: &'a State) -> Element<'a, Message> {
-    render(&view_model::project(state), state.theme_handle())
-}
-
-/// Draws a view model with a set of tokens.
-///
-/// Separate from [`view`] so that the render tests can draw any scenario —
-/// light, dark, empty, degraded — without a running application.
-///
-/// The tokens are an [`Arc`] rather than a reference because a style closure
-/// outlives this call: it is kept by the widget tree and asked for a colour on
-/// every frame, so it has to own what it reads. Everything else the tree is built
-/// from is owned too, which is what lets the element outlive the view model it
-/// was projected from.
-#[must_use]
-pub fn render(model: &WallpaperViewModel, tokens: Arc<Theme>) -> Element<'static, Message> {
-    let mut layers: Vec<Element<'static, Message>> = vec![surface(model, &tokens)];
-
-    layers.push(overlay(
-        cards(model, &tokens),
-        Arc::clone(&tokens),
-        Horizontal::Left,
-        Vertical::Top,
-    ));
-
-    if let Some(footer) = &model.footer {
-        layers.push(overlay(
-            strip(footer, &tokens),
-            Arc::clone(&tokens),
-            Horizontal::Left,
-            Vertical::Bottom,
-        ));
-    }
-
-    Stack::with_children(layers)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
-/// The wallpaper itself, or the theme background when there is none.
-fn surface(model: &WallpaperViewModel, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    match &model.wallpaper {
-        Some(wallpaper) => drawn(wallpaper, tokens),
-        None => {
-            let tokens = Arc::clone(tokens);
-
-            container(Space::new())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(move |_theme| theme::background(&tokens))
-                .into()
+impl Projection {
+    /// The projection before any state exists: no title, no wallpaper.
+    ///
+    /// Used only by the bridge's fallback, which must be total when the binary
+    /// has not installed a runtime.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            json: String::from("{}"),
+            title: String::new(),
+            accessible_items: 0,
+            has_wallpaper: false,
         }
     }
-}
 
-/// The column of cards: what the output is drawing, then whatever has to be read.
-fn cards(model: &WallpaperViewModel, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let mut column = Column::new()
-        .spacing(theme::section_gap(tokens))
-        .push(status_card(&model.card, tokens));
-
-    if let Some(notice) = &model.notice {
-        column = column.push(notice_card(notice, tokens));
+    /// The JSON document QML parses.
+    #[must_use]
+    pub fn json(&self) -> &str {
+        &self.json
     }
 
-    column.into()
+    /// The window title the projection carries.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// How many accessible items the QML tree must expose for this model.
+    #[must_use]
+    pub fn accessible_items(&self) -> i32 {
+        self.accessible_items
+    }
+
+    /// Whether the model draws an image.
+    #[must_use]
+    pub fn has_wallpaper(&self) -> bool {
+        self.has_wallpaper
+    }
 }
 
-/// The card that describes the previewed output.
+/// Projects the state into the document QML renders.
+#[must_use]
+pub fn project(state: &State) -> Projection {
+    let model = view_model::project(state);
+    let document = document(&model, state.theme());
+
+    Projection {
+        json: document.to_string(),
+        title: model.title.clone(),
+        accessible_items: model.accessible_items(),
+        has_wallpaper: model.wallpaper.is_some(),
+    }
+}
+
+/// The document for a view model and a token set.
 ///
-/// The order is fixed by the view model — output, what is on it, where that came
-/// from, how it was fitted, the phase, and what would change an empty state — so
-/// this function is a transcription of that order and nothing else.
-fn status_card(card: &StatusCard, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let mut content = Column::new().spacing(theme::gap(tokens)).push(line(
-        &card.heading,
-        theme::title_size(tokens),
-        theme::bold(tokens),
-        theme::text(tokens),
-    ));
-
-    if let Some(summary) = &card.summary {
-        content = content.push(line(
-            summary,
-            theme::body_size(tokens),
-            theme::font(tokens),
-            theme::text(tokens),
-        ));
-    }
-    if let Some(source) = &card.source {
-        content = content.push(caption(source, tokens));
-    }
-
-    content = content.push(caption(&card.scaling, tokens));
-
-    if let Some(phase) = &card.phase {
-        content = content.push(line(
-            &phase.text,
-            theme::caption_size(tokens),
-            theme::font(tokens),
-            phase_color(phase, tokens),
-        ));
-    }
-    if let Some(hint) = &card.hint {
-        content = content.push(caption(hint, tokens));
-    }
-
-    shell(content, tokens)
+/// Separate from [`project`] so a test can project any model — loaded, empty,
+/// degraded, at 200% font scale — without a running application.
+#[must_use]
+pub fn document(model: &WallpaperViewModel, tokens: &Theme) -> Value {
+    json!({
+        "title": model.title,
+        "footer": model.footer.as_deref().map_or(Value::Null, |footer| line(
+            footer,
+            text_px(theme::caption_size(tokens)),
+            theme::NORMAL_WEIGHT,
+            theme::muted(tokens),
+        )),
+        "tokens": token_values(tokens),
+        "card": {
+            "lines": model
+                .card
+                .lines()
+                .map(|line| line_value(line, tokens))
+                .collect::<Vec<Value>>(),
+        },
+        "notice": model
+            .notice
+            .as_ref()
+            .map_or(Value::Null, |notice| notice_values(notice, tokens)),
+        "wallpaper": model
+            .wallpaper
+            .as_ref()
+            .map_or(Value::Null, wallpaper_values),
+        "accessibleItems": model.accessible_items(),
+    })
 }
 
-/// The card a notice is drawn in: what happened, why, and the control that
-/// answers it.
-fn notice_card(notice: &Notice, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let heading_color = match notice.kind {
-        NoticeKind::Problem => theme::warning(tokens),
-        NoticeKind::Loading => theme::text(tokens),
+/// Reads one JSON action out of the bridge's `dispatch` channel.
+///
+/// One parser for every control: a control reports `{"type":"<id>"}` and this
+/// maps the id back onto the state machine. An unknown id is `None`, which the
+/// caller only logs — a QML tree that asks for something the binary does not do
+/// is a programming error, not a reason to stop drawing the desktop.
+#[must_use]
+pub fn parse_action(action: &str) -> Option<Message> {
+    let parsed: Value = serde_json::from_str(action).ok()?;
+
+    match parsed.get("type")?.as_str()? {
+        "reload" => Some(Message::Reload),
+        _ => None,
+    }
+}
+
+/// The token values QML binds to.
+fn token_values(tokens: &Theme) -> Value {
+    let padding = theme::control_padding(tokens);
+    let card = theme::card(tokens);
+
+    json!({
+        "window": {
+            "width": PREVIEW_SIZE.width,
+            "height": PREVIEW_SIZE.height,
+        },
+        "colors": {
+            "background": theme::qml_color(tokens.colors.background),
+            "surface": theme::qml_color(tokens.colors.surface),
+            "surfaceVariant": theme::qml_color(tokens.colors.surface_variant),
+            "border": theme::qml_color(tokens.colors.border),
+            "text": theme::text(tokens),
+            "textMuted": theme::muted(tokens),
+            "accent": theme::qml_color(tokens.colors.accent),
+            "onAccent": theme::qml_color(tokens.colors.on_accent),
+            "warning": theme::warning(tokens),
+            "success": theme::success(tokens),
+            "danger": theme::qml_color(tokens.colors.danger),
+        },
+        "font": {
+            "family": theme::font_family(tokens),
+            "weight": {
+                "normal": theme::NORMAL_WEIGHT,
+                "emphasis": theme::EMPHASIS_WEIGHT,
+            },
+            "size": {
+                "title": text_px(theme::title_size(tokens)),
+                "heading": text_px(theme::heading_size(tokens)),
+                "body": text_px(theme::body_size(tokens)),
+                "caption": text_px(theme::caption_size(tokens)),
+            },
+        },
+        "spacing": {
+            "sm": theme::units(theme::gap(tokens)),
+            "md": theme::units(theme::strip_padding(tokens)),
+            "lg": theme::units(theme::section_gap(tokens)),
+            "xl": theme::units(theme::window_padding(tokens)),
+        },
+        "radius": {
+            "sm": theme::units(theme::radius_sm(tokens)),
+            "md": theme::units(theme::radius_md(tokens)),
+            "lg": theme::units(theme::radius_lg(tokens)),
+        },
+        "sizes": {
+            "hairline": theme::units(theme::hairline(tokens)),
+            "focusRing": theme::units(theme::focus_ring(tokens)),
+            "controlHeight": theme::units(theme::control_height(tokens)),
+            "controlPadding": {
+                "top": theme::units(padding.top),
+                "right": theme::units(padding.right),
+                "bottom": theme::units(padding.bottom),
+                "left": theme::units(padding.left),
+            },
+            "cardWidth": theme::units(theme::card_width(tokens)),
+            "cardPadding": theme::units(theme::card_padding(tokens)),
+            "stripPadding": theme::units(theme::strip_padding(tokens)),
+            "windowPadding": theme::units(theme::window_padding(tokens)),
+        },
+        "card": {
+            "background": card.background,
+            "border": card.border,
+            "borderWidth": card.border_width,
+            "radius": card.radius,
+        },
+    })
+}
+
+/// One projected line, with everything needed to draw it.
+///
+/// The type role becomes a size and a weight, and the phase becomes a colour and a
+/// name, here — never in QML, which binds the four values and decides nothing
+/// (`docs/qml-migration-contract.md` §4). `kind` is the phase a line reports, and
+/// `null` for every line that is not a phase: the document says which state a
+/// sentence is about without the tree having to match on its text.
+fn line_value(projected: ProjectedLine<'_>, tokens: &Theme) -> Value {
+    let (size, weight, color) = match projected.role {
+        LineRole::Title => (
+            text_px(theme::title_size(tokens)),
+            theme::EMPHASIS_WEIGHT,
+            theme::text(tokens),
+        ),
+        LineRole::Heading => (
+            text_px(theme::heading_size(tokens)),
+            theme::EMPHASIS_WEIGHT,
+            theme::text(tokens),
+        ),
+        LineRole::WarningHeading => (
+            text_px(theme::heading_size(tokens)),
+            theme::EMPHASIS_WEIGHT,
+            theme::warning(tokens),
+        ),
+        LineRole::Body => (
+            text_px(theme::body_size(tokens)),
+            theme::NORMAL_WEIGHT,
+            theme::text(tokens),
+        ),
+        LineRole::Caption => (
+            text_px(theme::caption_size(tokens)),
+            theme::NORMAL_WEIGHT,
+            theme::muted(tokens),
+        ),
+        LineRole::Phase(kind) => (
+            text_px(theme::caption_size(tokens)),
+            theme::NORMAL_WEIGHT,
+            phase_color(kind, tokens),
+        ),
     };
 
-    let mut story = Column::new().spacing(theme::gap(tokens)).push(line(
-        &notice.heading,
-        theme::heading_size(tokens),
-        theme::bold(tokens),
-        heading_color,
-    ));
+    let kind = match projected.role {
+        LineRole::Phase(kind) => Value::from(phase_name(kind)),
+        _ => Value::Null,
+    };
 
-    if let Some(subject) = &notice.subject {
-        story = story.push(caption(subject, tokens));
+    json!({
+        "text": projected.text,
+        "size": size,
+        "weight": weight,
+        "color": color,
+        "kind": kind,
+    })
+}
+
+/// The name a phase is spelled with in the document.
+fn phase_name(kind: PhaseKind) -> &'static str {
+    match kind {
+        PhaseKind::Loading => "loading",
+        PhaseKind::Ready => "ready",
+        PhaseKind::Degraded => "degraded",
+        PhaseKind::Idle => "idle",
     }
-    if let Some(reason) = &notice.reason {
-        story = story.push(line(
-            reason,
-            theme::body_size(tokens),
-            theme::font(tokens),
-            theme::text(tokens),
-        ));
-    }
-    if let Some(remedy) = &notice.remedy {
-        story = story.push(caption(remedy, tokens));
-    }
-
-    let mut controls = Column::new()
-        .spacing(theme::gap(tokens))
-        .push(control(&notice.action, tokens));
-
-    if let Some(reason) = &notice.action.reason {
-        controls = controls.push(caption(reason, tokens));
-    }
-
-    shell(
-        Column::new()
-            .spacing(theme::section_gap(tokens))
-            .push(story)
-            .push(controls),
-        tokens,
-    )
-}
-
-/// The one control a notice offers, and why it cannot be pressed when it cannot.
-///
-/// It is the surface's primary action, so it is drawn with the accent fill the
-/// UI spec reserves for the one action a screen is for (§5); the reason a
-/// disabled control cannot be pressed is the caption under it, never the colour
-/// alone.
-fn control(action: &Action, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let themed = Arc::clone(tokens);
-
-    button(
-        text(action.label.clone())
-            .size(theme::body_size(tokens))
-            .font(theme::font(tokens)),
-    )
-    .height(Length::Fixed(theme::control_height(tokens)))
-    .padding(theme::control_padding(tokens))
-    .style(move |_theme, status| theme::button_style(&themed, theme::ButtonRole::Primary, status))
-    .on_press_maybe(action.enabled.then_some(Message::Reload))
-    .into()
-}
-
-/// The strip at the foot of the preview: what kind of surface this is.
-///
-/// It takes the width it is given because it is an explanatory sentence rather
-/// than a field (UI spec §4), and a caption colour because it is context the user
-/// reads once, not a value they act on (§7).
-fn strip(value: &str, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let themed = Arc::clone(tokens);
-
-    container(caption(value, tokens))
-        .width(Length::Fill)
-        .padding(theme::strip_padding(tokens))
-        .style(move |_theme| theme::card(&themed))
-        .into()
-}
-
-/// A card: `surface`, a hairline outline, an `md` radius, `lg` padding, and the
-/// width the UI spec bounds a path-bearing body to.
-fn shell(
-    content: impl Into<Element<'static, Message>>,
-    tokens: &Arc<Theme>,
-) -> Element<'static, Message> {
-    let themed = Arc::clone(tokens);
-
-    container(content)
-        .width(Length::Fixed(theme::card_width(tokens)))
-        .padding(theme::card_padding(tokens))
-        .style(move |_theme| theme::card(&themed))
-        .into()
-}
-
-/// Ordinary text.
-fn line(value: &str, size: f32, font: iced::Font, color: Color) -> iced::widget::Text<'static> {
-    text(value.to_owned())
-        .size(size)
-        .font(font)
-        .color(color)
-        .wrapping(Wrapping::WordOrGlyph)
-}
-
-/// Secondary text: a path, a mode, a state sentence, an explanation.
-fn caption(value: &str, tokens: &Theme) -> Element<'static, Message> {
-    line(
-        value,
-        theme::caption_size(tokens),
-        theme::font(tokens),
-        theme::muted(tokens),
-    )
-    .into()
 }
 
 /// The colour of a phase sentence.
 ///
 /// The sentence is the state; the colour only agrees with it (UI spec §6: colour
 /// is never the only thing that carries the state).
-fn phase_color(phase: &Phase, tokens: &Theme) -> Color {
-    match phase.kind {
+fn phase_color(kind: PhaseKind, tokens: &Theme) -> String {
+    match kind {
         PhaseKind::Loading | PhaseKind::Idle => theme::text(tokens),
         PhaseKind::Ready => theme::success(tokens),
         PhaseKind::Degraded => theme::warning(tokens),
     }
 }
 
-/// The image, one widget per copy of it.
-fn drawn(wallpaper: &Wallpaper, tokens: &Arc<Theme>) -> Element<'static, Message> {
-    let first = wallpaper.placement.first();
+/// The notice card: what happened, why, and the control that answers it.
+fn notice_values(notice: &Notice, tokens: &Theme) -> Value {
+    json!({
+        "kind": match notice.kind {
+            NoticeKind::Problem => "problem",
+            NoticeKind::Loading => "loading",
+        },
+        "lines": notice
+            .lines()
+            .map(|line| line_value(line, tokens))
+            .collect::<Vec<Value>>(),
+        "action": action_values(&notice.action, tokens),
+    })
+}
 
-    let content: Element<'static, Message> = if wallpaper.placement.is_tiled() {
-        tiled(wallpaper)
+/// The one control a notice offers, and why it cannot be pressed when it cannot.
+///
+/// All four states are projected rather than only the current one: QML needs the
+/// hovered and pressed drawings to answer the pointer, and they are token
+/// arithmetic rather than colours a QML file could spell.
+fn action_values(action: &Action, tokens: &Theme) -> Value {
+    let styles =
+        |state: ButtonState| style_value(theme::button_style(tokens, ButtonRole::Primary, state));
+    let current = if action.enabled {
+        styles(ButtonState::Active)
     } else {
-        copy(wallpaper, first)
+        styles(ButtonState::Disabled)
     };
 
-    let themed = Arc::clone(tokens);
-    let mut surface = container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .clip(true)
-        .style(move |_theme| theme::background(&themed));
-
-    if first.x > 0 || first.y > 0 {
-        surface = surface.padding(
-            Padding::default()
-                .top(first.y.max(0) as f32)
-                .left(first.x.max(0) as f32),
-        );
-    }
-    if first.x < 0 {
-        surface = surface.align_x(Horizontal::Center);
-    }
-    if first.y < 0 {
-        surface = surface.align_y(Vertical::Center);
-    }
-
-    surface.into()
+    json!({
+        "id": "reload",
+        "label": action.label,
+        "enabled": action.enabled,
+        "reason": action.reason.as_deref().map_or(Value::Null, |reason| caption(reason, tokens)),
+        "style": current,
+        "styles": {
+            "active": styles(ButtonState::Active),
+            "hovered": styles(ButtonState::Hovered),
+            "pressed": styles(ButtonState::Pressed),
+            "disabled": styles(ButtonState::Disabled),
+        },
+        "size": text_px(theme::body_size(tokens)),
+        "weight": theme::NORMAL_WEIGHT,
+    })
 }
 
-/// One whole copy of the image, stretched to the rectangle the geometry chose.
+/// One button drawing, as the fields QML binds.
+fn style_value(style: theme::ButtonStyle) -> Value {
+    json!({
+        "background": style.background,
+        "text": style.text,
+        "border": style.border,
+        "borderWidth": style.border_width,
+        "radius": style.radius,
+    })
+}
+
+/// The image, the rectangle it occupies, and whether Qt should tile it.
+fn wallpaper_values(wallpaper: &Wallpaper) -> Value {
+    // Tiling is the one mode whose copies are not one rectangle: Qt's own tiling
+    // draws the same grid from the origin, so QML gets the output as the area to
+    // cover instead of up to `scaling::MAX_TILES` rectangles.
+    let rect = if wallpaper.placement.is_tiled() {
+        Rect::new(0, 0, PREVIEW_SIZE.width, PREVIEW_SIZE.height)
+    } else {
+        wallpaper.placement.first()
+    };
+
+    json!({
+        "dataUrl": wallpaper.image.data_url(),
+        "sourceWidth": wallpaper.image.width(),
+        "sourceHeight": wallpaper.image.height(),
+        "tiled": wallpaper.placement.is_tiled(),
+        "rect": rect_value(rect),
+    })
+}
+
+/// A rectangle, as the four numbers QML positions an item with.
+fn rect_value(rect: Rect) -> Value {
+    json!({
+        "x": rect.x,
+        "y": rect.y,
+        "width": rect.width,
+        "height": rect.height,
+    })
+}
+
+/// One line of text with everything needed to draw it.
+fn line(text: &str, size: i32, weight: i32, color: String) -> Value {
+    json!({
+        "text": text,
+        "size": size,
+        "weight": weight,
+        "color": color,
+    })
+}
+
+/// A secondary line: a path, a mode, a state sentence, an explanation.
+fn caption(text: &str, tokens: &Theme) -> Value {
+    line(
+        text,
+        text_px(theme::caption_size(tokens)),
+        theme::NORMAL_WEIGHT,
+        theme::muted(tokens),
+    )
+}
+
+/// A text size in whole logical pixels, never below one.
 ///
-/// `ContentFit::Fill` is what draws the copy exactly as large as the rectangle:
-/// the scaling decision has already been taken, and the image is not made to
-/// choose again.
-fn copy(wallpaper: &Wallpaper, rect: Rect) -> Element<'static, Message> {
-    image(wallpaper.image.clone())
-        .width(Length::Fixed(rect.width as f32))
-        .height(Length::Fixed(rect.height as f32))
-        .content_fit(ContentFit::Fill)
-        .into()
+/// [`theme::px`] rounds a token length to whole pixels and is allowed to answer
+/// zero for a nonsensical font scale; text is not, because a zero-pixel label is
+/// an invisible one.
+fn text_px(size: f64) -> i32 {
+    theme::px(size).max(1)
 }
 
-/// The grid of copies a tiling needs, row by row from the origin.
-fn tiled(wallpaper: &Wallpaper) -> Element<'static, Message> {
-    let tile = wallpaper.placement.first();
-    let columns = (wallpaper.placement.bounds().width / tile.width.max(1)).max(1) as usize;
-    let rects: Vec<Rect> = wallpaper.placement.rects().collect();
-    let mut rows = Column::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    for row in rects.chunks(columns) {
-        let mut widgets = Row::new();
-        for rect in row {
-            widgets = widgets.push(copy(wallpaper, *rect));
-        }
-        rows = rows.push(widgets);
+    #[test]
+    fn a_known_action_is_parsed_and_an_unknown_one_is_not() {
+        assert!(matches!(
+            parse_action(r#"{"type":"reload"}"#),
+            Some(Message::Reload)
+        ));
+        assert!(parse_action(r#"{"type":"quit"}"#).is_none());
+        assert!(parse_action(r#"{"type":7}"#).is_none());
+        assert!(parse_action("not json").is_none());
+        assert!(parse_action(r#"{"action":"reload"}"#).is_none());
     }
 
-    rows.into()
-}
+    #[test]
+    fn an_empty_projection_is_not_a_document() {
+        let projection = Projection::empty();
 
-/// Places a layer in one corner of the surface, inset by the window padding the
-/// tokens ask for.
-fn overlay(
-    content: Element<'static, Message>,
-    tokens: Arc<Theme>,
-    horizontal: Horizontal,
-    vertical: Vertical,
-) -> Element<'static, Message> {
-    container(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(theme::window_padding(&tokens))
-        .align_x(horizontal)
-        .align_y(vertical)
-        .into()
+        assert_eq!(projection.json(), "{}");
+        assert!(projection.title().is_empty());
+        assert_eq!(projection.accessible_items(), 0);
+        assert!(!projection.has_wallpaper());
+    }
 }

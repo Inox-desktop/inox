@@ -17,7 +17,7 @@
 //!   ([`BoundaryState::is_current`]).
 //! - **Suspends wait for a confirmed lock.** A suspend request locks first, and
 //!   the suspend is allowed only once the machine reports every output covered —
-//!   `State::confirm_lock` is that watch (ADR 0015).
+//!   `State::confirm_lock` is that watch.
 //! - **A credential is cleared whenever it stops being needed** — on a cancel, when
 //!   the trusted UI hides or dies, on a successful unlock, and when a suspend takes
 //!   the session away — and it leaves the state by being *moved* into the outgoing
@@ -30,9 +30,6 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use iced::keyboard::Key;
-use iced::keyboard::key::Named;
-use iced::{Element, Task};
 use inox_common::i18n::Localizer;
 use inox_config::Theme as Tokens;
 use tracing::{debug, info, warn};
@@ -43,6 +40,7 @@ use crate::contract::{
     ServiceFailure,
 };
 use crate::credential::Secret;
+use crate::runtime::Task;
 use crate::state::{LockEvent, LockMachine, LockReason, OutputId, Transition};
 use crate::suspend::{
     SuspendCoordinator, SuspendDecision, SuspendEvent, SuspendPhase, SuspendPolicy, SuspendRefusal,
@@ -58,7 +56,7 @@ const TICK: Duration = Duration::from_secs(1);
 
 /// Something the lock screen asks of a process it does not own.
 ///
-/// The transports are not implemented in this milestone (ADR 0018): the
+/// The transports are not implemented in this milestone: the
 /// compositor does not advertise `ext-session-lock-v1`, and the authentication
 /// boundary is the review item ADR 0015 names. This queue is the interface those
 /// two will drain, and it is the only place the credential ever leaves [`State`].
@@ -301,14 +299,14 @@ impl State {
     ///
     /// Letting a suspend proceed is also where the credential is cleared for the
     /// last time: the session is going away, and the field was still typable while
-    /// the lock that authorised the suspend was being confirmed (ADR 0015).
+    /// the lock that authorised the suspend was being confirmed.
     fn queue(&mut self, decision: SuspendDecision) {
         match decision {
             SuspendDecision::AllowSuspend { generation } => {
                 // The request cleared the field, but the lock is confirmed later
                 // and the field is typable in between; what was typed while the
                 // lock was being established must not ride into the suspend
-                // either (ADR 0015).
+                // either.
                 self.forget_credential("the suspend is taking the session away");
                 info!(
                     %generation,
@@ -359,12 +357,43 @@ impl State {
     }
 }
 
+/// A named key the lock screen understands.
+///
+/// The crate no longer depends on a windowing toolkit's keyboard types (contract
+/// §5). A key arrives as a name from whatever input path is eventually reviewed —
+/// the QML keyboard handler for the window components, the protocol leg here —
+/// and this is the vocabulary [`key_binding`] answers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    /// Enter, which submits.
+    Enter,
+    /// Backspace, which deletes one character.
+    Backspace,
+    /// Escape, which cancels without submitting.
+    Escape,
+    /// Tab, which the lock screen does not use.
+    Tab,
+    /// Shift, which the lock screen does not use.
+    Shift,
+}
+
+/// A key press, without a toolkit attached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Key {
+    /// A key with a name.
+    Named(Named),
+    /// A character, as typed. A paste arrives as more than one character.
+    Character(String),
+}
+
 /// The message a key press maps to.
 ///
-/// Pure, and tested on its own: the subscription below is a two-line adapter, so
-/// "Enter submits, Backspace deletes, Escape clears" is a property of this
-/// function rather than of a running window (acceptance Q01: the whole lock and
-/// unlock path is reachable from the keyboard).
+/// Pure, and tested on its own: an input path is a two-line adapter from this
+/// function to the state, so "Enter submits, Backspace deletes, Escape clears" is
+/// a property of this function rather than of a running window (acceptance Q01:
+/// the whole lock and unlock path is reachable from the keyboard). No such
+/// adapter exists yet — see the crate `AGENTS.md` on why the lock surface reads
+/// no keyboard — and this is what it will map onto.
 pub fn key_binding(key: &Key) -> Option<Message> {
     match key {
         Key::Named(Named::Enter) => Some(Message::Submitted),
@@ -378,69 +407,26 @@ pub fn key_binding(key: &Key) -> Option<Message> {
                 _ => None,
             }
         }
-        _ => None,
+        Key::Named(Named::Tab | Named::Shift) => None,
     }
 }
 
-/// The lock screen's widget tree, from the projection.
-pub fn view(state: &State) -> Element<'_, Message> {
-    crate::view::view(state)
-}
-
-/// The window title.
-pub fn title(state: &State) -> String {
-    state.localizer.message("lock-window-title")
-}
-
-/// The window theme, from the theme tokens.
-pub fn theme(state: &State) -> iced::Theme {
-    crate::theme::from_tokens(&state.tokens)
-}
-
-/// The keys the lock screen handles, and the clock.
+/// The lock screen's clock period, in seconds.
 ///
-/// Key repeat is ignored: holding a key down is a person leaning on it, not a
-/// request, and a lock screen must not accept a credential that was typed by
-/// accident. The clock is the only subscription that is not an input — it is how
-/// a spent attempt allowance expires while nobody is typing.
-pub fn subscription(_state: &State) -> iced::Subscription<Message> {
-    iced::Subscription::batch([
-        iced::keyboard::listen().filter_map(|event| match event {
-            iced::keyboard::Event::KeyPressed {
-                key, repeat: false, ..
-            } => key_binding(&key),
-            _ => None,
-        }),
-        iced::Subscription::run(tick),
-    ])
-}
-
-/// A stream that produces one [`Message::Tick`] a second, for as long as the
-/// subscription is alive.
-///
-/// The thread ends when the runtime drops the receiver, which is what stops the
-/// timer when the lock screen exits.
-fn tick() -> iced::futures::channel::mpsc::Receiver<Message> {
-    let (mut sender, receiver) = iced::futures::channel::mpsc::channel(1);
-
-    std::thread::spawn(move || {
-        loop {
-            match sender.try_send(Message::Tick(Instant::now())) {
-                Ok(()) => {}
-                // The runtime has not read the last tick yet; skipping this one
-                // is better than blocking the timer thread.
-                Err(error) if error.is_full() => {}
-                Err(_) => break,
-            }
-
-            std::thread::sleep(TICK);
-        }
-    });
-
-    receiver
+/// The only thing the clock is for is letting a spent attempt allowance expire
+/// while nobody is typing. There is no subscription to declare any more (contract
+/// §5): a host that has a clock — the calloop loop in [`crate::session`], or the
+/// QML provider in the window components — feeds [`Message::Tick`] itself.
+pub const fn tick_period() -> Duration {
+    TICK
 }
 
 /// Applies one message.
+///
+/// The [`Task`] is always empty today: nothing this component does is slow. It is
+/// returned anyway because the reviewed authentication boundary names
+/// will arrive as work that must not run inside a state transition, and this is
+/// the shape that keeps it out.
 pub fn update(state: &mut State, message: Message) -> Task<Message> {
     handle(state, message);
     state.refresh_model();
@@ -459,11 +445,11 @@ fn handle(state: &mut State, message: Message) {
             warn!(
                 ?reason,
                 "the compositor does not offer the session lock protocol: this \
-                 build cannot lock the session (ADR 0015, ADR 0018)"
+                 build cannot lock the session"
             );
 
             // No lock can be asked for, so a suspend waiting on one is answered
-            // now rather than left to time out (ADR 0015).
+            // now rather than left to time out.
             if state.suspend.phase() == SuspendPhase::Locking {
                 let decision = state.suspend.refuse_unlockable();
                 state.queue(decision);
@@ -472,7 +458,7 @@ fn handle(state: &mut State, message: Message) {
         Message::LockRequested(reason) => {
             // Without the protocol there is no lock to hold, and the machine
             // claiming one would be a claim about the session's safety that
-            // nothing behind it supports (ADR 0015).
+            // nothing behind it supports.
             if !state.protocol.is_advertised() {
                 warn!(
                     ?reason,
@@ -517,7 +503,7 @@ fn handle(state: &mut State, message: Message) {
             state.lock_event(LockEvent::UiExited);
             warn!(
                 "the trusted lock screen UI exited: the session stays locked \
-                 while the session restarts it (ADR 0015)"
+                 while the session restarts it"
             );
         }
         Message::UiStarted => {
@@ -550,7 +536,7 @@ fn handle(state: &mut State, message: Message) {
                 // Four ways to land here, none of which may be obeyed: an answer
                 // for an attempt already over, a duplicate about one already
                 // answered, a generation that was never sent, and an unsolicited
-                // success with no attempt in flight at all (ADR 0015).
+                // success with no attempt in flight at all.
                 warn!(
                     %generation,
                     success = outcome.is_success(),
@@ -618,7 +604,7 @@ fn handle(state: &mut State, message: Message) {
         }
         Message::SuspendRequested => {
             // First, and whatever happens next: the session is about to go away,
-            // and sensitive input does not stay behind for the resume (ADR 0015).
+            // and sensitive input does not stay behind for the resume.
             // A suspend that is refused afterwards has still taken the screen
             // away, and a user who typed nothing they meant to lose types again.
             state.forget_credential("the session is suspending");
@@ -665,7 +651,7 @@ fn handle(state: &mut State, message: Message) {
             debug!(
                 ?decision,
                 phase = ?state.machine.phase(),
-                "back from a suspend; the lock state is unchanged (ADR 0015)"
+                "back from a suspend; the lock state is unchanged"
             );
         }
         Message::Tick(now) => state.clock = now,
@@ -706,7 +692,6 @@ mod tests {
     use super::*;
     use crate::contract::AuthFailure;
     use crate::view_model::{Face, FocusTarget};
-    use iced::theme::Base;
     use inox_common::i18n::Locale;
 
     fn state() -> State {
@@ -1535,15 +1520,11 @@ mod tests {
 
     #[test]
     fn the_title_comes_from_the_catalog() {
+        // The title used to be a window title; the lock surface is not a window
+        //, so what remains is the accessible name the projection
+        // carries into the frame.
         let state = state();
 
-        assert_eq!(title(&state), "Inox Session Lock");
-    }
-
-    #[test]
-    fn the_window_theme_follows_the_tokens() {
-        let state = state();
-
-        assert_eq!(theme(&state).name(), state.tokens().name);
+        assert_eq!(state.model().title, "Inox Session Lock");
     }
 }

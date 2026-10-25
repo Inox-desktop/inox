@@ -18,7 +18,7 @@
 //!   is visible, because a password field shows how much has been typed.
 //! - **A wait says nothing about itself.** [`Face::Waiting`] reports *that*
 //!   attempts are limited; the remaining time and the remaining allowance stay in
-//!   [`crate::attempts`] where the user cannot read them (ADR 0015).
+//!   [`crate::attempts`] where the user cannot read them.
 //!
 //! The module is pure: state in, value out. No iced, no clock, no I/O, so every
 //! state above is a unit test.
@@ -88,7 +88,7 @@ pub enum Face {
         /// The line the user reads.
         line: String,
     },
-    /// The session is locked with no trusted UI running (ADR 0015).
+    /// The session is locked with no trusted UI running.
     HeldWithoutUi {
         /// What is happening instead.
         detail: String,

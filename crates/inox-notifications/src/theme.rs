@@ -1,14 +1,14 @@
-//! Design tokens, as Iced sees them.
+//! Design tokens, as QML sees them.
 //!
 //! Every colour, gap, radius and text size the popup stack draws with is read
-//! from [`inox_config::Theme`] here (root AGENTS.md §4, PRD §9.2): no view and no
-//! style function in this crate contains a colour or a pixel size. What this file
-//! implements is `docs/quality/ui-guidelines.md` §1 (token discipline), §2 (the
-//! four type roles), §4 (card geometry), §5 (the five states of a control) and
-//! §6 (a status is a sentence first and a colour second). ADR 0018 explains why
-//! this small mapping is duplicated in each L3 component instead of being shared
-//! — a shared UI crate would be a new same-layer dependency, which needs an ADR
-//! of its own.
+//! from [`inox_config::Theme`] here (root AGENTS.md §4, PRD §9.2): neither the
+//! projection in [`crate::view`] nor `qml/Main.qml` contains a colour or a pixel
+//! size of its own. What this file implements is `docs/quality/ui-guidelines.md`
+//! §1 (token discipline), §2 (the four type roles), §4 (card geometry), §5 (the
+//! five states of a control) and §6 (a status is a sentence first and a colour
+//! second). ADR 0018 explains why this small mapping is duplicated in each L3
+//! component instead of being shared — a shared UI crate would be a new
+//! same-layer dependency, which needs a decision of its own.
 //!
 //! Sizes are derived, never invented. The base text size is
 //! `spacing.lg × typography.scale` — the window-shaped surface rule of §2 — and
@@ -16,9 +16,11 @@
 //! gets it without this file naming a pixel. The one literal left is the
 //! hairline: the token set carries a border *colour* and no border width, and one
 //! logical pixel is the hairline those colours are written against.
+//!
+//! Colours cross into QML as `#AARRGGBB` strings, which is the format Qt parses
+//! and the format the projection publishes: the conversion happens on the Rust
+//! side (docs/qml-migration-contract.md §4).
 
-use iced::widget::{button, container};
-use iced::{Border, Color, Font, Padding};
 use inox_config::{Rgba, Theme};
 
 use crate::markup::Emphasis;
@@ -55,9 +57,9 @@ pub enum TextRole {
     /// The window or page title: at most one per surface.
     ///
     /// Nothing in this stack draws it — the surface's title belongs to the
-    /// window manager and is set through [`crate::app::title`] — but the role is
-    /// part of the token contract and is exported so that every surface of this
-    /// component is measured against the same four sizes.
+    /// window manager and is set through the projection — but the role is part of
+    /// the token contract and is exported so that every surface of this component
+    /// is measured against the same four sizes.
     Title,
     /// A card's own heading: here, the notification's summary.
     Heading,
@@ -82,74 +84,135 @@ impl TextRole {
     }
 }
 
-/// A token colour, as Iced wants it.
-pub fn color(rgba: Rgba) -> Color {
-    Color::from_rgba8(rgba.r, rgba.g, rgba.b, f32::from(rgba.a) / 255.0)
-}
-
-/// The Iced theme the stack is drawn under.
+/// A token colour as the `#AARRGGBB` string QML parses.
 ///
-/// Iced needs a theme of its own for the widgets this crate does not style
-/// itself, so the six colours of its palette are filled from the tokens rather
-/// than left at Iced's defaults.
-pub fn iced_theme(tokens: &Theme) -> iced::Theme {
-    iced::Theme::custom(tokens.name.clone(), palette(tokens))
+/// The order is Qt's, not the CSS one: alpha first. Emitting it wrong would make
+/// an opaque colour transparent, so the conversion has one test per channel.
+pub fn qml_color(rgba: Rgba) -> String {
+    format!("#{:02X}{:02X}{:02X}{:02X}", rgba.a, rgba.r, rgba.g, rgba.b)
 }
 
-/// The palette Iced's own widgets fall back to.
-pub fn palette(tokens: &Theme) -> iced::theme::Palette {
-    iced::theme::Palette {
-        background: color(tokens.colors.background),
-        text: color(tokens.colors.text),
-        primary: color(tokens.colors.accent),
-        success: color(tokens.colors.success),
-        danger: color(tokens.colors.danger),
-        warning: color(tokens.colors.warning),
+/// The token colours the stack draws with, already in QML's form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Colors {
+    /// Behind the whole stack: the window's own background.
+    pub background: String,
+    /// A raised surface: one notification card.
+    pub surface: String,
+    /// The alternate surface: a notice line, a hovered control.
+    pub surface_variant: String,
+    /// Separator and outline colour.
+    pub border: String,
+    /// Default text colour.
+    pub text: String,
+    /// Secondary text: the application name, the timestamp, the close button.
+    pub text_muted: String,
+    /// Interactive accent colour: a primary action, a pressed control.
+    pub accent: String,
+    /// Text drawn on top of the accent.
+    pub on_accent: String,
+    /// A failure or something that cannot be undone.
+    pub danger: String,
+    /// A caution: notifications held but not shown.
+    pub warning: String,
+    /// A success.
+    pub success: String,
+}
+
+impl Colors {
+    /// Resolves every token colour into QML's form.
+    pub fn resolve(tokens: &Theme) -> Self {
+        let colors = &tokens.colors;
+
+        Self {
+            background: qml_color(colors.background),
+            surface: qml_color(colors.surface),
+            surface_variant: qml_color(colors.surface_variant),
+            border: qml_color(colors.border),
+            text: qml_color(colors.text),
+            text_muted: qml_color(colors.text_muted),
+            accent: qml_color(colors.accent),
+            on_accent: qml_color(colors.on_accent),
+            danger: qml_color(colors.danger),
+            warning: qml_color(colors.warning),
+            success: qml_color(colors.success),
+        }
     }
+}
+
+/// One state of one control, as QML draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlState {
+    /// Fill colour, or `None` for a control that only draws its text and edge.
+    pub fill: Option<String>,
+    /// Label colour.
+    pub text: String,
+    /// Edge colour.
+    pub border: String,
+}
+
+impl ControlState {
+    /// A state with a fill.
+    fn filled(fill: &str, text: &str, border: &str) -> Self {
+        Self {
+            fill: Some(fill.to_owned()),
+            text: text.to_owned(),
+            border: border.to_owned(),
+        }
+    }
+
+    /// A state that draws no fill.
+    fn plain(text: &str, border: &str) -> Self {
+        Self {
+            fill: None,
+            text: text.to_owned(),
+            border: border.to_owned(),
+        }
+    }
+}
+
+/// The four drawn states of one control (ui-guidelines §5).
+///
+/// All four are projected even though this stack is never focused or, for the
+/// close button, never disabled: §5 asks for the five states to be
+/// distinguishable, and a state that is not projected is a state that would be
+/// drawn wrong the day it appears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlStyle {
+    /// Resting.
+    pub rest: ControlState,
+    /// Pointer over it.
+    pub hover: ControlState,
+    /// Pressed.
+    pub press: ControlState,
+    /// Disabled: no fill, an edge that stops looking like a control.
+    pub disabled: ControlState,
 }
 
 /// The size every role is a multiple of: the window surface's base size.
 ///
 /// ui-guidelines §2 sets it to `spacing.lg × typography.scale` for a
 /// window-shaped surface, which is what this stack is. It is a token product
-/// rather than Iced's default text size, so the whole hierarchy moves together
-/// when a user changes the font scale.
+/// rather than a literal, so the whole hierarchy moves together when a user
+/// changes the font scale.
 pub fn base_text_size(tokens: &Theme) -> f32 {
     f32::from(tokens.spacing.lg) * tokens.typography.scale
 }
 
 /// The size of one type role, at the user's scale.
-pub fn text_size(tokens: &Theme, role: TextRole) -> f32 {
-    base_text_size(tokens) * role.multiplier()
-}
-
-/// Default text colour.
-pub fn text(tokens: &Theme) -> Color {
-    color(tokens.colors.text)
-}
-
-/// Colour of secondary information: the application name, the close button.
-pub fn muted_text(tokens: &Theme) -> Color {
-    color(tokens.colors.text_muted)
-}
-
-/// The colour a link is drawn in.
-pub fn link(tokens: &Theme) -> Color {
-    color(tokens.colors.accent)
-}
-
-/// How urgent a notification is, in the token set's colours.
 ///
-/// Low urgency is muted, normal text is ordinary, and critical is the danger
-/// colour. This is the one colour the urgency sentence is written in and the one
-/// the critical card is edged with: ui-guidelines §5 asks for a colour *and* a
-/// sentence, never a stack of colours.
-pub fn urgency_color(tokens: &Theme, urgency: Urgency) -> Color {
-    match urgency {
-        Urgency::Low => muted_text(tokens),
-        Urgency::Normal => text(tokens),
-        Urgency::Critical => color(tokens.colors.danger),
-    }
+/// A nonsensical configured scale must not make text disappear, so the result is
+/// floored at one pixel and falls back to the unscaled base size when the scale
+/// is not a number.
+pub fn text_size(tokens: &Theme, role: TextRole) -> f32 {
+    let base = base_text_size(tokens);
+    let scaled = if base.is_finite() {
+        base
+    } else {
+        f32::from(tokens.spacing.lg)
+    };
+
+    (scaled * role.multiplier()).max(1.0)
 }
 
 /// The inset inside a card (ui-guidelines §4: the large step).
@@ -169,12 +232,7 @@ pub fn block_gap(tokens: &Theme) -> f32 {
     f32::from(tokens.spacing.lg)
 }
 
-/// The gap between two parts of one block.
-///
-/// ui-guidelines §3 builds its rhythm out of two distances — blocks are `lg`
-/// apart, the things inside a group are `sm` apart — and this is the step
-/// between one thing and the next inside a card, which is the token set's own
-/// default gap between controls.
+/// The gap between two parts of one block: the token set's default control step.
 pub fn section_gap(tokens: &Theme) -> f32 {
     f32::from(tokens.spacing.md)
 }
@@ -195,31 +253,32 @@ pub fn inline_gap(tokens: &Theme) -> f32 {
 /// ui-guidelines §3 asks for `sm` above and below a control and `md` to its
 /// sides, and §4 also requires an interactive target at least `xl` tall. With the
 /// `body` role as a label the `sm` inset leaves a button shorter than that, so
-/// §4's requirement — the stricter one — sets the vertical inset to `md` as well.
-/// [`crate::view::StackGeometry::control_height`] is where that minimum is
-/// measured.
-pub fn control_inset(tokens: &Theme) -> Padding {
-    let step = f32::from(tokens.spacing.md);
+/// §4's requirement — the stricter one — sets the vertical inset to `md` as well,
+/// which makes the inset uniform and is what QML's single padding value carries.
+pub fn control_inset(tokens: &Theme) -> f32 {
+    f32::from(tokens.spacing.md)
+}
 
-    Padding {
-        top: step,
-        bottom: step,
-        left: step,
-        right: step,
-    }
+/// The height a control needs to be a target a pointer can hit.
+///
+/// The label's own size is the floor of its line box, so this is the least a
+/// button can be — which is what makes it the value ui-guidelines §4's
+/// `≥ spacing.xl` can be asserted against.
+pub fn control_height(tokens: &Theme) -> f32 {
+    text_size(tokens, TextRole::Body) + 2.0 * control_inset(tokens)
 }
 
 /// The corner radius of a card, a popup or a notice (ui-guidelines §4: `md`).
-pub fn card_radius(tokens: &Theme) -> iced::border::Radius {
-    f32::from(tokens.radii.md).into()
+pub fn card_radius(tokens: &Theme) -> f32 {
+    f32::from(tokens.radii.md)
 }
 
 /// The corner radius of a control (ui-guidelines §4: `sm`).
-pub fn control_radius(tokens: &Theme) -> iced::border::Radius {
-    f32::from(tokens.radii.sm).into()
+pub fn control_radius(tokens: &Theme) -> f32 {
+    f32::from(tokens.radii.sm)
 }
 
-/// The focus ring of a control (ui-guidelines §1 and §5).
+/// How thick the focus ring of a control is (ui-guidelines §1 and §5).
 ///
 /// The accent colour, drawn as thick as `spacing.xs`. This stack never takes
 /// keyboard focus — its placement is
@@ -227,72 +286,39 @@ pub fn control_radius(tokens: &Theme) -> iced::border::Radius {
 /// and the popup model has no focus order at all — so nothing here wears it yet.
 /// It is part of the token contract §10 asks every component to export, and it is
 /// what a host that does hand this surface the keyboard would draw.
-pub fn focus_ring(tokens: &Theme) -> Border {
-    hairline(
-        color(tokens.colors.accent),
-        f32::from(tokens.spacing.xs),
-        control_radius(tokens),
-    )
+pub fn focus_ring_width(tokens: &Theme) -> f32 {
+    f32::from(tokens.spacing.xs)
 }
 
-/// A hairline edge in `colour`, with `radius` rounded corners.
-fn hairline(colour: Color, width: f32, radius: iced::border::Radius) -> Border {
-    Border {
-        color: colour,
-        width,
-        radius,
-    }
+/// The colour a link is drawn in.
+pub fn link(tokens: &Theme) -> String {
+    qml_color(tokens.colors.accent)
 }
 
-/// The font one body span is drawn with.
+/// How urgent a notification is, in the token set's colours.
 ///
-/// `<b>` and `<i>` are weight and style rather than size or colour, so they are
-/// the two properties of a font the markup can move; `<u>` is an underline,
-/// which Iced 0.14's text cannot draw (a span has no underline decoration), and
-/// the view model still carries it.
-pub fn span_font(emphasis: Emphasis) -> Font {
-    Font {
-        weight: if emphasis.bold {
-            iced::font::Weight::Bold
-        } else {
-            iced::font::Weight::Normal
-        },
-        style: if emphasis.italic {
-            iced::font::Style::Italic
-        } else {
-            iced::font::Style::Normal
-        },
-        ..Font::DEFAULT
+/// Low urgency is muted, normal text is ordinary, and critical is the danger
+/// colour. This is the one colour the urgency sentence is written in and the one
+/// the critical card is edged with: ui-guidelines §5 asks for a colour *and* a
+/// sentence, never a stack of colours.
+pub fn urgency_color(tokens: &Theme, urgency: Urgency) -> String {
+    match urgency {
+        Urgency::Low => qml_color(tokens.colors.text_muted),
+        Urgency::Normal => qml_color(tokens.colors.text),
+        Urgency::Critical => qml_color(tokens.colors.danger),
     }
 }
 
-/// The surface the whole stack is drawn on: the window's own background.
-pub fn window(tokens: &Theme) -> container::Style {
-    container::Style {
-        background: Some(color(tokens.colors.background).into()),
-        text_color: Some(text(tokens)),
-        ..container::Style::default()
-    }
-}
-
-/// One notification card.
+/// The edge of one card.
 ///
-/// ui-guidelines §4: the body is the `surface` token, the edge is a `border`
-/// hairline, the radius is `md` and the padding (which the view applies) is `lg`.
-/// The one card that differs is a critical notification, which takes the danger
-/// colour as its edge — the same colour its urgency sentence is written in, so
-/// urgency is one colour plus one sentence rather than a second surface.
-pub fn card(tokens: &Theme, urgency: Urgency) -> container::Style {
-    let edge = match urgency {
-        Urgency::Critical => color(tokens.colors.danger),
-        Urgency::Low | Urgency::Normal => color(tokens.colors.border),
-    };
-
-    container::Style {
-        background: Some(color(tokens.colors.surface).into()),
-        text_color: Some(text(tokens)),
-        border: hairline(edge, BORDER_WIDTH, card_radius(tokens)),
-        ..container::Style::default()
+/// ui-guidelines §4: the edge is the `border` token, except for a critical
+/// notification, which takes the danger colour — the same colour its urgency
+/// sentence is written in, so urgency is one colour plus one sentence rather than
+/// a second surface.
+pub fn card_edge(tokens: &Theme, urgency: Urgency) -> String {
+    match urgency {
+        Urgency::Critical => qml_color(tokens.colors.danger),
+        Urgency::Low | Urgency::Normal => qml_color(tokens.colors.border),
     }
 }
 
@@ -307,207 +333,163 @@ pub enum NoticeTone {
     Caution,
 }
 
-/// The daemon's own line: the empty and muted states, and the overflow sentence.
+/// The colour the daemon's own line is written in.
+pub fn notice_text(tokens: &Theme, tone: NoticeTone) -> String {
+    match tone {
+        NoticeTone::Quiet => qml_color(tokens.colors.text_muted),
+        NoticeTone::Caution => qml_color(tokens.colors.warning),
+    }
+}
+
+/// The edge of the daemon's own line.
 ///
 /// A notice is a status bar rather than a card (ui-guidelines §3 gives it the
 /// `md` inset), but it keeps the hairline edge of §4 so that it still reads as
 /// something the daemon is saying rather than as slack in the layout.
-pub fn notice(tokens: &Theme, tone: NoticeTone) -> container::Style {
-    let edge = match tone {
-        NoticeTone::Quiet => color(tokens.colors.border),
-        NoticeTone::Caution => color(tokens.colors.warning),
-    };
-
-    container::Style {
-        background: Some(color(tokens.colors.surface_variant).into()),
-        text_color: Some(notice_text(tokens, tone)),
-        border: hairline(edge, BORDER_WIDTH, card_radius(tokens)),
-        ..container::Style::default()
-    }
-}
-
-/// The colour the daemon's own line is written in.
-pub fn notice_text(tokens: &Theme, tone: NoticeTone) -> Color {
+pub fn notice_edge(tokens: &Theme, tone: NoticeTone) -> String {
     match tone {
-        NoticeTone::Quiet => muted_text(tokens),
-        NoticeTone::Caution => color(tokens.colors.warning),
+        NoticeTone::Quiet => qml_color(tokens.colors.border),
+        NoticeTone::Caution => qml_color(tokens.colors.warning),
     }
 }
 
-/// The space an application's icon will occupy.
+/// The button that closes one popup (ui-guidelines §5, all four drawn states).
 ///
-/// This daemon does not decode icons yet (the `icon-static` capability is
-/// deliberately not claimed, see [`crate::protocol`]), so what is drawn is a
-/// neutral swatch of the configured size in the theme's alternate surface —
-/// which is what a notification with a missing icon looks like on any desktop,
-/// and what keeps the layout from jumping when the icon arrives.
-pub fn icon_placeholder(tokens: &Theme) -> container::Style {
-    container::Style {
-        background: Some(color(tokens.colors.surface_variant).into()),
-        border: Border {
-            radius: control_radius(tokens),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-/// The button that closes one popup.
-///
-/// ui-guidelines §5, all five rows of it: the resting button is the muted text
-/// colour with a hairline edge, hovering is the alternate surface, pressing fills
-/// it with the accent and writes on it in `on_accent`, and a disabled close
-/// button loses both its fill and its edge — so it stops looking like a control
-/// rather than looking like a quiet one.
+/// The resting button is the muted text colour with a hairline edge, hovering is
+/// the alternate surface, pressing fills it with the accent and writes on it in
+/// `on_accent`, and a disabled close button loses both its fill and its edge — so
+/// it stops looking like a control rather than looking like a quiet one.
 ///
 /// A close button is in fact never disabled by this stack: every popup carries
 /// one and it is always pressable, which is why there is no reason sentence for
-/// it to show. The state is drawn anyway because §5 asks for all five to be
-/// distinguishable, and a state that is not drawn is a state that would be drawn
-/// wrong the day it appears.
-pub fn close_button(tokens: &Theme, status: button::Status) -> button::Style {
-    let border = color(tokens.colors.border);
-    let (background, foreground, edge) = match status {
-        button::Status::Active => (None, muted_text(tokens), border),
-        button::Status::Hovered => (
-            Some(color(tokens.colors.surface_variant).into()),
-            text(tokens),
-            border,
-        ),
-        button::Status::Pressed => (
-            Some(color(tokens.colors.accent).into()),
-            color(tokens.colors.on_accent),
-            color(tokens.colors.accent),
-        ),
+/// it to show. The state is projected anyway because §5 asks for all of them to
+/// be distinguishable.
+pub fn close_control(tokens: &Theme) -> ControlStyle {
+    let colors = Colors::resolve(tokens);
+
+    ControlStyle {
+        rest: ControlState::plain(&colors.text_muted, &colors.border),
+        hover: ControlState::filled(&colors.surface_variant, &colors.text, &colors.border),
+        press: ControlState::filled(&colors.accent, &colors.on_accent, &colors.accent),
         // No edge at all: a disabled close button should not look like a quiet
         // control, it should stop looking like one.
-        button::Status::Disabled => (None, muted_text(tokens), Color::TRANSPARENT),
-    };
-
-    button::Style {
-        background,
-        text_color: foreground,
-        border: Border {
-            color: edge,
-            width: BORDER_WIDTH,
-            radius: control_radius(tokens),
-        },
-        ..button::Style::default()
+        disabled: ControlState::plain(&colors.text_muted, "transparent"),
     }
 }
 
 /// A button that invokes one of a notification's actions.
 ///
-/// The tier decides the colour, and only the colour: a primary action is drawn
-/// in the accent, a secondary one in ordinary text, and an action that cannot be
+/// The tier decides the colour, and only the colour: a primary action is drawn in
+/// the accent, a secondary one in ordinary text, and an action that cannot be
 /// undone in the danger colour (ui-guidelines §5: `accent` for the one primary
 /// action, `danger` as an edge, never a whole accent-filled block for something
-/// destructive). The four states are the shared ones: resting is plain, hovering
-/// is the alternate surface, pressing fills with the accent, and a disabled
-/// action loses its tier colour entirely — muted text, plain edge — so that
-/// nothing about it still looks like something the user could press (D05).
-pub fn action_button(
-    tokens: &Theme,
-    emphasis: ActionEmphasis,
-    status: button::Status,
-) -> button::Style {
-    let border = color(tokens.colors.border);
-    let (background, foreground, edge) = match status {
-        button::Status::Disabled => (None, muted_text(tokens), border),
-        button::Status::Active => (
-            None,
-            tier_color(tokens, emphasis),
-            tier_color(tokens, emphasis),
-        ),
-        button::Status::Hovered => (
-            Some(color(tokens.colors.surface_variant).into()),
-            tier_color(tokens, emphasis),
-            tier_color(tokens, emphasis),
-        ),
-        button::Status::Pressed => (
-            Some(color(tokens.colors.accent).into()),
-            color(tokens.colors.on_accent),
-            color(tokens.colors.accent),
-        ),
-    };
+/// destructive). A disabled action loses its tier colour entirely — muted text,
+/// plain edge — so that nothing about it still looks like something the user
+/// could press (D05).
+pub fn action_control(tokens: &Theme, emphasis: ActionEmphasis) -> ControlStyle {
+    let colors = Colors::resolve(tokens);
+    let tier = tier_color(tokens, emphasis);
 
-    button::Style {
-        background,
-        text_color: foreground,
-        border: Border {
-            color: edge,
-            width: BORDER_WIDTH,
-            radius: control_radius(tokens),
-        },
-        ..button::Style::default()
+    ControlStyle {
+        rest: ControlState::plain(&tier, &tier),
+        hover: ControlState::filled(&colors.surface_variant, &tier, &tier),
+        press: ControlState::filled(&colors.accent, &colors.on_accent, &colors.accent),
+        disabled: ControlState::plain(&colors.text_muted, &colors.border),
     }
 }
 
 /// The colour one action tier is drawn in at rest.
-fn tier_color(tokens: &Theme, emphasis: ActionEmphasis) -> Color {
+fn tier_color(tokens: &Theme, emphasis: ActionEmphasis) -> String {
     match emphasis {
-        ActionEmphasis::Primary => color(tokens.colors.accent),
-        ActionEmphasis::Secondary => text(tokens),
-        ActionEmphasis::Danger => color(tokens.colors.danger),
+        ActionEmphasis::Primary => qml_color(tokens.colors.accent),
+        ActionEmphasis::Secondary => qml_color(tokens.colors.text),
+        ActionEmphasis::Danger => qml_color(tokens.colors.danger),
+    }
+}
+
+/// How one body span is drawn.
+///
+/// `<b>` and `<i>` are weight and style rather than size or colour, so they are
+/// the properties of a span QML can move; `<u>` is an underline. The colour is the
+/// link colour for an `<a href>` span and the text colour for everything else —
+/// the sanitiser, not this file, decides what is a link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpanStyle {
+    /// Drawn bold.
+    pub bold: bool,
+    /// Drawn italic.
+    pub italic: bool,
+    /// Drawn underlined.
+    pub underline: bool,
+}
+
+impl SpanStyle {
+    /// The style of one span's emphasis.
+    pub fn from_emphasis(emphasis: Emphasis) -> Self {
+        Self {
+            bold: emphasis.bold,
+            italic: emphasis.italic,
+            underline: emphasis.underline,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::theme::Base;
     use inox_config::{BUILTIN_DARK, BUILTIN_LIGHT};
 
-    /// The four states of one action button, for the pairwise assertions.
-    fn states(
-        tokens: &Theme,
-        emphasis: ActionEmphasis,
-    ) -> [(Option<iced::Background>, Color, Color, f32); 4] {
-        [
-            button::Status::Active,
-            button::Status::Hovered,
-            button::Status::Pressed,
-            button::Status::Disabled,
-        ]
-        .map(|status| describe(&action_button(tokens, emphasis, status)))
-    }
-
-    /// The four things that make one button state tell itself apart from another:
-    /// its fill, its text, its edge and how thick that edge is.
-    fn describe(style: &button::Style) -> (Option<iced::Background>, Color, Color, f32) {
-        (
-            style.background,
-            style.text_color,
-            style.border.color,
-            style.border.width,
-        )
-    }
-
     #[test]
-    fn a_token_colour_keeps_its_channels() {
-        let colour = color(Rgba {
+    fn a_token_colour_keeps_its_channels_in_qml_order() {
+        let colour = qml_color(Rgba {
             r: 0x23,
             g: 0x26,
             b: 0x2e,
             a: 0x80,
         });
 
-        assert!((colour.r - 0x23 as f32 / 255.0).abs() < f32::EPSILON);
-        assert!((colour.a - 0x80 as f32 / 255.0).abs() < f32::EPSILON);
+        assert_eq!(colour, "#8023262E", "alpha comes first, as Qt reads it");
+        assert_eq!(colour.len(), 9);
     }
 
     #[test]
-    fn the_iced_theme_is_named_after_the_tokens_it_came_from() {
-        let light = iced_theme(&Theme::builtin_light());
-        let dark = iced_theme(&Theme::builtin_dark());
+    fn an_opaque_colour_is_not_turned_transparent() {
+        let colour = qml_color(Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        });
 
-        assert_eq!(light.name(), BUILTIN_LIGHT);
-        assert_eq!(dark.name(), BUILTIN_DARK);
-        assert_ne!(light.palette().background, dark.palette().background);
-        assert_eq!(
-            dark.palette().primary,
-            color(Theme::builtin_dark().colors.accent)
+        assert_eq!(colour, "#FF000000");
+        assert!(
+            !colour.contains("#00"),
+            "the alpha channel is written first"
         );
+    }
+
+    #[test]
+    fn every_palette_colour_is_the_token_it_came_from() {
+        let tokens = Theme::builtin_dark();
+        let colors = Colors::resolve(&tokens);
+
+        assert_eq!(colors.background, qml_color(tokens.colors.background));
+        assert_eq!(colors.text, qml_color(tokens.colors.text));
+        assert_eq!(colors.accent, qml_color(tokens.colors.accent));
+        assert_eq!(colors.on_accent, qml_color(tokens.colors.on_accent));
+        assert_ne!(colors.background, colors.surface);
+    }
+
+    #[test]
+    fn the_light_and_dark_themes_have_their_own_palettes() {
+        let light = Colors::resolve(&Theme::builtin_light());
+        let dark = Colors::resolve(&Theme::builtin_dark());
+
+        assert_ne!(light.background, dark.background);
+        assert_ne!(light.text, dark.text);
+        assert_ne!(light.background, light.text);
+        assert_eq!(Theme::builtin_light().name, BUILTIN_LIGHT);
+        assert_eq!(Theme::builtin_dark().name, BUILTIN_DARK);
     }
 
     #[test]
@@ -560,49 +542,18 @@ mod tests {
     }
 
     #[test]
-    fn every_urgency_has_a_colour_of_its_own() {
-        let tokens = Theme::builtin_dark();
+    fn a_nonsensical_font_scale_still_yields_visible_text() {
+        let mut tokens = Theme::builtin_dark();
 
-        let low = urgency_color(&tokens, Urgency::Low);
-        let normal = urgency_color(&tokens, Urgency::Normal);
-        let critical = urgency_color(&tokens, Urgency::Critical);
+        for scale in [f32::NAN, f32::INFINITY, -4.0, 0.0] {
+            tokens.typography.scale = scale;
 
-        assert_eq!(normal, text(&tokens));
-        assert_eq!(low, muted_text(&tokens));
-        assert_eq!(critical, color(tokens.colors.danger));
-        assert_ne!(low, normal);
-        assert_ne!(critical, normal);
-    }
-
-    #[test]
-    fn a_card_is_the_surface_token_with_a_hairline_and_the_card_radius() {
-        let tokens = Theme::builtin_dark();
-        let style = card(&tokens, Urgency::Normal);
-
-        assert_eq!(style.background, Some(color(tokens.colors.surface).into()));
-        assert_eq!(style.border.color, color(tokens.colors.border));
-        assert_eq!(style.border.radius, card_radius(&tokens));
-        assert_eq!(card_radius(&tokens), f32::from(tokens.radii.md).into());
-        assert!((style.border.width - BORDER_WIDTH).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn a_critical_card_is_edged_in_the_danger_colour() {
-        let tokens = Theme::builtin_dark();
-        let normal = card(&tokens, Urgency::Normal);
-        let critical = card(&tokens, Urgency::Critical);
-
-        assert_eq!(critical.border.color, color(tokens.colors.danger));
-        assert_ne!(critical.border.color, normal.border.color);
-        assert_eq!(
-            critical.background, normal.background,
-            "the danger colour is an edge, not a second background"
-        );
-        assert_eq!(
-            card(&tokens, Urgency::Low).border.color,
-            normal.border.color,
-            "low urgency is said in a sentence, not in a second edge colour"
-        );
+            for role in TextRole::ALL {
+                let size = text_size(&tokens, role);
+                assert!(size >= 1.0, "scale {scale} produced {size} for {role:?}");
+                assert!(size.is_finite(), "scale {scale} produced {size}");
+            }
+        }
     }
 
     #[test]
@@ -615,15 +566,7 @@ mod tests {
         assert_eq!(section_gap(&tokens), f32::from(tokens.spacing.md));
         assert_eq!(control_gap(&tokens), f32::from(tokens.spacing.md));
         assert_eq!(inline_gap(&tokens), f32::from(tokens.spacing.sm));
-        assert_eq!(
-            control_inset(&tokens),
-            Padding {
-                top: f32::from(tokens.spacing.md),
-                bottom: f32::from(tokens.spacing.md),
-                left: f32::from(tokens.spacing.md),
-                right: f32::from(tokens.spacing.md),
-            }
-        );
+        assert_eq!(control_inset(&tokens), f32::from(tokens.spacing.md));
         assert!(
             inline_gap(&tokens) < block_gap(&tokens),
             "the rhythm is a rhythm: a group is tighter than a block boundary"
@@ -643,7 +586,7 @@ mod tests {
         assert_eq!(section_gap(&tokens), 12.0);
         assert_eq!(control_gap(&tokens), 12.0);
         assert_eq!(notice_inset(&tokens), 12.0);
-        assert_eq!(control_inset(&tokens).left, 12.0);
+        assert_eq!(control_inset(&tokens), 12.0);
         assert_eq!(
             card_inset(&tokens),
             f32::from(Theme::builtin_dark().spacing.lg),
@@ -655,41 +598,122 @@ mod tests {
     fn a_control_radius_is_the_small_token_and_a_card_radius_is_the_medium_one() {
         let tokens = Theme::builtin_dark();
 
-        assert_eq!(control_radius(&tokens), f32::from(tokens.radii.sm).into());
+        assert_eq!(control_radius(&tokens), f32::from(tokens.radii.sm));
+        assert_eq!(card_radius(&tokens), f32::from(tokens.radii.md));
         assert_ne!(control_radius(&tokens), card_radius(&tokens));
     }
 
     #[test]
-    fn the_focus_ring_is_the_accent_colour_as_thick_as_the_spacing_step() {
-        let tokens = Theme::builtin_dark();
-        let ring = focus_ring(&tokens);
+    fn a_control_is_at_least_the_tall_target_the_guidelines_ask_for() {
+        let mut tokens = Theme::builtin_dark();
 
-        assert_eq!(ring.color, color(tokens.colors.accent));
-        assert_eq!(ring.width, f32::from(tokens.spacing.xs));
-        assert!(
-            ring.width > BORDER_WIDTH,
-            "a focus ring is thicker than the hairline it sits on"
+        for scale in [1.0_f32, 2.0] {
+            tokens.typography.scale = scale;
+            assert!(
+                control_height(&tokens) >= f32::from(tokens.spacing.xl),
+                "at {scale}× scale a control is {} px tall, under the {} px target",
+                control_height(&tokens),
+                tokens.spacing.xl
+            );
+        }
+    }
+
+    #[test]
+    fn the_focus_ring_is_as_thick_as_the_spacing_step() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(focus_ring_width(&tokens), f32::from(tokens.spacing.xs));
+        assert!(focus_ring_width(&tokens) > BORDER_WIDTH);
+    }
+
+    #[test]
+    fn every_urgency_has_a_colour_of_its_own() {
+        let tokens = Theme::builtin_dark();
+
+        let low = urgency_color(&tokens, Urgency::Low);
+        let normal = urgency_color(&tokens, Urgency::Normal);
+        let critical = urgency_color(&tokens, Urgency::Critical);
+
+        assert_eq!(normal, qml_color(tokens.colors.text));
+        assert_eq!(low, qml_color(tokens.colors.text_muted));
+        assert_eq!(critical, qml_color(tokens.colors.danger));
+        assert_ne!(low, normal);
+        assert_ne!(critical, normal);
+    }
+
+    #[test]
+    fn a_critical_card_is_edged_in_the_danger_colour() {
+        let tokens = Theme::builtin_dark();
+
+        let normal = card_edge(&tokens, Urgency::Normal);
+        let critical = card_edge(&tokens, Urgency::Critical);
+
+        assert_eq!(normal, qml_color(tokens.colors.border));
+        assert_eq!(critical, qml_color(tokens.colors.danger));
+        assert_ne!(critical, normal);
+        assert_eq!(
+            card_edge(&tokens, Urgency::Low),
+            normal,
+            "low urgency is said in a sentence, not in a second edge colour"
         );
-        assert_eq!(ring.radius, control_radius(&tokens));
+    }
+
+    #[test]
+    fn a_caution_notice_is_written_in_the_warning_colour_and_a_quiet_one_in_muted_text() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(
+            notice_text(&tokens, NoticeTone::Quiet),
+            qml_color(tokens.colors.text_muted)
+        );
+        assert_eq!(
+            notice_text(&tokens, NoticeTone::Caution),
+            qml_color(tokens.colors.warning)
+        );
+        assert_eq!(
+            notice_edge(&tokens, NoticeTone::Caution),
+            qml_color(tokens.colors.warning)
+        );
+        assert_eq!(
+            notice_edge(&tokens, NoticeTone::Quiet),
+            qml_color(tokens.colors.border)
+        );
+    }
+
+    #[test]
+    fn a_link_is_drawn_in_the_accent_colour() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(link(&tokens), qml_color(tokens.colors.accent));
+        assert_ne!(link(&tokens), qml_color(tokens.colors.text));
     }
 
     #[test]
     fn every_action_tier_is_a_colour_of_its_own() {
         let tokens = Theme::builtin_dark();
-        let accent = color(tokens.colors.accent);
-        let primary = action_button(&tokens, ActionEmphasis::Primary, button::Status::Active);
-        let secondary = action_button(&tokens, ActionEmphasis::Secondary, button::Status::Active);
-        let danger = action_button(&tokens, ActionEmphasis::Danger, button::Status::Active);
+        let colors = Colors::resolve(&tokens);
 
-        assert_eq!(primary.text_color, accent);
-        assert_eq!(primary.border.color, accent);
-        assert_eq!(secondary.text_color, text(&tokens));
-        assert_eq!(secondary.background, None, "a secondary action has no fill");
-        assert_eq!(danger.text_color, color(tokens.colors.danger));
-        assert_eq!(danger.border.color, color(tokens.colors.danger));
-        assert_ne!(primary.text_color, secondary.text_color);
-        assert_ne!(danger.text_color, secondary.text_color);
-        assert_ne!(danger.border.color, accent, "danger is not accent-filled");
+        let primary = action_control(&tokens, ActionEmphasis::Primary);
+        let secondary = action_control(&tokens, ActionEmphasis::Secondary);
+        let danger = action_control(&tokens, ActionEmphasis::Danger);
+
+        assert_eq!(primary.rest.text, colors.accent);
+        assert_eq!(primary.rest.border, colors.accent);
+        assert_eq!(secondary.rest.text, colors.text);
+        assert_eq!(secondary.rest.fill, None, "a secondary action has no fill");
+        assert_eq!(danger.rest.text, colors.danger);
+        assert_eq!(danger.rest.border, colors.danger);
+        assert_ne!(primary.rest.text, secondary.rest.text);
+        assert_ne!(danger.rest.text, secondary.rest.text);
+        assert_ne!(
+            danger.rest.border, colors.accent,
+            "danger is not accent-filled"
+        );
+    }
+
+    /// The four states of one control, for the pairwise assertions.
+    fn states(style: &ControlStyle) -> [&ControlState; 4] {
+        [&style.rest, &style.hover, &style.press, &style.disabled]
     }
 
     #[test]
@@ -701,7 +725,8 @@ mod tests {
             ActionEmphasis::Secondary,
             ActionEmphasis::Danger,
         ] {
-            let states = states(&tokens, emphasis);
+            let style = action_control(&tokens, emphasis);
+            let states = states(&style);
             let names = ["resting", "hovered", "pressed", "disabled"];
 
             for (left, first) in states.iter().enumerate() {
@@ -719,13 +744,8 @@ mod tests {
     #[test]
     fn the_four_states_of_a_close_button_are_pairwise_distinguishable() {
         let tokens = Theme::builtin_dark();
-        let states = [
-            button::Status::Active,
-            button::Status::Hovered,
-            button::Status::Pressed,
-            button::Status::Disabled,
-        ]
-        .map(|status| describe(&close_button(&tokens, status)));
+        let style = close_control(&tokens);
+        let states = states(&style);
 
         for (left, first) in states.iter().enumerate() {
             for (_, second) in states.iter().enumerate().skip(left + 1) {
@@ -737,131 +757,82 @@ mod tests {
     #[test]
     fn a_pressed_control_is_filled_with_the_accent_and_written_on_it() {
         let tokens = Theme::builtin_dark();
-        let pressed = action_button(&tokens, ActionEmphasis::Primary, button::Status::Pressed);
-        let close = close_button(&tokens, button::Status::Pressed);
+        let colors = Colors::resolve(&tokens);
 
-        assert_eq!(pressed.background, Some(color(tokens.colors.accent).into()));
-        assert_eq!(pressed.text_color, color(tokens.colors.on_accent));
-        assert_eq!(close.background, Some(color(tokens.colors.accent).into()));
-        assert_eq!(close.text_color, color(tokens.colors.on_accent));
+        let pressed = action_control(&tokens, ActionEmphasis::Primary).press;
+        let close = close_control(&tokens).press;
+
+        assert_eq!(pressed.fill.as_deref(), Some(colors.accent.as_str()));
+        assert_eq!(pressed.text, colors.on_accent);
+        assert_eq!(close.fill.as_deref(), Some(colors.accent.as_str()));
+        assert_eq!(close.text, colors.on_accent);
     }
 
     #[test]
     fn a_hovered_control_is_drawn_on_the_alternate_surface() {
         let tokens = Theme::builtin_dark();
-        let hovered = action_button(&tokens, ActionEmphasis::Primary, button::Status::Hovered);
-        let idle = action_button(&tokens, ActionEmphasis::Primary, button::Status::Active);
+        let colors = Colors::resolve(&tokens);
+
+        let hovered = action_control(&tokens, ActionEmphasis::Primary).hover;
+        let idle = action_control(&tokens, ActionEmphasis::Primary).rest;
 
         assert_eq!(
-            hovered.background,
-            Some(color(tokens.colors.surface_variant).into())
+            hovered.fill.as_deref(),
+            Some(colors.surface_variant.as_str())
         );
-        assert_ne!(idle.background, hovered.background);
+        assert_ne!(idle.fill, hovered.fill);
         assert_eq!(
-            close_button(&tokens, button::Status::Hovered).background,
-            Some(color(tokens.colors.surface_variant).into())
+            close_control(&tokens).hover.fill.as_deref(),
+            Some(colors.surface_variant.as_str())
         );
     }
 
     #[test]
     fn a_disabled_action_looks_different_from_one_that_can_be_used() {
         let tokens = Theme::builtin_dark();
-        let enabled = action_button(&tokens, ActionEmphasis::Primary, button::Status::Active);
-        let disabled = action_button(&tokens, ActionEmphasis::Primary, button::Status::Disabled);
-        let accent = color(tokens.colors.accent);
+        let colors = Colors::resolve(&tokens);
 
-        assert_ne!(enabled.text_color, disabled.text_color);
-        assert_eq!(disabled.text_color, muted_text(&tokens));
-        assert_eq!(disabled.background, None);
+        let enabled = action_control(&tokens, ActionEmphasis::Primary).rest;
+        let disabled = action_control(&tokens, ActionEmphasis::Primary).disabled;
+
+        assert_ne!(enabled.text, disabled.text);
+        assert_eq!(disabled.text, colors.text_muted);
+        assert_eq!(disabled.fill, None);
         assert_ne!(
-            disabled.border.color, accent,
+            disabled.border, colors.accent,
             "nothing about a disabled action is accent-coloured"
         );
-        assert_eq!(disabled.border.color, color(tokens.colors.border));
+        assert_eq!(disabled.border, colors.border);
         assert_eq!(
-            action_button(&tokens, ActionEmphasis::Danger, button::Status::Disabled).text_color,
-            muted_text(&tokens),
+            action_control(&tokens, ActionEmphasis::Danger)
+                .disabled
+                .text,
+            colors.text_muted,
             "a disabled action loses its tier colour, danger included"
         );
     }
 
     #[test]
-    fn a_caution_notice_is_written_in_the_warning_colour_and_a_quiet_one_in_muted_text() {
-        let tokens = Theme::builtin_dark();
-        let quiet = notice(&tokens, NoticeTone::Quiet);
-        let caution = notice(&tokens, NoticeTone::Caution);
-
-        assert_eq!(quiet.text_color, Some(muted_text(&tokens)));
-        assert_eq!(caution.text_color, Some(color(tokens.colors.warning)));
-        assert_ne!(quiet.text_color, caution.text_color);
-        assert_eq!(caution.border.color, color(tokens.colors.warning));
-        assert_eq!(quiet.border.color, color(tokens.colors.border));
+    fn markup_moves_the_weight_the_style_and_the_underline_of_a_span() {
         assert_eq!(
-            quiet.background, caution.background,
-            "a caution is a sentence and an edge, not a second surface"
+            SpanStyle::from_emphasis(Emphasis::PLAIN),
+            SpanStyle {
+                bold: false,
+                italic: false,
+                underline: false
+            }
         );
         assert_eq!(
-            quiet.background,
-            Some(color(tokens.colors.surface_variant).into())
-        );
-        assert_eq!(quiet.border.radius, card_radius(&tokens));
-        assert!((quiet.border.width - BORDER_WIDTH).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn the_window_wears_the_background_token() {
-        let tokens = Theme::builtin_dark();
-        let style = window(&tokens);
-
-        assert_eq!(
-            style.background,
-            Some(color(tokens.colors.background).into())
-        );
-    }
-
-    #[test]
-    fn an_icon_placeholder_uses_the_alternate_surface() {
-        let tokens = Theme::builtin_dark();
-        let style = icon_placeholder(&tokens);
-
-        assert_eq!(
-            style.background,
-            Some(color(tokens.colors.surface_variant).into())
-        );
-        assert_eq!(style.border.radius, control_radius(&tokens));
-    }
-
-    #[test]
-    fn markup_moves_the_weight_and_the_style_of_a_span() {
-        assert_eq!(span_font(Emphasis::PLAIN), Font::DEFAULT);
-        assert_eq!(
-            span_font(Emphasis {
-                bold: true,
-                ..Emphasis::PLAIN
-            })
-            .weight,
-            iced::font::Weight::Bold
-        );
-        assert_eq!(
-            span_font(Emphasis {
-                italic: true,
-                ..Emphasis::PLAIN
-            })
-            .style,
-            iced::font::Style::Italic
-        );
-        assert_eq!(
-            span_font(Emphasis {
+            SpanStyle::from_emphasis(Emphasis {
                 bold: true,
                 italic: true,
                 underline: true
             }),
-            Font {
-                weight: iced::font::Weight::Bold,
-                style: iced::font::Style::Italic,
-                ..Font::DEFAULT
-            },
-            "an underline is carried by the model and not drawn by iced 0.14"
+            SpanStyle {
+                bold: true,
+                italic: true,
+                underline: true
+            }
         );
     }
 }

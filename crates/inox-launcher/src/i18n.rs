@@ -3,7 +3,7 @@
 //! The catalogs are embedded in the binary, so a missing or malformed one is a
 //! build-time packaging mistake that `Localizer::load` reports at startup rather
 //! than a blank label the user has to notice (root AGENTS.md §7.3, acceptance
-//! Q03). `tests/catalog.rs` asserts that the two catalogs define the same ids
+//! Q03). `crate::catalog_tests` asserts that the two catalogs define the same ids
 //! with the same placeholders.
 //!
 //! Message ids follow the project's `<component>-<area>-<name>` convention:

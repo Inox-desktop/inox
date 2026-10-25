@@ -24,7 +24,7 @@
 //!
 //! - **One request at a time.** [`Application::begin_save`] returns `None`
 //!   while a save is in flight, so two Apply clicks cannot produce two
-//!   generations racing for the same file (ADR 0014, decision 3: 串行化或使用代次比较).
+//!   generations racing for the same file.
 //! - **A stale answer changes nothing.** Every answer carries the generation it
 //!   belongs to, and one from an older request is dropped — the state a user
 //!   sees can only ever come from the request that is current.
@@ -164,7 +164,7 @@ pub enum Rejection {
     /// things to the user: a refusal is a value the component rejected, while
     /// this is Inox being unable to deliver the request — which is the state
     /// the whole L3 milestone is in, because no transport between the settings
-    /// application and the components exists yet (ADR 0018).
+    /// application and the components exists yet.
     Unreachable {
         /// The consumer that could not be reached.
         component: Component,
@@ -411,7 +411,7 @@ impl Application {
     ///
     /// Returns the new generation, or `None` when a save is already in flight:
     /// one request at a time, so two Apply clicks cannot produce two writes
-    /// racing for the same file (ADR 0014, decision 3).
+    /// racing for the same file.
     pub fn begin_save(
         &mut self,
         files: impl IntoIterator<Item = SettingFile>,
@@ -531,7 +531,7 @@ impl Application {
     ///
     /// Returns whether the answer belonged to the current request. An answer
     /// from an older one is dropped: the state a user reads can only come from
-    /// the request that is current (ADR 0014, decision 3).
+    /// the request that is current.
     pub fn component_applied(&mut self, component: Component, generation: Generation) -> bool {
         if !self.accepts(generation) || !self.settle(component) {
             return false;
@@ -547,7 +547,7 @@ impl Application {
     ///
     /// A refusal is a rejection of the request, so it goes through
     /// [`Application::fail`]: the file stays written, and the window says both
-    /// things (ADR 0014, decision 4).
+    /// things.
     pub fn component_rejected(
         &mut self,
         component: Component,

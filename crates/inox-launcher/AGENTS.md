@@ -6,33 +6,43 @@
 
 应用启动器：XDG 应用索引、搜索与排序、按条目规范启动并验证结果。所属层级：**L3**（见根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`）。
 
+表面模式：**普通窗口**。`main` 引导 `QGuiApplication` + `QQmlApplicationEngine`，加载内嵌的 `qml/Main.qml`（`Window` 根）；QML 只渲染 Rust 的 JSON 投影并通过一个窄动作通道回报（ADR 0033、ADR 0035、ADR 0039，`docs/qml-migration-contract.md` §1–§3）。
+
 ## crate 特有约束
 
-- 默认禁止 `unsafe`：继承根 `Cargo.toml` 的 `[workspace.lints]`（`unsafe_code = "forbid"`）；本 crate 无例外。
+- **`unsafe` 例外仅限 cxx-qt 生成的胶水**：`[lints.rust] unsafe_code = "allow"` 覆盖工作区的 `forbid`，因为 `#[cxx_qt::bridge]` 宏必然生成 `unsafe extern "C++"`（ADR 0035 §实施执行约束）。Inox 手写的 Rust 仍不写 `unsafe`；不要为了绕开某条约束去写字面 `unsafe`。
+- **不引入私有 ABI**（ADR 0039）：本 crate 只用 cxx-qt / Qt 的公开 API（`QGuiApplication`、`QQmlApplicationEngine`、`QUrl`、`QString`）。需要 Qt 私有头或私有 Qt Quick 接口时先改 ADR 记录范围，再动代码。
+- **bin-only**：没有 `src/lib.rs`，所有模块挂在 `main.rs` 的 `mod` 上。cxx-qt 0.10 把 bridge 的 `cxx_qt_init_*` 定义嵌进声明 bridge 的 target，独立库 target / `tests/` 集成测试会以 `undefined reference` 链接失败（KDAB/cxx-qt#770，契约 §2.1）。因此断言只能写在 `#[cfg(test)] mod catalog_tests` / `headless_tests` 里。
+- **QML↔Rust 只有一条数据通道和一条动作通道**：`model_json`（整份投影，每次变化整体重发）与 `dispatch(json)`；不要为每个字段加 `#[qproperty]`，也不要在 QML 里做业务决策（契约 §3）。
+- **QML 里没有颜色、像素或用户可见文案**：`qml/Main.qml` 只绑定 `vm.*`（契约 §4）。新增视觉值先加到 `view.rs` 的投影，再在 QML 里绑定；文案永远来自 Fluent。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。`State::new` 会读文件系统，但失败都以 `ServiceState::Unavailable` + 可读原因呈现，不 panic。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - **`Exec` 只能展开成 argv。** 本 crate 不得出现返回命令行字符串的 API，也不得把搜索词传入任何进程启动路径：`exec::ExecContext` 没有查询字段，`exec::argv` 返回 `Vec<String>`。这是验收 D02「不把搜索词拼成 shell 命令」的结构性保证，破坏它需要重写而非放宽。
-- **`update` 里不做 I/O。** 读索引与等待被启动进程的证据都在 `Task` 里（扫描走 `Task::perform`，探针走独立线程 + `Task::stream`）。`State::new` 的首次扫描发生在窗口存在之前，不占用交互循环。
-- **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`tests/catalog.rs` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」，所以新增/删除文案必须两边一起改。
-- **颜色、尺寸、间距、圆角只能来自 `inox_config::Theme`。** `view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；`placement.rs` 里的字面量只有无量纲比例与个数（表面尺寸是配置与令牌的乘积），`theme::text_size` 缩放的是 iced 自己的默认字号。
+- **`update` 里不做 I/O。** 读索引与等待被启动进程的证据都在 `crate::runtime::Task` 里（扫描走 `Task::perform`，探针走独立线程），结果经 `Queue` 回到 Qt 线程的 `pump()`。`State::new` 的首次扫描发生在窗口存在之前，不占用交互循环。
+- **启动辅助是同一个二进制，不是第二个 bin**：`main` 见到 `--exec-application` 就装好 SIGHUP 遮罩并 `exec` 目标程序，所以被启动的应用不以本 crate 的线程/信号状态运行。`cargo build -p inox-launcher` 只产出一个 target（bin-only 也正因如此不必处理 cxx-qt 的多 target 链接问题）。
+- **编辑器内的焦点是一次串行请求，不是一个 widget 句柄**：QML 是焦点的主人，Rust 只递增 `focus_serial`，桥把它发布成 `focusSerial`，QML 在变化时 `forceActiveFocus()`。不要为了「直接 focus」把 QML 控件塞进状态。
+- **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`catalog_tests` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」，所以新增/删除文案必须两边一起改。
+- **颜色、尺寸、间距、圆角只能来自 `inox_config::Theme`**。`view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；`placement.rs` 里的字面量只有无量纲比例与个数（表面尺寸是配置与令牌的乘积），`theme::text_size` 缩放的是 Qt Quick 在 96 dpi 下的名义正文尺寸。
+- **它仍是普通窗口，不是 layer 表面。** 合成器尚未广告 `zwlr_layer_shell_v1`，`placement::Placement` 只是算好并写进日志的数据；启动时**恰好一条** `warn!` 说明这一点（ADR 0018）。不得声称摆放已生效，也不得为了「像 panel」把它变成 layer 表面——那是 panel/lock 的路径（ADR 0038）。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 只依赖 L1：`inox-common`（i18n 与 XDG 路径）、`inox-config`（`shell.toml` 的 `[launcher]` 与主题令牌）。**不得**新增 L2 或 L3 依赖（ADR 0013、ADR 0018）。
 - 令牌映射、Fluent 装配与 layer 引导在每个 L3 组件里各有一份，这是 ADR 0018 明确接受的成本；**不要**为此新建共享 crate 或同层依赖，那需要先有 ADR。
 
 ## 主要依赖
 
 - 上游 Inox crate：`inox-common`（`i18n::Localizer`/`Locale`、`paths::data_home`）、`inox-config`（`LauncherConfig`、`Theme` 令牌）。
-- 第三方：`iced` 0.14（`tiny-skia`，另加**本 crate 自选的** `advanced` feature —— iced 0.14 只有经它才把 `Operation` 变成 `Task`，也就是唯一能把光标放进搜索框的办法）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
-- 测试：`proptest`、`tempfile`、`iced_core`、`iced_runtime`、`iced_tiny_skia`（无头渲染），`image`（仅在设置 `INOX_SCREENSHOT_DIR` 时写 PNG 工件）。
+- 第三方（UI）：`cxx`、`cxx-qt`、`cxx-qt-lib`（bridge 与 `QString`/`QGuiApplication`/`QQmlApplicationEngine`），构建期 `cxx-qt-build` 注册 `com.inox.launcher.qml` 模块。
+- 第三方（其余）：`serde` / `serde_json`（投影与动作通道）、`calloop`（启动时安装 SIGHUP 遮罩）、`zbus`（`org.inox.Launcher` 的 `/org/inox/Configuration` `Reload` 方法）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
+- 测试：`proptest`、`tempfile`；没有渲染/i 截图 harness（见「已知缺口」）。
 
 ## 命令
 
-> 仅作参考，不作为本地验收依据；真正判定在 CI。以下四条即本 crate 的自检。
+> 仅作参考，不作为本地验收依据；真正判定在 CI。`CARGO_HOME` 指向仓库内缓存，`--offline` 避免联网；本机还可用 `QT_QPA_PLATFORM=offscreen` 跑离屏 QML 加载测试（测试自身会给子进程设这个变量）。
 
 | 目的 | 命令 |
 |------|------|
 | 格式化 | `cargo fmt -p inox-launcher` |
-| 本 crate 测试 | `cargo test -p inox-launcher --all-features` |
-| 静态检查 | `cargo clippy -p inox-launcher --all-targets --all-features -- -D warnings` |
+| 本 crate 测试 | `CARGO_HOME=<repo>/.cargo-home QT_QPA_PLATFORM=offscreen cargo test -p inox-launcher --all-features --offline` |
+| 静态检查 | `CARGO_HOME=<repo>/.cargo-home cargo clippy -p inox-launcher --all-targets --all-features --offline -- -D warnings` |
 | 文档 | `RUSTDOCFLAGS='-D warnings' cargo doc -p inox-launcher --no-deps --all-features` |
 | 分层方向检查 | `cargo test -p inox-integration --test layering` |
 
@@ -40,20 +50,39 @@
 
 - 纯逻辑必须有单元测试（`#[cfg(test)]`），**含拒绝与错误路径**，不只覆盖成功路径。
 - 属性测试每项 ≥1000 样本（`ProptestConfig::with_cases(1000)`）：`Exec` 展开、搜索排序与代次、解析器健壮性。
-- `tests/catalog.rs`：`compare_catalogs` 的 id 与占位符一致性，加上代码 ↔ 目录的双向检查。
-- `tests/render.rs`：至少浅色、深色与一个空/错误态，在 1280×720 下经真实组件树渲染并断言像素。
+- `catalog_tests`：`compare_catalogs` 的 id 与占位符一致性，加上代码 ↔ 目录的双向检查。
+- `headless_tests`：投影断言（颜色 = 令牌转换、字号/间距 = 令牌推导、标题/提示来自 Fluent 且中英不同）、QML 动作经 `dispatch` 进入真实 `update`（打字、Enter 只启动一次、Esc、上下键、指针选择、按住不重复）、以及**离屏 QML 加载**——测试进程以 `QT_QPA_PLATFORM=offscreen` 自 spawn 子进程，等 `reportReady` 确认根对象与语义树（QML 里 `Accessible.role` 的控件数量）后才算通过。这些取代了 Iced 的 `tests/render.rs` 像素断言。
 - 测试代码不受「禁止 unwrap/expect/panic」约束。
+
+## 已知缺口（诚实记录）
+
+- **没有像素级证据**：Iced 的 `UserInterface`/tiny-skia 渲染装置已删除，也不再有 `INOX_SCREENSHOT_DIR` 的 PNG 工件；Q02 的截图证据需要 waydriver + 真实 Qt 平台，工作区尚未提供宿主。
+- **语义树只被「存在性」断言**：QML 用 `Accessible.role/name` 暴露控件，`reportReady` 检查固定 chrome 的数量下限；离屏平台没有 AT-SPI 桥，screen reader 路径未被验证，Q01 不声称已验收。
+- **就绪以进程存活为证据**（`activation.rs` 模块文档写明）：合成器没有窗口列表接口，多数应用也没有 D-Bus 名字。
+- **重载桥没有自动化测试**：`reload.rs`（SIGHUP 遮罩 + `org.inox.Launcher` 的 `Reload`）本身只有 SIGHUP 安装会失败时返回错误这一条结构性保证；`main::reload_state` 的「过期快照 / 目录不可加载则保留旧配置」路径也没有测试驱动（需要会话总线或信号），改动这段代码要人工验证。
+- **启动辅助的 `--exec-application` 模式**只被真实启动路径覆盖，没有单独的进程级测试。
 
 ## 目录结构
 
 ```
 crates/inox-launcher/
-  Cargo.toml    工作区继承：字段一律 *.workspace = true
-  src/          源码（模块划分见 README）
-  i18n/         en-US / zh-CN 的 Fluent 目录
-  tests/        catalog.rs、render.rs、support/mod.rs
-  README.md     本 crate 说明
-  AGENTS.md     本文件（CLAUDE.md 是其符号链接）
+  Cargo.toml        工作区继承：字段一律 *.workspace = true
+  build.rs          cxx-qt：注册 com.inox.launcher.qml 模块并编译 bridge
+  qml/Main.qml      声明式 UI（Window 根）；只绑定 vm.*，不含字面量颜色/尺寸/文案
+  src/main.rs       入口 + Qt 宿主 + QML 加载自检；模块声明（bin-only）
+  src/cxxqt_object.rs  #[cxx_qt::bridge]：model_json / windowWidth / focusSerial / quitRequested + dispatch/pump/reportReady
+  src/view.rs       状态 + 令牌 + Fluent → 一份 JSON 投影
+  src/theme.rs      令牌 → QML 颜色（#AARRGGBB）与尺寸的纯函数
+  src/runtime.rs    Queue / Task / oneshot（替代 iced::Task 与 Subscription）
+  src/reload.rs     SIGHUP + org.inox.Launcher 重载桥（状态仍在 Qt 线程改）
+  src/app.rs        State / Message / update（纯状态机）
+  src/view_model.rs 状态 → 画面语义（纯投影）
+  src/desktop_entry.rs, exec.rs, index.rs, search.rs, contract.rs,
+  activation.rs, placement.rs, i18n.rs
+  src/catalog_tests.rs, src/headless_tests.rs   #[cfg(test)] 证据
+  i18n/{en-US,zh-CN}/launcher.ftl
+  README.md         本 crate 说明
+  AGENTS.md         本文件（CLAUDE.md 是其符号链接）
 ```
 
 工作区级文件（`Cargo.toml`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`LICENSE`、CI 工作流）在仓库根目录，**各 crate 不再各自保留一份**。

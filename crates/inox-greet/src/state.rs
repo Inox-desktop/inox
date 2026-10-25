@@ -21,7 +21,7 @@
 //!   contract would refuse is refused here too, with a reason on screen.
 //! - **A session that started is a dwell, not the end of the model.** The display
 //!   manager hands the display to a session on another VT, which this process
-//!   cannot see (ADR 0037 §决策 3); the screen it has to show when that session
+//!   cannot see; the screen it has to show when that session
 //!   ends is this one. So [`Phase::SessionStarted`] lasts [`SESSION_STARTED_DWELL`]
 //!   and then returns to [`Phase::Ready`] with the account kept and the credential
 //!   gone (§决策 4). The dwell runs on the model's own clock — [`Event::Tick`] —
@@ -69,7 +69,7 @@ impl AttemptId {
 
 /// How long the screen stays on the started face before the login comes back.
 ///
-/// ADR 0037 §决策 4: the session runs on a VT this process cannot see, so the
+/// 4: the session runs on a VT this process cannot see, so the
 /// screen that has to be here when the session ends is this one. The started face
 /// is therefore a *dwell* rather than the end of the model's life — long enough to
 /// be read, short enough that whoever stays in front of the greeter is not looking
@@ -111,7 +111,7 @@ pub enum Phase {
     /// Not the end of the login: the screen holds this face for
     /// [`SESSION_STARTED_DWELL`] and then comes back to [`Phase::Ready`], because
     /// the session runs on a VT this process cannot see and the screen that has to
-    /// be here when it ends is this one (ADR 0037 §决策 4).
+    /// be here when it ends is this one.
     SessionStarted,
 }
 
@@ -259,16 +259,18 @@ impl Greeter {
     }
 
     /// The username being edited or authenticated.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn username(&self) -> &str {
         &self.username
     }
 
     /// The attempt that is in flight, when one is.
     ///
-    /// For a caller that drives the model without a transport — the render tests do,
-    /// and a diagnostic line can — the identifier is otherwise unobservable. It is
-    /// not a capability: the model checks it against the attempt it issued before it
+    /// For a caller that drives the model without a transport — the tests do, and a
+    /// diagnostic line can — the identifier is otherwise unobservable. It is not a
+    /// capability: the model checks it against the attempt it issued before it
     /// believes any answer, so knowing it buys nothing.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn attempt_in_flight(&self) -> Option<AttemptId> {
         self.pending.map(|(id, _)| id)
     }
@@ -283,6 +285,7 @@ impl Greeter {
     }
 
     /// Whether the user has typed a credential.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn credential_is_empty(&self) -> bool {
         self.credential.is_empty()
     }
@@ -321,7 +324,7 @@ impl Greeter {
                 < 3
     }
     /// Takes the screen back to the login prompt when the started face has had its
-    /// moment (ADR 0037 §决策 4).
+    /// moment.
     ///
     /// Two things carry over and one does not: the account stays, because it is the
     /// account this login used and the next login is most likely the same one; the
@@ -462,7 +465,7 @@ impl Greeter {
                     self.phase = Phase::SessionStarted;
                     // The started face is a moment on screen, not the end of this
                     // screen's life: the login comes back when the dwell is over
-                    // (ADR 0037 §决策 4).
+                    //.
                     self.resume_at = Some(now + SESSION_STARTED_DWELL);
                 } else {
                     // A session that would not start is a failed login, with the
@@ -483,7 +486,7 @@ impl Greeter {
 /// a second copy of it: the field must accept exactly what the boundary will accept,
 /// and the only way to keep those two from drifting apart is for both to call the
 /// same function. The dependency is L4 → L2 and carries no PAM: `inox-greet` takes
-/// `inox-auth` with `default-features = false` on purpose (ADR 0029).
+/// `inox-auth` with `default-features = false` on purpose.
 pub use inox_auth::wire::valid_username;
 
 #[cfg(test)]

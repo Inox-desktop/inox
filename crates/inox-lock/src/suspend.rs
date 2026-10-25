@@ -1,5 +1,5 @@
+//! Prepare-to-suspend ordering.
 //! Prepare-to-suspend ordering (ADR 0015).
-//!
 //! ADR 0015 states the order as a rule and gives no room to hope:
 //!
 //! > 触发顺序为准备锁定→收到锁完成确认→允许挂起；锁定失败按明确策略阻止/取消挂起，

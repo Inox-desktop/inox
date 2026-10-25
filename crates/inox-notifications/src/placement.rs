@@ -18,9 +18,8 @@
 //!   rather than a full-height one over the user's windows.
 //!
 //! **This module computes that placement; nothing applies it yet.** The Inox
-//! compositor does not advertise `zwlr_layer_shell_v1`, and `iced_layershell`
-//! does not compile against iced 0.14's winit generation (ADR 0018), so the
-//! stack runs as an ordinary window. Keeping the policy here, as data with
+//! compositor does not advertise `zwlr_layer_shell_v1`, so the QML surface runs
+//! as an ordinary window. Keeping the policy here, as data with
 //! tests, is what makes the move to a layer surface a change of host rather than
 //! a change of behaviour; `main.rs` logs exactly one warning naming ADR 0018 and
 //! the fact that none of this is applied.

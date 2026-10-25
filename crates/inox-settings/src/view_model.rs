@@ -14,7 +14,7 @@
 //!
 //! - **Saved and applied are different sentences.** [`StatusKind`] has a state
 //!   for each, and [`StatusView`] carries the per-component results that say
-//!   which consumer has answered (ADR 0014, decision 4).
+//!   which consumer has answered.
 //! - **A disabled action or field always says why** (D05). [`ActionView`] and
 //!   [`FieldView`] carry a reason the user can read, never an empty control.
 //! - **A field error names the key.** The sentence the user reads is
@@ -60,7 +60,7 @@ pub enum FocusTarget {
     ///
     /// A trial is a question the window asks before a display change becomes
     /// permanent, so while one is open these are the only entries the keyboard
-    /// can reach (ADR 0028).
+    /// can reach.
     Trial(TrialChoice),
 }
 
@@ -302,7 +302,7 @@ pub struct SettingsViewModel {
     pub focused: Option<FocusTarget>,
     /// Whether a change is waiting to be written.
     pub modified: bool,
-    /// The display trial the window is asking about, if one is open (ADR 0028).
+    /// The display trial the window is asking about, if one is open.
     pub trial: Option<TrialView>,
 }
 
@@ -403,7 +403,7 @@ impl SettingsViewModel {
 struct Usability {
     /// A write is in flight.
     busy: bool,
-    /// A display trial is open (ADR 0028).
+    /// A display trial is open.
     trial: bool,
     /// The schema refuses something in the draft.
     invalid: bool,
@@ -426,7 +426,7 @@ pub struct SettingsInput<'a> {
     pub errors: &'a [FieldError],
     /// The entry the keyboard is on.
     pub focused: Option<FocusTarget>,
-    /// The display trial waiting for an answer, if one is (ADR 0028).
+    /// The display trial waiting for an answer, if one is.
     pub trial: Option<TrialInput>,
     /// What the window last did about a display trial.
     pub notice: Option<&'a DisplayTrialNotice>,
@@ -521,7 +521,7 @@ impl SettingsInput<'_> {
     /// offer — so the walk follows the window down the screen.
     ///
     /// A control the window draws as unusable is not an entry of it. The focus
-    /// is a colour drawn on the control it is on ([`crate::theme::control`]), so
+    /// is a colour drawn on the control it is on ([`crate::theme::control_colors`]), so
     /// an entry that cannot be drawn as focused would be an entry where the
     /// keyboard is on nothing at all, and an activation there would be a keystroke
     /// with no answer (Q01).
@@ -577,7 +577,7 @@ impl SettingsInput<'_> {
     /// The actions the window offers right now.
     ///
     /// Reload is only there when it is the way out of the state the window is
-    /// in: after the files changed underneath it (ADR 0014: 检测外部编辑冲突并提示重读).
+    /// in: after the files changed underneath it (检测外部编辑冲突并提示重读).
     fn action_order(&self) -> Vec<Action> {
         let mut actions = vec![Action::Apply, Action::Cancel, Action::ResetAll];
 
@@ -655,7 +655,7 @@ impl SettingsInput<'_> {
     ) -> ActionView {
         // A display trial is a question the window is waiting on: every other
         // action would either act behind the question or write a second change
-        // the user has not answered for yet (ADR 0028).
+        // the user has not answered for yet.
         let reason = if usability.trial {
             Some("settings-display-trial-active")
         } else {
@@ -681,7 +681,7 @@ impl SettingsInput<'_> {
     ///
     /// The countdown is drawn as a number of seconds rather than as a progress
     /// bar: the value the state machine decrements is exactly the value the user
-    /// has to be able to read (ADR 0028).
+    /// has to be able to read.
     fn trial_view(&self, localizer: &Localizer) -> Option<TrialView> {
         let trial = self.trial.as_ref()?;
         let choices = TrialChoice::ALL
@@ -895,7 +895,7 @@ impl SettingsInput<'_> {
         }
 
         // An unanswered trial is never reported as settled: the sentence says the
-        // display is on trial, in the colour that says "still waiting" (ADR 0028).
+        // display is on trial, in the colour that says "still waiting".
         if self.trial.is_some() {
             status.kind = StatusKind::Provisional;
             status.message = localizer.message("settings-status-display-trial");
@@ -909,7 +909,7 @@ impl SettingsInput<'_> {
 ///
 /// Only the two answers: the trial is a question, and a field or another action
 /// would let the user act behind it — the same reason those controls are drawn
-/// disabled (ADR 0028).
+/// disabled.
 fn trial_focus_order(trial: &TrialView) -> Vec<FocusTarget> {
     trial
         .choices

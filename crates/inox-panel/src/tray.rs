@@ -3,7 +3,7 @@
 //! A tray application registers a StatusNotifierItem with the session's status
 //! notifier watcher under a D-Bus name and an object path, then updates its
 //! title, icon, status and menu as it runs, and unregisters when it exits. The
-//! panel is the *presentation* half of that protocol (ADR 0013: "订阅窗口状态；
+//! panel is the *presentation* half of that protocol ("订阅窗口状态；
 //! StatusNotifierItem/DBusMenu ... 呈现"), which is what this module models: the
 //! item set, the registration lifecycle, the menu tree, and the reconnect that
 //! keeps the panel correct when the watcher restarts.
@@ -415,7 +415,7 @@ impl Tray {
             })
     }
 
-    /// Rebuilds the item set from a snapshot (ADR 0013: reconnect).
+    /// Rebuilds the item set from a snapshot (reconnect).
     ///
     /// The snapshot is authoritative for **which** items exist and what they
     /// say, so an item it does not mention is dropped — that is how an item whose

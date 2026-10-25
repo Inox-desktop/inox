@@ -16,8 +16,10 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use image::{ImageFormat, ImageReader, Limits};
+use image::{ExtendedColorType, ImageEncoder, ImageFormat, ImageReader, Limits};
+use tracing::warn;
 
 use crate::model::{Size, Unusable};
 
@@ -126,6 +128,171 @@ impl Frame {
     pub fn into_rgba(self) -> Vec<u8> {
         self.rgba
     }
+
+    /// The frame as the refcounted value the state contract holds.
+    ///
+    /// The pixels are moved, not copied, and the value is encoded for QML once,
+    /// here — off the interaction loop, on the worker that decoded it.
+    #[must_use]
+    pub fn into_handle(self) -> FrameHandle {
+        FrameHandle::new(self)
+    }
+}
+
+/// A decoded frame, shared between the contract, the projection and the tests.
+///
+/// One reference-counted frame that a swap replaces rather than
+/// mutates, so whoever is drawing the old one keeps a complete image (see
+/// [`crate::apply`]). Two things come with it:
+///
+/// - **Identity equality**: `a == b` means "the same frame", not "the same
+///   pixels". That is what the contract tests assert when they say a swap leaves
+///   the other outputs byte-for-byte alone.
+/// - **The QML encoding**: a `data:image/png;base64,…` URL, produced once when
+///   the frame is built (the only way QML `Image` can be handed pixels without
+///   an image provider or a file on disk).
+///
+/// Equality being identity is deliberate and documented: a clone is free, and a
+/// frame that was rebuilt from the same file is a *different* frame, which is
+/// exactly the observation "nothing was rebuilt" needs.
+#[derive(Clone)]
+pub struct FrameHandle(Arc<FrameImage>);
+
+/// The pixels and the encoded form behind one [`FrameHandle`].
+struct FrameImage {
+    frame: Frame,
+    data_url: String,
+}
+
+impl FrameHandle {
+    /// A shareable frame, encoded for QML once.
+    #[must_use]
+    pub fn new(frame: Frame) -> Self {
+        let data_url = png_data_url(&frame);
+
+        Self(Arc::new(FrameImage { frame, data_url }))
+    }
+
+    /// The frame's size in pixels.
+    #[must_use]
+    pub fn size(&self) -> Size {
+        self.0.frame.size()
+    }
+
+    /// The frame's width in pixels.
+    #[must_use]
+    pub fn width(&self) -> u32 {
+        self.0.frame.width()
+    }
+
+    /// The frame's height in pixels.
+    #[must_use]
+    pub fn height(&self) -> u32 {
+        self.0.frame.height()
+    }
+
+    /// The pixels, in RGBA order, row-major from the top-left corner.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        self.0.frame.rgba()
+    }
+
+    /// The frame as a `data:` URL, or an empty string when it could not be
+    /// encoded (which leaves the output on the theme background and logs why).
+    #[must_use]
+    pub fn data_url(&self) -> &str {
+        &self.0.data_url
+    }
+}
+
+impl PartialEq for FrameHandle {
+    /// Identity, not pixel equality: see the type's documentation.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FrameHandle {}
+
+impl std::fmt::Debug for FrameHandle {
+    /// Reports the size and the encoded length, never the pixels.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameHandle")
+            .field("size", &self.size())
+            .field("bytes", &self.0.frame.rgba().len())
+            .field("data_url_bytes", &self.0.data_url.len())
+            .finish()
+    }
+}
+
+impl From<Frame> for FrameHandle {
+    fn from(frame: Frame) -> Self {
+        Self::new(frame)
+    }
+}
+
+/// The frame encoded as a PNG `data:` URL.
+///
+/// Qt Quick draws an `Image` from a URL; a data URL is the one route that needs
+/// neither a file on disk (which the wallpaper must not write) nor a
+/// `QQuickImageProvider` (which would add a C++ layer to every component). The
+/// cost is a full PNG encode per committed frame, paid on the worker that
+/// decoded it, and a base64 copy in the model — recorded as a known gap in the
+/// crate `README.md`.
+fn png_data_url(frame: &Frame) -> String {
+    let mut png = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut png);
+
+    match encoder.write_image(
+        frame.rgba(),
+        frame.width(),
+        frame.height(),
+        ExtendedColorType::Rgba8,
+    ) {
+        Ok(()) => format!("data:image/png;base64,{}", base64_encode(&png)),
+        Err(error) => {
+            warn!(
+                %error,
+                size = %frame.size(),
+                "the decoded frame could not be encoded for QML; the output keeps the theme background"
+            );
+            String::new()
+        }
+    }
+}
+
+/// The Base64 alphabet of RFC 4648 §4.
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Base64, as a `data:` URL needs it.
+///
+/// Written out rather than pulled in because the projection is the only caller
+/// and a dependency for thirty lines would have to be justified in the root
+/// manifest; the standard vectors are asserted in the tests below.
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let first = u32::from(chunk[0]);
+        let second = chunk.get(1).map_or(0, |byte| u32::from(*byte));
+        let third = chunk.get(2).map_or(0, |byte| u32::from(*byte));
+        let triple = (first << 16) | (second << 8) | third;
+
+        encoded.push(char::from(BASE64[((triple >> 18) & 0x3f) as usize]));
+        encoded.push(char::from(BASE64[((triple >> 12) & 0x3f) as usize]));
+        encoded.push(if chunk.len() > 1 {
+            char::from(BASE64[((triple >> 6) & 0x3f) as usize])
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            char::from(BASE64[(triple & 0x3f) as usize])
+        } else {
+            '='
+        });
+    }
+
+    encoded
 }
 
 /// A frame whose pixel buffer does not match its size.
@@ -692,5 +859,122 @@ mod tests {
         assert!(!is_not_found(&io::Error::from(
             io::ErrorKind::PermissionDenied
         )));
+    }
+
+    /// Decodes Base64 back to bytes, for the round-trip assertions below.
+    ///
+    /// The crate only ever encodes, so the decoder exists only where a test can
+    /// see it: writing a production decoder nothing calls would be dead code.
+    fn base64_decode(encoded: &str) -> Vec<u8> {
+        let mut sextets: Vec<u8> = Vec::new();
+        for byte in encoded.bytes() {
+            if byte == b'=' {
+                continue;
+            }
+            let value = BASE64
+                .iter()
+                .position(|candidate| *candidate == byte)
+                .expect("a Base64 alphabet character") as u8;
+            sextets.push(value);
+        }
+
+        let mut decoded = Vec::new();
+        for chunk in sextets.chunks(4) {
+            let mut triple = 0u32;
+            for (index, sextet) in chunk.iter().enumerate() {
+                triple |= u32::from(*sextet) << (18 - 6 * index);
+            }
+            decoded.push(((triple >> 16) & 0xff) as u8);
+            if chunk.len() > 2 {
+                decoded.push(((triple >> 8) & 0xff) as u8);
+            }
+            if chunk.len() > 3 {
+                decoded.push((triple & 0xff) as u8);
+            }
+        }
+
+        decoded
+    }
+
+    #[test]
+    fn base64_matches_the_rfc_4648_vectors() {
+        // RFC 4648 §10, the standard vectors a data URL has to agree with.
+        for (input, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(input.as_bytes()), expected, "`{input}`");
+            assert_eq!(base64_decode(expected), input.as_bytes(), "`{input}`");
+        }
+
+        // Bytes above 0x7f, which a PNG signature contains.
+        let bytes = [0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        assert_eq!(base64_decode(&base64_encode(&bytes)), bytes);
+    }
+
+    #[test]
+    fn a_handle_carries_a_png_data_url_of_its_own_pixels() {
+        let frame = Frame::new(3, 2, (0..3 * 2 * 4).collect()).expect("a well-formed frame");
+        let handle = frame.into_handle();
+
+        let url = handle.data_url();
+        let encoded = url
+            .strip_prefix("data:image/png;base64,")
+            .expect("a PNG data URL");
+        let png = base64_decode(encoded);
+
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        assert_eq!(handle.size(), Size::new(3, 2));
+        assert_eq!(handle.width(), 3);
+        assert_eq!(handle.height(), 2);
+        assert_eq!(handle.rgba().len(), 24);
+    }
+
+    #[test]
+    fn two_handles_are_equal_only_when_they_are_the_same_frame() {
+        let frame = || Frame::new(2, 2, vec![7; 16]).expect("a well-formed frame");
+
+        let first = frame().into_handle();
+        let same = first.clone();
+        let rebuilt = frame().into_handle();
+
+        assert_eq!(first, same, "a clone is the same frame");
+        assert_ne!(
+            first, rebuilt,
+            "a frame rebuilt from equal pixels is a different frame"
+        );
+    }
+
+    #[test]
+    fn a_handles_debug_line_never_prints_the_pixels() {
+        let handle = Frame::new(1, 1, vec![9, 9, 9, 9])
+            .expect("a well-formed frame")
+            .into_handle();
+        let line = format!("{handle:?}");
+
+        assert!(line.contains("FrameHandle"), "{line}");
+        assert!(line.contains("size"), "{line}");
+        assert!(!line.contains("9, 9, 9, 9"), "the pixels stay out of logs");
+    }
+
+    #[test]
+    fn a_decoded_png_reaches_the_interface_as_a_data_url() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = png(dir.path(), "wall.png", 4, 3);
+
+        let handle = decode(&path).expect("a decodable fixture").into_handle();
+
+        assert!(
+            handle.data_url().starts_with("data:image/png;base64,"),
+            "{}",
+            handle.data_url()
+        );
+        assert!(handle.data_url().len() > 32);
+        assert_eq!(handle.size(), Size::new(4, 3));
     }
 }

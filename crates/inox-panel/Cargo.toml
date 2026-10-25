@@ -15,28 +15,22 @@ categories.workspace = true
 calloop.workspace = true
 zbus.workspace = true
 anyhow.workspace = true
-# Civil time in the session's timezone for the panel clock (ADR 0018).
+# Civil time in the session's timezone for the panel clock.
 chrono.workspace = true
-# ADR 0003 fixes Iced for every shell component; the workspace entry selects
-# the tiny-skia renderer, which is what both the headless render tests and the
-# panel's own `src/layer.rs` draw through.
-iced.workspace = true
-# The panel's own renderer (ADR 0018, ADR 0031). A layer surface is not a window,
-# so `iced`'s Wayland support — which creates `xdg-shell` surfaces — cannot draw
-# on one; what it does expose is the pair `src/layer.rs` uses: `UserInterface`
-# lays the widget tree out and routes events to it, and the tiny-skia renderer
-# turns it into the pixels `wl_shm` wants. `iced` re-exports neither, which is
-# why the three are named directly, and they are *dependencies* rather than
-# dev-dependencies because the binary draws with them.
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
+# : the interface is QML + Qt Quick, bound through cxx-qt
+# and rendered **offscreen** into the layer surface's shared-memory
+# frame. `cxx` is the FFI layer, `cxx-qt-lib` wraps `QString`/`QByteArray`, and
+# `cxx-qt` provides the bridge. There is no Qt Wayland client and no
+# LayerShellQt: the surface stays the `wlr-layer-shell` one `src/layer.rs` owns.
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
 # L1: the shared Fluent loader and the design tokens. L3 components take no
-# same-layer dependency and no dependency on the compositor (ADR 0013, 0018).
+# same-layer dependency and no dependency on the compositor.
 inox-common.workspace = true
 inox-config.workspace = true
 # A legal downward L3 -> L2 edge: the protocol bindings are owned by L2 and
-# `inox-protocols` is the single source of truth for them (ADR 0006), so the
+# `inox-protocols` is the single source of truth for them, so the
 # panel does not name `wayland-protocols` or `wayland-protocols-wlr` itself.
 inox-protocols.workspace = true
 # Reading the compositor's events, creating the layer surface, taking pointer
@@ -48,17 +42,30 @@ rustix = { workspace = true, features = ["fs"] }
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# The QML view is a Qt-free JSON projection (`src/view.rs`, contract §3): the
+# model is serialised here and handed to the QML renderer as one string.
+serde_json.workspace = true
+
+[build-dependencies]
+cxx-qt-build.workspace = true
 
 [dev-dependencies]
-# `tests/protocol.rs` plays the compositor side of `wlr-layer-shell-unstable-v1`,
-# `wl_shm`, `wl_seat` and `inox-glass-v1` on a real socket pair and drives the
-# built binary as a subprocess, the pattern `inox-lock/tests/protocol.rs`
-# established.
+# The protocol tests in `src/tests/protocol.rs` play the compositor side of
+# `wlr-layer-shell-unstable-v1`, `wl_shm`, `wl_seat` and `inox-glass-v1` on a
+# real socket pair and drive the built binary as a subprocess, the pattern
+# `inox-lock` established.
 wayland-server.workspace = true
-# `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02).
-image.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe_code`, but `#[cxx_qt::bridge]` (see
+# `src/cxxqt_object.rs`) emits `unsafe extern "C++"` blocks without an
+# `#[allow]` wrapper, so the generated FFI glue cannot compile under `forbid`.
+# This is the exception; Inox-authored Rust in this crate stays
+# unsafe-free (see `src/main.rs`'s crate documentation and `AGENTS.md`).
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

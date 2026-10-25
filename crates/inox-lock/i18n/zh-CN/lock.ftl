@@ -39,7 +39,7 @@ lock-disabled-no-ui = 锁屏界面未在运行
 lock-held-title = 会话已锁定
 lock-held-detail = 锁屏界面正在重启，会话保持锁定。
 
-# 无法准备好的挂起（ADR 0015：先锁定，再挂起）。
+# 无法准备好的挂起（先锁定，再挂起）。
 lock-suspend-refused-lock-failed = 会话未挂起：无法确认锁定已完成
 lock-suspend-refused-timeout = 会话未挂起：锁定未在时限内确认
 lock-suspend-refused-no-protocol = 会话未挂起：该合成器无法锁定会话

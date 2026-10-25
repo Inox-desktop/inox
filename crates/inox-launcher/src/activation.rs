@@ -13,7 +13,7 @@
 //!   launch that produced no evidence is reported as a failure with a reason
 //!   and a retry rather than left spinning (acceptance D05).
 //!
-//! Nothing in this module touches Iced, and the state machine does no I/O: the
+//! Nothing in this module touches Qt, and the state machine does no I/O: the
 //! single blocking function is [`spawn_and_probe`], which the caller is
 //! expected to run on a thread of its own (`crate::app` does).
 //!
@@ -27,8 +27,8 @@
 //! instead is the process still being alive after a grace period, which rules
 //! out the failure that actually happens in practice — an `Exec` that names a
 //! program that starts and immediately dies. That is a weaker claim than
-//! ADR 0013's, and it is reported as such rather than dressed up: see the crate
-//! README's "not implemented" list.
+//! ADR 0013's specification, and it is reported as such rather than dressed up:
+//! see the crate README's "not implemented" list.
 //!
 //! [ADR 0013]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0013-shell-service-and-interaction-contracts.md
 
@@ -99,7 +99,7 @@ pub enum Readiness {
 
 /// The result of an activation.
 ///
-/// ADR 0013's sent / applied / rejected distinction is [`LaunchOutcome::state`]'s
+/// ADR 0013: the sent / applied / rejected distinction is [`LaunchOutcome::state`]'s
 /// mapping: what the user is told is never stronger than what was observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchOutcome {

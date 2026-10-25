@@ -1,15 +1,21 @@
-//! The panel's row of widgets: tasks, tray, clock.
+//! The panel's surface, projected as the Qt-free JSON the QML renderer draws.
+//!   that could hold on to focus (ADR 0013, [`crate::placement`]).
+//! Everything here is layout and drawing data, and nothing here is Qt: the
+//! projection is a `serde_json::Value` of rectangles and text on absolute
+//! coordinates, handed to the offscreen QML renderer one frame at a time
+//!. That is what keeps QML a pure renderer: it contains
+//! no colour, no size and no sentence — all three arrive from Rust, which is
+//! also where the pointer is matched against the layout ([`Scene::entry_at`]).
 //!
-//! Everything here is drawing. Which entries exist, what they say, and why one
-//! of them is disabled all arrive already decided in a
-//! [`crate::view_model::PanelViewModel`]; this module turns that into iced
-//! widgets and takes every colour, size and radius from the tokens through
-//! [`crate::theme`].
+//! Which entries exist, what they say, and why one of them is disabled all
+//! arrive already decided in a [`crate::view_model::PanelViewModel`]; this
+//! module turns that into a scene and takes every colour, size and radius from
+//! the tokens through [`crate::theme`].
 //!
-//! [`surface`] is the entry point the application calls: it picks the widget
-//! tree `[panel] surface` asks for and hands each one the section that describes
-//! it. The taskbar is [`panel`]; the menu bar is [`menubar::menubar`] and the
-//! dock is [`dock::dock`], both of which reuse the entry helpers below so that
+//! [`scene`] is the entry point the protocol leg calls: it picks the scene
+//! `[panel] surface` asks for and hands each one the section that describes it.
+//! The taskbar is [`panel`]; the menu bar is [`menubar::menubar`] and the dock
+//! is [`dock::dock`], both of which reuse the entry painters below so that
 //! three surfaces can never draw "disabled" or "hovered" two different ways.
 //!
 //! The taskbar strip is drawn as **groups separated by a gap wider than the
@@ -25,29 +31,28 @@
 //! and D05 are about:
 //!
 //! - **The clock and the tray keep their space.** The task buttons sit in a
-//!   flexible area and each label is bounded, so an application with a very long
-//!   title cannot push a key action off the end of the strip.
+//!   flexible area that is laid out last, so an application with a very long
+//!   title is clipped out of it instead of pushing a key action off the end of
+//!   the strip.
 //! - **The panel is one row of the configured height.** A taller panel gets
 //!   taller entries, not a second row; the entries are inset vertically so a
 //!   rounded, pressed or focused entry stays inside the strip.
 //! - **Nothing on the strip takes keyboard focus by itself.** The task buttons
-//!   are click targets; the clock and the tray items are plain containers, and
-//!   the panel's own navigation focus is drawn as a colour, never as a widget
-//!   that could hold on to focus (ADR 0013, [`crate::placement`]).
+//!   are click targets; the clock and the tray items are plain text, and the
+//!   panel's own navigation focus is drawn as a colour, never as a widget that
+//!   could hold on to focus.
 //! - **A disabled entry says why.** Its hover text is the reason the projection
 //!   produced, not the application name the label already shows (D05).
 
 pub mod dock;
 pub mod menubar;
 
-use iced::widget::text::Wrapping;
-use iced::widget::{Row, Space, button, container, text, tooltip};
-use iced::{Element, Length, Padding};
 use inox_common::i18n::Localizer;
 use inox_config::{PanelConfig, PanelPosition, PanelSurface, ShellConfig, Theme as Tokens};
+use serde_json::{Value, json};
 
-use crate::app::Message;
-use crate::theme::{self, TaskEmphasis};
+use crate::tasks::WindowKey;
+use crate::theme::{self, EntryStyle, InteractionStatus, Stop, TaskEmphasis};
 use crate::view_model::{PanelStatus, PanelViewModel, TaskButton, TrayItemView};
 
 /// How many extra-large spacing steps a task label may be wide.
@@ -65,6 +70,29 @@ const LABEL_WIDTH_STEPS: f32 = 6.0;
 /// entry, so it is allowed to be wider than one: eight steps is 256 logical
 /// pixels, and everything after it is still reachable.
 const NOTICE_WIDTH_STEPS: f32 = 8.0;
+
+/// The ratio of an average glyph's advance to the font size.
+///
+/// The renderer measures text, but the *layout* has to place the clock and the
+/// tray before a frame exists, so widths are estimated exactly as
+/// [`crate::dock::DockGeometry::text_width`] estimates them and as the launcher
+/// budgets a result row's label: about half an em per glyph. It is a lower bound
+/// for the two locales the panel ships, and it is deliberately the same number
+/// in both places — an estimate that disagreed with itself would make the pane
+/// a different width from the row it holds.
+pub const AVERAGE_ADVANCE_RATIO: f32 = 0.5;
+
+/// Where a tooltip would open, so that it is not drawn past a screen edge.
+///
+/// iced carried this type; the panel projects its own so that no toolkit type
+/// survives in the crate's pure data (`src/dock.rs`, `src/menubar.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TooltipPosition {
+    /// Away from an edge the panel occupies at the bottom.
+    Above,
+    /// Away from an edge the panel occupies at the top.
+    Below,
+}
 
 /// The geometry of the panel strip, derived from the tokens and the configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,7 +123,7 @@ pub struct PanelGeometry {
     /// Height of that divider: as tall as a line of secondary information.
     pub divider_height: f32,
     /// Which way a tooltip opens, so that it is not drawn past the screen edge.
-    pub tooltip_position: tooltip::Position,
+    pub tooltip_position: TooltipPosition,
 }
 
 impl PanelGeometry {
@@ -122,8 +150,8 @@ impl PanelGeometry {
             divider_width: theme::hairline(tokens),
             divider_height: caption.min(available),
             tooltip_position: match config.position {
-                PanelPosition::Bottom => tooltip::Position::Top,
-                PanelPosition::Top => tooltip::Position::Bottom,
+                PanelPosition::Bottom => TooltipPosition::Above,
+                PanelPosition::Top => TooltipPosition::Below,
             },
         }
     }
@@ -134,16 +162,6 @@ impl PanelGeometry {
     /// assert the font size against.
     pub fn content_height(&self) -> f32 {
         (self.height - self.inset * 2.0).max(1.0)
-    }
-
-    /// The sizes the strip's group of display-only entries is drawn at.
-    fn entries(&self) -> EntryMetrics {
-        EntryMetrics {
-            caption_size: self.caption_size,
-            label_max_width: self.label_max_width,
-            spacing: self.entry_padding,
-            tooltip_position: self.tooltip_position,
-        }
     }
 
     /// The sizes the strip's own notice is drawn at.
@@ -168,7 +186,7 @@ pub(super) struct EntryMetrics {
     /// Gap between two entries of the group.
     pub spacing: f32,
     /// Which way a tooltip opens.
-    pub tooltip_position: tooltip::Position,
+    pub tooltip_position: TooltipPosition,
 }
 
 /// The sizes the panel's own notice is drawn at.
@@ -186,185 +204,296 @@ pub(super) struct NoticeMetrics {
     pub max_width: f32,
 }
 
-/// Draws the surface `shell.panel.surface` asks for.
+/// What a click on an entry asks the panel to do.
 ///
-/// The three surfaces present the same model; what changes is the tree, the
+/// The projection decides it, [`crate::layer`] carries it out: a click on the
+/// application the user is already looking at is the request to put it away
+/// (D03), a click on any other brings it forward, and the retry action asks the
+/// window service again (D05).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryAction {
+    /// Bring this window forward.
+    Activate(WindowKey),
+    /// Put this window away.
+    Toggle(WindowKey),
+    /// Reach the window service again.
+    Retry,
+}
+
+/// What the pointer is doing, as the projection needs to know it.
+///
+/// The pointer is owned by [`crate::layer`] — the only thing that sees
+/// `wl_pointer` — and this is the whole of what it hands to a projection: which
+/// entry it rests on and which one it is pressing. The projection turns that
+/// into an [`InteractionStatus`], so a hovered or pressed entry is drawn by the
+/// same code, under the same state table, that draws a resting one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Interaction {
+    /// The entry the pointer rests on, if any.
+    pub hovered: Option<EntryAction>,
+    /// The entry a button is currently pressed on, if any.
+    pub pressed: Option<EntryAction>,
+}
+
+impl Interaction {
+    /// How `action` is drawn under this interaction.
+    ///
+    /// A disabled entry is `Disabled` whether or not the pointer is on it: the
+    /// state table says it has no fill and no outline, and clicking it does
+    /// nothing (D05).
+    pub fn status(&self, action: EntryAction, enabled: bool) -> InteractionStatus {
+        if !enabled {
+            InteractionStatus::Disabled
+        } else if self.pressed == Some(action) {
+            InteractionStatus::Pressed
+        } else if self.hovered == Some(action) {
+            InteractionStatus::Hovered
+        } else {
+            InteractionStatus::Active
+        }
+    }
+}
+
+/// One clickable area of the scene, in logical surface pixels.
+///
+/// A plain value: routing a pointer event only needs the geometry and the action,
+/// so the input half copies entries out of a scene instead of borrowing the whole
+/// projection for as long as it holds one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Entry {
+    /// What a click means.
+    pub action: EntryAction,
+    /// Whether the entry accepts a click at all.
+    pub enabled: bool,
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub width: f32,
+    /// Height.
+    pub height: f32,
+}
+
+impl Entry {
+    /// Whether `(x, y)` is inside this entry.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
+/// One frame's worth of drawing data: the JSON the QML renderer draws and the
+/// entries a pointer can be matched against.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scene {
+    /// Which surface this scene draws.
+    pub surface: PanelSurface,
+    /// The projection: `{ font_family, background, items: [ … ] }`.
+    pub json: Value,
+    /// The clickable areas, in the order they are drawn.
+    pub entries: Vec<Entry>,
+}
+
+impl Scene {
+    /// The entry under `(x, y)`, topmost last — what a pointer press means.
+    ///
+    /// Only enabled entries answer: a disabled entry's reason is its tooltip, and
+    /// clicking it must do nothing at all (D05).
+    pub fn entry_at(&self, x: f32, y: f32) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.enabled && entry.contains(x, y))
+    }
+}
+
+/// Projects the surface `shell.panel.surface` asks for at `width` × `height`.
+///
+/// The three surfaces present the same model; what changes is the scene, the
 /// section of the configuration that describes it and, for the glass surfaces,
 /// the material behind it. The localizer comes along because the menu bar names
 /// the focused application and the dock badges it, and both fall back to a
 /// catalog message for an application that has no name.
-pub fn surface<'a>(
-    model: PanelViewModel,
-    tokens: &'a Tokens,
+#[allow(clippy::too_many_arguments)]
+pub fn scene(
+    model: &PanelViewModel,
+    tokens: &Tokens,
     shell: &ShellConfig,
     localizer: &Localizer,
-) -> Element<'a, Message> {
+    width: f32,
+    height: f32,
+    interaction: &Interaction,
+) -> Scene {
     match shell.panel.surface {
-        PanelSurface::Taskbar => panel(model, tokens, &shell.panel),
-        PanelSurface::Menubar => menubar::menubar(model, tokens, &shell.menubar, localizer),
-        PanelSurface::Dock => dock::dock(model, tokens, &shell.panel, &shell.dock, localizer),
+        PanelSurface::Taskbar => panel(model, tokens, &shell.panel, width, height, interaction),
+        PanelSurface::Menubar => {
+            menubar::menubar(model, tokens, &shell.menubar, localizer, width, interaction)
+        }
+        PanelSurface::Dock => dock::dock(
+            model,
+            tokens,
+            &shell.panel,
+            &shell.dock,
+            localizer,
+            width,
+            interaction,
+        ),
     }
 }
 
 /// Draws the panel's taskbar strip.
-///
-/// The model is taken by value and its strings are copied into the widgets, so
-/// the element this returns borrows the tokens and nothing else — which is what
-/// lets the caller project a fresh model on every frame instead of caching one.
-pub fn panel<'a>(
-    model: PanelViewModel,
-    tokens: &'a Tokens,
+pub fn panel(
+    model: &PanelViewModel,
+    tokens: &Tokens,
     config: &PanelConfig,
-) -> Element<'a, Message> {
+    width: f32,
+    height: f32,
+    interaction: &Interaction,
+) -> Scene {
     let geometry = PanelGeometry::new(tokens, config);
-    let mut groups: Vec<Element<'a, Message>> = Vec::new();
+    let mut painter = Painter::new(PanelSurface::Taskbar, tokens);
+
+    painter.rect(0.0, 0.0, width, height, &theme::panel_fill(tokens), 0.0);
+
+    let top = geometry.inset;
+    let content_height = (height - geometry.inset * 2.0).max(1.0);
+
+    // The notice opens the strip, and it is laid out first because it is what a
+    // user has to read before anything else (D05).
+    let mut left = geometry.padding;
 
     if let Some(notice) = &model.notice {
-        groups.push(notice_view(
+        let slot = painter.notice(
             notice,
             model.retry.as_deref(),
             model.status,
             tokens,
             geometry.notice(),
-        ));
+            left,
+            top,
+            content_height,
+            interaction,
+        );
+
+        left += slot + geometry.group_gap;
     }
 
-    // The task buttons share one flexible area, which is what keeps the clock
-    // and the tray where they belong: iced lays non-fluid children out first, so
-    // the tray and the clock ask for their width before the buttons take what is
-    // left (D05).
-    groups.push(task_area(&model.tasks, model.focused, tokens, &geometry));
-
-    if !model.tray.is_empty() {
-        groups.push(divider(
-            tokens,
-            geometry.divider_width,
-            geometry.divider_height,
-        ));
-        groups.push(tray_group(&model.tray, tokens, geometry.entries()));
-    }
+    // The clock and the tray are laid out from the right edge inwards, which is
+    // what keeps them where they belong whatever the task area does (D05).
+    let mut right = width - geometry.padding;
 
     if let Some(clock) = &model.clock {
-        groups.push(clock_view(
-            clock.text.clone(),
-            clock.tooltip.clone(),
-            tokens,
-            geometry.entries(),
-        ));
+        let text_width =
+            estimate_width(&clock.text, geometry.caption_size).min(geometry.label_max_width);
+
+        painter.text(
+            right - text_width,
+            top,
+            text_width,
+            content_height,
+            &clock.text,
+            &theme::clock_text(tokens),
+            geometry.caption_size,
+            false,
+            Align::Left,
+        );
+
+        right -= text_width + geometry.group_gap;
     }
 
-    container(
-        Row::with_children(groups)
-            .spacing(geometry.group_gap)
-            .align_y(iced::alignment::Vertical::Center),
-    )
-    .width(Length::Fill)
-    .height(Length::Fixed(geometry.height))
-    .padding(Padding {
-        top: geometry.inset,
-        right: geometry.padding,
-        bottom: geometry.inset,
-        left: geometry.padding,
-    })
-    .style(move |_theme| theme::panel(tokens))
-    .into()
-}
+    if !model.tray.is_empty() {
+        let mut cursor = right;
 
-/// The task buttons, in one flexible area that clips what does not fit.
-///
-/// The area is fluid and the entries inside it are not, which is the whole
-/// arrangement: the tray and the clock are laid out first and keep their width,
-/// and a title that is too long is cut off inside this area instead of pushing
-/// them off the strip. With no task to draw the area is empty space, which is
-/// what keeps the tray and the clock at the panel's other end.
-fn task_area<'a>(
-    tasks: &[TaskButton],
-    focused: Option<crate::tasks::WindowKey>,
-    tokens: &'a Tokens,
-    geometry: &PanelGeometry,
-) -> Element<'a, Message> {
-    if tasks.is_empty() {
-        return Space::new().width(Length::Fill).into();
-    }
+        for item in model.tray.iter().rev() {
+            let text_width =
+                estimate_width(&item.label, geometry.caption_size).min(geometry.label_max_width);
 
-    let buttons: Vec<Element<'a, Message>> = tasks
-        .iter()
-        .map(|task| task_view(task, focused == Some(task.key), tokens, geometry))
-        .collect();
+            cursor -= text_width;
 
-    container(
-        Row::with_children(buttons)
-            .spacing(geometry.spacing)
-            .align_y(iced::alignment::Vertical::Center),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .clip(true)
-    .into()
-}
+            painter.text(
+                cursor,
+                top,
+                text_width,
+                content_height,
+                &item.label,
+                &theme::tray_text(tokens, item.attention),
+                geometry.caption_size,
+                false,
+                Align::Left,
+            );
 
-/// The sentence the panel shows about itself, and its retry action.
-///
-/// The panel's own state is what a user has to read first, so the state that
-/// needs action — the window service is not available — is written at the body
-/// size in the warning colour, while the ordinary states (starting, empty) are
-/// secondary information at the caption size in the muted colour. The sentence
-/// never claims more than the projection knows, and a retry is always offered
-/// when there is something to retry (D05: never an endless spinner).
-///
-/// The taskbar and the menu bar both draw this, so the panel's own state can
-/// never be worded, coloured or laid out two different ways.
-fn notice_view<'a>(
-    notice: &str,
-    retry: Option<&str>,
-    status: PanelStatus,
-    tokens: &'a Tokens,
-    metrics: NoticeMetrics,
-) -> Element<'a, Message> {
-    let colour = theme::notice_text(tokens, status);
-    let size = match status {
-        PanelStatus::Unavailable => metrics.font_size,
-        PanelStatus::Starting | PanelStatus::Empty | PanelStatus::Ready => metrics.caption_size,
-    };
-
-    let label = clamp(
-        text(notice.to_owned())
-            .size(size)
-            .color(colour)
-            .wrapping(Wrapping::None)
-            .into(),
-        metrics.max_width,
-    );
-
-    match retry {
-        None => label,
-        Some(retry) => {
-            let action = button(text(retry.to_owned()).size(metrics.font_size))
-                .height(Length::Fill)
-                .padding(Padding {
-                    top: 0.0,
-                    right: metrics.entry_padding,
-                    bottom: 0.0,
-                    left: metrics.entry_padding,
-                })
-                .on_press(Message::Retry)
-                .style(move |_theme, status| theme::notice_action(tokens, status));
-
-            Row::with_children([label, action.into()])
-                .spacing(metrics.group_gap)
-                .align_y(iced::alignment::Vertical::Center)
-                .into()
+            cursor -= geometry.entry_padding;
         }
+
+        right = cursor;
+
+        // The divider separates what the user acts on from what the panel
+        // reports, and it opens the group it belongs to.
+        right -= geometry.divider_width;
+
+        painter.rect(
+            right,
+            top + (content_height - geometry.divider_height) / 2.0,
+            geometry.divider_width,
+            geometry.divider_height,
+            &theme::divider_color(tokens),
+            0.0,
+        );
+
+        right -= geometry.group_gap;
     }
+
+    // The task area is what is left: fluid, clipped, laid out last.
+    let area_width = (right - left).max(0.0);
+    let mut cursor = left;
+
+    for task in &model.tasks {
+        let label_width =
+            estimate_width(&task.label, geometry.font_size).min(geometry.label_max_width);
+        let entry_width = label_width + geometry.entry_padding * 2.0;
+
+        if cursor + entry_width > left + area_width {
+            // The strip is full: the rest is clipped, exactly as the old widget
+            // tree's `clip` did, so a long list never pushes the clock away.
+            break;
+        }
+
+        task_view(
+            &mut painter,
+            task,
+            model.focused == Some(task.key),
+            tokens,
+            &geometry,
+            cursor,
+            top,
+            entry_width,
+            content_height,
+            interaction,
+        );
+
+        cursor += entry_width + geometry.spacing;
+    }
+
+    painter.finish(width, height)
 }
 
 /// One task button.
-fn task_view<'a>(
+///
+/// A click on the application the user is already looking at is the request to
+/// put it away, which is what a taskbar's active button does (D03).
+#[allow(clippy::too_many_arguments)]
+fn task_view(
+    painter: &mut Painter,
     task: &TaskButton,
     focused: bool,
-    tokens: &'a Tokens,
+    tokens: &Tokens,
     geometry: &PanelGeometry,
-) -> Element<'a, Message> {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    interaction: &Interaction,
+) {
     let emphasis = if task.active {
         TaskEmphasis::Active
     } else if task.minimized {
@@ -372,142 +501,353 @@ fn task_view<'a>(
     } else {
         TaskEmphasis::Idle
     };
-
-    // A click on the application the user is already looking at is the request
-    // to put it away, which is what a taskbar's active button does (D03).
-    let on_press = if task.active {
-        Message::TaskToggled { key: task.key }
+    let action = if task.active {
+        EntryAction::Toggle(task.key)
     } else {
-        Message::TaskActivated { key: task.key }
+        EntryAction::Activate(task.key)
     };
+    let style = theme::task_button(
+        tokens,
+        emphasis,
+        focused,
+        interaction.status(action, task.enabled),
+    );
 
-    // A disabled entry says why: the reason is a sentence the user can act on,
-    // and the label already carries the application's name (D05).
-    let hint = hint(task);
+    painter.entry(&style, x, y, width, height);
+    painter.text(
+        x + geometry.entry_padding,
+        y,
+        (width - geometry.entry_padding * 2.0).max(0.0),
+        height,
+        &task.label,
+        &style.text_color,
+        geometry.font_size,
+        false,
+        Align::Left,
+    );
 
-    let button = button(clamp(
-        text(task.label.clone())
-            .size(geometry.font_size)
-            .wrapping(Wrapping::None)
-            .into(),
-        geometry.label_max_width,
-    ))
-    .height(Length::Fill)
-    .padding(Padding {
-        top: 0.0,
-        right: geometry.entry_padding,
-        bottom: 0.0,
-        left: geometry.entry_padding,
-    })
-    .on_press_maybe(task.enabled.then_some(on_press))
-    .style(move |_theme, status| theme::task_button(tokens, emphasis, focused, status));
-
-    tooltip(
-        button,
-        text(hint).size(geometry.caption_size),
-        geometry.tooltip_position,
-    )
-    .into()
+    painter.entries.push(Entry {
+        action,
+        enabled: task.enabled,
+        x,
+        y,
+        width,
+        height,
+    });
 }
 
-/// What a hover on an entry says: its tooltip, or the reason it is disabled.
-///
-/// A disabled entry says why, and the reason is a sentence the user can act on
-/// rather than the application name the label already carries (D05).
-pub(super) fn hint(task: &TaskButton) -> String {
-    if task.enabled {
-        task.tooltip.clone()
-    } else {
-        task.disabled_reason
-            .clone()
-            .unwrap_or_else(|| task.tooltip.clone())
+/// The width a label is laid out at, before the layout clips it.
+pub fn estimate_width(text: &str, size: f32) -> f32 {
+    text.chars().count() as f32 * size * AVERAGE_ADVANCE_RATIO
+}
+
+/// Where a line of text sits inside its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Align {
+    /// Against the box's left edge.
+    Left,
+    /// Centred in the box.
+    Center,
+}
+
+impl Align {
+    /// The value the QML renderer reads.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Center => "center",
+        }
     }
 }
 
-/// The tray items, as one group: display-only, so they show a title and their
-/// status and take no pointer or keyboard input.
-pub(super) fn tray_group<'a>(
-    items: &[TrayItemView],
-    tokens: &'a Tokens,
-    metrics: EntryMetrics,
-) -> Element<'a, Message> {
-    let children: Vec<Element<'a, Message>> = items
-        .iter()
-        .map(|item| tray_view(item, tokens, metrics))
-        .collect();
-
-    Row::with_children(children)
-        .spacing(metrics.spacing)
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
+/// Turns the model into JSON drawing commands and clickable areas.
+pub(super) struct Painter {
+    surface: PanelSurface,
+    font_family: String,
+    items: Vec<Value>,
+    entries: Vec<Entry>,
 }
 
-/// One tray item.
-pub(super) fn tray_view<'a>(
-    item: &TrayItemView,
-    tokens: &'a Tokens,
-    metrics: EntryMetrics,
-) -> Element<'a, Message> {
-    let label = clamp(
-        text(item.label.clone())
-            .size(metrics.caption_size)
-            .color(theme::tray_text(tokens, item.attention))
-            .wrapping(Wrapping::None)
-            .into(),
-        metrics.label_max_width,
-    );
+impl Painter {
+    fn new(surface: PanelSurface, tokens: &Tokens) -> Self {
+        Self {
+            surface,
+            font_family: theme::font_family(tokens),
+            items: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
 
-    tooltip(
-        label,
-        text(item.tooltip.clone()).size(metrics.caption_size),
-        metrics.tooltip_position,
-    )
-    .into()
+    /// A filled rectangle with an optional radius.
+    fn rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: &str, radius: f32) {
+        self.items.push(json!({
+            "kind": "rect",
+            "x": x,
+            "y": y,
+            "w": width.max(0.0),
+            "h": height.max(0.0),
+            "color": color,
+            "radius": radius,
+            "border": 0.0,
+            "border_color": theme::TRANSPARENT,
+        }));
+    }
+
+    /// An entry's fill and outline, in the state the theme decided.
+    fn entry(&mut self, style: &EntryStyle, x: f32, y: f32, width: f32, height: f32) {
+        let background = style
+            .background
+            .clone()
+            .unwrap_or_else(|| theme::TRANSPARENT.to_owned());
+
+        self.items.push(json!({
+            "kind": "rect",
+            "x": x,
+            "y": y,
+            "w": width.max(0.0),
+            "h": height.max(0.0),
+            "color": background,
+            "radius": style.radius,
+            "border": style.border_width,
+            "border_color": style.border_color,
+        }));
+    }
+
+    /// A frosted pane, as the bands its colour stops describe.
+    ///
+    /// A vertical gradient between solid stops is what the pane's fill has
+    /// always been — a one-hairline highlight, the tint, a one-hairline shade —
+    /// so laying it out as the bands between those stops is the same drawing
+    /// with no gradient in the renderer. [`crate::theme::glass_stops`] is the
+    /// one description of that fill: the body is the tint after the leading
+    /// highlight, the first band is the highlight along the top edge, and a
+    /// four-stop fill ends with the shade along the bottom one.
+    ///
+    /// The body is drawn rounded to the pane's radius and the two hairlines are
+    /// laid over its edges, so a floating pane keeps its rounded silhouette
+    /// instead of being squared off by the band that covers most of it.
+    fn pane(&mut self, x: f32, y: f32, width: f32, height: f32, stops: &[Stop], radius: f32) {
+        let body = stops.get(1).or_else(|| stops.first());
+
+        if let Some(body) = body {
+            self.rect(x, y, width, height, &body.color, radius);
+        }
+
+        if let (Some(highlight), Some(tint)) = (stops.first(), stops.get(1)) {
+            let band = (tint.at - highlight.at) * height;
+
+            if band > 0.0 && band < height {
+                self.rect(x, y, width, band, &highlight.color, radius);
+            }
+        }
+
+        if stops.len() > 2
+            && let (Some(shade), Some(before)) = (stops.last(), stops.get(stops.len() - 2))
+        {
+            let start = before.at * height;
+            let band = height - start;
+
+            if band > 0.0 && band < height {
+                self.rect(x, y + start, width, band, &shade.color, radius);
+            }
+        }
+    }
+
+    /// A line of text in a box it may be clipped to.
+    #[allow(clippy::too_many_arguments)]
+    fn text(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        text: &str,
+        color: &str,
+        size: f32,
+        bold: bool,
+        align: Align,
+    ) {
+        self.items.push(json!({
+            "kind": "text",
+            "x": x,
+            "y": y,
+            "w": width.max(0.0),
+            "h": height.max(0.0),
+            "text": text,
+            "color": color,
+            "size": size,
+            "bold": bold,
+            "align": align.as_str(),
+        }));
+    }
+
+    /// The sentence the panel shows about itself, and its retry action.
+    ///
+    /// The panel's own state is what a user has to read first, so the state that
+    /// needs action — the window service is not available — is written at the
+    /// body size in the warning colour, while the ordinary states (starting,
+    /// empty) are secondary information at the caption size in the muted colour.
+    /// The sentence never claims more than the projection knows, and a retry is
+    /// always offered when there is something to retry (D05: never an endless
+    /// spinner).
+    ///
+    /// Returns the width the group took, so the caller can place the next group.
+    ///
+    /// The taskbar and the menu bar both draw this, so the panel's own state can
+    /// never be worded, coloured or laid out two different ways.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn notice(
+        &mut self,
+        notice: &str,
+        retry: Option<&str>,
+        status: PanelStatus,
+        tokens: &Tokens,
+        metrics: NoticeMetrics,
+        x: f32,
+        y: f32,
+        height: f32,
+        interaction: &Interaction,
+    ) -> f32 {
+        let colour = theme::notice_text(tokens, status);
+        let size = match status {
+            PanelStatus::Unavailable => metrics.font_size,
+            PanelStatus::Starting | PanelStatus::Empty | PanelStatus::Ready => metrics.caption_size,
+        };
+        let sentence_width = estimate_width(notice, size).min(metrics.max_width);
+
+        self.text(
+            x,
+            y,
+            sentence_width,
+            height,
+            notice,
+            &colour,
+            size,
+            false,
+            Align::Left,
+        );
+
+        let Some(retry) = retry else {
+            return sentence_width;
+        };
+
+        let action_x = x + sentence_width + metrics.group_gap;
+        let action_width = estimate_width(retry, metrics.font_size) + metrics.entry_padding * 2.0;
+        let style = theme::notice_action(tokens, interaction.status(EntryAction::Retry, true));
+
+        self.entry(&style, action_x, y, action_width, height);
+        self.text(
+            action_x + metrics.entry_padding,
+            y,
+            (action_width - metrics.entry_padding * 2.0).max(0.0),
+            height,
+            retry,
+            &style.text_color,
+            metrics.font_size,
+            false,
+            Align::Left,
+        );
+        self.entries.push(Entry {
+            action: EntryAction::Retry,
+            enabled: true,
+            x: action_x,
+            y,
+            width: action_width,
+            height,
+        });
+
+        sentence_width + metrics.group_gap + action_width
+    }
+
+    /// The tray items, as one group: display-only, so they show a title and take
+    /// no pointer or keyboard input.
+    pub(super) fn tray_group(
+        &mut self,
+        items: &[TrayItemView],
+        tokens: &Tokens,
+        metrics: EntryMetrics,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> f32 {
+        let mut cursor = x;
+
+        for item in items {
+            let width =
+                estimate_width(&item.label, metrics.caption_size).min(metrics.label_max_width);
+
+            self.text(
+                cursor,
+                y,
+                width,
+                height,
+                &item.label,
+                &theme::tray_text(tokens, item.attention),
+                metrics.caption_size,
+                false,
+                Align::Left,
+            );
+
+            cursor += width + metrics.spacing;
+        }
+
+        (cursor - metrics.spacing - x).max(0.0)
+    }
+
+    /// The width the same tray group will take, for a layout that has to reserve
+    /// it before drawing the task area.
+    pub(super) fn tray_width(items: &[TrayItemView], metrics: EntryMetrics) -> f32 {
+        let widths: f32 = items
+            .iter()
+            .map(|item| {
+                estimate_width(&item.label, metrics.caption_size).min(metrics.label_max_width)
+            })
+            .sum();
+
+        if items.len() > 1 {
+            widths + metrics.spacing * (items.len() - 1) as f32
+        } else {
+            widths
+        }
+    }
+
+    /// Finishes the frame: the root's background and the projection QML reads.
+    fn finish(mut self, width: f32, height: f32) -> Scene {
+        // The root is *structurally* transparent on all three surfaces: the
+        // taskbar paints its opaque strip as a rectangle, and the menu bar and
+        // the dock are glass panes whose backdrop has to show through. That is
+        // the "no design colour" sentinel `theme::TRANSPARENT`, not a token a
+        // theme could set.
+        let json = json!({
+            "surface": surface_name(self.surface),
+            "width": width,
+            "height": height,
+            "font_family": self.font_family,
+            "background": theme::TRANSPARENT,
+            "items": std::mem::take(&mut self.items),
+        });
+
+        Scene {
+            surface: self.surface,
+            json,
+            entries: std::mem::take(&mut self.entries),
+        }
+    }
 }
 
-/// The clock, display-only, with the full date in its tooltip.
-pub(super) fn clock_view<'a>(
-    clock: String,
-    tooltip_text: String,
-    tokens: &'a Tokens,
-    metrics: EntryMetrics,
-) -> Element<'a, Message> {
-    tooltip(
-        text(clock)
-            .size(metrics.caption_size)
-            .color(theme::clock_text(tokens)),
-        text(tooltip_text).size(metrics.caption_size),
-        metrics.tooltip_position,
-    )
-    .into()
-}
-
-/// A hairline that separates two groups.
-///
-/// The tasks are what the user acts on and the tray is what the panel reports,
-/// so the two groups are separated by a divider as well as by a wider gap. It
-/// takes its colour from [`theme::divider`] and both of its sizes from the
-/// geometry it is drawn on, so a divider can never be a size nobody chose.
-pub(super) fn divider<'a>(tokens: &'a Tokens, width: f32, height: f32) -> Element<'a, Message> {
-    container(Space::new())
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(height))
-        .style(move |_theme| theme::divider(tokens))
-        .into()
-}
-
-/// Bounds a label so that the rest of the surface keeps its space.
-///
-/// `Wrapping::None` keeps a label on one line; the maximum width is what stops
-/// that line from growing without end.
-pub(super) fn clamp<'a>(content: Element<'a, Message>, max_width: f32) -> Element<'a, Message> {
-    container(content).max_width(max_width).clip(true).into()
+/// The name the renderer sees for a surface, so a QML-side diagnostic can say
+/// which one it drew. It is a diagnostic label, not a translated string.
+const fn surface_name(surface: PanelSurface) -> &'static str {
+    match surface {
+        PanelSurface::Taskbar => "taskbar",
+        PanelSurface::Menubar => "menubar",
+        PanelSurface::Dock => "dock",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view_model::PanelViewModel;
 
     fn geometry(config: &PanelConfig) -> PanelGeometry {
         PanelGeometry::new(&Tokens::builtin_dark(), config)
@@ -623,8 +963,8 @@ mod tests {
             ..PanelConfig::default()
         });
 
-        assert_eq!(bottom.tooltip_position, tooltip::Position::Top);
-        assert_eq!(top.tooltip_position, tooltip::Position::Bottom);
+        assert_eq!(bottom.tooltip_position, TooltipPosition::Above);
+        assert_eq!(top.tooltip_position, TooltipPosition::Below);
     }
 
     #[test]
@@ -635,14 +975,33 @@ mod tests {
             ..PanelConfig::default()
         };
 
-        // Building the element is the assertion: a model with nothing in it
+        // Projecting the scene is the assertion: a model with nothing in it
         // must still produce a strip of the configured height.
-        let _element = panel(model(), &tokens, &config);
+        let scene = panel(
+            &model(),
+            &tokens,
+            &config,
+            1280.0,
+            34.0,
+            &Interaction::default(),
+        );
+
+        assert_eq!(scene.surface, PanelSurface::Taskbar);
+        assert!(
+            scene.entries.is_empty(),
+            "an empty panel has nothing to click"
+        );
+        assert!(
+            scene.json["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "the strip itself is still painted"
+        );
         assert!((geometry(&config).height - 34.0).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn the_surface_picker_draws_the_section_the_configuration_names() {
+    fn the_scene_picker_draws_the_section_the_configuration_names() {
         let tokens = Tokens::builtin_dark();
         let locale = inox_common::i18n::Locale::default_locale();
         let localizer = crate::i18n::load(&locale).expect("the catalogs parse");
@@ -660,10 +1019,18 @@ mod tests {
                 ..ShellConfig::default()
             };
 
-            // Building the element is the assertion: the picker has to find a
-            // tree for every surface, and each tree only borrows `shell`.
-            let _element = surface(model(), &tokens, &shell, &localizer);
-            assert_eq!(shell.panel.surface, mode);
+            let scene = scene(
+                &model(),
+                &tokens,
+                &shell,
+                &localizer,
+                1280.0,
+                96.0,
+                &Interaction::default(),
+            );
+
+            assert_eq!(scene.surface, mode);
+            assert_eq!(scene.json["surface"], surface_name(mode));
         }
     }
 }

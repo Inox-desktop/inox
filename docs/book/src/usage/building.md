@@ -1,6 +1,6 @@
 # 构建与运行
 
-> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；L3 目前以普通窗口运行，layer-shell 客户端与完整服务 ready 尚未接线。锁屏的协议腿与界面已经落地（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。**认证边界与开机登录链**已按 [ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 接线（`inox-host` + `packaging/`），但**真机登录尚未取得证据**；挂起仍未接线。本页说明可运行路径及其限制，登录链的安装、试运行与回退另见[登录与开机链](login.md)。
+> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；七个 L3 组件的界面已从 Iced 迁到 **QML + Qt Quick**（经 cxx-qt 绑定），面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染），其余五个是普通 Qt 窗口；完整服务 ready 与真实宿主截图证据（waydriver）尚未接线。锁屏的协议腿与界面已经落地（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。**认证边界与开机登录链**已按 [ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 接线（`inox-host` + `packaging/`），但**真机登录尚未取得证据**；挂起仍未接线。本页说明可运行路径及其限制，登录链的安装、试运行与回退另见[登录与开机链](login.md)。
 
 ## 今天能跑到什么程度
 
@@ -9,7 +9,7 @@
 | 构建 `inox-compositor` 并启动 headless 合成器 | **可以**：创建 `wl_output`、接受客户端、平铺窗口、渲染帧 |
 | 在物理显示器上看到画面 | **不行**：没有 DRM/KMS 后端，输出是逻辑输出，渲染到离屏缓冲 |
 | 用真实键盘/鼠标操作 | **不行**：没有 libinput/udev 后端；输入事件只能由测试注入（M3 起经测试专用套接字，需 `test-input` feature 构建） |
-| 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件都已实现，`cargo run -p inox-panel` 会打开一个普通窗口；由于合成器尚未广告 `zwlr_layer_shell_v1` 且 `iced_layershell` 当前无法编译（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)），它们**不是** layer-shell 客户端，放置策略只被建模与测试、未被应用；`inox-lock` 默认以可读错误非零退出（认证边界未评审），`--take-lock` 则真实取锁并把界面画到每个输出上 |
+| 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件的界面是 QML + Qt Quick。面板与锁屏**不是普通窗口**——它们自己创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，QML 只做离屏渲染，所以需要支持对应协议的合成器，缺协议时以可读错误与非零码退出；启动器、设置、通知与壁纸是普通 Qt 窗口，放置策略只被建模与测试、未被应用；`inox-lock` 默认以可读错误非零退出（认证边界未评审），`--take-lock` 则真实取锁并把界面画到每个输出上 |
 | 启动与监督会话 | **部分可以**：`inox-session` 能启动合成器及桌面组件，提供有限重启、故障隔离和注销；尚无完整服务 ready，也未接入 XWayland 的 DISPLAY 发布 |
 | 真实登录、自动锁定与挂起 | **未验证**：登录链（`inox-host` 起合成器与登录界面，`inox-auth` 认证并建立用户会话）与部署面 `packaging/` 已接线，但**没有任何真机登录证据**；`inox-greet` 不带 `--preview` 时要求认证边界，`inox-idle` 有协议客户端与策略，而 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线。步骤见[登录与开机链](login.md) |
 | 锁定会话、收发通知 | **部分可以**：`inox-lock --take-lock` 会话内真的会锁住屏幕并画出界面（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），`inox-notifications` 提供 `org.freedesktop.Notifications`；但锁屏**不能认证任何人**（ADR 0015 要求人类安全审查），因此它会如实显示「本构建没有认证边界」，释放会话只能靠注销 |
@@ -66,7 +66,7 @@ INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headles
 
 ## 前置条件
 
-`inox-compositor` 的构建与运行需要：
+构建整个工作区、运行合成器与 QML 组件需要：
 
 | 依赖 | 用途 |
 |------|------|
@@ -76,6 +76,11 @@ INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headles
 | EGL 与 Mesa DRI 驱动（如 `libegl1`、`libgl1-mesa-dri`） | 运行期：Smithay 的 `GlesRenderer` 通过 `dlopen` 加载 `libEGL.so.1`；无 GPU 时用 llvmpipe 软件渲染 |
 | 一个已存在的绝对路径目录作为 `$XDG_RUNTIME_DIR` | Wayland 套接字在该目录下创建 |
 | `xwayland-satellite`（≥ v0.8.3）与 `Xwayland` | 运行期：只有要跑 X11 应用时才需要，二者都不参与构建；`inox-xwayland` 用 `--satellite <PATH>` 拉起前者，由它自行 spawn 后者 |
+| `qt6-base-dev`、`qt6-declarative-dev` | 构建期：七个 QML 组件与 `inox-qml-prototype` 通过 cxx-qt 链接 Qt6Core/Gui/Qml/Quick，构建脚本用 `qmake`/`pkg-config` 解析它们；缺 Qt 时 `cxx-qt` 的构建脚本直接 panic，连 `cargo check` 都过不去 |
+| `qml6-module-qtquick`、`-qtquick-window`、`-qtquick-templates`、`-qtquick-controls`、`-qtquick-layouts`、`-qtquick-dialogs`、`-qtqml-workerscript` | 运行期：QML 组件 `import` 的模块，缺一个模块就加载失败（包名以 Debian/Ubuntu 为准） |
+| `qt6-wayland-dev` | 构建/运行期：普通窗口组件经 Qt 的 Wayland 客户端建连 |
+| `fonts-dejavu-core`、`fonts-noto-cjk`（或任意已安装字体） | 运行期：Qt 在出帧时自己排版文本，没有字体时标签是空的 |
+| `lld` | 链接期：`qt-build-utils` 为 Qt 相关的链接步骤选用 lld；用 gold 时 cxx-qt 的 `cxx_qt_init_*` 符号会变成 `undefined reference` |
 
 系统包名以你的发行版为准；上表列出的是 Debian/Ubuntu 上的名字，与 CI 使用的包一致。
 
@@ -133,21 +138,26 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
 
 ```bash
 cargo run -p inox-shell          # 解析入口注册表并报告，然后退出
-cargo run -p inox-panel          # 面板：普通窗口
-cargo run -p inox-launcher       # 启动器：普通窗口
-cargo run -p inox-settings       # 设置：普通窗口（唯一会写配置的组件）
-cargo run -p inox-wallpaper      # 壁纸预览：普通窗口
-cargo run -p inox-notifications  # 通知的弹窗层：普通窗口
+cargo run -p inox-panel          # 面板：真实 layer 表面（需要支持 wlr-layer-shell 的合成器）
+cargo run -p inox-launcher       # 启动器：普通 Qt 窗口
+cargo run -p inox-settings       # 设置：普通 Qt 窗口（唯一会写配置的组件）
+cargo run -p inox-wallpaper      # 壁纸预览：普通 Qt 窗口
+cargo run -p inox-notifications  # 通知的弹窗层：普通 Qt 窗口
 cargo run -p inox-lock           # 锁屏：打印原因并以非零状态退出（认证边界未评审；--take-lock 见下文）
 ```
 
-现在启动它们会看到**普通窗口**而不是桌面层：合成器还没有广告 `wlr-layer-shell-unstable-v1`，而第三方 `iced_layershell` 0.19.1 与 0.19.0 在当前依赖图下无法编译（`error[E0004]`，见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。组件在启动时会用 `warn!` 说明这件事，`placement.rs` 里的锚点、独占区与边距是**已经测试但尚未应用**的数据。
+两种形态要分开看（[ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)）：
 
-要看它们真正画出来的样子，不必有合成器：渲染测试在无 GPU 的环境里把真实控件树画到位图并断言像素，设 `INOX_SCREENSHOT_DIR` 时还会把每个场景写成 PNG（CI 把它作为 artifact 收集）：
+- **面板与锁屏不是普通窗口。** 它们在自己的 `calloop` 循环里创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，QML 只负责把界面渲染成帧写进 `wl_shm`。缺 `wl_compositor`、`wl_shm`、`zwlr_layer_shell_v1` 中的任何一个，面板都会以可读错误与非零码退出——它不会退回成一个浮窗来假装自己摆了位。
+- **启动器、设置、通知与壁纸是普通 Qt 窗口**，由 Qt 事件循环驱动，QML 同时负责渲染与交互。`placement.rs` 里的锚点、独占区与边距仍是**已经测试但尚未应用**的数据（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md) 记录了当时的取舍与缺口，ADR 0038 保留了普通窗口这一形态）。
+
+界面本身是 QML + Qt Quick（Rust 投影 JSON，QML 只绑定），所以它们的测试不需要合成器也不需要 GPU：在 `QT_QPA_PLATFORM=offscreen` 下断言投影、加载 QML，面板与锁屏还会读回自己提交的离屏帧。命令与 CI 逐字一致：
 
 ```bash
-INOX_SCREENSHOT_DIR=/tmp/inox-shots cargo test -p inox-panel --test render
+QT_QPA_PLATFORM=offscreen cargo test -p inox-panel --all-features
 ```
+
+迁移后这些测试**不写 PNG 截图**：Iced 时代的 `tests/render.rs` 与 `INOX_SCREENSHOT_DIR` 装置随 Iced 一起删除了，本页不声称存在截图工件（原因见[测试策略](../development/testing.md)）。
 
 语言由 `config.toml` 的 `[locale]` 或环境变量（`LC_ALL` / `LC_MESSAGES` / `LANG`）决定，`en-US` 与 `zh-CN` 都有完整目录。
 

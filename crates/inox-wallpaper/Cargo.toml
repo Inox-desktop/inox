@@ -14,24 +14,37 @@ categories.workspace = true
 calloop.workspace = true
 zbus.workspace = true
 # The wallpaper is an L3 component: it reads configuration from L1 and never
-# depends on the compositor or on another L3 crate (ADR 0002 rules 1, 6).
+# depends on the compositor or on another L3 crate.
 inox-common.workspace = true
 inox-config.workspace = true
 anyhow.workspace = true
-iced.workspace = true
+# QML + Qt Quick host. `cxx` is the FFI layer, `cxx-qt` the
+# Rust-QObject bridge and `cxx-qt-lib` the Qt value types the bridge names.
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
 image.workspace = true
+# The view projection is one JSON document (docs/qml-migration-contract.md §3);
+# `serde_json` builds it without growing a second UI definition.
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[build-dependencies]
+cxx-qt-build.workspace = true
+
 [dev-dependencies]
-# The headless render harness: it builds the real widget tree and draws it
-# through the same tiny-skia renderer the binary uses, with no compositor.
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe` (root AGENTS.md §3.2), but the
+# `#[cxx_qt::bridge]` macro (see `src/cxxqt_object.rs`) emits `unsafe extern
+# "C++"` blocks without an `#[allow]` wrapper, so the generated FFI glue cannot
+# compile under `forbid`. Override it to `allow` here; Inox-authored code stays unsafe-free.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

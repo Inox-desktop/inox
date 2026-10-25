@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// The compositor's handle for one window.
-///
 /// Server-assigned: the panel never invents one (ADR 0013 decision 1). Opaque
+/// Server-assigned: the panel never invents one. Opaque
 /// outside the window service, which is why this is a newtype and not a `u64`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(u64);
@@ -78,6 +78,11 @@ impl fmt::Display for SessionGeneration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct WorkspaceId(u32);
 
+// The window-service transport is not implemented, so nothing constructs a
+// workspace yet. The newtype and its conversions are kept because they are
+// what a transport will use; a bare `u32` would let a window number and a
+// workspace number be confused.
+#[allow(dead_code)]
 impl WorkspaceId {
     /// The workspace a compositor reports.
     pub const fn new(raw: u32) -> Self {
@@ -98,11 +103,6 @@ impl OutputId {
     /// The output's name, as the compositor spells it.
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
-    }
-
-    /// The output's name.
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -178,13 +178,6 @@ pub enum Applied {
     Updated,
     /// The state belongs to another session generation and was dropped.
     Stale,
-}
-
-impl Applied {
-    /// Whether the list changed.
-    pub const fn changed(self) -> bool {
-        matches!(self, Self::Added | Self::Updated)
-    }
 }
 
 /// One application's windows, in the order the panel draws them.
@@ -389,8 +382,7 @@ impl TaskList {
     /// Forgets every window and moves the list to `generation`.
     ///
     /// Returns how many windows were discarded, which is what a caller logs when
-    /// a compositor restart invalidated its view (ADR 0013 decision 1: the old
-    /// view is dropped and resynchronised, never patched).
+    /// a compositor restart invalidated its view.
     pub fn resync(&mut self, generation: SessionGeneration) -> usize {
         let discarded = self.windows.len();
         self.windows.clear();

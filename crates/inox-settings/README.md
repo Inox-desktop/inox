@@ -1,7 +1,7 @@
 # inox-settings
 
 Inox 的系统设置应用，属于 **L3**，也是唯一写入 Inox 配置的组件。
-普通 `xdg-shell` 窗口，使用 Iced、Fluent 与 `inox-config` 主题令牌。
+普通 `xdg-shell` 窗口：**QML + Qt Quick**（经 cxx-qt 绑定）渲染，状态、草稿、持久化与文案都在 Rust，颜色与尺寸只来自 `inox_config::Theme` 令牌（ADR 0033、0035）。
 
 ## 设置范围
 
@@ -24,6 +24,27 @@ Inox 的系统设置应用，属于 **L3**，也是唯一写入 Inox 配置的�
 输入法示例：第一项 `/usr/bin/fcitx5`，之后每项一个参数；不经 shell 解释。
 物理合成器会读取保存的 `input.input_method`，显式 `--input-method` 优先；
 确定性 headless 后端仍只使用显式启动参数。词库、语言方案和切换快捷键由引擎自己的配置工具管理。
+
+## 界面结构（QML + cxx-qt）
+
+```
+main.rs            QGuiApplication + QQmlApplicationEngine，加载 qrc:/qt/qml/com/inox/settings/qml/qml/Main.qml
+cxxqt_object.rs    唯一的 QML↔Rust 边界：SettingsApp { modelJson, ready, pump(), dispatch(json), reportReady(...), quit() }
+ui_host.rs         Qt-free 的 Host 契约与线程局部安装；bridge 只依赖它
+runtime.rs         UiRuntime：状态机、后台工作线程、pump（排空消息 + 试用倒计时）
+view.rs            投影：状态 + 令牌 → 一份 JSON；QML 发回的动作是一组闭合的 UiAction
+theme.rs           令牌 → #AARRGGBB 颜色与全部几何值（纯函数）
+qml/               11 个文件：Main、SettingsSurface、FieldRow、TextFieldControl、NumberControl、
+                   ChoiceRow、FlagControl、CollectionControl、ControlButton、StatusStrip、TrialDialog
+```
+
+- **一份 JSON 模型，整份重发。** 每次状态变化，Rust 把「当前状态 + 令牌 + Fluent 文案」重新投影成 JSON 塞进 `modelJson`，QML 里 `JSON.parse` 后绑定。不为每个字段加属性，QML 里也没有第二份界面定义。
+- **QML 不做决定。** 页面、卡片、控件形态、值、禁用原因、焦点位置、状态行句子、试用弹窗全部由 Rust 决定；QML 里没有颜色字面量、没有像素字面量、没有用户可见字符串。
+- **单向动作通道。** 点击与按键序列化成 `{"type": ...}` 交给 `dispatch`，由 `parse_action` 解析成 `UiAction` 再变成 `Message`；不认识的动作用 `warn!` 记录后丢弃，不会让窗口崩。
+- **pump。** QML 的 16 ms 定时器调用 `pump()`，它排空后台线程送回来的消息（写盘结果、D-Bus 回执）、推进显示试用倒计时，并在投影变化时重发 `modelJson`。
+- **键盘。** QML 只上报 Tab / Enter / Esc / 上下方向键；焦点顺序、禁用项是否可达、要滚动哪个容器都由 Rust 投影。`Keys` 挂在铺满窗口的 `Item` 上（挂在 `Window` 上会被 Qt 静默丢弃）。
+- **窗口是普通窗口**，不是 layer-shell 客户端；不使用 Qt Wayland Compositor（GPL-only），也不引入 webview。
+- 同一 package 还有第二个 bin `inoxctl`，它用 `#[path]` 直接编译 `cxxqt_object.rs` 以满足 cxx-qt 的链接要求（`cargo build --bins` 是这条的检查）；细节见 `AGENTS.md`。
 
 ## 保存与生效
 
@@ -66,20 +87,32 @@ headless 后端的输出来自 `--output`，该路径仍拒绝运行时改动。
 ## 验证与开发
 
 所有控件文案有 en-US / zh-CN 目录；长页面滚动，键盘焦点按真实布局自动显示。
-测试覆盖真实文件保存/回读、集合的 TOML 写法、字段边界、取消、冲突、写盘失败、
-陈旧回执、部分成功、输入法 argv 与离屏渲染；属性测试每次运行至少 1000 例。
+测试全部跑在二进制内（crate 是 bin-only，`tests/` 会破坏 cxx-qt 的链接，见 `AGENTS.md`）：
 
-验收以 GitHub Actions 为准，不在本地运行构建或测试。离屏渲染是 E1 证据，
-不等同于 waydriver/真实会话的 E2/E3 验收。
+| 证据 | 位置 |
+|------|------|
+| 真实文件上的保存/回读、取消、冲突、写盘失败、重启、重载、显示试用三条路径、≥1000 例属性测试 | `src/headless_tests/workflow.rs` |
+| 每个可编辑字段的边界与 TOML 往返 | `src/headless_tests/complete_settings.rs` |
+| en-US / zh-CN 的 id 与占位符一致（Q03） | `src/headless_tests/catalog.rs` |
+| **投影断言**（颜色都是令牌、禁用原因、焦点序列、试用弹窗、SavedOnly ≠ Applied、字号加倍） | `src/headless_tests/projection.rs` |
+| **离屏加载**：真实 `qrc:` QML 模块载入、QML 树回报的就绪与投影一致、没有 QML 错误 | `src/headless_tests/qml.rs` |
 
 ```bash
-cargo test -p inox-settings --all-features
-INOX_SCREENSHOT_DIR=/tmp/inox-shots cargo test -p inox-settings --test render
+cargo check  -p inox-settings --all-targets --all-features --offline
+cargo clippy -p inox-settings --all-targets --all-features --offline -- -D warnings
+QT_QPA_PLATFORM=offscreen cargo test -p inox-settings --all-features --offline
+cargo build  -p inox-settings --bins --offline   # cxx-qt 的链接陷阱，必须单独过
+cargo fmt    -p inox-settings
 ```
+
+验收以 GitHub Actions 为准，不在本地把构建或测试结果当作验收。离屏加载是 E1 证据：它证明模块能载入、树读到了投影，
+**不等于**真实会话里的像素、鼠标交互或屏幕阅读器验收——这些仍是缺口，记录在 `AGENTS.md` 的「已知缺口」里。
 
 架构依据：[ADR 0014](../../docs/adr/0014-configuration-apply-and-migration.md)、
 [ADR 0018](../../docs/adr/0018-l3-component-architecture.md)、
-[ADR 0024](../../docs/adr/0024-settings-coverage-and-input-method-preferences.md)。
+[ADR 0024](../../docs/adr/0024-settings-coverage-and-input-method-preferences.md)、
+[ADR 0033](../../docs/adr/0033-qml-qt-quick-shell-evaluation.md)、
+[ADR 0035](../../docs/adr/0035-cxx-qt-binding.md)。
 开发遵循根级与本 crate 的 `AGENTS.md`，提交 scope 为 `settings`。
 
 LGPL-3.0，见仓库根的 `LICENSE`。

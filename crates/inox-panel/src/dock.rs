@@ -35,7 +35,7 @@
 //! This module is the *pure* half — the geometry and the projection. The widgets
 //! are in [`crate::view::dock`].
 
-use iced::widget::tooltip;
+use crate::view::TooltipPosition;
 use inox_common::i18n::Localizer;
 use inox_config::{DockConfig, Theme as Tokens};
 
@@ -155,7 +155,7 @@ pub struct DockGeometry {
     pub minimum_width: f32,
     /// Which way a tooltip opens. The dock floats above the bottom edge, so its
     /// tooltips open upwards.
-    pub tooltip_position: tooltip::Position,
+    pub tooltip_position: TooltipPosition,
 }
 
 impl DockGeometry {
@@ -182,7 +182,7 @@ impl DockGeometry {
             tray_size: theme::caption_size(tokens, config.icon_size).min(content_height),
             label_max_width: f32::from(tokens.spacing.xl) * LABEL_WIDTH_STEPS,
             minimum_width: f32::from(tokens.spacing.xl) * MINIMUM_WIDTH_STEPS,
-            tooltip_position: tooltip::Position::Top,
+            tooltip_position: TooltipPosition::Above,
         }
     }
 
@@ -480,7 +480,7 @@ fn tile(task: &TaskButton, focused: Option<WindowKey>, localizer: &Localizer) ->
 /// The badge a tile shows: the first character of the application's name, or the
 /// catalog's placeholder when it has none.
 ///
-/// The panel has no icon theme decoder (ADR 0018 keeps it out of this crate), so
+/// The panel has no icon theme decoder, so
 /// this is the same degradation the launcher's icon column uses, and the
 /// placeholder keeps a missing name visible rather than silent.
 fn glyph(app_id: &str, localizer: &Localizer) -> (String, bool) {
@@ -886,7 +886,7 @@ mod tests {
     fn the_tooltips_open_upwards_because_the_dock_is_at_the_bottom() {
         assert_eq!(
             geometry(&DockConfig::default()).tooltip_position,
-            tooltip::Position::Top
+            TooltipPosition::Above
         );
     }
 

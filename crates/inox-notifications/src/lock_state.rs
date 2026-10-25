@@ -5,7 +5,6 @@
 //! is not a UI client's to keep), and the compositor publishes it over the
 //! private `inox-ipc` protocol as the `session_lock_state` event (ADR 0022 §4).
 //! This module is the reader of that event and nothing else:
-//!
 //! ```text
 //! compositor ──inox-ipc: session_lock_state──► this watcher ──Message──► app::State
 //! ```
@@ -63,8 +62,8 @@ const THREAD: &str = "inox-notifications lock state";
 const IPC_INTERFACE: &str = "inox_ipc";
 
 /// The version of `inox-ipc` that carries `session_lock_state`.
-///
 /// Version 2 is where ADR 0022 §4 put the event. A compositor that only offers
+/// Version 2 is where put the event. A compositor that only offers
 /// version 1 has no lock state to report, which is a reason to be disabled and
 /// not a reason to assume the session is unlocked.
 const IPC_VERSIONS: RangeInclusive<u32> = 2..=2;
@@ -390,7 +389,7 @@ mod tests {
     #[test]
     fn a_state_is_handed_over_once_and_not_again() {
         let (inbox, mut report) = report();
-        let mut stream = inbox.stream();
+        let stream = inbox.stream();
 
         report.record(SessionState::Locked);
         assert!(report.flush(), "the state went out");
@@ -429,7 +428,7 @@ mod tests {
             "a state that did not get through is not recorded as told"
         );
 
-        let mut stream = inbox.stream();
+        let stream = inbox.stream();
         assert!(report.flush(), "the retry succeeds");
         assert_eq!(report.told, Some(SessionState::Locked));
         assert!(matches!(
@@ -441,7 +440,7 @@ mod tests {
     #[test]
     fn a_repeated_report_of_the_same_state_is_not_a_second_message() {
         let (inbox, mut report) = report();
-        let mut stream = inbox.stream();
+        let stream = inbox.stream();
 
         report.record(SessionState::Locked);
         assert!(report.flush());

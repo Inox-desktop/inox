@@ -5,7 +5,7 @@
 //! invent any: it shows the focused application's name at its left end (when
 //! `[menubar] show_app_name` asks for it) and nothing that pretends to be a
 //! menu. Inventing titles would be a claim about a protocol that does not
-//! exist, and the panel only draws what it actually knows (ADR 0013).
+//! exist, and the panel only draws what it actually knows.
 //!
 //! What it does draw is the same data the taskbar draws, arranged for a bar:
 //!
@@ -33,7 +33,7 @@
 //!   is always shown when the projection produced one, because a service that
 //!   is not available is not something a user should have to switch on (D05).
 
-use iced::widget::tooltip;
+use crate::view::TooltipPosition;
 use inox_common::i18n::Localizer;
 use inox_config::{MenubarConfig, Theme as Tokens};
 
@@ -75,7 +75,7 @@ pub struct MenubarGeometry {
     pub label_max_width: f32,
     /// Which way a tooltip opens. The bar sits on the top edge, so its tooltips
     /// open downwards.
-    pub tooltip_position: tooltip::Position,
+    pub tooltip_position: TooltipPosition,
 }
 
 impl MenubarGeometry {
@@ -100,7 +100,7 @@ impl MenubarGeometry {
             font_size: theme::title_size(tokens, config.height).min(available),
             caption_size: theme::caption_size(tokens, config.height).min(available),
             label_max_width: f32::from(tokens.spacing.xl) * NOTICE_WIDTH_STEPS,
-            tooltip_position: tooltip::Position::Bottom,
+            tooltip_position: TooltipPosition::Below,
         }
     }
 
@@ -298,7 +298,7 @@ mod tests {
     fn the_tooltips_open_away_from_the_edge_the_bar_sits_on() {
         assert_eq!(
             geometry(&MenubarConfig::default()).tooltip_position,
-            tooltip::Position::Bottom,
+            TooltipPosition::Below,
             "the bar is on the top edge, so its tooltips open downwards"
         );
     }

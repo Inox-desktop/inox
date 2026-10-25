@@ -9,7 +9,7 @@
 //! unchanged rather than inherit a size someone guessed at a call site.
 //!
 //! Everything here is a plain value: [`LogicalSize`], counts and booleans. No
-//! Iced type, no Wayland type, no I/O — which is what keeps it testable, and
+//! Qt type, no Wayland type, no I/O — which is what keeps it testable, and
 //! what will let a future host translate it into `set_anchor`, `set_size`,
 //! `set_exclusive_zone`, `set_keyboard_interactivity` and `set_margin` one
 //! field at a time.

@@ -11,17 +11,7 @@
 //! alone, so a user who selected a custom theme keeps it, and only the
 //! appearance the fallback resolves against changes here.
 
-use iced::Element;
-use inox_config::Theme as Tokens;
-
-use crate::app::Message;
 use crate::draft::Field;
-use crate::view_model::{FieldView, PageView};
 
 /// The fields this page edits.
 pub const FIELDS: &[Field] = &[Field::ThemeAppearance];
-
-/// Draws the page: its heading and the fields listed above, in that order.
-pub fn view<'a>(page: &PageView, fields: &[FieldView], tokens: &'a Tokens) -> Element<'a, Message> {
-    crate::view::page_section(page, fields, tokens)
-}

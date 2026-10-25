@@ -79,7 +79,7 @@ settings-status-component-rejected = { $component } refused the change
 settings-status-reload-failed = The files could not be read again
 settings-status-unreachable = { $component } cannot be asked to apply the change
 
-# The display trial (ADR 0028). A mode, scale or position change takes effect
+# The display trial. A mode, scale or position change takes effect
 # immediately, so the window asks before it becomes permanent: the compositor
 # keeps it only if it is confirmed, and puts the previous display settings back
 # when the countdown runs out. Only the display page does this.

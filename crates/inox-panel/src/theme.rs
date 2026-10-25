@@ -1,14 +1,15 @@
-//! Inox design tokens, turned into iced's theme and style closures.
+//! Inox design tokens, turned into the values the QML renderer draws with.
 //!
 //! Root AGENTS.md §4 forbids a component from hard-coding a colour, a size, a
 //! radius or a duration: every one of them comes from [`inox_config::Theme`].
-//! iced, meanwhile, expects a [`iced::Theme`] and a handful of `Style` structs
-//! built from it. This module is the join between the two, and it is the only
-//! place in the crate where a colour becomes a widget's.
+//! QML, meanwhile, is a renderer in this crate: it is handed a JSON
+//! projection whose colours are `#AARRGGBB` strings and whose sizes are logical
+//! pixels. This module is the join between the two, and it is the only place in
+//! the crate where a token becomes a value a widget draws with.
 //!
 //! Every function here takes the tokens as an argument rather than reaching for
-//! a global, so the view can hand the styles the same theme the rest of the
-//! panel is drawn with — and so a test can render the same widget tree under the
+//! a global, so the view can be projected with the same theme the rest of the
+//! panel is drawn with — and so a test can project the same surface under the
 //! light and the dark tokens (acceptance Q02).
 //!
 //! Three sizes are *derived* rather than taken, because the token set has no
@@ -26,17 +27,14 @@
 //! The **glass material** of the menu bar and the dock is built here too, from
 //! the `glass` token group alone (`docs/quality/ui-guidelines.md` §12): a pane
 //! is a translucent tint, a highlight along its top edge and a shade along its
-//! bottom one, and the blur radius it asks of the compositor is
-//! [`glass_blur`]. No function in this file picks a tint of its own, so a theme
-//! can make the glass warm, cool, dark or light without the panel changing.
+//! bottom one, and the blur radius it asks of the compositor is [`glass_blur`].
+//! No function in this file picks a tint of its own, so a theme can make the
+//! glass warm, cool, dark or light without the panel changing.
 //!
 //! ADR 0018 explains why there is a copy of this file in every L3 component
 //! instead of one shared crate: the duplication is the price of not adding a
 //! same-layer Cargo dependency that would need its own ADR.
 
-use iced::gradient::Linear;
-use iced::widget::{button, container};
-use iced::{Background, Border, Color, Radians, Shadow, Theme, Vector};
 use inox_config::{Rgba, Theme as Tokens};
 
 use crate::view_model::PanelStatus;
@@ -58,36 +56,25 @@ const HAIRLINE_DIVISOR: f32 = 2.0;
 /// A soft shadow is what lifts the dock off the wallpaper; the blur is derived
 /// from the spacing scale rather than written down, so a theme with wider
 /// spacing also gets a softer shadow.
-const SHADOW_BLUR_STEPS: f32 = 2.0;
+pub const SHADOW_BLUR_STEPS: f32 = 2.0;
 
-/// The angle of a pane's edge gradient, in radians: straight down, so offset
-/// `0` of the gradient is the pane's top edge and `1` its bottom edge.
-const PANE_EDGE_ANGLE: f32 = std::f32::consts::PI;
-
-/// A token colour, as iced wants it.
-pub fn color(value: Rgba) -> Color {
-    Color::from_rgba8(value.r, value.g, value.b, f32::from(value.a) / 255.0)
-}
-
-/// The iced theme the panel runs under.
+/// The structural "no colour" value: nothing is painted here.
 ///
-/// iced needs a theme of its own for the widgets this crate does not style
-/// itself, so the six colours of its palette are filled from the tokens rather
-/// than left at iced's defaults.
-pub fn from_tokens(tokens: &Tokens) -> Theme {
-    Theme::custom(tokens.name.clone(), palette(tokens))
-}
+/// This is not a design colour and no theme can set it — it is what a
+/// transparent surface, an inactive dock mark or an absent outline is drawn as.
+/// It matches `Color::TRANSPARENT`'s premultiplied `#00000000`.
+pub const TRANSPARENT: &str = "#00000000";
 
-/// The palette iced's own widgets fall back to.
-pub fn palette(tokens: &Tokens) -> iced::theme::Palette {
-    iced::theme::Palette {
-        background: color(tokens.colors.background),
-        text: color(tokens.colors.text),
-        primary: color(tokens.colors.accent),
-        success: color(tokens.colors.success),
-        danger: color(tokens.colors.danger),
-        warning: color(tokens.colors.warning),
-    }
+/// A token colour, as the QML renderer wants it: Qt's `#AARRGGBB`.
+///
+/// Qt parses `#AARRGGBB` as premultiplied-independent ARGB, which is the same
+/// value the token holds: the alpha comes first so a translucent tint keeps its
+/// colour instead of being read as `#RRGGBBAA`.
+pub fn qml_color(value: Rgba) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}{:02X}",
+        value.a, value.r, value.g, value.b
+    )
 }
 
 /// The body text size, in logical pixels.
@@ -130,49 +117,49 @@ pub fn focus_ring(tokens: &Tokens) -> f32 {
 }
 
 /// Default text colour.
-pub fn text(tokens: &Tokens) -> Color {
-    color(tokens.colors.text)
+pub fn text(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.text)
 }
 
 /// Colour of secondary information, such as the clock or a minimized label.
-pub fn muted_text(tokens: &Tokens) -> Color {
-    color(tokens.colors.text_muted)
+pub fn muted_text(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.text_muted)
 }
 
 /// Colour for something the user should look at: an item asking for attention,
 /// or a service that is not available.
-pub fn warning_text(tokens: &Tokens) -> Color {
-    color(tokens.colors.warning)
+pub fn warning_text(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.warning)
 }
 
 /// The accent colour, as the pressed state and the focus ring use it.
-pub fn accent(tokens: &Tokens) -> Color {
-    color(tokens.colors.accent)
+pub fn accent(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.accent)
 }
 
 /// The colour text takes when it sits on the accent colour.
-pub fn on_accent(tokens: &Tokens) -> Color {
-    color(tokens.colors.on_accent)
+pub fn on_accent(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.on_accent)
 }
 
 /// The colour of a divider or an outline.
-pub fn border_color(tokens: &Tokens) -> Color {
-    color(tokens.colors.border)
+pub fn border_color(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.border)
 }
 
 /// The corner radius of a control.
-pub fn radius(tokens: &Tokens) -> iced::border::Radius {
-    f32::from(tokens.radii.sm).into()
+pub fn radius(tokens: &Tokens) -> f32 {
+    f32::from(tokens.radii.sm)
 }
 
 /// The corner radius of a group: a card, a menu, a floating pane.
-pub fn radius_md(tokens: &Tokens) -> iced::border::Radius {
-    f32::from(tokens.radii.md).into()
+pub fn radius_md(tokens: &Tokens) -> f32 {
+    f32::from(tokens.radii.md)
 }
 
-/// The corner radius of a window-sized surface.
-pub fn radius_lg(tokens: &Tokens) -> iced::border::Radius {
-    f32::from(tokens.radii.lg).into()
+/// The font family the projection names.
+pub fn font_family(tokens: &Tokens) -> String {
+    tokens.typography.font_family.clone()
 }
 
 /// The blur radius the glass asks the compositor for, in logical pixels.
@@ -188,8 +175,8 @@ pub fn glass_blur(tokens: &Tokens) -> u16 {
 ///
 /// `strong` selects [`inox_config::Glass::tint_strong`], the tint of an
 /// emphasised pane, such as a dock the keyboard navigation is on.
-pub fn glass_tint(tokens: &Tokens, strong: bool) -> Color {
-    color(if strong {
+pub fn glass_tint(tokens: &Tokens, strong: bool) -> String {
+    qml_color(if strong {
         tokens.glass.tint_strong
     } else {
         tokens.glass.tint
@@ -197,13 +184,23 @@ pub fn glass_tint(tokens: &Tokens, strong: bool) -> Color {
 }
 
 /// The colour of the hairline along a pane's top edge: what reads as "glass".
-pub fn glass_highlight(tokens: &Tokens) -> Color {
-    color(tokens.glass.highlight)
+pub fn glass_highlight(tokens: &Tokens) -> String {
+    qml_color(tokens.glass.highlight)
 }
 
 /// The colour of the hairline along a pane's bottom edge.
-pub fn glass_shade(tokens: &Tokens) -> Color {
-    color(tokens.glass.shade)
+pub fn glass_shade(tokens: &Tokens) -> String {
+    qml_color(tokens.glass.shade)
+}
+
+/// One colour stop of a pane's vertical fill.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stop {
+    /// Where the stop is on the pane, from `0` (its top edge) to `1` (its
+    /// bottom one).
+    pub at: f32,
+    /// What is drawn from this stop on.
+    pub color: String,
 }
 
 /// The fill of a frosted pane: its tint, with a hairline highlight along the top
@@ -212,88 +209,51 @@ pub fn glass_shade(tokens: &Tokens) -> Color {
 /// The two edges are part of the pane's own fill rather than two extra rows of
 /// widgets. A row that spanned the pane would make the pane itself span the
 /// surface it is drawn on, and a dock is only as wide as the tiles it holds; the
-/// gradient is `height` tall, so `height` is what its hairline offsets are
-/// derived from.
-pub fn glass_fill(tokens: &Tokens, strong: bool, height: f32, shaded: bool) -> Background {
+/// stops are fractions of `height`, so `height` is what the hairlines are
+/// derived from. [`crate::view`] lays the stops out as solid bands, which is
+/// exactly what a gradient between these stops is: the hairlines are one pixel
+/// tall and the two ends are the same tint.
+pub fn glass_stops(tokens: &Tokens, strong: bool, height: f32, shaded: bool) -> Vec<Stop> {
     let edge = (hairline(tokens) / height.max(1.0)).clamp(0.0, 0.5);
     let tint = glass_tint(tokens, strong);
-    let mut gradient = Linear::new(Radians::from(PANE_EDGE_ANGLE))
-        .add_stop(0.0, glass_highlight(tokens))
-        .add_stop(edge, tint);
+    let mut stops = vec![
+        Stop {
+            at: 0.0,
+            color: glass_highlight(tokens),
+        },
+        Stop {
+            at: edge,
+            color: tint.clone(),
+        },
+    ];
 
     if shaded {
-        gradient = gradient
-            .add_stop(1.0 - edge, tint)
-            .add_stop(1.0, glass_shade(tokens));
-    }
-
-    Background::Gradient(gradient.into())
-}
-
-/// The surface a glass pane floats on: nothing at all.
-///
-/// The menu bar and the dock are drawn on a transparent surface so that the
-/// wallpaper and the windows behind them show through the pane. This is the
-/// structural "no design colour" case, not a token: there is deliberately no
-/// colour here for a theme to set.
-pub fn glass_surface(tokens: &Tokens) -> container::Style {
-    container::Style {
-        background: Some(Color::TRANSPARENT.into()),
-        text_color: Some(text(tokens)),
-        ..container::Style::default()
-    }
-}
-
-/// A frosted pane with square corners: the menu bar, which spans the screen
-/// edge and so has no corner of its own.
-pub fn glass_bar(tokens: &Tokens, height: f32) -> container::Style {
-    container::Style {
-        background: Some(glass_fill(tokens, false, height, false)),
-        text_color: Some(text(tokens)),
-        // Square corners are the default border: a bar that reaches both sides
-        // of the output must not round the ends it does not own.
-        ..container::Style::default()
-    }
-}
-
-/// A frosted pane with the group radius, both edges and a soft shadow: the
-/// floating dock.
-pub fn glass_dock(tokens: &Tokens, strong: bool, height: f32) -> container::Style {
-    container::Style {
-        background: Some(glass_fill(tokens, strong, height, true)),
-        text_color: Some(text(tokens)),
-        border: Border {
-            radius: radius_md(tokens),
-            ..Border::default()
-        },
-        shadow: Shadow {
+        stops.push(Stop {
+            at: 1.0 - edge,
+            color: tint,
+        });
+        stops.push(Stop {
+            at: 1.0,
             color: glass_shade(tokens),
-            offset: Vector::new(0.0, hairline(tokens)),
-            blur_radius: f32::from(tokens.spacing.sm) * SHADOW_BLUR_STEPS,
-        },
-        ..container::Style::default()
+        });
     }
+
+    stops
 }
 
-/// The mark under a dock tile: the accent colour when the group is active, and
-/// nothing at all when it is not.
-///
-/// The inactive mark is still laid out — the view reserves the same slot for
-/// every tile — so the mark's position never depends on which application is in
-/// use, and the structural "no colour" value is the transparent sentinel rather
-/// than a token.
-pub fn dock_indicator(tokens: &Tokens, active: bool) -> container::Style {
-    container::Style {
-        background: Some(
-            if active {
-                accent(tokens)
-            } else {
-                Color::TRANSPARENT
-            }
-            .into(),
-        ),
-        ..container::Style::default()
-    }
+/// The shade a floating pane's shadow is drawn in.
+pub fn glass_shadow(tokens: &Tokens) -> String {
+    glass_shade(tokens)
+}
+
+/// The offset of a floating pane's shadow, in logical pixels.
+pub fn glass_shadow_offset(tokens: &Tokens) -> f32 {
+    hairline(tokens)
+}
+
+/// The blur radius of a floating pane's shadow, in logical pixels.
+pub fn glass_shadow_blur(tokens: &Tokens) -> f32 {
+    f32::from(tokens.spacing.sm) * SHADOW_BLUR_STEPS
 }
 
 /// The panel strip itself.
@@ -301,23 +261,16 @@ pub fn dock_indicator(tokens: &Tokens, active: bool) -> container::Style {
 /// The strip is the `surface` token: it is the layer the desktop sits behind,
 /// and it draws no outline of its own — a border here would be a size the
 /// tokens do not have and would eat into the entries' room.
-pub fn panel(tokens: &Tokens) -> container::Style {
-    container::Style {
-        background: Some(color(tokens.colors.surface).into()),
-        text_color: Some(text(tokens)),
-        ..container::Style::default()
-    }
+pub fn panel_fill(tokens: &Tokens) -> String {
+    qml_color(tokens.colors.surface)
 }
 
-/// A hairline that separates two groups on the strip.
+/// The colour that separates two groups on the strip.
 ///
-/// The view gives it its width and height; this decides only what colour it is,
-/// so a divider can never be a colour nobody chose.
-pub fn divider(tokens: &Tokens) -> container::Style {
-    container::Style {
-        background: Some(border_color(tokens).into()),
-        ..container::Style::default()
-    }
+/// The view gives the divider its width and height; this decides only what
+/// colour it is, so a divider can never be a colour nobody chose.
+pub fn divider_color(tokens: &Tokens) -> String {
+    border_color(tokens)
 }
 
 /// The colour of the sentence the panel shows about itself.
@@ -325,7 +278,7 @@ pub fn divider(tokens: &Tokens) -> container::Style {
 /// The panel's own state is the first thing a user has to be able to read, so
 /// "the service is not available" is drawn in the warning colour; the ordinary
 /// states are secondary information and stay muted.
-pub fn notice_text(tokens: &Tokens, status: PanelStatus) -> Color {
+pub fn notice_text(tokens: &Tokens, status: PanelStatus) -> String {
     match status {
         PanelStatus::Unavailable => warning_text(tokens),
         PanelStatus::Starting | PanelStatus::Empty | PanelStatus::Ready => muted_text(tokens),
@@ -333,7 +286,7 @@ pub fn notice_text(tokens: &Tokens, status: PanelStatus) -> Color {
 }
 
 /// The colour of a tray item's label.
-pub fn tray_text(tokens: &Tokens, attention: bool) -> Color {
+pub fn tray_text(tokens: &Tokens, attention: bool) -> String {
     if attention {
         warning_text(tokens)
     } else {
@@ -342,14 +295,14 @@ pub fn tray_text(tokens: &Tokens, attention: bool) -> Color {
 }
 
 /// The colour of the clock.
-pub fn clock_text(tokens: &Tokens) -> Color {
+pub fn clock_text(tokens: &Tokens) -> String {
     muted_text(tokens)
 }
 
 /// How a task button is emphasized.
 ///
-/// The interaction status iced reports ([`button::Status`]) says what the pointer
-/// is doing; this says what the *window* is doing, which the panel draws as well.
+/// [`InteractionStatus`] says what the pointer is doing; this says what the
+/// *window* is doing, which the panel draws as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskEmphasis {
     /// One of the group's windows is the focused one.
@@ -358,6 +311,38 @@ pub enum TaskEmphasis {
     Idle,
     /// Every window of the group is minimized.
     Minimized,
+}
+
+/// What the pointer is doing to an entry.
+///
+/// The four states a widget has to tell apart, independent of the toolkit: the
+/// panel's pointer events (`src/layer.rs`) decide which one an entry is in, and
+/// [`entry_style`] decides what it looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractionStatus {
+    /// Nothing is pointing at it and nothing is pressed on it.
+    Active,
+    /// The pointer rests on it.
+    Hovered,
+    /// A button is pressed on it.
+    Pressed,
+    /// It cannot be pressed.
+    Disabled,
+}
+
+/// Everything an entry draws with: its fill, its label colour and its outline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryStyle {
+    /// The fill, or `None` for "no fill at all" (the resting panel look).
+    pub background: Option<String>,
+    /// The colour of the label.
+    pub text_color: String,
+    /// The outline's width, in logical pixels; `0` means no outline.
+    pub border_width: f32,
+    /// The outline's colour.
+    pub border_color: String,
+    /// The corner radius of the entry.
+    pub radius: f32,
 }
 
 /// A task button, in its emphasis, whether the panel's own navigation is on it,
@@ -398,8 +383,8 @@ pub fn task_button(
     tokens: &Tokens,
     emphasis: TaskEmphasis,
     focused: bool,
-    status: button::Status,
-) -> button::Style {
+    status: InteractionStatus,
+) -> EntryStyle {
     entry_style(tokens, emphasis, focused, status, radius(tokens))
 }
 
@@ -412,7 +397,7 @@ pub fn task_button(
 /// five interaction states are exactly a task entry's, so a tile hovered,
 /// pressed, focused or disabled looks the way the rest of the panel looks in
 /// that state.
-pub fn dock_tile(tokens: &Tokens, focused: bool, status: button::Status) -> button::Style {
+pub fn dock_tile(tokens: &Tokens, focused: bool, status: InteractionStatus) -> EntryStyle {
     entry_style(
         tokens,
         TaskEmphasis::Active,
@@ -431,51 +416,47 @@ fn entry_style(
     tokens: &Tokens,
     emphasis: TaskEmphasis,
     focused: bool,
-    status: button::Status,
-    radius: iced::border::Radius,
-) -> button::Style {
+    status: InteractionStatus,
+    radius: f32,
+) -> EntryStyle {
     let accent = accent(tokens);
     let on_accent = on_accent(tokens);
-    let variant = color(tokens.colors.surface_variant);
-    let outline = |width: f32, color: Color| Border {
-        radius,
-        width,
-        color,
-    };
-    let none = outline(0.0, Color::TRANSPARENT);
-    let hairline_outline = outline(hairline(tokens), border_color(tokens));
-    let focus_outline = outline(focus_ring(tokens), accent);
+    let variant = qml_color(tokens.colors.surface_variant);
+    let none = (0.0, TRANSPARENT.to_owned());
+    let hairline_outline = (hairline(tokens), border_color(tokens));
+    let focus_outline = (focus_ring(tokens), accent.clone());
 
-    let (background, foreground, border) = match status {
-        button::Status::Disabled => (None, muted_text(tokens), none),
-        button::Status::Pressed => (
-            Some(accent.into()),
-            on_accent,
-            outline(focus_ring(tokens), on_accent),
+    let (background, foreground, (border_width, border_color)) = match status {
+        InteractionStatus::Disabled => (None, muted_text(tokens), none),
+        InteractionStatus::Pressed => (
+            Some(accent.clone()),
+            on_accent.clone(),
+            (focus_ring(tokens), on_accent),
         ),
-        button::Status::Hovered if focused => (Some(variant.into()), accent, focus_outline),
-        button::Status::Hovered => match emphasis {
+        InteractionStatus::Hovered if focused => (Some(variant), accent.clone(), focus_outline),
+        InteractionStatus::Hovered => match emphasis {
             TaskEmphasis::Active => (
-                Some(accent.into()),
-                on_accent,
-                outline(hairline(tokens), on_accent),
+                Some(accent.clone()),
+                on_accent.clone(),
+                (hairline(tokens), on_accent),
             ),
-            TaskEmphasis::Idle => (Some(variant.into()), text(tokens), hairline_outline),
-            TaskEmphasis::Minimized => (Some(variant.into()), muted_text(tokens), hairline_outline),
+            TaskEmphasis::Idle => (Some(variant), text(tokens), hairline_outline),
+            TaskEmphasis::Minimized => (Some(variant), muted_text(tokens), hairline_outline),
         },
-        button::Status::Active if focused => (Some(variant.into()), accent, focus_outline),
-        button::Status::Active => match emphasis {
-            TaskEmphasis::Active => (Some(accent.into()), on_accent, none),
+        InteractionStatus::Active if focused => (Some(variant), accent, focus_outline),
+        InteractionStatus::Active => match emphasis {
+            TaskEmphasis::Active => (Some(accent), on_accent, none),
             TaskEmphasis::Idle => (None, text(tokens), hairline_outline),
             TaskEmphasis::Minimized => (None, muted_text(tokens), hairline_outline),
         },
     };
 
-    button::Style {
+    EntryStyle {
         background,
         text_color: foreground,
-        border,
-        ..button::Style::default()
+        border_width,
+        border_color,
+        radius,
     }
 }
 
@@ -486,73 +467,96 @@ fn entry_style(
 /// the panel's one filled control is the entry of the application the user is
 /// looking at. Pressing it fills it, with the text taken from the window's own
 /// background token so the label stays readable on the warning colour.
-pub fn notice_action(tokens: &Tokens, status: button::Status) -> button::Style {
+pub fn notice_action(tokens: &Tokens, status: InteractionStatus) -> EntryStyle {
     let warning = warning_text(tokens);
-    let border = Border {
-        radius: radius(tokens),
-        width: hairline(tokens),
-        color: warning,
-    };
 
     let (background, foreground) = match status {
-        button::Status::Disabled => (None, muted_text(tokens)),
-        button::Status::Pressed => (Some(warning.into()), color(tokens.colors.background)),
-        button::Status::Hovered => (Some(color(tokens.colors.surface_variant).into()), warning),
-        button::Status::Active => (None, warning),
+        InteractionStatus::Disabled => (None, muted_text(tokens)),
+        InteractionStatus::Pressed => (Some(warning.clone()), qml_color(tokens.colors.background)),
+        InteractionStatus::Hovered => (Some(qml_color(tokens.colors.surface_variant)), warning),
+        InteractionStatus::Active => (None, warning),
     };
 
-    button::Style {
+    EntryStyle {
         background,
         text_color: foreground,
-        border,
-        ..button::Style::default()
+        border_width: hairline(tokens),
+        border_color: warning_text(tokens),
+        radius: radius(tokens),
+    }
+}
+
+/// The mark under a dock tile: the accent colour when the group is active, and
+/// nothing at all when it is not.
+///
+/// The inactive mark is still laid out — the view reserves the same slot for
+/// every tile — so the mark's position never depends on which application is in
+/// use, and the structural "no colour" value is the transparent sentinel rather
+/// than a token.
+pub fn dock_indicator(tokens: &Tokens, active: bool) -> String {
+    if active {
+        accent(tokens)
+    } else {
+        TRANSPARENT.to_owned()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::Gradient;
-    use iced::theme::Base;
-    use inox_config::{BUILTIN_DARK, BUILTIN_LIGHT};
+    use inox_config::{Rgba, Theme as Tokens};
 
     #[test]
     fn a_token_colour_keeps_its_channels() {
-        let colour = color(Rgba {
+        let colour = qml_color(Rgba {
             r: 0x23,
             g: 0x26,
             b: 0x2e,
             a: 0xff,
         });
 
-        assert!((colour.r - 0x23 as f32 / 255.0).abs() < f32::EPSILON);
-        assert!((colour.g - 0x26 as f32 / 255.0).abs() < f32::EPSILON);
-        assert!((colour.b - 0x2e as f32 / 255.0).abs() < f32::EPSILON);
-        assert!((colour.a - 1.0).abs() < f32::EPSILON);
+        assert_eq!(colour, "#FF23262E");
     }
 
     #[test]
-    fn the_iced_theme_is_named_after_the_tokens_it_came_from() {
-        let light = from_tokens(&Tokens::builtin_light());
-        let dark = from_tokens(&Tokens::builtin_dark());
+    fn the_alpha_comes_first_so_a_translucent_token_keeps_its_colour() {
+        // `#RRGGBBAA` would make Qt read the alpha as a blue channel; the glass
+        // tints are translucent, so the order is not cosmetic.
+        assert_eq!(
+            qml_color(Rgba {
+                r: 0x10,
+                g: 0x20,
+                b: 0x30,
+                a: 0x80,
+            }),
+            "#80102030"
+        );
+        assert_eq!(
+            qml_color(Rgba {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            }),
+            TRANSPARENT
+        );
+    }
 
-        assert_eq!(light.name(), BUILTIN_LIGHT);
-        assert_eq!(dark.name(), BUILTIN_DARK);
-        assert_ne!(light.palette().background, dark.palette().background);
+    #[test]
+    fn the_light_and_dark_themes_do_not_draw_the_same_strip() {
+        let light = panel_fill(&Tokens::builtin_light());
+        let dark = panel_fill(&Tokens::builtin_dark());
+
+        assert_ne!(light, dark, "the two shipped themes are different themes");
+        assert_ne!(dark, TRANSPARENT, "a strip is painted, not left blank");
     }
 
     #[test]
     fn the_panel_background_is_the_surface_token() {
         let tokens = Tokens::builtin_dark();
-        let style = panel(&tokens);
 
-        assert_eq!(style.background, Some(color(tokens.colors.surface).into()));
-        assert_eq!(style.text_color, Some(text(&tokens)));
-        assert_eq!(
-            style.border,
-            Border::default(),
-            "the strip draws no outline: the top-left pixel has to stay the surface token"
-        );
+        assert_eq!(panel_fill(&tokens), qml_color(tokens.colors.surface));
+        assert_ne!(panel_fill(&tokens), TRANSPARENT);
     }
 
     #[test]
@@ -589,6 +593,18 @@ mod tests {
     }
 
     #[test]
+    fn the_font_size_follows_the_panel_height_and_the_user_scale() {
+        let mut tokens = Tokens::builtin_dark();
+        assert!((font_size(&tokens, 32) - 16.0).abs() < f32::EPSILON);
+
+        tokens.typography.scale = 2.0;
+        assert!(
+            (font_size(&tokens, 32) - 32.0).abs() < f32::EPSILON,
+            "font scaling is a token, not a hard-coded size"
+        );
+    }
+
+    #[test]
     fn the_hairline_and_the_focus_ring_come_from_the_smallest_spacing_step() {
         let mut tokens = Tokens::builtin_dark();
 
@@ -603,11 +619,21 @@ mod tests {
     #[test]
     fn an_active_button_is_drawn_on_the_accent_colour() {
         let tokens = Tokens::builtin_dark();
-        let active = task_button(&tokens, TaskEmphasis::Active, false, button::Status::Active);
-        let idle = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Active);
+        let active = task_button(
+            &tokens,
+            TaskEmphasis::Active,
+            false,
+            InteractionStatus::Active,
+        );
+        let idle = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
 
-        assert_eq!(active.background, Some(color(tokens.colors.accent).into()));
-        assert_eq!(active.text_color, color(tokens.colors.on_accent));
+        assert_eq!(active.background, Some(accent(&tokens)));
+        assert_eq!(active.text_color, on_accent(&tokens));
         assert_eq!(idle.background, None);
         assert_ne!(active.text_color, idle.text_color);
     }
@@ -615,13 +641,23 @@ mod tests {
     #[test]
     fn a_disabled_button_looks_different_from_an_enabled_one() {
         let tokens = Tokens::builtin_dark();
-        let enabled = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Active);
-        let disabled = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Disabled);
+        let enabled = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
+        let disabled = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Disabled,
+        );
 
         assert_ne!(enabled.text_color, disabled.text_color);
         assert_eq!(disabled.background, None);
         assert_eq!(disabled.text_color, muted_text(&tokens));
-        assert_eq!(disabled.border.width, 0.0);
+        assert_eq!(disabled.border_width, 0.0);
     }
 
     #[test]
@@ -631,7 +667,7 @@ mod tests {
             &tokens,
             TaskEmphasis::Minimized,
             false,
-            button::Status::Active,
+            InteractionStatus::Active,
         );
 
         assert_eq!(minimized.text_color, muted_text(&tokens));
@@ -641,30 +677,50 @@ mod tests {
     #[test]
     fn the_entry_navigation_reached_is_visibly_different() {
         let tokens = Tokens::builtin_dark();
-        let focused = task_button(&tokens, TaskEmphasis::Idle, true, button::Status::Active);
-        let idle = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Active);
+        let focused = task_button(&tokens, TaskEmphasis::Idle, true, InteractionStatus::Active);
+        let idle = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
 
-        assert_eq!(focused.text_color, color(tokens.colors.accent));
-        assert_eq!(focused.border.color, color(tokens.colors.accent));
-        assert_eq!(focused.border.width, focus_ring(&tokens));
+        assert_eq!(focused.text_color, accent(&tokens));
+        assert_eq!(focused.border_color, accent(&tokens));
+        assert_eq!(focused.border_width, focus_ring(&tokens));
         assert_ne!(focused.text_color, idle.text_color);
-        assert_ne!(focused.border.color, idle.border.color);
+        assert_ne!(focused.border_color, idle.border_color);
     }
 
     #[test]
     fn a_hovered_entry_keeps_its_navigation_focus_visible() {
         let tokens = Tokens::builtin_dark();
-        let focused = task_button(&tokens, TaskEmphasis::Idle, true, button::Status::Hovered);
-        let hovered = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Hovered);
-        let plain = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Active);
+        let focused = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            true,
+            InteractionStatus::Hovered,
+        );
+        let hovered = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Hovered,
+        );
+        let plain = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
 
         // The pointer rests on a panel all the time: the entry the user reached
         // with explicit navigation has to stay readable there (Q01/D01).
         assert_ne!(focused.text_color, hovered.text_color);
-        assert_eq!(focused.text_color, color(tokens.colors.accent));
+        assert_eq!(focused.text_color, accent(&tokens));
         assert_eq!(focused.background, hovered.background);
         assert_ne!(hovered.background, plain.background);
-        assert_eq!(focused.border.width, focus_ring(&tokens));
+        assert_eq!(focused.border_width, focus_ring(&tokens));
     }
 
     #[test]
@@ -682,23 +738,23 @@ mod tests {
             let states = [
                 (
                     "resting",
-                    task_button(&tokens, emphasis, false, button::Status::Active),
+                    task_button(&tokens, emphasis, false, InteractionStatus::Active),
                 ),
                 (
                     "hovered",
-                    task_button(&tokens, emphasis, false, button::Status::Hovered),
+                    task_button(&tokens, emphasis, false, InteractionStatus::Hovered),
                 ),
                 (
                     "pressed",
-                    task_button(&tokens, emphasis, false, button::Status::Pressed),
+                    task_button(&tokens, emphasis, false, InteractionStatus::Pressed),
                 ),
                 (
                     "focused",
-                    task_button(&tokens, emphasis, true, button::Status::Active),
+                    task_button(&tokens, emphasis, true, InteractionStatus::Active),
                 ),
                 (
                     "disabled",
-                    task_button(&tokens, emphasis, false, button::Status::Disabled),
+                    task_button(&tokens, emphasis, false, InteractionStatus::Disabled),
                 ),
             ];
 
@@ -706,16 +762,16 @@ mod tests {
                 for (other_name, other) in &states[index + 1..] {
                     assert_ne!(
                         (
-                            style.background,
-                            style.text_color,
-                            style.border.width,
-                            style.border.color
+                            &style.background,
+                            &style.text_color,
+                            style.border_width,
+                            &style.border_color
                         ),
                         (
-                            other.background,
-                            other.text_color,
-                            other.border.width,
-                            other.border.color
+                            &other.background,
+                            &other.text_color,
+                            other.border_width,
+                            &other.border_color
                         ),
                         "{emphasis:?}: {name} and {other_name} have to be told apart"
                     );
@@ -727,13 +783,23 @@ mod tests {
     #[test]
     fn a_resting_entry_has_the_hairline_outline_and_a_disabled_one_does_not() {
         let tokens = Tokens::builtin_dark();
-        let resting = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Active);
-        let disabled = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Disabled);
+        let resting = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
+        let disabled = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Disabled,
+        );
 
-        assert_eq!(resting.border.width, hairline(&tokens));
-        assert_eq!(resting.border.color, border_color(&tokens));
-        assert_eq!(disabled.border.width, 0.0);
-        assert_ne!(resting.border.width, disabled.border.width);
+        assert_eq!(resting.border_width, hairline(&tokens));
+        assert_eq!(resting.border_color, border_color(&tokens));
+        assert_eq!(disabled.border_width, 0.0);
+        assert_ne!(resting.border_width, disabled.border_width);
     }
 
     #[test]
@@ -743,38 +809,43 @@ mod tests {
             &tokens,
             TaskEmphasis::Minimized,
             false,
-            button::Status::Active,
+            InteractionStatus::Active,
         );
         let disabled = task_button(
             &tokens,
             TaskEmphasis::Minimized,
             false,
-            button::Status::Disabled,
+            InteractionStatus::Disabled,
         );
 
         // Both are muted — neither is on screen — but a minimized window can
         // still be restored, so it keeps the outline a disabled entry loses.
         assert_eq!(minimized.text_color, disabled.text_color);
         assert_eq!(minimized.background, disabled.background);
-        assert_ne!(minimized.border.width, disabled.border.width);
-        assert!(minimized.border.width > 0.0);
+        assert_ne!(minimized.border_width, disabled.border_width);
+        assert!(minimized.border_width > 0.0);
     }
 
     #[test]
     fn the_entry_in_use_keeps_its_accent_colour_under_the_pointer() {
         let tokens = Tokens::builtin_dark();
-        let resting = task_button(&tokens, TaskEmphasis::Active, false, button::Status::Active);
+        let resting = task_button(
+            &tokens,
+            TaskEmphasis::Active,
+            false,
+            InteractionStatus::Active,
+        );
         let hovered = task_button(
             &tokens,
             TaskEmphasis::Active,
             false,
-            button::Status::Hovered,
+            InteractionStatus::Hovered,
         );
 
-        assert_eq!(resting.background, Some(color(tokens.colors.accent).into()));
+        assert_eq!(resting.background, Some(accent(&tokens)));
         assert_eq!(hovered.background, resting.background);
         assert_ne!(
-            hovered.border.width, resting.border.width,
+            hovered.border_width, resting.border_width,
             "the hover still has to be visible on the entry the user is looking at"
         );
     }
@@ -782,36 +853,51 @@ mod tests {
     #[test]
     fn a_pressed_entry_fills_with_the_accent_colour() {
         let tokens = Tokens::builtin_dark();
-        let pressed = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Pressed);
-        let hovered = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Hovered);
+        let pressed = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Pressed,
+        );
+        let hovered = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Hovered,
+        );
 
-        assert_eq!(pressed.background, Some(color(tokens.colors.accent).into()));
-        assert_eq!(pressed.text_color, color(tokens.colors.on_accent));
+        assert_eq!(pressed.background, Some(accent(&tokens)));
+        assert_eq!(pressed.text_color, on_accent(&tokens));
         assert_ne!(pressed.background, hovered.background);
     }
 
     #[test]
     fn a_button_keeps_the_token_radius() {
         let tokens = Tokens::builtin_dark();
-        let style = task_button(&tokens, TaskEmphasis::Idle, false, button::Status::Active);
+        let style = task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
 
-        assert_eq!(style.border.radius, radius(&tokens));
+        assert!((style.radius - radius(&tokens)).abs() < f32::EPSILON);
     }
 
     #[test]
     fn the_notice_action_is_an_outline_in_the_warning_colour() {
         let tokens = Tokens::builtin_dark();
-        let rest = notice_action(&tokens, button::Status::Active);
-        let hovered = notice_action(&tokens, button::Status::Hovered);
-        let pressed = notice_action(&tokens, button::Status::Pressed);
-        let disabled = notice_action(&tokens, button::Status::Disabled);
+        let rest = notice_action(&tokens, InteractionStatus::Active);
+        let hovered = notice_action(&tokens, InteractionStatus::Hovered);
+        let pressed = notice_action(&tokens, InteractionStatus::Pressed);
+        let disabled = notice_action(&tokens, InteractionStatus::Disabled);
 
         assert_eq!(rest.text_color, warning_text(&tokens));
-        assert_eq!(rest.border.color, warning_text(&tokens));
-        assert_eq!(rest.border.width, hairline(&tokens));
+        assert_eq!(rest.border_color, warning_text(&tokens));
+        assert_eq!(rest.border_width, hairline(&tokens));
         assert_eq!(rest.background, None);
         assert_ne!(hovered.background, rest.background);
-        assert_eq!(pressed.background, Some(warning_text(&tokens).into()));
+        assert_eq!(pressed.background, Some(warning_text(&tokens)));
         assert_eq!(disabled.text_color, muted_text(&tokens));
     }
 
@@ -845,71 +931,31 @@ mod tests {
     fn a_divider_is_the_border_token() {
         let tokens = Tokens::builtin_dark();
 
-        assert_eq!(
-            divider(&tokens).background,
-            Some(border_color(&tokens).into())
-        );
+        assert_eq!(divider_color(&tokens), border_color(&tokens));
     }
 
-    #[test]
-    fn the_font_size_follows_the_panel_height_and_the_user_scale() {
-        let mut tokens = Tokens::builtin_dark();
-        assert!((font_size(&tokens, 32) - 16.0).abs() < f32::EPSILON);
-
-        tokens.typography.scale = 2.0;
-        assert!(
-            (font_size(&tokens, 32) - 32.0).abs() < f32::EPSILON,
-            "font scaling is a token, not a hard-coded size"
-        );
-    }
-
-    /// The colour stops of a pane's fill, in the order they are drawn.
-    fn stops(background: &Background) -> Vec<iced::gradient::ColorStop> {
-        match background {
-            Background::Gradient(Gradient::Linear(linear)) => {
-                linear.stops.into_iter().flatten().collect()
-            }
-            other => panic!("expected a gradient pane, got {other:?}"),
-        }
-    }
-
-    fn stop_colours(background: &Background) -> Vec<Color> {
-        stops(background)
-            .into_iter()
-            .map(|stop| stop.color)
-            .collect()
+    fn stop_colours(stops: &[Stop]) -> Vec<String> {
+        stops.iter().map(|stop| stop.color.clone()).collect()
     }
 
     #[test]
     fn a_menu_bar_is_a_tint_with_a_highlight_along_its_top_edge_only() {
         let tokens = Tokens::builtin_dark();
         let height = 28.0;
-        let bar = glass_bar(&tokens, height);
-        let stops = stops(&glass_fill(&tokens, false, height, false));
+        let stops = glass_stops(&tokens, false, height, false);
 
-        assert_eq!(bar.text_color, Some(text(&tokens)));
         assert_eq!(
-            bar.border,
-            Border::default(),
-            "the bar is square: it reaches both sides of the output"
-        );
-        assert_eq!(
-            bar.shadow,
-            Shadow::default(),
-            "a bar along the screen edge carries no shadow"
-        );
-        assert_eq!(
-            stop_colours(&bar.background.expect("a bar has a fill")),
+            stop_colours(&stops),
             vec![glass_highlight(&tokens), glass_tint(&tokens, false)],
             "the fill starts with the highlight and is the tint from there on"
         );
-        assert_eq!(stops[0].offset, 0.0);
+        assert!((stops[0].at - 0.0).abs() < f32::EPSILON);
         assert!(
-            (stops[1].offset - hairline(&tokens) / height).abs() < f32::EPSILON,
+            (stops[1].at - hairline(&tokens) / height).abs() < f32::EPSILON,
             "the highlight is exactly one hairline of the pane's height"
         );
         assert!(
-            !stop_colours(&glass_fill(&tokens, false, height, false))
+            !stop_colours(&glass_stops(&tokens, false, height, false))
                 .contains(&glass_shade(&tokens)),
             "a bar that reaches the screen edge draws no bottom shade"
         );
@@ -919,25 +965,23 @@ mod tests {
     fn a_floating_pane_takes_the_group_radius_a_highlight_a_shade_and_a_soft_shadow() {
         let tokens = Tokens::builtin_dark();
         let height = 70.0;
-        let dock = glass_dock(&tokens, false, height);
-        let stops = stops(&glass_fill(&tokens, false, height, true));
+        let stops = glass_stops(&tokens, false, height, true);
 
-        assert_eq!(dock.border.radius, radius_md(&tokens));
-        assert_eq!(dock.border.width, 0.0);
-        assert_eq!(dock.shadow.color, glass_shade(&tokens));
+        assert!((radius_md(&tokens) - f32::from(tokens.radii.md)).abs() < f32::EPSILON);
+        assert_eq!(glass_shadow(&tokens), glass_shade(&tokens));
         assert!(
-            dock.shadow.blur_radius > 0.0,
+            glass_shadow_blur(&tokens) > 0.0,
             "a floating pane is lifted off the wallpaper by a soft shadow"
         );
         assert_ne!(
-            dock.shadow.color,
-            Color::TRANSPARENT,
+            glass_shadow(&tokens),
+            TRANSPARENT,
             "the shadow is derived from the glass shade token, not written down"
         );
-        assert_eq!(dock.shadow.offset.y, hairline(&tokens));
+        assert!((glass_shadow_offset(&tokens) - hairline(&tokens)).abs() < f32::EPSILON);
 
         assert_eq!(
-            stop_colours(&dock.background.expect("a dock has a fill")),
+            stop_colours(&stops),
             vec![
                 glass_highlight(&tokens),
                 glass_tint(&tokens, false),
@@ -947,19 +991,21 @@ mod tests {
             "the pane is highlighted at the top, tinted in the middle and shaded \
              at the bottom"
         );
-        assert_eq!(stops[0].offset, 0.0);
-        assert_eq!(stops[3].offset, 1.0);
-        assert!((stops[2].offset - (1.0 - hairline(&tokens) / height)).abs() < f32::EPSILON);
+        assert!((stops[0].at - 0.0).abs() < f32::EPSILON);
+        assert!((stops[3].at - 1.0).abs() < f32::EPSILON);
+        assert!((stops[2].at - (1.0 - hairline(&tokens) / height)).abs() < f32::EPSILON);
 
-        let strong = glass_dock(&tokens, true, height);
-        assert_ne!(dock.background, strong.background);
+        let strong = glass_stops(&tokens, true, height, true);
+        assert_ne!(stops, strong);
         assert!(
-            stop_colours(&strong.background.expect("a dock has a fill"))
-                .contains(&glass_tint(&tokens, true)),
+            stop_colours(&strong).contains(&glass_tint(&tokens, true)),
             "the emphasised pane uses the stronger tint"
         );
-        assert_eq!(glass_tint(&tokens, false), color(tokens.glass.tint));
-        assert_eq!(glass_tint(&tokens, true), color(tokens.glass.tint_strong));
+        assert_eq!(glass_tint(&tokens, false), qml_color(tokens.glass.tint));
+        assert_eq!(
+            glass_tint(&tokens, true),
+            qml_color(tokens.glass.tint_strong)
+        );
         assert_ne!(
             glass_tint(&tokens, false),
             glass_tint(&tokens, true),
@@ -971,27 +1017,9 @@ mod tests {
     fn the_two_edges_of_a_pane_come_from_the_two_glass_edge_tokens() {
         let tokens = Tokens::builtin_dark();
 
-        assert_eq!(glass_highlight(&tokens), color(tokens.glass.highlight));
-        assert_eq!(glass_shade(&tokens), color(tokens.glass.shade));
+        assert_eq!(glass_highlight(&tokens), qml_color(tokens.glass.highlight));
+        assert_eq!(glass_shade(&tokens), qml_color(tokens.glass.shade));
         assert_ne!(glass_highlight(&tokens), glass_shade(&tokens));
-    }
-
-    #[test]
-    fn a_glass_surface_is_structurally_transparent() {
-        let tokens = Tokens::builtin_dark();
-        let surface = glass_surface(&tokens);
-
-        assert_eq!(
-            surface.background,
-            Some(Color::TRANSPARENT.into()),
-            "the backdrop has to show through the surface the pane floats on"
-        );
-        assert_ne!(
-            surface.background,
-            Some(color(tokens.colors.surface).into()),
-            "a glass surface is not the opaque `surface` token"
-        );
-        assert_eq!(surface.text_color, Some(text(&tokens)));
     }
 
     #[test]
@@ -1013,19 +1041,25 @@ mod tests {
     fn a_dock_tile_draws_the_same_five_states_as_a_task_entry() {
         let tokens = Tokens::builtin_dark();
         let states = [
-            ("resting", dock_tile(&tokens, false, button::Status::Active)),
+            (
+                "resting",
+                dock_tile(&tokens, false, InteractionStatus::Active),
+            ),
             (
                 "hovered",
-                dock_tile(&tokens, false, button::Status::Hovered),
+                dock_tile(&tokens, false, InteractionStatus::Hovered),
             ),
             (
                 "pressed",
-                dock_tile(&tokens, false, button::Status::Pressed),
+                dock_tile(&tokens, false, InteractionStatus::Pressed),
             ),
-            ("focused", dock_tile(&tokens, true, button::Status::Active)),
+            (
+                "focused",
+                dock_tile(&tokens, true, InteractionStatus::Active),
+            ),
             (
                 "disabled",
-                dock_tile(&tokens, false, button::Status::Disabled),
+                dock_tile(&tokens, false, InteractionStatus::Disabled),
             ),
         ];
 
@@ -1033,30 +1067,29 @@ mod tests {
             for (other_name, other) in &states[index + 1..] {
                 assert_ne!(
                     (
-                        style.background,
-                        style.text_color,
-                        style.border.width,
-                        style.border.color
+                        &style.background,
+                        &style.text_color,
+                        style.border_width,
+                        &style.border_color
                     ),
                     (
-                        other.background,
-                        other.text_color,
-                        other.border.width,
-                        other.border.color
+                        &other.background,
+                        &other.text_color,
+                        other.border_width,
+                        &other.border_color
                     ),
                     "{name} and {other_name} have to be told apart"
                 );
             }
         }
 
-        assert_eq!(
-            states[0].1.border.radius,
-            radius(&tokens),
+        assert!(
+            (states[0].1.radius - radius(&tokens)).abs() < f32::EPSILON,
             "a tile is a control, so it takes the control radius"
         );
         assert_eq!(
             states[0].1.background,
-            Some(accent(&tokens).into()),
+            Some(accent(&tokens)),
             "the tile is the application's badge, drawn on the accent colour"
         );
         assert_eq!(
@@ -1069,13 +1102,10 @@ mod tests {
     fn the_dock_indicator_is_the_accent_colour_only_for_an_active_group() {
         let tokens = Tokens::builtin_dark();
 
+        assert_eq!(dock_indicator(&tokens, true), accent(&tokens));
         assert_eq!(
-            dock_indicator(&tokens, true).background,
-            Some(accent(&tokens).into())
-        );
-        assert_eq!(
-            dock_indicator(&tokens, false).background,
-            Some(Color::TRANSPARENT.into()),
+            dock_indicator(&tokens, false),
+            TRANSPARENT,
             "the inactive mark still occupies its slot, it just draws nothing"
         );
     }

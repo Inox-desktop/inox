@@ -1,5 +1,5 @@
+//! The credential buffer.
 //! The credential buffer (ADR 0015).
-//!
 //! ADR 0015 makes three demands of the thing that holds what a user typed, and
 //! they are the whole of this module:
 //!
@@ -11,8 +11,8 @@
 //!    a log, a notification and a panic message are all closed to it.
 //! 3. **There is exactly one way out.** [`Secret::expose`] is the only accessor
 //!    for the plaintext in the crate, and its only caller is
-//!    [`crate::contract::AuthAttempt`] on its way to the trusted boundary ADR
-//!    0015 requires a review for.
+//!    [`crate::contract::AuthAttempt`] on its way to the trusted boundary that
+//!    ADR 0015 requires a review for.
 //!
 //! Two things this type deliberately is not. It is not `Clone` — a credential
 //! that can be copied is a credential that can be left behind in an allocation
@@ -102,7 +102,7 @@ impl Secret {
     /// Overwrites the credential with zeros and forgets it.
     ///
     /// Called when the screen hides, when the user cancels, and when the session
-    /// suspends — none of which wait for an animation to finish (ADR 0015).
+    /// suspends — none of which wait for an animation to finish.
     pub fn clear(&mut self) {
         self.buffer.as_mut_slice().zeroize();
         self.length = 0;

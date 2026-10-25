@@ -1,7 +1,6 @@
 //! The D-Bus service: `org.freedesktop.Notifications` on the session bus.
-//!
 //! This is the transport ADR 0022 decision 5 asks for, migrated by ADR 0027.
-//! It is a translation layer and nothing else: a method call becomes a [`Request`] the application
+//! This is the transport decision 5 asks for, migrated by//! It is a translation layer and nothing else: a method call becomes a [`Request`] the application
 //! answers, the answer becomes a D-Bus reply or error, and a [`Signal`] becomes
 //! `NotificationClosed` or `ActionInvoked`. Every decision about what a
 //! notification *is* — identifiers, lifetimes, the bound, the policy, the
@@ -78,7 +77,7 @@
 //!
 //! [`Service::serve`] connects to the session bus and claims
 //! [`crate::protocol::BUS_NAME`]
-//! *before* the iced application starts. A session that already has a
+//! *before* the Qt host starts pumping. A session that already has a
 //! notification daemon gets a readable error and a non-zero exit instead of two
 //! daemons silently sharing the name. There is no signal handling here: the
 //! session stops this daemon with `SIGTERM`, the process ends, and D-Bus
@@ -93,7 +92,6 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use iced::futures::StreamExt;
 use tracing::{debug, info, warn};
 use zbus::fdo;
 use zbus::message::{Header, Message, Type};
@@ -450,7 +448,7 @@ fn bus_loop(
 ) {
     let mut messages = MessageStream::from(&connection);
 
-    while let Some(message) = zbus::block_on(messages.next()) {
+    while let Some(message) = next_message(&mut messages) {
         let message = match message {
             Ok(message) => message,
             Err(error) => {
@@ -470,6 +468,22 @@ fn bus_loop(
         "the session bus connection ended: the notification service is no longer \
          listening, and no client will be answered"
     );
+}
+
+/// The next message the connection carries, or `None` once it is gone.
+///
+/// zbus 6's `MessageStream` is a `Stream`, and reading it incrementally used to
+/// come from `futures-util`'s `StreamExt` — which this crate no longer depends on
+/// now that `iced` is gone. `zbus::export::futures_core` is the same trait zbus
+/// itself implements, and `poll_fn` over it is the whole of what `.next()`
+/// elsewhere would do, so no async runtime and no extra dependency is needed.
+pub(crate) fn next_message(stream: &mut MessageStream) -> Option<zbus::Result<Message>> {
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    use zbus::export::futures_core::Stream as _;
+
+    zbus::block_on(poll_fn(|context| Pin::new(&mut *stream).poll_next(context)))
 }
 
 /// Answers one method call, from the wire to the wire.

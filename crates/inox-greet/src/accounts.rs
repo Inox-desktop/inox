@@ -90,6 +90,10 @@ impl Account {
     }
 
     /// The account's numeric identifier, as the account database lists it.
+    ///
+    /// The ordering and the filtering are what the binary needs; the tests read the
+    /// identifier itself to assert where an account came from.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn uid(&self) -> u32 {
         self.uid
     }

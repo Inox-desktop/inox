@@ -35,7 +35,7 @@
 //! screen is told there is nothing here that could check a password, rather than
 //! being invited to type one nobody will look at.
 //!
-//! It reads no keyboard either (ADR 0022 decision 6). With no boundary there is
+//! It reads no keyboard either. With no boundary there is
 //! nothing on the screen to operate, so a keyboard path would be code that can
 //! never run; the next step, recorded in [ADR 0025] and in this crate's README, is
 //! the input path and the reviewed boundary together.
@@ -45,8 +45,8 @@
 //! is released by logging out, and the compositor says so when the process is
 //! signalled.
 //!
-//! [ADR 0015]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0015-session-lock-and-failure-boundaries.md
-//! [ADR 0024]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md
+//! []:
+//! []:
 
 use std::{
     collections::HashMap,
@@ -63,7 +63,6 @@ use calloop::{
     signals::{Signal, Signals},
     timer::{TimeoutAction, Timer},
 };
-use iced_core::Size;
 use inox_common::i18n::Localizer;
 use inox_config::Theme as Tokens;
 use inox_protocols::{
@@ -115,8 +114,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// The compositor refused: the session was already locked, this connection had
-    /// not claimed the lock role, or no more locks are being accepted (ADR 0022
-    /// decision 2). Nothing was covered, and nothing is left holding anything.
+    /// not claimed the lock role, or no more locks are being accepted. Nothing was covered, and nothing is left holding anything.
     Refused,
     /// The compositor withdrew the lock with the protocol's `finished` event.
     Released,
@@ -435,7 +433,7 @@ impl Client {
     /// Draw the lock screen onto an output's surface and commit it.
     ///
     /// Returns whether a frame was committed. Every reason not to is a reason the
-    /// output is still covered by the compositor's own locked blank (ADR 0022), so
+    /// output is still covered by the compositor's own locked blank, so
     /// a refusal here is never a hole in the lock — which is why most of them are
     /// logged and not treated as failures.
     fn commit_frame(&mut self, index: usize, qh: &QueueHandle<Self>) -> Result<bool, SessionError> {
@@ -465,12 +463,13 @@ impl Client {
             // The two are set together by the configure handler, and if they ever
             // came apart the frame would declare one size and hold another size's
             // pixels. Refusing is the safe answer: the output keeps the covering
-            // frame it already has.
-            if interface.size() != Size::new(width as f32, height as f32) {
+            // frame it already has. The comparison is on the integers the
+            // configure delivered, never on an `f32` that could round them.
+            if interface.dimensions() != (width, height) {
                 warn!(
                     output = %entry.name,
-                    configured = ?Size::new(width as f32, height as f32),
-                    drawn = ?interface.size(),
+                    configured = ?(width, height),
+                    drawn = ?interface.dimensions(),
                     "the interface is not the size the surface was configured to; \
                      not committing a frame of the wrong size"
                 );
@@ -644,7 +643,7 @@ impl Dispatch<lock_surface::ExtSessionLockSurfaceV1, ()> for Client {
                 Some(interface) => {
                     interface.resize(width, height);
 
-                    if interface.size() != Size::new(width as f32, height as f32) {
+                    if interface.dimensions() != (width, height) {
                         entry.interface = None;
                     }
                 }
@@ -712,6 +711,15 @@ pub fn take(
         return Err(SessionError::NoToken);
     };
 
+    // The signal source is created before anything else, and that order is
+    // load-bearing: `signalfd` only receives a signal that is blocked in *every*
+    // thread, and a thread created before the mask is installed does not inherit
+    // it. The offscreen QML host is exactly such a component — it is built when
+    // the first output is covered, further down this function — so the mask goes
+    // in first and the source is handed to the loop by `drive`.
+    let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP])
+        .map_err(|error| SessionError::EventLoop(error.to_string()))?;
+
     let connection =
         Connection::connect_to_env().map_err(|error| SessionError::Connect(error.to_string()))?;
     let mut queue = connection.new_event_queue::<Client>();
@@ -761,7 +769,7 @@ pub fn take(
     }
 
     // Claim the trusted lock role before asking for the lock: the compositor only
-    // accepts a lock from a connection that has claimed it (ADR 0022 decision 3),
+    // accepts a lock from a connection that has claimed it,
     // and it refuses rather than guessing. The token is a capability, not an
     // identity claim.
     if let Some(ipc) = client.ipc.as_ref() {
@@ -790,7 +798,7 @@ pub fn take(
         .map_err(|error| SessionError::Connect(error.to_string()))?;
     info!("{}", localizer.message("lock-taking"));
 
-    let outcome = drive(&connection, &mut queue, &mut client, &localizer)?;
+    let outcome = drive(&connection, &mut queue, &mut client, &localizer, signals)?;
     if let Some(lock) = client.lock.take() {
         // Never `unlock_and_destroy`: releasing the session is not this component's
         // to do while it has no authentication boundary, and a signal is not a
@@ -846,6 +854,7 @@ fn drive(
     queue: &mut wayland_client::EventQueue<Client>,
     client: &mut Client,
     localizer: &Localizer,
+    signals: Signals,
 ) -> Result<Outcome, SessionError> {
     let mut event_loop: EventLoop<Client> =
         EventLoop::try_new().map_err(|error| SessionError::EventLoop(error.to_string()))?;
@@ -881,8 +890,6 @@ fn drive(
         )
         .map_err(|error| SessionError::EventLoop(error.to_string()))?;
 
-    let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP])
-        .map_err(|error| SessionError::EventLoop(error.to_string()))?;
     handle
         .insert_source(signals, |event, _, client| {
             // The lock is deliberately not released here: this mode has no way to
@@ -937,7 +944,7 @@ fn drive(
         // confirmed — an administrative decision on its side, not a failure here.
         // Before `locked` it is the protocol's refusal, which is what a compositor
         // sends when the session is already locked or this connection never
-        // claimed the trusted role (ADR 0022 decisions 2 and 3).
+        // claimed the trusted role.
         return Ok(if client.locked {
             Outcome::Released
         } else {

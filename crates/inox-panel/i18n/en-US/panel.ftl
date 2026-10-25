@@ -9,7 +9,7 @@
 # 1 = Monday .. 7 = Sunday, 1 = January .. 12 = December.
 
 # Title of the panel's own surface: every surface the panel draws is a
-# wlr-layer-shell surface (ADR 0018).
+# wlr-layer-shell surface.
 panel-window-title = Inox Panel
 
 # Panel-level states (acceptance D05).

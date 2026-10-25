@@ -41,7 +41,7 @@ use crate::pages::PageId;
 /// Following the environment is the absence of the key rather than a value of
 /// it: `config.toml` is read by every component, and a tag written here would
 /// pin the session's language even when the user's environment asks for
-/// another one (ADR 0009, [`inox_config::LocaleConfig::resolve`]).
+/// another one.
 pub const ENVIRONMENT: &str = "environment";
 
 /// The identifier of `light` in the appearance choices.
@@ -220,7 +220,7 @@ const NOTIFICATION_POSITION_CHOICES: &[Choice] = &[
 /// private to that crate; `tests/workflow.rs` proves the mirror agrees by
 /// handing the values either side of each limit to `InoxConfig::load` and
 /// checking which ones it accepts. The widget clamps to this range, so a value
-/// the schema rejects cannot be entered (ADR 0009, decision 4).
+/// the schema rejects cannot be entered.
 const PANEL_HEIGHT_RANGE: Range = Range {
     min: 8,
     max: 256,

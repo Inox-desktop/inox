@@ -9,8 +9,9 @@
 //!
 //! The loading itself is [`inox_common::i18n::Localizer`]'s job — this module
 //! only says which catalogs the panel ships. The parity check that keeps the two
-//! locales in step (same ids, same placeholders) runs in `tests/catalog.rs`
-//! through [`inox_common::i18n::compare_catalogs`] (acceptance Q03).
+//! locales in step (same ids, same placeholders) runs in
+//! `src/headless_tests/catalog.rs` through
+//! [`inox_common::i18n::compare_catalogs`] (acceptance Q03).
 
 use inox_common::i18n::{I18nError, Locale, Localizer};
 

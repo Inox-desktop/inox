@@ -199,7 +199,7 @@ fn replace(path: &Path, content: &[u8]) -> Result<(), String> {
     // The rename is atomic, but on its own it only promises that the *name*
     // points at the new inode: a crash right after it can still lose the
     // directory entry. Syncing the directory is what makes the new name
-    // durable (ADR 0014: 不能把 rename 一步等同于所有文件系统的持久化保证).
+    // durable (不能把 rename 一步等同于所有文件系统的持久化保证).
     match fs::File::open(directory) {
         Ok(handle) => handle
             .sync_all()

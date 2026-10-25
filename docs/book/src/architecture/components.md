@@ -27,16 +27,17 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区与私有 `inox_ipc`） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；单输出真实后端已实现，E4 尚未执行） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、真实 X11 连接往返的就绪判定、生命周期） |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 部分实现（跨入口导航、服务契约、内部入口注册表；不绘制界面） |
-| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型与 Iced 界面；layer-shell 客户端待接线） |
-| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 部分实现（XDG 条目解析、Exec 展开、带代次的搜索、Iced 界面；layer-shell 客户端待接线） |
-| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏与界面模型；D-Bus 服务属 M5） |
-| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 部分实现（草稿/校验/原子保存/回读状态机与 Iced 界面；普通窗口，无需 layer-shell） |
-| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿与**锁表面界面**已落地——界面由离屏渲染绘制到 configure 尺寸并提交，见 [ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)；认证边界与键鼠输入路径未实现，见 ADR 0015） |
-| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现（来源解析、缩放几何、原子应用与预览窗口；layer-shell 背景客户端待接线） |
+| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、菜单栏、Dock、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型；界面为 QML，经**离屏渲染**写入自己创建的 `zwlr_layer_shell_v1` 表面；窗口服务与 SNI 传输尚未实现） |
+| `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 部分实现（XDG 条目解析、Exec 展开、带代次的搜索；界面为 QML **普通窗口**，`placement.rs` 的层表面策略只建模、未应用） |
+| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏；`org.freedesktop.Notifications` 服务由 `zbus` 提供；界面为 QML **普通窗口**） |
+| `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings`（另有 `inoxctl`） | 部分实现（草稿/校验/原子保存/回读状态机；界面为 QML **普通窗口**，无需 layer-shell） |
+| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿与**锁表面界面**已落地——QML 离屏渲染成 configure 尺寸的帧并提交，见 [ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md) 与 [ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)；认证边界与键鼠输入路径未实现，见 ADR 0015） |
+| `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现（来源解析、缩放几何、原子应用与预览窗口；界面为 QML **普通窗口**，背景层策略只建模、未应用） |
+| `inox-qml-prototype` | L3 | `crates/inox-qml-prototype` | QML + Qt Quick + cxx-qt 的最小原型（ADR 0033/0035 的绑定证据） | 二进制 | 已实现（最小 bridge、QML 模块与 headless 加载测试；占位原型，不是产品组件） |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，拉起合成器与 Shell | 二进制 `inox-session` | 部分实现：Wayland 往返就绪、有界进程监督/注销；完整服务 ready 待实现 |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 部分实现：标准空闲通知客户端与锁前挂起策略；可信锁/挂起通道待审查 |
 | `inox-auth` | L2 | `crates/inox-auth` | 认证边界（PAM + `auth-v1` + VT 分配/交回） | 二进制 `inox-auth` | 已实现：系统 PAM（安全封装，无新增 `unsafe`）、Unix 套接字服务与 `SO_PEERCRED` 对端校验、滚动限额；ADR 0037 的会话负责人（`src/leader.rs`：一次登录一个进程，`pam_open_session` 只在它里面调用）与 logind VT 分配/交回（`src/logind.rs`）已落地，一次只允许一个用户会话；口令与打开会话分在**两个栈**上（`--service inox-auth` 校验口令、`--session-service inox-auth-session` 打开会话，见 `packaging/`）；契约文本在 `inox-protocols/protocol/auth-v1.md`；真机 PAM/VT 行为是 E4，尚未取得 |
-| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 已接线：默认路径要求认证边界套接字（否则开窗前拒绝），口令字段以掩码呈现、凭据只经 `Secret` 移交，认证成功后由边界启动会话；身份来自系统账户库（`getent passwd`，[ADR 0032](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0032-greeter-account-selection-and-login-interface.md)），界面不提供手工输入账户名；会话启动后**驻留并在 3 秒后回到登录画面**（`state::SESSION_STARTED_DWELL`，ADR 0037 §决策 4），因此注销回来时屏幕上已经是登录界面；`--preview` 仍是「没有边界时的界面」；真机验收是 E4，尚未取得 |
+| `inox-greet` | L4 | `crates/inox-greet` | 显示管理器（可选） | 二进制 `inox-greet` | 已接线：默认路径要求认证边界套接字（否则开窗前拒绝），口令字段以掩码呈现、凭据只经 `Secret` 移交（明文不进 QML），认证成功后由边界启动会话；界面为 QML **普通窗口**；身份来自系统账户库（`getent passwd`，[ADR 0032](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0032-greeter-account-selection-and-login-interface.md)），界面不提供手工输入账户名；会话启动后**驻留并在 3 秒后回到登录画面**（`state::SESSION_STARTED_DWELL`，ADR 0037 §决策 4），因此注销回来时屏幕上已经是登录界面；`--preview` 仍是「没有边界时的界面」；真机验收是 E4，尚未取得 |
 | `inox-host` | L4 | `crates/inox-host` | greeter 宿主：在裸 VT 上按顺序拉起登录界面的合成器与登录界面，监督并在退出时清理（ADR 0037 §决策 1/3） | 二进制 `inox-host` | 已实现：`supervisor`（边界不可达拒绝、合成器就绪等待 10 s、登录界面 60 s 内最多 3 次有界重启、SIGTERM 逆序清理）与 `cli`/`process`/`runtime` 适配，`tests/supervisor.rs` 用真进程（假合成器与假界面）驱动；它不认证、不碰凭据、不启动用户会话。真机 VT 交接与登录是 E4，尚未取得 |
 | `inox-integration` | 测试 | `crates/inox-integration` | 端到端集成测试与分层方向检查（B04） | 测试报告 | 部分实现（分层检查已落地；M3 的 XWayland/剪贴板/拖放 E3 用例以进程方式驱动工作区二进制，完整会话 E2E 待 M6） |
 
@@ -49,6 +50,30 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
   使用方式见[登录与开机链](../usage/login.md)。
 
 规划中、**尚未创建**的组件：`inox-portal`（`xdg-desktop-portal` 后端）、`inox-screenshot`（截图/录屏）、`inox-osd`（屏幕提示）、`inox-cli`（`inoxctl` 命令行工具）。新增 crate 属破坏性架构变更，须先写 ADR。
+
+## 各组件的 UI 技术栈与表面模式
+
+七个 GUI 组件的界面都已从 Iced 迁到 **QML + Qt Quick**，经 **cxx-qt** 绑定到 Rust（[ADR 0033](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0033-qml-qt-quick-shell-evaluation.md)、[ADR 0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md)、[ADR 0036](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0036-component-migration-plan.md)）。分工是固定的：领域模型、状态机、Fluent 文案与设计令牌留在 Rust，Rust 把「状态 + 令牌 + 文案」投影成一份 JSON 交给 QML 渲染，QML 把用户动作作为窄 JSON 指令（`dispatch`）交回——不为每个字段单独开 `qproperty`。Iced 已从依赖图移除（[ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md)）。
+
+| 组件 | UI | 表面模式 | QML 宿主 |
+|------|----|----------|----------|
+| `inox-panel` | QML | 真实 `zwlr_layer_shell_v1` 表面（`src/layer.rs` 自己创建） | **离屏**：Qt Quick 软件场景图 + `grabWindow()`，帧写进自己的 `wl_shm` 缓冲 |
+| `inox-lock` | QML | 真实 `ext_session_lock_v1` 表面（`src/session.rs` 自己创建） | **离屏**：每个锁表面一个 `QQmlApplicationEngine` + `QQuickWindow`，各自按 configure 尺寸出帧 |
+| `inox-wallpaper` | QML | 普通 Qt 窗口（预览） | `QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window` |
+| `inox-launcher` | QML | 普通 Qt 窗口 | 同上 |
+| `inox-notifications` | QML | 普通 Qt 窗口（通知栈） | 同上 |
+| `inox-settings` | QML | 普通 Qt 窗口 | 同上 |
+| `inox-greet` | QML | 普通 Qt 窗口（登录界面） | 同上 |
+
+- **面板与锁屏不得退化为普通窗口**（[ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)）：它们的 `calloop` 主循环、协议表面、放置、输入与安全边界都不动，QML 只是渲染器；缺 layer/会话锁协议时以可读错误与非零退出，而不是把摆放策略当作已应用。
+- **其余五个是普通窗口**：Qt 事件循环驱动它们，QML 同时负责渲染与交互；`placement.rs` 里的层表面策略仍只是数据，没有宿主会应用它。
+- **绑定是 bin-only**：含 `#[cxx_qt::bridge]` 的 crate 没有 `lib.rs`，原有 `tests/*.rs` 迁进 bin 内的 `#[cfg(test)]` 模块；含 bridge 的 crate 在自己的 `[lints.rust]` 里把 `unsafe_code` 放开为 `allow`（[ADR 0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md) 的例外），Inox 手写的 Rust 仍然不写 `unsafe`。
+
+### 已知缺口
+
+- **离屏的面板与锁屏没有 AT-SPI 语义桥**：Qt 的 `offscreen` 平台没有 QPA 无障碍桥，因此这两处的 role/name/state 导出仍是 Q01 的缺口；五个窗口组件走标准 QPA 路径，但真实屏幕阅读器验收也未取得。Iced 时代同样缺这条桥，这不是回归。
+- **真实宿主证据未取得**：waydriver 在真实合成器宿主上启动 L3 表面、截图并断言的 job **尚未接线**（ADR 0036 的 M02、ADR 0039 的 M10），所以「组件在真实 layer 表面上的样子」没有 E2 证据。
+- **投影整体重发**：每次状态变化都重新序列化整份 JSON，QML 重新 `JSON.parse`；先保证边界干净与正确性，性能取舍等实测数据再决定是否做增量。
 
 ## 需要注意的几处
 
@@ -80,12 +105,15 @@ ADR 0002 规则 6 允许 `inox-wallpaper` 直接依赖 `inox-compositor`，其�
 
 ### L3 组件之间没有 Rust 依赖，共享能力下沉到 L1
 
-七个 L3 组件是**七个独立进程**：面板、启动器、通知与壁纸是 layer-shell 客户端，设置是普通窗口应用，
-`inox-shell` 不持有界面。它们之间以及与 `inox-compositor` 之间只通过 Wayland 协议、`inox-ipc` 与 D-Bus
-协作，**没有新增任何同层边**。共享能力放在 L1 的既有职责里：用户可见文案的加载在 `inox-common::i18n`，
-配置模型在 `inox-config`，主题令牌在 `inox-config::theme`。代价是每个组件各有约一百行相同的
-「令牌 → Iced 主题」映射与宿主引导代码——这是 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)
-明确接受的权衡，而不是疏忽；共享 UI crate 需要先获得 ADR 批准。
+七个 L3 组件是**七个独立进程**：面板是 layer-shell 客户端，锁屏是会话锁客户端，启动器、通知、壁纸与设置
+是普通窗口应用（迁移后的界面均为 QML，见上一节），`inox-shell` 不持有界面。它们之间以及与
+`inox-compositor` 之间只通过 Wayland 协议、`inox-ipc` 与 D-Bus 协作，**没有新增任何同层边**。
+共享能力放在 L1 的既有职责里：用户可见文案的加载在 `inox-common::i18n`，配置模型在 `inox-config`，
+主题令牌在 `inox-config::theme`。代价是每个组件各有一份「令牌 → QML 颜色与尺寸」的映射（`theme.rs`
+里的 `qml_color` 之类的纯函数，有单测）与一小段 QML/宿主编织代码——这是
+[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)
+明确接受的权衡（迁移前那份重复是「令牌 → Iced 主题」映射，取舍本身没变），而不是疏忽；
+共享 UI crate 需要先获得 ADR 批准。
 
 ### 登录链：三个组件，三个权威
 
@@ -108,18 +136,18 @@ ADR 0002 规则 6 允许 `inox-wallpaper` 直接依赖 `inox-compositor`，其�
 对 `inox-greeter@1.service` 建立。真机证据（安装、试运行、切换、注销、回退、VT3 救援）**尚未取得**，
 见[登录与开机链](../usage/login.md)。
 
-### layer-shell 宿主尚未具备
+### layer 表面与真实宿主证据
 
-PRD §2.3 把 `wlr-layer-shell-unstable-v1` 列为**必须**，面板、启动器、通知与壁纸都依赖它。当前有两个缺口：
+PRD §2.3 把 `wlr-layer-shell-unstable-v1` 列为**必须**，面板要用它；锁屏用的是 `ext-session-lock-v1`。这两条协议腿现在都在位：
 
-1. `inox-compositor` **还没有广告** `zwlr_layer_shell_v1`（协议绑定已在 `inox-protocols` 中，但合成器未接入），
-   因此这些组件在 Inox 会话里还无法成为真实表面；
-2. CI 没有支持该协议的宿主（`weston` 不支持），且 `iced_layershell` 0.19.1 与 0.19.0 **无法编译**
-   （其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配）。
+- `inox-compositor` 已接入并广告 `zwlr_layer_shell_v1` v4（`tests/layer_shell.rs` 用真实客户端覆盖四层、独占区、焦点与隔离）；
+- `inox-panel` 自己创建 `zwlr_layer_shell_v1` 表面，`inox-lock` 自己创建 `ext_session_lock_v1` 表面；两者都用离屏 QML 出帧，缺协议即以可读错误和非零码退出。
 
-因此本次交付把这些组件的**放置策略**（锚点、独占区、边距、尺寸、键盘交互、按输出分配）建模为纯数据并测试，
-界面以普通窗口运行，启动时记录一行说明原因的 `warn!`。真实控件树的布局与像素由**离屏渲染测试**覆盖
-（见[测试策略](../development/testing.md)），不需要合成器；表面、焦点与放置则必须等上述缺口补齐。
+**仍然缺的是真实宿主证据**（不是协议腿）：CI 里没有「启动真实 L3 Qt 表面 → 截图 → 断言」的 waydriver 宿主 job，`weston` 也不支持 layer-shell。所以面板与锁屏的像素与交互只在离屏路径与真实协议 peer（socket pair / 子进程）中得到断言，它们在真实合成器上的样子**没有 E2 证据**（ADR 0036 的 M02、ADR 0039 的 M10）。
+
+历史备注：迁移前这里记录的两个缺口，一是合成器尚未广告 layer-shell、二是 `iced_layershell` 0.19.1/0.19.0 **无法编译**（其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配，`error[E0004]`）。第一条已由合成器补齐，第二条随 Iced 退出依赖图而失效——它是走离屏 QML 这条路（ADR 0033/0038）的现实动因之一，不是当前架构。
+
+启动器、通知、壁纸与设置仍以**普通窗口**运行，`placement.rs` 里的锚点、独占区、边距与尺寸是**已经测试但未被应用**的数据；这不再是「被上游阻塞」，而是 [ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md) 为普通窗口组件选定的形态。
 
 ## 相关页面
 

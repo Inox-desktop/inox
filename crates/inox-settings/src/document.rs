@@ -1,7 +1,7 @@
 //! The configuration files as documents: what was read, and what a save writes.
 //!
 //! The settings application is the only component that *writes* the Inox
-//! configuration (ADR 0014 gives it that job), and it writes three files:
+//! configuration, and it writes three files:
 //! `config.toml`, `shell.toml` and `notifications.toml` ([`SettingFile`]).
 //! Each is held as a [`Document`] — the path, the bytes as they were read, and
 //! the [`Digest`] of those bytes — which is what lets a save be checked against

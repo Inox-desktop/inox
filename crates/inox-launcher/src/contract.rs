@@ -1,5 +1,5 @@
+//! The vocabulary of the launcher's service contract.
 //! The vocabulary of the launcher's service contract (ADR 0013).
-//!
 //! ADR 0013 asks every L3 component to distinguish four things that a launcher
 //! is unusually prone to blurring:
 //!
@@ -15,7 +15,7 @@
 //!   loading, empty, error — plus the retry action that has to come with the
 //!   error (acceptance D05).
 //!
-//! Nothing here is Iced-specific and nothing here does I/O: the types are the
+//! Nothing here is Qt-specific and nothing here does I/O: the types are the
 //! data the state machine moves between, which is what makes the transitions
 //! testable without a compositor.
 
@@ -24,7 +24,7 @@
 /// The distinction that matters is between [`CommandState::Sent`] and
 /// [`CommandState::Applied`]: the launcher knows it handed a request to the
 /// process boundary, and separately knows that the process is still alive
-/// afterwards. Treating those two as one is exactly the optimistic UI the ADR
+/// afterwards. Treating those two as one is exactly the optimistic UI the decision
 /// rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommandState {

@@ -9,13 +9,14 @@
 //!
 //! The loading itself is [`inox_common::i18n::Localizer`]'s job — this module only
 //! says which catalogs the lock screen ships. The parity check that keeps the two
-//! locales in step (same ids, same placeholders) runs in `tests/catalog.rs`
-//! through [`inox_common::i18n::compare_catalogs`] (acceptance Q03).
+//! locales in step (same ids, same placeholders) runs in
+//! `src/headless_tests/catalog.rs` through
+//! [`inox_common::i18n::compare_catalogs`] (acceptance Q03).
 //!
 //! One catalog is load-bearing in a way the others are not: the message that says
 //! *why* the session lock cannot start is the only thing `main.rs` has to say, and
 //! it has to be said in a language the user reads. That is why the binary loads
-//! the catalogs before it reports anything (ADR 0015, ADR 0018).
+//! the catalogs before it reports anything.
 
 use inox_common::i18n::{I18nError, Locale, Localizer};
 

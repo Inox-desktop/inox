@@ -1,17 +1,20 @@
 //! The panel's protocol leg: a real `wlr-layer-shell` surface, drawn from shared
 //! memory and taking pointer input.
-//!
-//! Until this module existed the panel ran as an ordinary `xdg-shell` window on
-//! iced's own backend: [`crate::placement`] computed anchors, an exclusive zone
-//! and a keyboard-interactivity policy, and **nothing applied them** — the binary
 //! logged exactly one warning saying so (ADR 0018). That is the one thing a panel
-//! may not do. A panel that claims to reserve a strip while it is really a
-//! floating window is a lie about the desktop's geometry, and the compositor
-//! cannot keep windows out from under a strip it was never asked to keep free.
+//! Until this module existed the panel ran as an ordinary `xdg-shell` window on
+//! a widget toolkit's own backend: [`crate::placement`] computed anchors, an
+//! exclusive zone and a keyboard-interactivity policy, and **nothing applied
+//! them** — the binary logged exactly one warning saying so. That is
+//! the one thing a panel may not do. A panel that claims to reserve a strip while
+//! it is really a floating window is a lie about the desktop's geometry, and the
+//! compositor cannot keep windows out from under a strip it was never asked to
+//! keep free.
 //!
-//! So this leg is hand-written rather than delegated to `iced_layershell` (which
-//! this crate's `AGENTS.md` forbids, and which does not compile against iced
-//! 0.14's winit generation anyway). It is the same shape as `inox-lock`'s
+//! The toolkit moved to QML and this leg stayed: the QML tree is
+//! rendered **offscreen** by Qt Quick's software scene graph and its pixels are
+//! copied into this module's shared-memory frames. No Qt Wayland
+//! client exists in this process, no `xdg_toplevel` either, and the surface below
+//! is still the protocol's. It is the same shape as `inox-lock`'s
 //! `session.rs`, because that is this repository's proven protocol-leg pattern:
 //! `Connection::connect_to_env`, one `WlRegistry` handler collecting the globals,
 //! a `calloop` event loop with a `Generic` source over the connection, `wl_shm`
@@ -39,47 +42,49 @@
 //!
 //! # Frames
 //!
-//! A frame is [`crate::app::view`]'s widget tree, laid out at the configured size
-//! and drawn by the same `tiny-skia` renderer the render tests use — there is no
-//! second implementation of the interface here. The bytes go into an anonymous
-//! shared-memory file and are attached with `wl_shm`'s **`Argb8888`**, written
-//! premultiplied `B, G, R, A`.
+//! A frame is the QML scene of [`crate::view`], rendered offscreen at the
+//! configured size and copied into an anonymous shared-memory file that is
+//! attached with `wl_shm`'s **`Argb8888`**, written premultiplied `B, G, R, A`.
+//! [`crate::view`] is the only description of the interface: it is a Qt-free
+//! projection of rectangles and text, so there is no second implementation of
+//! the layout here.
 //!
-//! Both halves of that matter:
+//! Both halves of the format matter:
 //!
 //! - `Argb8888`, not `Xrgb8888`, because the menu bar and the dock are
 //!   *translucent*: the pixels the view does not paint must stay transparent, or
-//!   the compositor would blend an opaque square over the wallpaper. The frame is
-//!   screenshotted over [`Color::TRANSPARENT`] for the same reason.
-//! - Premultiplied, because that is what `iced_tiny_skia`'s `Headless::screenshot`
-//!   returns: the tiny-skia pixmap is premultiplied RGBA, and `Argb8888` is the
+//!   the compositor would blend an opaque square over the wallpaper. The QML
+//!   window's root is transparent for the same reason.
+//! - Premultiplied, because that is what Qt Quick's
+//!   `QImage::Format_RGBA8888_Premultiplied` holds, and `Argb8888` is the
 //!   premultiplied-alpha format. Un-premultiplying (or writing the channels in
-//!   screenshot order) would put a halo around every rounded corner and every
+//!   the renderer's order) would put a halo around every rounded corner and every
 //!   glyph, which is exactly the artefact a glass pane shows most.
 //!
 //! A frame is drawn only when something has changed — a state change, a
 //! configure, a pointer-driven interaction, or a glass parameter that needs the
 //! next commit to take effect. There is no frame clock: the clock is the
-//! [`app::Message::Tick`] the iced runtime used to deliver, driven by a
-//! `calloop::timer::Timer` on [`crate::app::TICK`].
+//! [`app::Message::Tick`] a `calloop::timer::Timer` on [`crate::app::TICK`]
+//! produces.
 //!
 //! # Pointer input
 //!
 //! `wl_seat` is bound, and when it advertises a pointer a `wl_pointer` is bound
-//! and its enter / leave / motion / button events become iced events at the same
-//! cursor position the render tests use. They are fed through the same
-//! [`UserInterface::update`] the tests drive, the messages the widget tree
-//! produces are applied with [`crate::app::update`], and the surface is redrawn
-//! when iced asked for a redraw or the state moved. A click on a task tile
-//! therefore produces the *same* [`crate::app::Message::TaskActivated`] the
-//! render tests assert on; what the panel then does with it (queue it for a
-//! transport that does not exist yet) is [`crate::app`]'s business, not this
+//! and its enter / leave / motion / button events become [`Pointer`] values.
+//! [`crate::view`] lays the scene out and records the clickable entries, so the
+//! interface matches the point against them ([`Scene::entry_at`]) and applies the
+//! message the entry means with [`crate::app::update`]; the surface is redrawn
+//! when the interaction changed what is drawn or the state moved. A click on a
+//! task tile therefore produces the *same* [`crate::app::Message::TaskActivated`]
+//! the projection tests assert on; what the panel then does with it (queue it for
+//! a transport that does not exist yet) is [`crate::app`]'s business, not this
 //! module's.
 //!
 //! Coordinates arrive in surface-local coordinates, which are physical pixels of
-//! the buffer; iced lays the interface out in logical pixels. The two are related
-//! by the surface's scale factor, which the panel does not scale (it draws at
-//! [`SCALE_FACTOR`]), so [`logical`] is the one place that division happens.
+//! the buffer; [`crate::view`] lays the interface out in logical pixels. The two
+//! are related by the surface's scale factor, which the panel does not scale (it
+//! draws at [`SCALE_FACTOR`]), so [`logical`] is the one place that division
+//! happens.
 //!
 //! # Frosted glass
 //!
@@ -105,7 +110,6 @@ use std::fs::File;
 use std::io::{self, Write as _};
 use std::os::fd::AsFd;
 use std::rc::Rc;
-use std::time::Instant;
 
 use calloop::{
     EventLoop, Interest, Mode, PostAction,
@@ -115,10 +119,6 @@ use calloop::{
     timer::{TimeoutAction, Timer},
 };
 use chrono::Local;
-use iced_core::renderer::{Headless, Style};
-use iced_core::{Color, Event, Font, Pixels, Point, Size, clipboard, mouse, window};
-use iced_runtime::UserInterface;
-use iced_runtime::user_interface::Cache;
 use inox_common::i18n::Localizer;
 use inox_config::{ConfigPaths, PanelSurface, ShellConfig, Theme as Tokens};
 use inox_protocols::{
@@ -147,7 +147,9 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
 use crate::app::{self, Message, OutgoingCommand, State};
 use crate::dock::{DockGeometry, DockView};
+use crate::offscreen::{self, RenderError};
 use crate::placement::{self, Anchors, PanelPlacement};
+use crate::view::{self, EntryAction, Interaction, Scene};
 use crate::view_model::PanelViewModel;
 use crate::{frost, reload, theme};
 
@@ -211,7 +213,7 @@ pub enum LegError {
     /// it somewhere it never asked for — the lie ADR 0018 refuses.
     #[error(
         "the compositor does not offer {0}: the panel is a wlr-layer-shell surface and will \
-         not run as an ordinary window whose placement is not applied (ADR 0018)"
+         not run as an ordinary window whose placement is not applied"
     )]
     MissingGlobal(&'static str),
     /// The event loop could not be built or failed while running.
@@ -220,6 +222,52 @@ pub enum LegError {
     /// A shared-memory frame could not be built.
     #[error("failed to prepare a panel frame: {0}")]
     Frame(#[from] io::Error),
+    /// The offscreen QML renderer could not draw.
+    ///
+    /// There is no fallback: a panel that cannot render has no surface to show,
+    /// and turning itself into an ordinary Qt window would place it where it
+    /// never asked to be.
+    #[error("the panel's QML renderer failed: {0}")]
+    Render(#[from] RenderError),
+}
+
+/// A point in surface-local logical pixels.
+///
+/// iced carried this type while the interface was a widget tree; the panel's
+/// pointer input outlived that, so it keeps its own point and stays testable
+/// without a compositor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    /// Horizontal position.
+    pub x: f32,
+    /// Vertical position.
+    pub y: f32,
+}
+
+impl Point {
+    /// A point at `(x, y)`.
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
+/// A pointer button the panel acts on.
+///
+/// The values are the ones `wl_pointer.button` names (`BTN_LEFT`, …); a button
+/// that is not here is not an error, it is simply not a button the panel has a
+/// meaning for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    /// `BTN_LEFT`.
+    Left,
+    /// `BTN_RIGHT`.
+    Right,
+    /// `BTN_MIDDLE`.
+    Middle,
+    /// `BTN_SIDE`.
+    Back,
+    /// `BTN_EXTRA`.
+    Forward,
 }
 
 /// One pointer event, in surface-local logical coordinates.
@@ -237,70 +285,250 @@ pub enum Pointer {
     /// The pointer left the surface.
     Leave,
     /// A button was pressed, at the last position the pointer had.
-    Press(mouse::Button),
+    Press(Button),
     /// A button was released, at the last position the pointer had.
-    Release(mouse::Button),
+    Release(Button),
 }
 
 /// What feeding one pointer event produced.
 #[derive(Debug, Clone)]
 pub struct Produced {
-    /// The messages the widget tree produced. [`Interface::pointer`] has already
+    /// The messages the interaction produced. [`Interface::pointer`] has already
     /// applied them with [`crate::app::update`]; they are returned so a caller
     /// (and a test) can see what the interaction meant.
     pub messages: Vec<Message>,
-    /// Whether the interface asked for a redraw — a hover or a press that has to
-    /// be visible while it is held (`docs/quality/ui-guidelines.md` §5).
+    /// Whether the surface has to be drawn again — a hover or a press that has
+    /// to be visible while it is held (`docs/quality/ui-guidelines.md` §5).
     pub repaint: bool,
 }
 
-/// The panel's interface on its layer surface: the widget tree, drawn offscreen.
+/// Why an interface could not be created for a configure.
+#[derive(Debug, thiserror::Error)]
+pub enum InterfaceError {
+    /// The compositor configured a size this component will not draw.
+    #[error("a {0}x{1} surface is not a size the panel will draw")]
+    Size(u32, u32),
+    /// The QML renderer could not be started.
+    ///
+    /// This is fatal rather than a fallback: the panel's surface is a layer
+    /// surface it cannot draw on without pixels, and starting a Qt window
+    /// instead would put the panel somewhere it never asked to be.
+    #[error(transparent)]
+    Render(#[from] RenderError),
+}
+
+/// The panel's pointer input: the scene it was last drawn from, and what the
+/// pointer is doing to it.
 ///
-/// One per surface, because the surface has one configured size and one widget
-/// state. The size is kept as the integers the configure delivered, exactly: an
-/// `f32` cannot represent every `u32`, and a frame drawn at the rounded size
-/// would be handed to a buffer created for the real one.
-pub struct Interface {
-    renderer: iced_tiny_skia::Renderer,
-    /// The widget tree carried between frames, so iced matches the new tree
-    /// against the old one instead of treating every frame as a new screen.
-    cache: Option<Cache>,
+/// Split from [`Interface`] because it is pure Rust: a scene is a projection
+/// (rectangles and clickable entries, no pixels), so what a click *means* is
+/// testable without a renderer, a compositor or a Qt application — which is what
+/// the protocol tests use it for.
+pub struct Input {
     width: u32,
     height: u32,
-    /// The last frame drawn, in RGBA order (the screenshot's order, not the
-    /// buffer's).
-    pixels: Vec<u8>,
-    /// Where the pointer is, as iced remembers it. `Press` and `Release` carry
-    /// no position of their own, so the last motion is what they happen at.
-    cursor: mouse::Cursor,
+    /// The scene the last frame carried, and what a pointer is matched against.
+    scene: Option<Scene>,
+    /// Where the pointer is and what it is pressing, as the projection draws it.
+    interaction: Interaction,
+    /// The last position the pointer reported. `Press` and `Release` carry no
+    /// position of their own, so the last motion is what they happen at.
+    cursor: Option<Point>,
+}
+
+impl Input {
+    /// Input for a surface of `width` × `height` logical pixels.
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            scene: None,
+            interaction: Interaction::default(),
+            cursor: None,
+        }
+    }
+
+    /// The size this input projects at.
+    pub const fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Resizes the input for a new configure, and reports whether it changed.
+    ///
+    /// A size the renderer will not draw is not a resize: the surface keeps the
+    /// frame it is already showing, so the input keeps the size that frame was
+    /// projected at. The rule lives here as well as in [`Interface::resize`]
+    /// because an input that took a size the renderer refuses would match
+    /// pointer events against a projection nobody ever saw.
+    pub fn resize(&mut self, width: u32, height: u32) -> bool {
+        if self.dimensions() == (width, height) {
+            return false;
+        }
+
+        let Some((width, height)) = frame_size(width, height) else {
+            return false;
+        };
+
+        self.width = width;
+        self.height = height;
+        self.scene = None;
+
+        true
+    }
+
+    /// The scene the surface currently carries.
+    ///
+    /// This is what a test asserts against when it asks what the panel would
+    /// draw, without involving a renderer: the colours, sizes and sentences the
+    /// QML tree receives are all in here. [`Interface::render_argb`] stores the
+    /// scene it drew, so a pointer is matched against what is on screen rather
+    /// than against the projection of an older state.
+    pub fn scene(&self) -> Option<&Scene> {
+        self.scene.as_ref()
+    }
+
+    /// Records the scene that is on the surface now.
+    fn set_scene(&mut self, scene: Scene) {
+        self.scene = Some(scene);
+    }
+
+    /// The scene projected from `state` at this input's size.
+    pub fn project(&self, state: &State) -> Scene {
+        let model = state.model();
+
+        view::scene(
+            &model,
+            state.tokens(),
+            state.shell(),
+            state.localizer(),
+            self.width as f32,
+            self.height as f32,
+            &self.interaction,
+        )
+    }
+
+    /// Feeds one pointer event to the interface and applies what it produced.
+    ///
+    /// Returns the messages the interaction produced and whether the surface has
+    /// to be drawn again. The messages are applied with [`crate::app::update`]
+    /// here, so the caller has exactly one way to learn what an interaction
+    /// meant, and the interaction is drawn from the same state table the resting
+    /// entries are: a hovered or pressed entry is `Hovered`/`Pressed` in
+    /// [`crate::theme`].
+    pub fn pointer(&mut self, state: &mut State, event: Pointer) -> Produced {
+        if self.scene.is_none() {
+            let scene = self.project(state);
+            self.scene = Some(scene);
+        }
+
+        let mut messages = Vec::new();
+        let mut repaint = false;
+
+        match event {
+            Pointer::Enter(point) | Pointer::Motion(point) => {
+                self.cursor = Some(point);
+                repaint = self.move_hover(point);
+            }
+            Pointer::Leave => {
+                self.cursor = None;
+                repaint = self.interaction.hovered.take().is_some();
+                self.interaction.pressed = None;
+            }
+            Pointer::Press(Button::Left) => {
+                let action = self.cursor.and_then(|point| self.action_at(point));
+
+                repaint = action.is_some();
+                self.interaction.pressed = action;
+            }
+            Pointer::Press(_) => {}
+            Pointer::Release(Button::Left) => {
+                let pressed = self.interaction.pressed.take();
+                repaint = pressed.is_some();
+
+                if let (Some(pressed), Some(point)) = (pressed, self.cursor)
+                    && self.action_at(point) == Some(pressed)
+                    && let Some(message) = message_of(pressed)
+                {
+                    messages.push(message);
+                }
+            }
+            Pointer::Release(_) => {}
+        }
+
+        for message in &messages {
+            app::update(state, message.clone());
+        }
+
+        Produced { messages, repaint }
+    }
+
+    /// The action under `point`, when it is one a click can start.
+    fn action_at(&self, point: Point) -> Option<EntryAction> {
+        self.scene
+            .as_ref()
+            .and_then(|scene| scene.entry_at(point.x, point.y))
+            .map(|entry| entry.action)
+    }
+
+    /// Notes that the pointer is at `point` and reports whether that changed the
+    /// entry it is over.
+    fn move_hover(&mut self, point: Point) -> bool {
+        let hovered = self.action_at(point);
+
+        if self.interaction.hovered == hovered {
+            return false;
+        }
+
+        self.interaction.hovered = hovered;
+
+        true
+    }
+}
+
+/// The message an action becomes, when it is one [`crate::app`] understands.
+fn message_of(action: EntryAction) -> Option<Message> {
+    Some(match action {
+        EntryAction::Activate(key) => Message::TaskActivated { key },
+        EntryAction::Toggle(key) => Message::TaskToggled { key },
+        EntryAction::Retry => Message::Retry,
+    })
+}
+
+/// The panel's interface on its layer surface: a QML scene rendered offscreen.
+///
+/// One per surface, because the surface has one configured size and one
+/// interaction state. The size is kept as the integers the configure delivered,
+/// exactly: an `f32` cannot represent every `u32`, and a frame drawn at the
+/// rounded size would be handed to a buffer created for the real one.
+pub struct Interface {
+    renderer: offscreen::Host,
+    /// Pointer input and the scene it is matched against. It is also what the
+    /// last frame drew.
+    input: Input,
 }
 
 impl Interface {
     /// An interface for a surface of `width` × `height`.
     ///
-    /// `None` when the size is one this component will not draw: a zero-sized
-    /// surface (nothing to draw on) or a frame past [`MAX_FRAME_BYTES`].
-    pub fn new(width: u32, height: u32) -> Option<Self> {
-        let (width, height) = frame_size(width, height)?;
+    /// # Errors
+    ///
+    /// [`InterfaceError::Size`] when the size is one this component will not
+    /// draw (a zero-sized surface, or a frame past [`MAX_FRAME_BYTES`]), and
+    /// [`InterfaceError::Render`] when the offscreen QML renderer cannot start.
+    pub fn new(width: u32, height: u32) -> Result<Self, InterfaceError> {
+        let Some((width, height)) = frame_size(width, height) else {
+            return Err(InterfaceError::Size(width, height));
+        };
 
-        Some(Self {
-            renderer: iced_tiny_skia::Renderer::new(Font::DEFAULT, default_text_size()),
-            cache: None,
-            width,
-            height,
-            pixels: Vec::new(),
-            cursor: mouse::Cursor::Unavailable,
+        Ok(Self {
+            renderer: offscreen::Host::new()?,
+            input: Input::new(width, height),
         })
     }
 
     /// The size this interface draws at, in pixels.
     pub const fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    /// The size this interface draws at, as layout bounds want it.
-    pub fn size(&self) -> Size<f32> {
-        Size::new(self.width as f32, self.height as f32)
+        self.input.dimensions()
     }
 
     /// Resizes the interface for a new configure.
@@ -313,142 +541,41 @@ impl Interface {
             return false;
         };
 
-        if self.dimensions() == (width, height) {
-            return false;
-        }
-
-        self.width = width;
-        self.height = height;
-
-        true
+        self.input.resize(width, height)
     }
 
-    /// Draws the panel into `out` as the byte order `wl_shm` wants.
-    pub fn render_argb(&mut self, state: &State, out: &mut Vec<u8>) {
-        self.draw(state);
-        write_argb(&self.pixels, out);
-    }
-
-    /// The last frame drawn, in RGBA order, and empty before the first draw.
-    pub fn pixels(&self) -> &[u8] {
-        &self.pixels
+    /// The input half: what a click means, and the scene it is matched against.
+    pub const fn input(&self) -> &Input {
+        &self.input
     }
 
     /// Feeds one pointer event to the interface and applies what it produced.
-    ///
-    /// Returns the messages the widget tree produced and whether the interface
-    /// asked for a redraw. The messages are applied with [`crate::app::update`]
-    /// here, so the caller has exactly one way to learn what an interaction
-    /// meant, and the `Task` the update returns is dropped — the panel returns
-    /// `Task::none()` (see [`crate::app::update`]) and the leg owns the clock.
     pub fn pointer(&mut self, state: &mut State, event: Pointer) -> Produced {
-        let (events, cursor) = match event {
-            Pointer::Enter(point) => (
-                vec![Event::Mouse(mouse::Event::CursorMoved { position: point })],
-                mouse::Cursor::Available(point),
-            ),
-            Pointer::Motion(point) => (
-                vec![Event::Mouse(mouse::Event::CursorMoved { position: point })],
-                mouse::Cursor::Available(point),
-            ),
-            Pointer::Leave => (
-                vec![Event::Mouse(mouse::Event::CursorLeft)],
-                mouse::Cursor::Unavailable,
-            ),
-            Pointer::Press(button) => (
-                vec![Event::Mouse(mouse::Event::ButtonPressed(button))],
-                self.cursor,
-            ),
-            Pointer::Release(button) => (
-                vec![Event::Mouse(mouse::Event::ButtonReleased(button))],
-                self.cursor,
-            ),
-        };
-
-        self.cursor = cursor;
-        let (messages, repaint) = self.produce(state, &events, cursor);
-
-        for message in &messages {
-            let _ = app::update(state, message.clone());
-        }
-
-        Produced { messages, repaint }
+        self.input.pointer(state, event)
     }
 
-    /// Lays the widget tree out, handles `events` and draws the panel.
-    fn draw(&mut self, state: &State) {
-        let theme = theme::from_tokens(state.tokens());
-        let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
-        let (produced, _) = self.produce(state, &[redraw], self.cursor);
-
-        // A redraw produces no messages in this crate — nothing here reacts to
-        // being drawn — so this is a diagnostic rather than a queue something
-        // drains. It is logged rather than dropped silently because a widget that
-        // started producing one would be a widget whose state this module is
-        // quietly discarding.
-        if !produced.is_empty() {
-            debug!(
-                messages = produced.len(),
-                "drawing the panel produced messages, which the redraw path does not consume"
-            );
-        }
-
-        let cache = self.cache.take().unwrap_or_default();
-        let mut ui = UserInterface::build(app::view(state), self.size(), cache, &mut self.renderer);
-        ui.draw(&mut self.renderer, &theme, &Style::default(), self.cursor);
-        self.cache = Some(ui.into_cache());
-
-        // Composited over nothing: the pane is translucent, so a screenshot over
-        // an opaque colour would make every unpainted pixel a colour the
-        // compositor then blends as if the panel had painted it.
-        let mut frame = Headless::screenshot(
-            &mut self.renderer,
-            Size::new(self.width, self.height),
-            SCALE_FACTOR,
-            Color::TRANSPARENT,
-        );
-
-        std::mem::swap(&mut self.pixels, &mut frame);
-    }
-
-    /// Feeds `events` to a freshly built interface and returns what it produced.
+    /// Draws the panel into `out` as the byte order `wl_shm` wants.
     ///
-    /// The interface is rebuilt from the kept cache on every call, which is what
-    /// makes the widget tree see one continuous interaction rather than a new
-    /// screen per event.
-    fn produce(
-        &mut self,
-        state: &State,
-        events: &[Event],
-        cursor: mouse::Cursor,
-    ) -> (Vec<Message>, bool) {
-        let cache = self.cache.take().unwrap_or_default();
-        let mut messages = Vec::new();
-        let redraw = {
-            let mut ui =
-                UserInterface::build(app::view(state), self.size(), cache, &mut self.renderer);
-            let (status, _) = ui.update(
-                events,
-                cursor,
-                &mut self.renderer,
-                &mut clipboard::Null,
-                &mut messages,
-            );
-            let requested = match status {
-                iced_runtime::user_interface::State::Updated { redraw_request, .. } => {
-                    !matches!(redraw_request, window::RedrawRequest::Wait)
-                }
-                // The tree decided its layout is out of date; the next draw is
-                // the one that will rebuild it, so it has to happen.
-                iced_runtime::user_interface::State::Outdated => true,
-            };
+    /// # Errors
+    ///
+    /// [`RenderError`] when the QML renderer cannot draw this size. The caller
+    /// reports it and stops: there is no frame to commit and no window to fall
+    /// back to.
+    pub fn render_argb(&mut self, state: &State, out: &mut Vec<u8>) -> Result<(), RenderError> {
+        let scene = self.input.project(state);
 
-            self.cache = Some(ui.into_cache());
+        self.renderer.set_model(&scene.json)?;
 
-            requested
-        };
+        let frame = self.renderer.frame(self.input.width, self.input.height)?;
 
-        (messages, redraw)
+        write_argb(&frame, out);
+
+        // The frame that is now on the surface is the one a pointer is matched
+        // against: a click on a tile the user can see has to mean that tile,
+        // even when the state changed since the previous frame.
+        self.input.set_scene(scene);
+
+        Ok(())
     }
 }
 
@@ -465,12 +592,11 @@ fn frame_size(width: u32, height: u32) -> Option<(u32, u32)> {
     (bytes <= MAX_FRAME_BYTES).then_some((width, height))
 }
 
-/// The bytes of a `wl_shm` `Argb8888` frame, from a premultiplied RGBA screenshot.
+/// The bytes of a `wl_shm` `Argb8888` frame, from premultiplied RGBA pixels.
 ///
 /// `wl_shm` names the *words*: on little-endian — every architecture Inox
 /// supports — a word of `Argb8888` is `B, G, R, A` in memory, and its alpha is
-/// premultiplied, which is exactly what `iced_tiny_skia`'s screenshot already
-/// holds. Swapping the channels without un-premultiplying them is what makes a
+/// premultiplied, which is exactly what the offscreen renderer already holds. Swapping the channels without un-premultiplying them is what makes a
 /// translucent pane show a halo, which is why the frame is translated here rather
 /// than written straight out.
 fn write_argb(rgba: &[u8], out: &mut Vec<u8>) {
@@ -482,16 +608,11 @@ fn write_argb(rgba: &[u8], out: &mut Vec<u8>) {
     }
 }
 
-/// The text size the renderer starts from, before any widget asks for its own.
-fn default_text_size() -> Pixels {
-    iced::Settings::default().default_text_size
-}
-
 /// A surface-local logical coordinate for a protocol coordinate.
 ///
-/// `wl_pointer` reports coordinates in surface-local physical pixels and iced
-/// lays the interface out in logical pixels; the surface's scale factor is what
-/// relates them. The panel does not scale its buffer ([`SCALE_FACTOR`] is one),
+/// `wl_pointer` reports coordinates in surface-local physical pixels and the
+/// projection lays the interface out in logical pixels; the surface's scale
+/// factor is what relates them. The panel does not scale its buffer ([`SCALE_FACTOR`] is one),
 /// but dividing here is what keeps a future buffer scale a one-line change
 /// instead of a hunt.
 pub fn logical(pixels: f64, scale: f32) -> f32 {
@@ -502,19 +623,19 @@ pub fn logical(pixels: f64, scale: f32) -> f32 {
     }
 }
 
-/// The iced button for a Linux input event code, when the panel acts on it.
+/// The button for a Linux input event code, when the panel acts on it.
 ///
 /// The codes are the `BTN_*` values `wl_pointer.button` carries
 /// (`linux/input-event-codes.h`); a button the panel has no meaning for is not an
 /// error and not a panicked `unreachable` — it is simply not a button the panel
 /// reacts to.
-pub const fn pointer_button(code: u32) -> Option<mouse::Button> {
+pub const fn pointer_button(code: u32) -> Option<Button> {
     match code {
-        0x110 => Some(mouse::Button::Left),
-        0x111 => Some(mouse::Button::Right),
-        0x112 => Some(mouse::Button::Middle),
-        0x113 => Some(mouse::Button::Back),
-        0x114 => Some(mouse::Button::Forward),
+        0x110 => Some(Button::Left),
+        0x111 => Some(Button::Right),
+        0x112 => Some(Button::Middle),
+        0x113 => Some(Button::Back),
+        0x114 => Some(Button::Forward),
         _ => None,
     }
 }
@@ -626,6 +747,10 @@ struct Client {
     pending_repaint: bool,
     stopped: bool,
     connection_lost: bool,
+    /// The failure that stopped the leg, when it was one of its own rather than
+    /// the compositor's: a renderer that could not start, or a frame it could
+    /// not draw. `main` reports it and exits non-zero.
+    fatal: Option<LegError>,
     /// Frames committed, which is the observable proof that the panel drew.
     committed: u64,
 }
@@ -848,11 +973,21 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Client {
 
                         interface.dimensions() != (width, height)
                     }
-                    None => {
-                        state.interface = Interface::new(width, height);
+                    None => match Interface::new(width, height) {
+                        Ok(interface) => {
+                            state.interface = Some(interface);
 
-                        state.interface.is_none()
-                    }
+                            false
+                        }
+                        Err(InterfaceError::Size(..)) => true,
+                        Err(InterfaceError::Render(error)) => {
+                            state.interface = None;
+                            state.configured = None;
+                            state.fail(LegError::Render(error));
+
+                            return;
+                        }
+                    },
                 };
 
                 if refused {
@@ -930,6 +1065,17 @@ impl Client {
         };
 
         interface.pointer(state, input)
+    }
+
+    /// Stops the leg with a failure it has to report.
+    ///
+    /// A renderer that cannot start is not a degradation: the panel has no
+    /// pixels to put on its surface, and a Qt window is exactly the outcome
+    /// refuses. The loop ends here and [`run`] returns the reason.
+    fn fail(&mut self, error: LegError) {
+        error!(%error, "the panel cannot draw its surface; stopping");
+        self.fatal = Some(error);
+        self.stopped = true;
     }
 
     /// Notes that a global went away, and stops when it is one the surface needs.
@@ -1291,7 +1437,7 @@ impl Client {
         };
 
         let mut bytes = Vec::new();
-        interface.render_argb(&self.state, &mut bytes);
+        interface.render_argb(&self.state, &mut bytes)?;
 
         let mut file = File::from(frame_memory("inox-panel-frame")?);
         file.write_all(&bytes)?;
@@ -1397,13 +1543,12 @@ impl Client {
         }
     }
 
-    /// Feeds the clock the iced runtime used to feed.
+    /// Feeds the clock the timer used to feed.
     fn tick(&mut self) {
         let before = self.state.model();
-        // The `Task` is dropped: this crate's `update` returns `Task::none()`
-        // (there is no asynchronous work behind a tick), and the leg owns the
-        // clock — the `calloop` timer is what produces the next one.
-        let _ = app::update(&mut self.state, Message::Tick(Local::now()));
+        // `update` does no I/O and returns nothing to poll: the leg owns the
+        // clock, and the `calloop` timer is what produces the next tick.
+        app::update(&mut self.state, Message::Tick(Local::now()));
 
         if self.state.model() != before {
             self.pending_repaint = true;
@@ -1527,6 +1672,7 @@ pub fn run(
         pending_repaint: false,
         stopped: false,
         connection_lost: false,
+        fatal: None,
         committed: 0,
     };
 
@@ -1646,8 +1792,7 @@ fn drive(
         .insert_source(wake_source, |_, _, client| client.drain_reloads())
         .map_err(|error| LegError::EventLoop(error.to_string()))?;
 
-    // The clock is a timer, not a frame clock: it feeds the same
-    // `Message::Tick` the iced runtime's subscription used to, at the same
+    // The clock is a timer, not a frame clock: it feeds `Message::Tick` at the
     // `app::TICK` interval, and only a clock that actually changed the projection
     // causes a frame.
     handle
@@ -1676,7 +1821,10 @@ fn drive(
         client.repaint(&qh, model);
     }
 
-    Ok(client.outcome())
+    match client.fatal.take() {
+        Some(error) => Err(error),
+        None => Ok(client.outcome()),
+    }
 }
 
 #[cfg(test)]
@@ -1694,45 +1842,40 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_is_the_size_it_was_configured_to() {
-        let interface = Interface::new(320, 32).expect("a drawable size");
-
-        assert_eq!(interface.dimensions(), (320, 32));
-    }
-
-    #[test]
-    fn a_size_nothing_could_have_meant_is_refused_rather_than_allocated() {
-        assert!(Interface::new(0, 32).is_none(), "a surface with no width");
-        assert!(Interface::new(320, 0).is_none(), "a surface with no height");
-        assert!(
-            Interface::new(65_536, 65_536).is_none(),
+    fn a_frame_is_refused_before_it_is_allocated_when_the_size_means_nothing() {
+        assert_eq!(frame_size(0, 32), None, "a surface with no width");
+        assert_eq!(frame_size(320, 0), None, "a surface with no height");
+        assert_eq!(
+            frame_size(65_536, 65_536),
+            None,
             "16 GiB of frame is not a display"
         );
-        assert!(
-            Interface::new(3840, 2160).is_some(),
+        assert_eq!(frame_size(320, 32), Some((320, 32)));
+        assert_eq!(
+            frame_size(3840, 2160),
+            Some((3840, 2160)),
             "and a real 4K output is not refused"
         );
     }
 
     #[test]
     fn a_configure_that_does_not_change_the_size_says_so() {
-        let mut interface = Interface::new(320, 32).expect("a drawable size");
+        let mut input = Input::new(320, 32);
 
-        assert!(!interface.resize(320, 32), "the same size");
-        assert!(interface.resize(640, 32), "a real resize");
-        assert_eq!(interface.dimensions(), (640, 32));
+        assert!(!input.resize(320, 32), "the same size");
+        assert!(input.resize(640, 32), "a real resize");
+        assert_eq!(input.dimensions(), (640, 32));
         assert!(
-            !interface.resize(u32::MAX, u32::MAX),
+            !Input::new(640, 32).resize(u32::MAX, u32::MAX),
             "a size that cannot be drawn leaves the frame that is already there"
         );
-        assert_eq!(interface.dimensions(), (640, 32));
     }
 
     #[test]
     fn a_frame_is_little_endian_premultiplied_argb() {
         // `wl_shm`'s `Argb8888` names the *words*: the byte order on the wire is
-        // B, G, R, A. The pixels are premultiplied — what the screenshot already
-        // holds — so the alpha is copied, not divided out.
+        // B, G, R, A. The pixels are premultiplied — what the offscreen renderer
+        // already holds — so the alpha is copied, not divided out.
         let mut out = Vec::new();
 
         write_argb(&[0x11, 0x22, 0x33, 0xff, 0x44, 0x55, 0x66, 0x80], &mut out);
@@ -1754,37 +1897,14 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_frame_keeps_the_pane_translucent() {
-        // The one assertion that catches a screenshot composited over an opaque
-        // colour: a glass pane has to leave the pixels it does not paint
-        // transparent, or the compositor blends a coloured square over the
-        // wallpaper behind it.
-        let state = state(PanelSurface::Dock);
-        let mut interface = Interface::new(320, 96).expect("a drawable size");
-        let mut out = Vec::new();
-
-        interface.render_argb(&state, &mut out);
-
-        assert_eq!(out.len(), 320 * 96 * 4);
-        assert!(
-            out.as_chunks::<4>().0.iter().any(|pixel| pixel[3] < 0xff),
-            "every pixel is opaque, so the pane's transparency was composited away"
-        );
-        assert!(
-            out.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0),
-            "every pixel is transparent, so nothing was drawn"
-        );
-    }
-
-    #[test]
     fn a_click_on_an_empty_panel_produces_nothing() {
         let mut state = state(PanelSurface::Taskbar);
         state.take_outgoing();
-        let mut interface = Interface::new(1280, 32).expect("a drawable size");
+        let mut input = Input::new(1280, 32);
 
-        let entered = interface.pointer(&mut state, Pointer::Enter(Point::new(640.0, 16.0)));
-        let pressed = interface.pointer(&mut state, Pointer::Press(mouse::Button::Left));
-        let released = interface.pointer(&mut state, Pointer::Release(mouse::Button::Left));
+        let entered = input.pointer(&mut state, Pointer::Enter(Point::new(640.0, 16.0)));
+        let pressed = input.pointer(&mut state, Pointer::Press(Button::Left));
+        let released = input.pointer(&mut state, Pointer::Release(Button::Left));
 
         assert!(entered.messages.is_empty(), "entering is not a message");
         assert!(pressed.messages.is_empty(), "the press is not a message");
@@ -1794,6 +1914,23 @@ mod tests {
             released.messages
         );
         assert!(state.take_outgoing().is_empty());
+    }
+
+    #[test]
+    fn the_empty_panel_still_projects_the_strip_and_nothing_to_click() {
+        let state = state(PanelSurface::Taskbar);
+        let input = Input::new(1280, 32);
+
+        let scene = input.project(&state);
+
+        assert_eq!(scene.surface, PanelSurface::Taskbar);
+        assert!(scene.entries.is_empty());
+        assert!(
+            scene.json["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "the strip is painted even when there is nothing running"
+        );
     }
 
     #[test]
@@ -1809,11 +1946,11 @@ mod tests {
 
     #[test]
     fn only_the_buttons_the_panel_acts_on_are_translated() {
-        assert_eq!(pointer_button(0x110), Some(mouse::Button::Left));
-        assert_eq!(pointer_button(0x111), Some(mouse::Button::Right));
-        assert_eq!(pointer_button(0x112), Some(mouse::Button::Middle));
-        assert_eq!(pointer_button(0x113), Some(mouse::Button::Back));
-        assert_eq!(pointer_button(0x114), Some(mouse::Button::Forward));
+        assert_eq!(pointer_button(0x110), Some(Button::Left));
+        assert_eq!(pointer_button(0x111), Some(Button::Right));
+        assert_eq!(pointer_button(0x112), Some(Button::Middle));
+        assert_eq!(pointer_button(0x113), Some(Button::Back));
+        assert_eq!(pointer_button(0x114), Some(Button::Forward));
         assert_eq!(pointer_button(0x115), None, "BTN_TASK has no meaning here");
         assert_eq!(pointer_button(0), None);
     }
@@ -1904,5 +2041,24 @@ mod tests {
         file.read_exact(&mut read).expect("the frame reads back");
 
         assert_eq!(read, frame, "the frame is the bytes that were written");
+    }
+
+    #[test]
+    fn hovering_an_entry_is_a_reason_to_draw_and_leaving_it_is_too() {
+        // A hover has to be visible while it lasts (ui-guidelines §5), and the
+        // protocol leg only commits a frame when the interface says so.
+        let mut state = state(PanelSurface::Taskbar);
+        let mut input = Input::new(1280, 32);
+        let scene = input.project(&state);
+        let _ = scene;
+
+        let entered = input.pointer(&mut state, Pointer::Enter(Point::new(2.0, 2.0)));
+        let left = input.pointer(&mut state, Pointer::Leave);
+
+        assert!(
+            !entered.repaint,
+            "there is no entry to hover on an empty strip"
+        );
+        assert!(!left.repaint);
     }
 }

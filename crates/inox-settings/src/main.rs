@@ -1,38 +1,84 @@
-//! The settings binary: logging, configuration, catalogs, then the iced window.
+//! The settings window: logging, configuration, the Qt Quick host.
 //!
-//! This file is also the window's **runtime**: [`app::update`] performs no I/O,
-//! it queues [`OutgoingCommand`]s, and the wrapper below is what carries them
-//! out and feeds the outcomes back as messages. That is why the same state
-//! machine the unit tests drive is the one a user drives — there is no second
-//! implementation of "write the file" or "ask the component" anywhere.
+//! This file is the crate root, and the window's **entry point** — the crate is
+//! bin-only on purpose. cxx-qt 0.10 embeds the bridge's generated initializers in
+//! the target that declares the bridge, so a bridge split between a library and a
+//! binary in the same package fails to link with `undefined reference to
+//! 'cxx_qt_init_*'` (KDAB/cxx-qt #770, `docs/qml-migration-contract.md` §2.1).
+//! Everything that used to be a library item lives in this binary's modules, and
+//! every test lives in `headless_tests` (`#[cfg(test)]` below) for the same
+//! reason: an integration test in `tests/` is a separate target that links the
+//! same generated archive but not the bridge's Rust symbols.
 //!
+//! The runtime itself is [`runtime::UiRuntime`]: it owns the state machine, turns
+//! each [`OutgoingCommand`](app::OutgoingCommand) into work on another thread, and
+//! answers the QML tree with a projection. This file only boots: logging, the
+//! configuration, the catalogs, then Qt.
+//!
+//! The window is an ordinary Qt window: `QGuiApplication` +
+//! `QQmlApplicationEngine`, with a QML `Window` root. There is no Qt Wayland
+//! Compositor anywhere in the dependency graph, and no GPL-only Qt module.
+
+// The crate is bin-only (contract §2.1), so every module here is internal to the
+// binary and the evidence that drives these items lives in the binary's own
+// `#[cfg(test)]` modules: the state machine's accessors, the message variants the
+// workflow tests send, and the catalog checklists read as "never used" from the
+// binary target, because a `#[cfg(test)]` read does not count as a use of the
+// non-test build. `inox-launcher`, `inox-lock` and `inox-notifications` carry the
+// same allowance for the same reason after their own migrations.
+#![allow(dead_code)]
+
+mod app;
+mod apply;
+mod collections;
+mod cxxqt_object;
+mod document;
+mod draft;
+mod focus;
+mod i18n;
+mod live;
+mod pages;
+mod persist;
+mod runtime;
+mod theme;
+mod ui_host;
+mod validate;
+mod view;
+mod view_model;
+
+#[cfg(test)]
+mod headless_tests;
+
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use anyhow::{Context, Result};
-use iced::Task;
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
-use tracing::{error, info};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use inox_settings::app::{self, Message, OutgoingCommand, SaveRequest, State};
-use inox_settings::apply::Generation;
-use inox_settings::document::Documents;
-use inox_settings::draft::Field;
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
-mod live;
-use inox_settings::{i18n, persist, theme};
+use crate::document::Documents;
+use crate::runtime::UiRuntime;
 
-/// The size the window opens at, which is the size acceptance Q02 snapshots are
-/// taken at.
-const WINDOW_SIZE: (f32, f32) = (1280.0, 720.0);
+/// Resource URL of the bundled window.
+///
+/// cxx-qt registers `qml/Main.qml` under the module's import path and keeps the
+/// file's own relative path as its resource alias, so the module URI
+/// `com.inox.settings.qml` (path segments `com/inox/settings/qml`) plus the alias
+/// `qml/Main.qml` give the double `qml` below. `qml/Main.qml` imports
+/// `com.inox.settings.qml`, the full module URI.
+const MAIN_QML_URL: &str = "qrc:/qt/qml/com/inox/settings/qml/qml/Main.qml";
 
 fn main() -> Result<()> {
     initialise_logging()?;
+    run()
+}
 
-    // iced hands an unavailable display straight to `winit`, which panics on
-    // Linux; this check turns that into a message a user can act on.
+/// Boots the window: configuration, catalogs, runtime, then Qt.
+fn run() -> Result<()> {
+    // Qt hands an unavailable display straight to its platform plugin, which
+    // aborts the process on Linux; this check turns that into a message a user
+    // can act on.
     let display = DisplayEnv::from_process();
     if !display.is_available() {
         anyhow::bail!(
@@ -44,212 +90,88 @@ fn main() -> Result<()> {
     let paths = ConfigPaths::discover().context("locating the Inox configuration directory")?;
     let config =
         InoxConfig::load(&paths, Appearance::System).context("loading the Inox configuration")?;
-    let localizer =
-        Rc::new(i18n::load(&config.locale).context("loading the settings message catalogs")?);
+
+    boot(&paths, &config, false)
+}
+
+/// Builds the runtime, installs it, and runs the Qt host.
+///
+/// `self_check` loads the tree, waits for it to report ready and returns instead
+/// of entering the event loop: it is how the headless test proves that the module
+/// loads and that the tree read the projection.
+fn boot(paths: &ConfigPaths, config: &InoxConfig, self_check: bool) -> Result<()> {
+    let localizer = i18n::load(&config.locale).context("loading the settings message catalogs")?;
 
     info!(
         locale = %config.locale.tag(),
         theme = %config.theme.name,
         "starting Inox settings"
     );
-    let documents = Documents::open(&config, &paths)
+    let documents = Documents::open(config, paths)
         .context("reading the configuration files this window can write")?;
 
-    let runtime = Runtime {
-        paths: paths.clone(),
-        changes: RefCell::new(BTreeMap::new()),
-    };
+    let runtime = UiRuntime::new(config, documents, paths.clone(), localizer);
+    if !ui_host::install(Box::new(runtime)) {
+        anyhow::bail!("a settings window is already installed on this thread");
+    }
 
-    // iced asks for the initial state through a factory, so the window's pieces
-    // are cloned into the closure rather than moved into a state it cannot
-    // build twice.
-    let tokens = config.theme.clone();
-    let boot = {
-        let config = config.clone();
-        let documents = documents.clone();
-        let localizer = Rc::clone(&localizer);
-
-        move || {
-            (
-                State::new(
-                    &config,
-                    documents.clone(),
-                    tokens.clone(),
-                    Rc::clone(&localizer),
-                ),
-                Task::none(),
-            )
-        }
-    };
-
-    iced::application(
-        boot,
-        move |state: &mut State, message: Message| runtime.update(state, message),
-        app::view,
-    )
-    .title(app::title)
-    .theme(|state: &State| theme::from_tokens(state.tokens()))
-    .subscription(app::subscription)
-    .window_size(WINDOW_SIZE)
-    .run()
-    .context("running the settings window")
+    run_window(self_check)
 }
 
-/// The window's runtime: what carries out the commands the update loop queues.
-///
-/// It holds the configuration and the paths it was started with, so a reload
-/// reads the same directory the window opened — a `[components]` path the user
-/// pointed elsewhere is honoured rather than silently replaced by the default.
-struct Runtime {
-    paths: ConfigPaths,
-    changes: RefCell<BTreeMap<Generation, BTreeSet<Field>>>,
-}
-
-impl Runtime {
-    /// The Elm update, plus the side effects it asked for.
-    fn update(&self, state: &mut State, message: Message) -> Task<Message> {
-        let mut tasks = vec![app::update(state, message)];
-        tasks.extend(
-            state
-                .take_outgoing()
-                .into_iter()
-                .map(|command| self.perform(state, command)),
+/// Boots Qt, loads the QML module and either enters the event loop or checks it.
+fn run_window(self_check: bool) -> Result<()> {
+    let mut app = QGuiApplication::new();
+    if app.as_mut().is_none() {
+        anyhow::bail!(
+            "Qt could not create a GUI application; is a display or the offscreen platform \
+             available?"
         );
-
-        Task::batch(tasks)
     }
 
-    /// Carries out one command.
-    fn perform(&self, state: &State, command: OutgoingCommand) -> Task<Message> {
-        match command {
-            OutgoingCommand::Save(request) => {
-                // The state machine serializes saves; keep only the current generation.
-                let mut changes = self.changes.borrow_mut();
-                changes.retain(|generation, _| *generation == request.generation);
-                changes
-                    .entry(request.generation)
-                    .or_default()
-                    .extend(request.fields.iter().copied());
-                drop(changes);
-                let SaveRequest {
-                    generation,
-                    file,
-                    path,
-                    content,
-                    guard,
-                    ..
-                } = *request;
+    let mut engine = QQmlApplicationEngine::new();
+    let Some(engine) = engine.as_mut() else {
+        anyhow::bail!("Qt could not create a QML engine");
+    };
 
-                // The write is local and short; iced's thread pool keeps it off
-                // the interaction loop (ADR 0013, decision 4).
-                Task::perform(
-                    async move {
-                        let outcome = persist::save(&path, content.as_bytes(), Some(&guard));
+    engine.load(&QUrl::from(MAIN_QML_URL));
 
-                        Message::SaveSettled {
-                            generation,
-                            file,
-                            outcome,
-                        }
-                    },
-                    std::convert::identity,
-                )
+    if self_check {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+
+        loop {
+            if let Some(app) = app.as_mut() {
+                app.process_events();
             }
-            OutgoingCommand::Restore(request) => {
-                let SaveRequest {
-                    generation,
-                    file,
-                    path,
-                    content,
-                    guard,
-                    ..
-                } = *request;
 
-                // The same atomic write as a save, with its own answer: a restore
-                // is the end of a display trial, not a request the components
-                // have to confirm (ADR 0028).
-                Task::perform(
-                    async move {
-                        let outcome = persist::save(&path, content.as_bytes(), Some(&guard));
+            if cxxqt_object::qml_ready() {
+                return Ok(());
+            }
 
-                        Message::DisplayRestored {
-                            generation,
-                            file,
-                            outcome,
-                        }
-                    },
-                    std::convert::identity,
-                )
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "the settings window did not come up: the QML module failed to load, or \
+                     the tree it built does not match the projection"
+                );
             }
-            OutgoingCommand::Apply {
-                generation,
-                component,
-                trial,
-            } => {
-                let paths = self.paths.clone();
-                let documents = state.documents().clone();
-                let expected = state.draft().settings().clone();
-                let changes = self.changes.borrow();
-                let fields = changes
-                    .get(&generation)
-                    .or_else(|| changes.values().next())
-                    .cloned()
-                    .unwrap_or_default();
-                drop(changes);
-                Task::perform(
-                    async move {
-                        live::apply(
-                            &paths, &documents, &expected, &fields, generation, component, trial,
-                        )
-                    },
-                    std::convert::identity,
-                )
-            }
-            OutgoingCommand::ConfirmDisplay { generation } => Task::perform(
-                async move { live::confirm_display(generation) },
-                std::convert::identity,
-            ),
-            OutgoingCommand::RollbackDisplay { generation } => Task::perform(
-                async move { live::rollback_display(generation) },
-                std::convert::identity,
-            ),
-            OutgoingCommand::Reload => self.reload(),
+
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 
-    /// Reads the configuration and the three files again.
-    fn reload(&self) -> Task<Message> {
-        let paths = self.paths.clone();
-        let appearance = Appearance::System;
+    let status = match app.as_mut() {
+        Some(app) => app.exec(),
+        None => 1,
+    };
 
-        Task::perform(
-            async move {
-                let config = match InoxConfig::load(&paths, appearance) {
-                    Ok(config) => config,
-                    Err(error) => {
-                        return Message::ReloadFailed {
-                            reason: error.to_string(),
-                        };
-                    }
-                };
-
-                match Documents::open(&config, &paths) {
-                    Ok(documents) => Message::Reloaded {
-                        config: Box::new(config),
-                        documents: Box::new(documents),
-                    },
-                    Err(error) => {
-                        error!(%error, "the configuration files could not be read again");
-
-                        Message::ReloadFailed {
-                            reason: error.to_string(),
-                        }
-                    }
-                }
-            },
-            std::convert::identity,
-        )
+    if ui_host::with(|host| host.readiness()).is_none() {
+        warn!("the window closed after its runtime had already been dropped");
     }
+
+    if status != 0 {
+        anyhow::bail!("the settings window exited with status {status}");
+    }
+
+    Ok(())
 }
 
 /// Starts logging, honouring `RUST_LOG`.
@@ -395,7 +317,10 @@ mod tests {
     }
 
     #[test]
-    fn the_window_opens_at_the_size_the_snapshots_use() {
-        assert_eq!(WINDOW_SIZE, (1280.0, 720.0));
+    fn the_window_module_is_bundled_under_the_uri_its_qml_imports() {
+        assert_eq!(
+            MAIN_QML_URL,
+            "qrc:/qt/qml/com/inox/settings/qml/qml/Main.qml"
+        );
     }
 }

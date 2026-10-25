@@ -6,11 +6,11 @@
 //! clients (PRD §3.1, ADR 0013).
 //!
 //! **Nothing in this module is applied.** The compositor does not advertise the
-//! protocol yet and `iced_layershell` does not compile against this `iced`
-//! generation (ADR 0018), so the binary runs as an ordinary window and the
-//! placement below is computed, tested and logged rather than sent. It is
-//! written the way a future host will consume it unchanged — the same shapes the
-//! protocol has, so that host is a translation and not a redesign.
+//! protocol yet, so no layer surface can be created at all; the binary runs as an
+//! ordinary window and the placement below is computed, tested and logged rather
+//! than sent. It is written the way a future host will consume it unchanged — the
+//! same shapes the protocol has, so that host is a translation and not a
+//! redesign.
 //!
 //! The policy itself is short and unexciting, which is the point:
 //!
@@ -84,6 +84,10 @@ impl Anchors {
 
 /// What the surface may do with the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// The wallpaper asks for no keyboard interaction; the other two values are the
+// protocol's own vocabulary, kept so the model stays complete and a reader does
+// not have to consult the protocol to see what was left out.
+#[allow(dead_code)]
 pub enum KeyboardInteractivity {
     /// The surface never receives keyboard input, and the compositor does not
     /// wait for it to be focused.

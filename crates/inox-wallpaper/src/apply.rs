@@ -22,11 +22,10 @@
 
 use std::path::PathBuf;
 
-use iced::widget::image::Handle;
 use inox_config::WallpaperMode;
 
 use crate::contract::{CommandResult, OutputStatus, Problem, Showing, Snapshot};
-use crate::decode::{self, Frame};
+use crate::decode::{self, FrameHandle};
 use crate::model::{OutputName, Selection, Size, Unusable};
 use crate::scaling::{self, Placement};
 use crate::source::{self, OutputSource};
@@ -40,7 +39,7 @@ use crate::source::{self, OutputSource};
 pub struct Prepared {
     output: OutputName,
     path: PathBuf,
-    frame: Frame,
+    frame: FrameHandle,
     placement: Placement,
 }
 
@@ -57,12 +56,13 @@ impl Prepared {
         &self.path
     }
 
-    /// The pixels, still in the decoder's buffer.
+    /// The pixels and their QML encoding.
     ///
-    /// [`settle`] moves this buffer into the renderer's own handle; nothing
-    /// copies it, which is why the type is not `Arc`.
+    /// The handle owns the decoder's buffer — nothing copies it — and the data
+    /// URL QML draws from was produced off the interaction loop, when the frame
+    /// was prepared.
     #[must_use]
-    pub fn frame(&self) -> &Frame {
+    pub fn frame(&self) -> &FrameHandle {
         &self.frame
     }
 
@@ -75,10 +75,9 @@ impl Prepared {
 
 /// The result of preparing one output.
 ///
-/// [`Clone`] because the widget toolkit requires every message to be cloneable,
-/// and this is one. Nothing in the component clones a message: a prepared frame
-/// is moved into [`settle`], which moves its buffer into the renderer's handle,
-/// so no pixel buffer is ever copied.
+/// [`Clone`] because a message has to be cloneable, and this is one. Nothing in
+/// the component clones a message: a prepared frame is moved into [`settle`],
+/// which moves its handle into the snapshot, so no pixel buffer is ever copied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Preparation {
     /// A complete frame, ready to be swapped in.
@@ -154,10 +153,13 @@ pub fn prepare(
         }
     };
 
+    // Encoded for QML here, on the caller's thread: `prepare` is the half that
+    // runs off the interaction loop, so the PNG encoding a frame needs never
+    // stalls the window.
     Preparation::Ready(Box::new(Prepared {
         output,
         path,
-        frame,
+        frame: frame.into_handle(),
         placement,
     }))
 }
@@ -175,16 +177,13 @@ pub fn settle(snapshot: &mut Snapshot, preparation: Preparation) -> CommandResul
             let Prepared {
                 output,
                 path,
-                frame,
+                frame: image,
                 placement,
             } = *prepared;
-            let image_size = frame.size();
+            let image_size = image.size();
 
-            // The decoder's buffer *is* the renderer's buffer: the handle
-            // takes ownership of it, so a frame that has been placed is never
-            // copied and never exists twice.
-            let image = Handle::from_rgba(frame.width(), frame.height(), frame.into_rgba());
-
+            // The handle already owns the decoded buffer and its QML encoding,
+            // so a frame that has been placed is never copied or encoded twice.
             snapshot.set(
                 output,
                 OutputStatus {
@@ -272,7 +271,13 @@ mod tests {
             showing: Showing::Image {
                 path: "/walls/wall.png".to_owned(),
                 size: Size::new(width, height),
-                image: Handle::from_rgba(width, height, vec![0; (width * height * 4) as usize]),
+                image: crate::decode::Frame::new(
+                    width,
+                    height,
+                    vec![0; (width * height * 4) as usize],
+                )
+                .expect("a well-formed frame")
+                .into_handle(),
                 placement,
             },
             problem: None,

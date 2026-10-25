@@ -63,29 +63,45 @@ cargo test -p inox-integration --test layering
 
 MSRV 由根 `Cargo.toml` 的 `[workspace.package] rust-version` 统一给出，当前为 **1.89**；成员一律 `rust-version.workspace = true`，不再各自声明。CI 跟随 `stable`，声明的下限只约束使用者。
 
-当前下限来自 `zbus` 6.0 的 Rust 1.89 要求（[ADR 0027](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0027-zbus-6-migration.md)）。此次从 1.88 提升到 1.89，不再支持 1.88 工具链；Iced/image 引入时曾把工作区从 1.86 提升到 1.88。成员仍统一继承根声明，CI 除 stable 全量检查外增加 Rust 1.89 静态检查。
+当前下限来自 `zbus` 6.0 的 Rust 1.89 要求（[ADR 0027](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0027-zbus-6-migration.md)）。此次从 1.88 提升到 1.89，不再支持 1.88 工具链；Iced/image 引入时曾把工作区从 1.86 提升到 1.88（历史记录：Iced 已不在依赖图内）。成员仍统一继承根声明，CI 除 stable 全量检查外增加 Rust 1.89 静态检查。cxx-qt 0.10 的 MSRV 是 1.85、构建期通过 `qmake`/`pkg-config` 解析 Qt 6，两者都不抬高工作区的 1.89 下限。
 
 zbus 6 将停止维护的 zvariant、zvariant_derive、zbus_names 合并进自身，不再使用旧 blocking API。通知传输线程与配置重载工作线程使用 `zbus::block_on` 驱动异步 API；数据类型改为 `Variant` / `OwnedVariant`，标准 D-Bus 错误按 `Error::FDO` 分类。总线接口与用户配置格式不变，许可证仍为 MIT，完整依赖检查仍由 CI 执行。
 
 ## L3 的第三方依赖
 
-L3 组件（面板、启动器、通知、设置、锁屏、壁纸）在 L1/L2 之外引入下列依赖，全部在 `[workspace.dependencies]` 声明一次：
+L3 组件（面板、启动器、通知、设置、锁屏、壁纸）在 L1/L2 之外引入下列依赖，全部在 `[workspace.dependencies]` 声明一次。共享 UI 的边界（每个组件各自持有一小段令牌映射，而不是抽一个共享 UI crate）是 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md) 的取舍，迁移到 Qt 后这条取舍不变：
 
 | crate | 许可证 | 用途 | 作用范围 |
 |-------|--------|------|----------|
-| `iced` 0.14 | MIT | GUI 工具包（ADR 0003 已固定），`default-features = false`，只启用 `tiny-skia`、`wayland`、`thread-pool`、`crisp`、`image` | 六个有界面的组件 |
+| `cxx-qt` / `cxx-qt-lib` / `cxx-qt-build` 0.10 | MIT OR Apache-2.0 | QML + Qt Quick 的 Rust 绑定：`#[cxx_qt::bridge]` 定义暴露给 QML 的 QObject，`cxx-qt-build` 在 `build.rs` 里生成 C++ 薄胶水（[ADR 0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md)） | 七个 GUI 组件与 `inox-qml-prototype` |
+| `cxx` 1 | MIT OR Apache-2.0 | cxx-qt 之下的 FFI 层；桥的生成代码依赖它 | 同上 |
+| `serde_json` 1 | MIT OR Apache-2.0 | 把状态投影成一份 JSON 交给 QML（`model_json`），并解析 QML 交回的动作（`dispatch`） | 七个 GUI 组件 |
 | `fluent-bundle` / `fluent-syntax` 0.16 / 0.12 | Apache-2.0 OR MIT | 用户可见文案的加载与解析（PRD §11.2） | `inox-common::i18n` |
 | `unic-langid` 0.9 | MIT OR Apache-2.0 | BCP-47 语言标签 | 同上 |
 | `chrono` 0.4 | MIT OR Apache-2.0 | 面板时钟的民用时间 | `inox-panel` |
-| `image` 0.25 | MIT OR Apache-2.0 | 壁纸的 PNG/JPEG 解码（只启用这两种格式） | `inox-wallpaper`、渲染测试 |
+| `image` 0.25 | MIT OR Apache-2.0 | 壁纸的 PNG/JPEG 解码（只启用这两种格式）。迁移前它也在渲染测试装置里；那套装置已随 Iced 删除 | `inox-wallpaper` |
 | `zbus` 6.0 | MIT | 通知总线与配置重载；显式启用 default-rt/proxy/service/p2p/tracing | 通知、设置与配置消费方 |
-| `zeroize` 1 | MIT OR Apache-2.0 | 凭据缓冲在释放时清零（ADR 0015） | `inox-lock` |
-| `iced_core` / `iced_runtime` / `iced_tiny_skia` 0.14 | MIT | iced 的离屏一半：`UserInterface` 负责布局与事件、tiny-skia 渲染器负责像素。各 L3 组件作 **dev-dependency**（渲染测试装置）；`inox-lock` 作 **dependency**——锁表面不是窗口，提交的帧由它画成（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)） | 各 L3 组件的 `tests/`；`inox-lock` 的 `src/render.rs` |
+| `zeroize` 1 | MIT OR Apache-2.0 | 凭据缓冲在释放时清零（ADR 0015） | `inox-lock`、`inox-greet` |
 
-两个取舍值得记录：
+三个取舍值得记录：
 
-- **不启用 `wgpu`。** `tiny-skia` 是纯软件渲染，无 GPU 的 CI 与 llvmpipe 环境都能呈现，而 `wgpu` 会引入一个没有任何 Inox 配置会选中的第二渲染器。软件渲染是 CI 与回退路径，不是性能验收基准（PRD §8）。
-- **没有 `iced_layershell`。** 面板、启动器、通知与壁纸按 PRD §2.3 需要 layer-shell 表面，但截至本次实现，`iced_layershell` 0.19.1 与 0.19.0 **都无法编译**：其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举 `NativeKeyCode` 做了穷尽匹配。因此本次交付把 layer-shell 的**放置策略**建模为纯数据并测试，界面以普通窗口运行，表面协议腿留待上游修复或另择宿主方案（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。
+- **不需要 GPU 也能测。** Qt Quick 在面板与锁屏里用**软件场景图**（`QT_QUICK_BACKEND=software`）渲染到 `QT_QPA_PLATFORM=offscreen` 的窗口，因此 CI 与 llvmpipe 环境都能出帧；同样的选择也避免为了测试引入第二个渲染后端。软件渲染是 CI 与回退路径，不是性能验收基准（PRD §8）。
+- **没有 LayerShellQt。** [ADR 0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md) 原本选「Qt 窗口 + `LayerShellQt`」，但 CI 的 Ubuntu 24.04 归档里只有 Qt 5 的 `layer-shell-qt`，且 Qt 客户端根本没有 `ext-session-lock-v1` 路径——而锁表面不是窗口（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。[ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md) 因此改为：面板与锁屏保留自己的协议表面，QML 离屏渲染后把帧写进 `wl_shm`。依赖图里既没有 LayerShellQt，也没有 Qt Wayland 客户端。
+- **Iced 全部退出依赖图。** 迁移前这里有 `iced` 0.14 与作为「离屏一半」的 `iced_core` / `iced_runtime` / `iced_tiny_skia`（各组件作 dev-dependency、`inox-lock` 作 dependency 来画提交给锁表面的帧），外加一条记录「`iced_layershell` 0.19.1/0.19.0 无法编译」的备注。这五项已从根 `[workspace.dependencies]` 与各 crate 清单移除（[ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md)）；那段编译失败是当时选离屏路线的动因，属于历史。
+
+## 系统依赖：Qt 6
+
+引入 Qt 之后，构建期多了一类**系统**依赖（不受 `cargo-deny` 管辖，由 _system-deps_ 与 `license-audit` 两个 CI 环节覆盖）：
+
+| 包（Debian/Ubuntu） | 用途 |
+|---------------------|------|
+| `qt6-base-dev`、`qt6-declarative-dev` | `Qt6Core` / `Qt6Gui` / `Qt6Qml` / `Qt6Quick` / `Qt6QmlModels` 的头文件与 `.pc` 文件；`cxx-qt` 的构建脚本通过 `qmake`/`pkg-config` 找到它们，**找不到就 panic**，所以连只做类型检查的 job 也要装 |
+| `qml6-module-qtquick`、`-qtquick-window`、`-qtquick-templates`、`-qtquick-controls`、`-qtquick-layouts`、`-qtquick-dialogs`、`-qtqml-workerscript` | QML 运行时模块。它们是运行期数据而非链接输入：`import QtQuick` / `QtQuick.Controls` 缺一个，QML 模块就加载失败 |
+| `qt6-wayland-dev` | 普通窗口组件的 Qt Wayland 客户端 |
+| `fonts-dejavu-core`、`fonts-noto-cjk` | Qt 在出帧时自己排版文本；没有字体，标签会渲染成空 |
+| `lld` | `qt-build-utils` 为 Qt 相关链接步骤选用的链接器；用 gold 时 cxx-qt 的 `cxx_qt_init_*` 初始化符号会变成 `undefined reference` |
+
+这些包由 `.github/actions/system-deps` 的 `qt` 与 `fonts` 分支统一安装，判断依据是 crate 的 manifest **是否声明了 `cxx-qt`**，而不是手工维护名单。Qt 主体是 LGPL，**不引入任何 GPL-only 模块**（Qt Wayland Compositor / Qt Virtual Keyboard / Qt QML Compiler），`license-audit` job 继续断言这一点。
 
 ## 本站点
 

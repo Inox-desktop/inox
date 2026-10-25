@@ -25,6 +25,7 @@ pub const EN_US: &[&str] = &[include_str!("../i18n/en-US/messages.ftl")];
 pub const ZH_CN: &[&str] = &[include_str!("../i18n/zh-CN/messages.ftl")];
 
 /// The catalogs this component ships, by locale tag, for the parity test.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const CATALOGS: [(&str, &[&str]); 2] = [("en-US", EN_US), ("zh-CN", ZH_CN)];
 
 /// The catalogs this component ships, in the shape [`Localizer::load`] wants.
@@ -102,7 +103,7 @@ mod tests {
         // The block is the *authentication boundary*, not the display manager: the
         // screen cannot check a login because the process that can is not there, and
         // a message that blamed something else would send whoever reads it to the
-        // wrong place (ADR 0029).
+        // wrong place.
         assert!(message.contains("authentication boundary"), "{message}");
         assert!(message.contains("not available"), "{message}");
         assert!(

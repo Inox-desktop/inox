@@ -80,7 +80,7 @@ Inox 采用分层架构，自底向上分为四层：
 
 - **Layer 1**：提供配置解析、通用类型、日志、工具函数，被所有上层依赖。
 - **Layer 2**：核心 Wayland 合成器，基于 Smithay，处理 DRM/KMS、输入、渲染、窗口管理、XWayland 集成。
-- **Layer 3**：桌面 Shell，使用 Iced 构建面板、启动器、通知、设置等用户界面组件。
+- **Layer 3**：桌面 Shell，使用 **QML + Qt Quick**（经 cxx-qt 与 Rust 领域逻辑绑定，ADR 0033/0035/0036）构建面板、启动器、通知、设置等用户界面组件。Iced 已从依赖图移除（ADR 0039）。
 - **Layer 4**：会话管理、显示管理器、空闲管理等系统级服务。
 
 L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 0016](docs/adr/0016-single-repository-cargo-workspace.md)）。文档站点 `inox-docs` 不属于任何层：它是 `docs/book/` 下的 mdBook，无 `Cargo.toml`，不参与依赖图。
@@ -127,7 +127,7 @@ L1–L4 都是本仓库 `crates/` 下同一个 Cargo workspace 的成员（[ADR 
 | `wl_data_device`（`wl_data_device_manager` v3） | M3 必须 | 剪贴板与拖放；读取权跟随键盘焦点（`set_data_device_focus`），见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `xdg-shell` | 必须 | 标准窗口 |
 | `xdg-decoration` | 必须 | 服务端/客户端装饰协商；M3 不广告，X11 窗口标题栏由 satellite 自绘（[ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
-| `wlr-layer-shell-unstable-v1`（`zwlr_layer_shell_v1` v4） | 必须 | 已接入合成器：四层合成、锚点/边距/独占区、configure/ack 与卸载清理、键盘交互；真实客户端协议/像素测试交由 CI。仅普通桌面层，安全锁屏另用 session-lock；L3 的 Iced 客户端接线尚未完成 |
+| `wlr-layer-shell-unstable-v1`（`zwlr_layer_shell_v1` v4） | 必须 | 已接入合成器：四层合成、锚点/边距/独占区、configure/ack 与卸载清理、键盘交互；真实客户端协议/像素测试交由 CI。仅普通桌面层，安全锁屏另用 session-lock；L3 的 QML/Qt Quick 客户端接线已完成迁移，真实宿主截图证据仍缺（ADR 0039 M10） |
 | `viewporter`（`wp_viewporter`） | M3 必须 | 缩放与裁剪；`xwayland-satellite` 的宿主硬前提（缺失即启动失败），见 [ADR 0017](docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md) |
 | `linux-dmabuf` | 必须 | GPU 缓冲零拷贝 |
 | `presentation-time` | 必须 | 帧同步反馈 |
@@ -255,7 +255,7 @@ inox/
 | 输入后端 | Smithay `backend_libinput` | 输入设备抽象 |
 | 会话管理 | libseat | 无 root 权限设备访问 |
 | XWayland | xwayland-satellite | 无根 XWayland 集成 |
-| GUI 工具包 | QML + Qt Quick (cxx-qt) | 声明式 UI，领域逻辑留 Rust（ADR 0033/0035，自 Iced 迁移进行中） |
+| GUI 工具包 | QML + Qt Quick (cxx-qt) | 声明式 UI，领域逻辑留 Rust（ADR 0033/0035；Iced 迁移已完成，ADR 0039） |
 | 配置格式 | TOML + serde | 人类可读，AI 友好 |
 | 日志 | tracing + tracing-subscriber | 结构化日志 |
 | 错误处理 | thiserror + anyhow | 库用 thiserror，应用用 anyhow |
@@ -303,7 +303,7 @@ inox/
 ### 5.4 变更管理与 ADR
 
 - 架构决策记录（ADR）存放于本仓库 `docs/adr/NNNN-title.md`，采用 MADR 精简格式。
-- 以下情况**必须**先写 ADR 并获得批准：新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay/Iced/calloop）、改变 IPC 或配置格式的破坏性变更。
+- 以下情况**必须**先写 ADR 并获得批准：新增/删除组件 crate、改变分层或依赖方向、引入新协议策略、更换核心依赖（Smithay/Qt/calloop）、改变 IPC 或配置格式的破坏性变更。
 - ADR 状态：`proposed` → `accepted` → `superseded`。
 - ADR 必须包含决策驱动因素、可行备选与取舍、状态/数据所有权、失败和恢复、安全边界、影响仓库、版本/迁移/回退、可执行验收 ID 与证据计划、未决阻塞及复审条件，不能仅重述技术选型。模板与审查清单见 [ADR 索引](docs/adr/README.md)。
 - 架构接受、实现合入、CI 通过和产品验收分别记录；合并 proposed 文档不自动构成人类接受。状态变为 accepted 必须链接明确的人类批准记录；具体 API、依赖版本与许可证需有可核实来源。ADR 0001–0015 的历史正文保持不变，被取代的决策只更新状态字段与链接。
@@ -396,7 +396,7 @@ inox/
 
 各层测试的结论边界、场景操作和证据以[验收规范](docs/quality/acceptance.md)为准。单元/属性测试不模拟核心逻辑；协议测试使用真实客户端；GUI 同时检查实际行为、焦点/语义和图像。真实后端提交失败、设备移除、服务崩溃、无效配置、迁移中断和权限拒绝必须覆盖，不能只测成功路径。
 
-M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动与焦点链路可行；工具缺能力列为阻塞项，不能假定框架天然支持。完整任务基线至少覆盖：启动器搜索并启动→任务列表出现→切窗→配置应用/取消→服务重启重建→锁定/解锁→注销。
+M4 前先用 CI 原型证明 QML/Qt Quick layer-shell、语义导出/AT-SPI、GUI 驱动与焦点链路可行；工具缺能力列为阻塞项，不能假定框架天然支持。完整任务基线至少覆盖：启动器搜索并启动→任务列表出现→切窗→配置应用/取消→服务重启重建→锁定/解锁→注销。
 
 ---
 
@@ -449,7 +449,7 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 ### 9.2 主题系统
 
 - 主题由 `theme.toml` 定义设计令牌（design tokens）：颜色、排版、间距、圆角、动效时长，以及玻璃材质组 `[glass]`（`tint` / `tint_strong` / `highlight` / `shade` / `blur`）。
-- Iced 组件只消费令牌，不得硬编码颜色/尺寸；玻璃材质同样只有这一处来源，组件不得自带 tint。`blur` 是向合成器请求的背景模糊半径（逻辑像素，`0` = 只做半透明），实际能否磨砂由合成器经 `inox-glass-v1` 的 `capabilities` 回答（见 [ADR 0031](docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)）。
+- Shell 组件（QML）只消费令牌，不得硬编码颜色/尺寸；玻璃材质同样只有这一处来源，组件不得自带 tint。`blur` 是向合成器请求的背景模糊半径（逻辑像素，`0` = 只做半透明），实际能否磨砂由合成器经 `inox-glass-v1` 的 `capabilities` 回答（见 [ADR 0031](docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)）。
 - 支持浅色/深色与跟随系统；默认提供 `inox-light`、`inox-dark`。
 - 高对比、字体缩放与减少动态偏好从首个 Shell 阶段验证；自定义主题回退按所选外观匹配，不能以缺令牌为由产生不可读混色。涉及 ADR 0009 默认值语义的调整须先接受 ADR 0014 再迁移。
 
@@ -473,7 +473,7 @@ M4 前先用 CI 原型证明 Iced layer-shell、语义导出/AT-SPI、GUI 驱动
 ### 11.1 无障碍（Accessibility）
 
 - 目标：键盘可完成主要操作（启动器、面板、设置、锁屏）。
-- Iced 组件实际导出 role/name/state/action，经评审的桥接路径供 AT-SPI/屏幕阅读器读取；核心任务从 M4 起验证，完整生态后续扩展。桥接归属与可行性须通过原型确认，不把空接口或框架宣传当作证据。
+- QML 组件实际导出 role/name/state/action（窗口组件经 Qt QPA 的 AT-SPI；panel/lock 的离屏表面暂无桥，见 ADR 0038 的缺口记录），经评审的桥接路径供 AT-SPI/屏幕阅读器读取；核心任务从 M4 起验证，完整生态后续扩展。桥接归属与可行性须通过原型确认，不把空接口或框架宣传当作证据。
 - 尊重系统字体缩放与高对比度主题令牌。
 - 支持屏幕放大所需的 `wlr-screencopy`/`ext-image-copy-capture`（计划）。
 - Q01–Q03 要求唯一可见焦点、无键盘陷阱、200% 字体缩放、高对比、减少动态与 RTL 伪本地化布局测试；无需等到宣称完整无障碍后再补。
@@ -546,10 +546,11 @@ O02/O03 的虚拟拓扑、几何与像素证据由 `crates/inox-compositor/tests
 > 加**离屏渲染**（真实控件树在固定尺寸下的像素与事件断言，见[测试策略](docs/book/src/development/testing.md)）。
 > **E2/E3 尚未取得，未完成的 DoD 项包括 W05、O02–O03、C02–C03 的实测、D01–D05 与 Q01–Q03 的宿主侧证据**，
 > 合成器的 `zwlr_layer_shell_v1` v4 宿主已补齐，真实协议客户端测试纳入合成器 CI 分片；
-> L3 的 Iced 客户端接线与 GUI 驱动证据仍缺失。此前 `iced_layershell` 0.19.1 与 0.19.0
+> L3 的 GUI 驱动证据在 M4 时仍缺失：当时的 Iced 客户端接线无法成立，`iced_layershell` 0.19.1 与 0.19.0
 > **都无法编译**（其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举
-> `NativeKeyCode` 做了穷尽匹配）。因此第 7 节与 ADR 0013 要求的「M4 前完成 Iced + layer-shell 原型」
-> **仍未完成**，各组件以普通窗口运行并把 layer-shell 放置策略建模为纯数据；锁屏的协议腿已由 ADR 0022 落地、
+> `NativeKeyCode` 做了穷尽匹配）。**此后 ADR 0033/0035/0036/0039 完成了 QML + Qt Quick 迁移**：
+> Iced 已从依赖图移除，七个组件改为 cxx-qt 绑定 + 声明式 QML，panel/lock 保留真实 layer/lock 表面并离屏渲染
+> （ADR 0038）；真实合成器宿主上的截图断言（ADR 0039 的 M10）**仍未取得**，不得据此声称放置已在真机生效；锁屏的协议腿已由 ADR 0022 落地、
 > 界面已由 ADR 0025 绘制到锁表面上，**它唯一还不能做的是认证任何人**（ADR 0015 的人类安全审查项，
 > 键鼠输入路径与边界一起落地），通知的 D-Bus 服务按本表属 M5（D06）。决策与边界见
 > [ADR 0018](docs/adr/0018-l3-component-architecture.md)（状态 `proposed`）。
@@ -572,7 +573,7 @@ M5 的会话锁协议腿见 [ADR 0022](docs/adr/0022-m5-session-lock-notificatio
 | INOX 商标冲突 | 低 | 开源项目暂不商业化，必要时更名 |
 | 本地无法编译导致调试困难 | 中 | 完整 CI 环境/失败证据；人类使用 CI 发布物验收，不在本地构建 |
 | 性能回退被忽视 | 中 | 第 8 节预算纳入 PR 检查，Tracy 证据要求 |
-| 无障碍/i18n 后期返工 | 高 | M4 前验证 Iced/语义桥/驱动原型，核心键盘/语义/双语从 M4 实测 |
+| 无障碍/i18n 后期返工 | 高 | M4 前验证 QML/语义桥/驱动原型，核心键盘/语义/双语从 M4 实测 |
 | 配置或协议演进破坏用户状态 | 高 | 版本、历史 fixture、服务端回执、原子保存与回退；跨仓库契约测试 |
 | 锁屏/挂起/捕获竞态 | 高 | 合成器锁状态、可信认证、拒绝/撤销、锁 UI 崩溃和新增输出测试 |
 | 验收门槛写在文档但未执行 | 高 | 场景 ID → 实际测试/job/硬件 Issue 映射；未执行/阻塞不算通过 |
@@ -609,7 +610,6 @@ Version 3, 29 June 2007
 
 - 组织：https://github.com/Inox-desktop
 - Smithay：https://github.com/Smithay/smithay
-- Iced：https://github.com/iced-rs/iced
 - xwayland-satellite：https://github.com/Supreeeme/xwayland-satellite
 
 ### 16.3 术语表

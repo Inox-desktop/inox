@@ -14,11 +14,11 @@ inputs:
     default: "false"
   fonts:
     description: >-
-      Also install Latin and CJK font packages. The L3 shell components render their real
-      widget tree through cosmic-text in tests, and cosmic-text lays text out
-      from the fonts it finds on the system: on a runner with no font installed
-      a label renders as nothing and the pixel assertions in those tests would
-      be testing an empty frame. Only the crates that declare `iced` need it.
+      Also install Latin and CJK font packages. The QML + Qt Quick shell
+      components lay their text out at render time through Qt, from the fonts it
+      finds on the system: on a runner with no font installed a label renders as
+      nothing and the pixel assertions in those tests would be testing an empty
+      frame. Only the crates that declare `cxx-qt` need it.
     required: false
     default: "false"
   qt:

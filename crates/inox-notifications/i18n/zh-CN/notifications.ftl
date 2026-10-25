@@ -1,6 +1,6 @@
 # Inox 通知守护进程 — zh-CN。
 #
-# 与 en-US 目录保持完全相同的 id 与占位符：`tests/catalog.rs` 用
+# 与 en-US 目录保持完全相同的 id 与占位符：`src/headless_tests.rs` 用
 # `inox_common::i18n::compare_catalogs` 断言（验收 Q03）。应用名、通知标题、
 # 正文与动作标签是随通知到达的**数据**，不在这里翻译。
 

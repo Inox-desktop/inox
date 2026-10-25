@@ -1,5 +1,5 @@
+//! The daemon's side of the notification contract.
 //! The daemon's side of the notification contract (ADR 0013).
-//!
 //! ADR 0013 asks every L3 component to model its service boundary rather than
 //! assume it: a snapshot with a generation for state that belongs to someone
 //! else, and requests whose sent / accepted / applied / rejected outcomes are

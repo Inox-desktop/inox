@@ -153,11 +153,13 @@ jobs:
                       "crate": crate,
                       "layer": layer,
                       "graphics": any(d["name"] == "smithay" for d in deps),
-                      # The L3 shell components declare `iced` instead of `smithay`.
-                      # They link no system library, but their tests render the real
-                      # widget tree, so their shard needs a font installed (see the
-                      # `fonts` input of the system-deps action).
-                      "ui": any(d["name"] == "iced" for d in deps),
+                      # A `ui` shard is one of the QML + Qt Quick shell components:
+                      # it declares `cxx-qt`, so its build script resolves Qt through
+                      # pkg-config and its headless tests load QML modules at runtime.
+                      # It needs the Qt packages and fonts (`qt`/`fonts` inputs of the
+                      # system-deps action) — the shard also uploads the screenshot
+                      # artifacts its tests write (ADR 0033/0035/0036).
+                      "ui": any(d["name"] == "cxx-qt" for d in deps),
                       # A crate that declares `cxx-qt` builds and links Qt through
                       # pkg-config, so its build-script (and any bridge test) needs
                       # the Qt 6 development packages — the `qt` input of the
@@ -204,18 +206,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Two kinds of shard need system packages: the ones whose manifests
       # declare `smithay` (`graphics`, plus `egl` because they run the headless
-      # EGL/GLES render tests), the L3 components whose manifests declare
-      # `iced` (`ui`, plus `fonts` because their render tests lay text out
-      # through cosmic-text), and the Qt Quick crates that declare `cxx-qt`
-      # (`qt`: their build script resolves Qt through pkg-config, so they need
-      # the Qt 6 development packages — ADR 0033/0035). Every other shard stays
-      # cheap. The package lists live in one place — see
-      # `.github/actions/system-deps/action.yml`.
+      # EGL/GLES render tests), and the QML + Qt Quick shell components that
+      # declare `cxx-qt` (`ui`/`qt`: their build script resolves Qt through
+      # pkg-config, so they need the Qt 6 development packages, and their
+      # headless tests load real QML modules — ADR 0033/0035/0036). The QML
+      # shards also install fonts, because Qt lays the projection's text out at
+      # render time and an empty font set would make the pixel assertions test
+      # an empty frame. Every other shard stays cheap. The package lists live in
+      # one place — see `.github/actions/system-deps/action.yml`.
       - uses: ./.github/actions/system-deps
-        if: matrix.graphics || matrix.ui || matrix.qt || matrix.pam
+        if: matrix.graphics || matrix.qt || matrix.pam
         with:
           egl: ${{ matrix.graphics }}
-          fonts: ${{ matrix.ui }}
+          fonts: ${{ matrix.qt }}
           qt: ${{ matrix.qt }}
       # One job per crate keeps a failure attributable and keeps the command the
       # same one a developer runs locally: `cargo test -p <crate>`.
@@ -226,8 +229,14 @@ jobs:
       # 错误态" from a claim into something a reviewer can open. The path is
       # absolute because a test binary runs with its own crate directory as the
       # working directory, so a relative path would scatter files per crate.
+      # `QT_QPA_PLATFORM=offscreen`: the QML shell tests create a `QQuickWindow`
+      # and grab frames without a display. The panel/lock hosts force this
+      # platform themselves before their single `QGuiApplication` exists (ADR
+      # 0038); the window components read it from the environment, and their
+      # QML-load tests spawn a child binary with it (contract §7 item 3).
       - run: cargo test -p ${{ matrix.crate }} --all-features
         env:
+          QT_QPA_PLATFORM: offscreen
           INOX_SCREENSHOT_DIR: ${{ github.workspace }}/target/inox-screenshots
       - uses: actions/upload-artifact@v4
         if: matrix.ui
@@ -330,6 +339,7 @@ jobs:
         with:
           egl: "true"
           fonts: "true"
+          qt: "true"
       - name: Build the real session components
         run: cargo build -p inox-compositor -p inox-session -p inox-shell -p inox-panel -p inox-wallpaper -p inox-notifications -p inox-idle -p inox-lock
       # `--test headless` is the ADR 0021 shutdown budget; `--test session_lock` is

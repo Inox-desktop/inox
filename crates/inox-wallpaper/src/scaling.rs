@@ -142,7 +142,7 @@ impl Placement {
 
     /// Every copy, first one included, in draw order.
     pub fn rects(&self) -> impl Iterator<Item = Rect> + '_ {
-        std::iter::once(self.first).chain(self.rest.iter().copied())
+        std::iter::once(self.first).chain(self.rest().iter().copied())
     }
 
     /// How many copies of the image there are.

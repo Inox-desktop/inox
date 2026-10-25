@@ -1,52 +1,80 @@
-//! Session-bus and SIGHUP bridge; application state stays on the Iced thread.
+//! Session-bus and SIGHUP bridge; application state stays on the Qt thread.
+//!
+//! The channels are the crate's own ([`crate::runtime`]): a request travels to the
+//! UI thread over a bounded `std` channel, the UI thread finishes it, and the
+//! D-Bus method that asked awaits a one-shot future for the outcome. Nothing here
+//! touches Qt, and nothing here applies a configuration itself — `main` does that
+//! on the UI thread, which is what keeps a reload a state transition like every
+//! other message.
+//!
+//! A reload that fails keeps the previous state: the outcome is only reported as
+//! applied when `State::apply_configuration` ran, and a failure is logged and
+//! answered as an error rather than silently dropped (root AGENTS.md §7.1).
 
-use iced::futures::channel::{mpsc, oneshot};
-use inox_config::{Appearance, ConfigPaths, InoxConfig};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
-use tracing::warn;
 
+use inox_config::{Appearance, ConfigPaths, InoxConfig};
+use tracing::{debug, warn};
+
+use crate::runtime::oneshot;
+
+/// How long a prepared reload stays worth applying.
 const DEADLINE: Duration = Duration::from_secs(5);
 
+/// Marks a reload as in flight, and gives the marker back when it is dropped.
 #[derive(Debug)]
 struct Completion {
     sender: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
     busy: Arc<AtomicBool>,
 }
+
 impl Drop for Completion {
     fn drop(&mut self) {
         self.busy.store(false, Ordering::Release);
     }
 }
 
-#[derive(Debug, Clone)]
+/// One reload, prepared off the UI thread and applied on it.
+#[derive(Debug)]
 pub(super) struct Request {
+    /// The configuration that was read.
     pub(super) config: InoxConfig,
+    /// The index the configuration's locale and hidden-entry rule produce.
     pub(super) resource: super::ReloadResource,
     deadline: Instant,
     completion: Arc<Completion>,
 }
+
 impl Request {
+    /// Whether the request is still worth applying.
     pub(super) fn is_current(&self) -> bool {
         Instant::now() < self.deadline
     }
+
+    /// Reports the outcome to whoever asked, and clears the in-flight marker.
     pub(super) fn finish(&self, result: Result<(), String>) {
         let result = result.and_then(|()| self.config.snapshot().map_err(|e| e.to_string()));
         if let Err(error) = &result {
             warn!(%error, "configuration reload failed; keeping previous state");
         }
-        if let Some(sender) = self
+        let sender = self
             .completion
             .sender
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            // SIGHUP has no caller awaiting a reply; a closed receiver is expected.
-            let _ = sender.send(result);
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        let Some(sender) = sender else {
+            return;
+        };
+        if sender.send(result).is_err() {
+            // SIGHUP has no caller awaiting a reply, so a closed receiver is
+            // expected rather than an error.
+            debug!("configuration reload finished with no caller waiting for it");
         }
     }
 }
@@ -54,9 +82,10 @@ impl Request {
 #[derive(Clone)]
 struct Endpoint {
     paths: ConfigPaths,
-    sender: Arc<Mutex<mpsc::Sender<Request>>>,
+    sender: Arc<Mutex<SyncSender<Request>>>,
     busy: Arc<AtomicBool>,
 }
+
 impl Endpoint {
     fn submit(&self, expected: &str) -> Result<oneshot::Receiver<Result<String, String>>, String> {
         if self.busy.swap(true, Ordering::AcqRel) {
@@ -65,7 +94,7 @@ impl Endpoint {
         let (sender, receiver) = oneshot::channel();
         let completion = Arc::new(Completion {
             sender: Mutex::new(Some(sender)),
-            busy: self.busy.clone(),
+            busy: Arc::clone(&self.busy),
         });
         let deadline = Instant::now() + DEADLINE;
         let config =
@@ -76,7 +105,7 @@ impl Endpoint {
         let resource = super::prepare_reload(&config, &self.paths)?;
         self.sender
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .try_send(Request {
                 config,
                 resource,
@@ -87,34 +116,40 @@ impl Endpoint {
         Ok(receiver)
     }
 }
+
 #[zbus::interface(name = "org.inox.Configuration1")]
 impl Endpoint {
     async fn reload(&self, generation: u64, expected: String) -> zbus::fdo::Result<(u64, String)> {
         let receiver = self.submit(&expected).map_err(zbus::fdo::Error::Failed)?;
         let applied = receiver
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
             .map_err(zbus::fdo::Error::Failed)?;
         Ok((generation, applied))
     }
 }
 
+/// The reload source the launcher runs for its whole lifetime.
 pub(super) struct Host {
     _connection: Option<zbus::Connection>,
-    receiver: std::cell::RefCell<Option<mpsc::Receiver<Request>>>,
+    receiver: Receiver<Request>,
 }
+
 impl Host {
+    /// Installs the SIGHUP mask and opens the D-Bus interface.
+    ///
+    /// The mask is installed here, before the Qt application exists, so a SIGHUP
+    /// cannot reach the default handler and kill a session mid-frame.
     pub(super) fn start(paths: ConfigPaths) -> anyhow::Result<Self> {
-        // Install the mask before creating the D-Bus or Iced threads.
         let signals = calloop::signals::Signals::new(&[calloop::signals::Signal::SIGHUP])?;
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::sync_channel(1);
         let endpoint = Endpoint {
             paths,
             sender: Arc::new(Mutex::new(sender)),
             busy: Arc::new(AtomicBool::new(false)),
         };
         let signal_endpoint = endpoint.clone();
-        let (ready, started) = std::sync::mpsc::sync_channel(1);
+        let (ready, started) = mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("configuration signals".into())
             .spawn(move || {
@@ -145,6 +180,7 @@ impl Host {
                 }
             })?;
         started.recv()?;
+
         let connection = zbus::block_on(
             zbus::connection::Builder::session()
                 .name("org.inox.Launcher")
@@ -160,15 +196,19 @@ impl Host {
         };
         Ok(Self {
             _connection: connection,
-            receiver: std::cell::RefCell::new(Some(receiver)),
+            receiver,
         })
     }
-    pub(super) fn task(&self) -> iced::Task<super::RuntimeMessage> {
-        match self.receiver.borrow_mut().take() {
-            Some(receiver) => iced::Task::run(receiver, |request| {
-                super::RuntimeMessage::Reload(Box::new(request))
-            }),
-            None => iced::Task::none(),
+
+    /// Takes the requests that arrived since the last call.
+    ///
+    /// `pump` calls this, so a reload is applied on the UI thread like every other
+    /// message instead of on the thread that received the signal.
+    pub(super) fn requests(&self) -> Vec<Request> {
+        let mut requests = Vec::new();
+        while let Ok(request) = self.receiver.try_recv() {
+            requests.push(request);
         }
+        requests
     }
 }

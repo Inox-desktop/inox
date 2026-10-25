@@ -1,5 +1,5 @@
+//! Rate limiting failed authentication.
 //! Rate limiting failed authentication (ADR 0015).
-//!
 //! ADR 0015 asks for "limited and readable feedback" on failure, and acceptance
 //! S03 asks that the credential never reach a log, a clipboard or a screenshot.
 //! What a rate limiter must *not* become is a way to keep the legitimate user out:
@@ -44,8 +44,7 @@ impl AttemptPolicy {
     ///
     /// Chosen to be boring: five failures in five minutes. It is not a
     /// configuration key yet — there is no `[lock]` section in `inox-config`
-    /// (ADR 0018 scoped the L3 configuration work to `shell.toml` and
-    /// `notifications.toml`), and a value with no consumer should not be invented
+    ///, and a value with no consumer should not be invented
     /// ahead of one.
     pub const fn standard() -> Self {
         Self {
@@ -174,7 +173,7 @@ impl AttemptLimiter {
     /// For whoever schedules the retry — a session timer, say. Deliberately not
     /// part of [`crate::view_model`]: the *user* is told that a wait applies, not
     /// how much of it is left, because that is the limiter's internal state and
-    /// reporting it turns a prompt into a counter (ADR 0015).
+    /// reporting it turns a prompt into a counter.
     ///
     /// The gate opens when enough failures have left the window that fewer than
     /// [`AttemptPolicy::allowance`] remain, which is not the same moment as the

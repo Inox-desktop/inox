@@ -3,7 +3,7 @@
 //!
 //! `inoxctl reload` reaches the session through `org.inox.Panel`, and
 //! `org.inox.Configuration1.Reload` hands back a snapshot only once the panel has
-//! *applied* the candidate — not once the files were read (ADR 0009). That is why
+//! *applied* the candidate — not once the files were read. That is why
 //! the endpoint below never answers by itself: it reads the candidate, puts a
 //! [`Request`] on a channel and waits for whatever owns the panel's state to
 //! [`Request::finish`] it.
@@ -22,12 +22,12 @@
 //! whenever it has prepared something. That is the whole cross-thread contract:
 //! the channel carries the data, the ping carries the wake-up.
 
-use iced::futures::channel::{mpsc, oneshot};
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
 use std::rc::Rc;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
+    mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
 };
 use std::time::{Duration, Instant};
 use tracing::warn;
@@ -40,7 +40,7 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct Completion {
-    sender: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
+    sender: Mutex<Option<SyncSender<Result<String, String>>>>,
     busy: Arc<AtomicBool>,
 }
 impl Drop for Completion {
@@ -133,17 +133,17 @@ pub fn apply(state: &mut State, request: &Request) -> Result<(), String> {
 #[derive(Clone)]
 struct Endpoint {
     paths: ConfigPaths,
-    sender: Arc<Mutex<mpsc::Sender<Request>>>,
+    sender: SyncSender<Request>,
     busy: Arc<AtomicBool>,
     /// What wakes the panel's loop after a request was queued.
     wake: Ping,
 }
 impl Endpoint {
-    fn submit(&self, expected: &str) -> Result<oneshot::Receiver<Result<String, String>>, String> {
+    fn submit(&self, expected: &str) -> Result<Receiver<Result<String, String>>, String> {
         if self.busy.swap(true, Ordering::AcqRel) {
             return Err("configuration reload is busy".into());
         }
-        let (sender, receiver) = oneshot::channel();
+        let (sender, receiver) = sync_channel(1);
         let completion = Arc::new(Completion {
             sender: Mutex::new(Some(sender)),
             busy: self.busy.clone(),
@@ -155,8 +155,6 @@ impl Endpoint {
             return Err("configuration changed after it was saved; read the files again".into());
         }
         self.sender
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .try_send(Request {
                 config,
                 deadline,
@@ -172,20 +170,52 @@ impl Endpoint {
 }
 #[zbus::interface(name = "org.inox.Configuration1")]
 impl Endpoint {
+    /// Applies the candidate and answers with the snapshot that is *running*,
+    /// not with the one that was read.
+    ///
+    /// The wait is a poll rather than an `await` on an async channel, because the
+    /// other end of it is the panel's `calloop` loop, which is not an async
+    /// runtime and must not become one. Blocking this executor for the few
+    /// milliseconds a reload takes is safe here for one reason worth writing
+    /// down: a second reload cannot arrive meanwhile — [`Endpoint::submit`]
+    /// refuses one while a request is in flight — so there is no other call on
+    /// this interface waiting for the executor. The deadline is the request's
+    /// own: past it the panel would be applying a snapshot the caller has already
+    /// given up on.
     async fn reload(&self, generation: u64, expected: String) -> zbus::fdo::Result<(u64, String)> {
         let receiver = self.submit(&expected).map_err(zbus::fdo::Error::Failed)?;
-        let applied = receiver
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
-            .map_err(zbus::fdo::Error::Failed)?;
-        Ok((generation, applied))
+        let deadline = Instant::now() + DEADLINE + Duration::from_secs(1);
+
+        loop {
+            match receiver.try_recv() {
+                Ok(applied) => {
+                    let applied = applied.map_err(zbus::fdo::Error::Failed)?;
+
+                    return Ok((generation, applied));
+                }
+                Err(TryRecvError::Disconnected) => {
+                    return Err(zbus::fdo::Error::Failed(
+                        "the panel stopped before it applied the configuration".into(),
+                    ));
+                }
+                Err(TryRecvError::Empty) => {
+                    if Instant::now() >= deadline {
+                        return Err(zbus::fdo::Error::Failed(
+                            "configuration reload expired".into(),
+                        ));
+                    }
+
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
     }
 }
 
 /// The reload host of a running panel.
 pub struct Host {
     _connection: Option<zbus::Connection>,
-    receiver: std::cell::RefCell<Option<mpsc::Receiver<Request>>>,
+    receiver: std::cell::RefCell<Option<Receiver<Request>>>,
     endpoint: Endpoint,
 }
 impl Host {
@@ -196,10 +226,10 @@ impl Host {
     /// best-effort: a session without one logs a warning and keeps `SIGHUP`
     /// working, which is the same degradation the endpoint has always had.
     pub fn start(paths: ConfigPaths, wake: Ping) -> Self {
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = sync_channel(1);
         let endpoint = Endpoint {
             paths,
-            sender: Arc::new(Mutex::new(sender)),
+            sender,
             busy: Arc::new(AtomicBool::new(false)),
             wake,
         };
@@ -272,14 +302,13 @@ fn prepare(endpoint: &Endpoint) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::futures::{StreamExt, executor::block_on};
 
-    fn endpoint(paths: ConfigPaths, wake: Ping) -> (Endpoint, mpsc::Receiver<Request>) {
-        let (sender, receiver) = mpsc::channel(1);
+    fn endpoint(paths: ConfigPaths, wake: Ping) -> (Endpoint, Receiver<Request>) {
+        let (sender, receiver) = sync_channel(1);
         (
             Endpoint {
                 paths,
-                sender: Arc::new(Mutex::new(sender)),
+                sender,
                 busy: Arc::new(AtomicBool::new(false)),
                 wake,
             },
@@ -306,14 +335,15 @@ mod tests {
         );
         std::fs::write(dir.path().join("shell.toml"), "[panel]\nheight = 48\n").expect("candidate");
         let (ping, _source) = calloop::ping::make_ping().expect("a ping");
-        let (endpoint, mut receiver) = endpoint(paths, ping);
+        let (endpoint, receiver) = endpoint(paths, ping);
         let reply = endpoint.submit("").expect("prepare");
-        let mut request = block_on(receiver.next()).expect("candidate");
+        let mut request = receiver.recv().expect("candidate");
         request.deadline = Instant::now() - Duration::from_secs(1);
         apply_request(&mut state, request);
         assert_eq!(state.config(), &old.shell.panel);
         assert!(
-            block_on(reply)
+            reply
+                .recv()
                 .expect("reply")
                 .expect_err("expired")
                 .contains("expired")
@@ -367,7 +397,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("directory");
         let paths = ConfigPaths::new(dir.path());
         let (ping, _source) = calloop::ping::make_ping().expect("a ping");
-        let (endpoint, mut receiver) = endpoint(paths, ping);
+        let (endpoint, receiver) = endpoint(paths, ping);
         std::fs::write(dir.path().join("shell.toml"), "[panel]\nheight = 'bad'\n").expect("write");
         assert!(
             endpoint
@@ -384,11 +414,11 @@ mod tests {
             endpoint.submit("").is_err(),
             "an outstanding apply is serialized"
         );
-        let request = block_on(receiver.next()).expect("candidate");
+        let request = receiver.recv().expect("candidate");
         assert_eq!(request.config.shell.panel.height, 48);
         request.finish(Err("panel refused the candidate".into()));
         assert_eq!(
-            block_on(reply).expect("reply"),
+            reply.recv().expect("reply"),
             Err("panel refused the candidate".into())
         );
         drop(request);
@@ -406,12 +436,12 @@ mod tests {
         let paths = ConfigPaths::new(dir.path());
         std::fs::write(dir.path().join("shell.toml"), "[panel]\nheight = 48\n").expect("write");
         let (ping, source) = calloop::ping::make_ping().expect("a ping");
-        let (endpoint, mut receiver) = endpoint(paths, ping);
+        let (endpoint, receiver) = endpoint(paths, ping);
 
         let _reply = endpoint.submit("").expect("prepare");
 
         assert!(
-            block_on(receiver.next()).is_some(),
+            receiver.recv().is_ok(),
             "the request is in the channel the host drains"
         );
 
@@ -441,7 +471,7 @@ mod tests {
         let paths = ConfigPaths::new(dir.path());
         std::fs::write(dir.path().join("shell.toml"), "[panel]\nheight = 48\n").expect("write");
         let (ping, _source) = calloop::ping::make_ping().expect("a ping");
-        let (endpoint, mut receiver) = endpoint(paths, ping);
+        let (endpoint, receiver) = endpoint(paths, ping);
 
         prepare(&endpoint);
 
@@ -480,7 +510,7 @@ mod tests {
         let config = InoxConfig::load(&paths, Appearance::System).expect("candidate");
         let expected = config.snapshot().expect("snapshot");
         let (ping, _source) = calloop::ping::make_ping().expect("a ping");
-        let (endpoint, mut receiver) = endpoint(paths, ping);
+        let (endpoint, receiver) = endpoint(paths, ping);
         let (server_socket, client_socket) =
             std::os::unix::net::UnixStream::pair().expect("sockets");
         let guid = zbus::Guid::generate();

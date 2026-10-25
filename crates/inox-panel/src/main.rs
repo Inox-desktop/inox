@@ -1,27 +1,133 @@
-//! The panel binary: configuration, logging, catalogs, then the panel's layer
-//! surface.
+//! The Inox panel: the strip along an output's edge that shows what is running.
 //!
-//! The binary is deliberately thin. Everything that decides anything lives in
-//! the library: [`inox_panel::app`] owns the state, [`inox_panel::placement`] the
-//! placement the surface asks for, and [`inox_panel::layer`] the protocol leg
-//! that applies it. This file loads the configuration, picks the surface,
-//! installs logging, and hands control to the leg.
+//! `inox-panel` is an L3 component (PRD §3.1). It draws three things and owns
+//! none of the state behind them:
 //!
-//! Three things are worth stating before the code, because they are deliberate:
+//! - a **task list**, one button per application, built from the window states
+//!   the compositor reports ([`tasks`]);
+//! - a **system tray** of StatusNotifierItems ([`tray`]);
+//! - a **clock** ([`clock`]).
 //!
-//! - **The surface is a real `wlr-layer-shell` surface.** The panel used to run
-//!   as an ordinary `xdg-shell` window with its computed placement unapplied, and
-//!   logged a warning saying so (ADR 0018). It no longer does: a compositor that
-//!   does not advertise `zwlr_layer_shell_v1` is a **readable error and a
-//!   non-zero exit**, because a panel that claims to reserve a strip while it is
-//!   really a floating window is a lie about the desktop's geometry.
-//! - **Which surface a process draws comes from `[panel] surface`, or from
-//!   `--surface`.** The flag overrides the file for this process only, which is
-//!   how one session runs a menu bar and a dock at once: they are two processes,
-//!   because they are two surfaces with different sizes and different placements.
-//! - **The window service is not reached yet.** No transport is implemented in
-//!   this milestone, so the panel starts in its connecting state and shows that
-//!   state honestly instead of inventing a task list.
+//! It has no window of its own. The real surface is the `zwlr_layer_shell_v1`
+//! one this crate creates ([`layer`]), and the QML tree is rendered *offscreen*
+//! into that surface's `wl_shm` frames (ADR 0038): there is no Qt window, no
+//! `xdg_toplevel`, and no Qt Wayland client anywhere in the process.
+//!
+//! Those three things are presented on one of three surfaces, chosen by
+//! `[panel] surface`:
+//!
+//! - the **taskbar** ([`view::panel`]), a strip along one edge;
+//! - the **menu bar** ([`menubar`]), a full-width glass bar along the top edge;
+//! - the **dock** ([`dock`]), a floating glass pane above the bottom edge.
+//!
+//! The surfaces are presentations of the *same* data, never new data: the
+//! projection in [`view_model`] is shared, and the menu bar and the dock add
+//! only their own geometry and arrangement. The menu bar shows the focused
+//! application's name and nothing that pretends to be an application menu:
+//! Inox has no application-menu protocol, and the bar does not invent one.
+//!
+//! Everything it shows comes from an authoritative service, over a contract
+//! rather than a shared in-process model: the window service gives the panel a
+//! snapshot plus events, server-assigned window identities, and commands whose
+//! sent / accepted / applied / rejected states are distinguishable
+//! ([`contract`]). Nothing here guesses a window's identity from a PID, a title
+//! or a list index.
+//!
+//! # The surface, the renderer and the division of labour
+//!
+//! [`layer`] is a real `wlr-layer-shell` surface that this process creates
+//! itself, and it stays that way: anchors, layer, exclusive zone,
+//! keyboard interactivity, the frosted-glass request, pointer input and the
+//! `calloop` loop are all the protocol's and all this crate's.
+//!
+//! The *drawing* is QML. [`view`] projects the state into a Qt-free JSON scene,
+//! and [`offscreen`] renders that scene through Qt Quick's software scene graph
+//! in an `offscreen` platform window, then hands the pixels back to [`layer`],
+//! which copies them into the existing `wl_shm` frame. There is no Qt Wayland
+//! client and no LayerShellQt in this process: the QML window never becomes an
+//! `xdg_toplevel`, and the panel's placement is still the protocol's answer.
+//!
+//! QML is a **renderer only**. Input, focus, placement and state live in Rust:
+//! the pointer is matched against the scene's own entries ([`layer::Input`]) and
+//! produces the same [`app::Message`] the keyboard navigation does.
+//!
+//! # How the crate is organised
+//!
+//! | module | what lives there |
+//! |---|---|
+//! | [`tasks`] | the window and task-group model — pure, fully tested |
+//! | [`tray`] | the StatusNotifierItem and DBusMenu model — pure |
+//! | [`clock`] | expanding `panel.clock_format` into a localized label |
+//! | [`contract`] | service state, request correlation, deduplication |
+//! | [`placement`] | the layer-shell placement the panel asks for, as data |
+//! | [`view_model`] | the projection from state to what the view draws |
+//! | [`menubar`] | the menu bar's geometry and projection — pure |
+//! | [`dock`] | the dock's geometry and projection — pure |
+//! | [`app`] | `State`, `Message`, `update` (Elm) |
+//! | [`view`] | the Qt-free JSON scene the QML renderer draws |
+//! | [`theme`] | design tokens turned into the scene's colours and sizes |
+//! | [`frost`] | the frosted-glass decisions — pure, fully tested |
+//! | [`layer`] | the protocol leg: a real `wlr-layer-shell` surface |
+//! | [`offscreen`] | the offscreen QML host, behind a cxx-qt bridge |
+//! | [`reload`] | `SIGHUP` and `org.inox.Panel` reload requests |
+//! | [`i18n`] | the `en-US` and `zh-CN` catalogs this component ships |
+//!
+//! # Why there is no `src/lib.rs`
+//!
+//! cxx-qt 0.10 emits its bridge initialisers into the target that *declares* the
+//! bridge, and a static library that nothing references loses them to
+//! `--gc-sections` (KDAB/cxx-qt#770). The crate is therefore **binary only**:
+//! every module hangs off this file, and the tests that used to live in
+//! `tests/*.rs` are `#[cfg(test)]` modules under `src/headless_tests/` (migration
+//! contract §2.1). The protocol tests drive this binary as a child process the
+//! same way as before; the crate's own `Cargo.toml` still lists `wayland-server`,
+//! `proptest` and `tempfile` for them.
+//!
+//! # What is verified, and what is not
+//!
+//! The pure logic — the task model, the tray lifecycle, the clock, the placement
+//! policy, the projection, the menu bar's and the dock's geometry, the
+//! frosted-glass decisions — is covered by unit and property tests, with
+//! `en-US`/`zh-CN` catalog parity asserted by
+//! [`inox_common::i18n::compare_catalogs`]. The scenes each surface projects are
+//! asserted value by value (colours from the tokens, sizes from the geometry,
+//! sentences from Fluent), and one test renders a real frame through the
+//! offscreen host and asserts that pixels came back.
+//!
+//! `src/headless_tests/protocol.rs` goes one step further: it plays the
+//! compositor side of `wlr-layer-shell`, `wl_shm`, `wl_seat` and `inox-glass-v1`
+//! on a real socket pair and drives this binary, so the placement, the
+//! shared-memory frame and the glass request are asserted **on the wire** rather
+//! than in a comment.
+//!
+//! Not delivered, and not claimed:
+//!
+//! - **The transports.** The window service (inox-ipc or Wayland) and the
+//!   StatusNotifierItem protocol (D-Bus) are not implemented: [`app`] queues what
+//!   it wants in [`app::OutgoingCommand`] and [`app::Message`] is the interface a
+//!   transport will feed. [`layer`] drops those commands with one log line
+//!   explaining that nothing can carry them yet, and [`app`] opens no bus.
+//! - **One surface per process, on one output.** [`layer`] asks the compositor to
+//!   place the surface on the output it considers active (the `wlr-layer-shell`
+//!   null-output request); it does not enumerate `wl_output`s and create one
+//!   surface per output.
+//! - **Tooltips.** The projection still carries the hover text (it is what a
+//!   disabled entry says, D05), but an offscreen renderer never receives a
+//!   pointer, so nothing draws it; tooltips need a popup surface, which is
+//!   separate work.
+//! - **AT-SPI.** An `offscreen` Qt platform has no accessibility bridge, so the
+//!   semantic tree Q01 asks for is still missing.
+//! - **E3 GUI evidence** on real hardware, which CI cannot provide.
+
+// The domain modules expose rules this binary does not exercise yet: the window
+// service and StatusNotifierItem transports are not implemented, so `app`'s
+// accessors, the `Message` variants a transport will feed and the parts of the
+// projection only a test drives are all unreachable from `main`. Their tests are
+// the specification until then, so the API is kept and this allowance keeps
+// `cargo check` from calling the specification dead. It applies to the shipped
+// build only: under `cfg(test)` the whole surface is used, and anything that is
+// not is still reported.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -31,8 +137,28 @@ use inox_config::{Appearance, ConfigPaths, InoxConfig, PanelSurface};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use inox_panel::i18n;
-use inox_panel::layer::{self, Outcome};
+mod app;
+mod clock;
+mod contract;
+mod cxxqt_object;
+mod dock;
+mod frost;
+mod i18n;
+mod layer;
+mod menubar;
+mod offscreen;
+mod placement;
+mod reload;
+mod tasks;
+mod theme;
+mod tray;
+mod view;
+mod view_model;
+
+#[cfg(test)]
+mod headless_tests;
+
+use crate::layer::Outcome;
 
 /// What this binary accepts on the command line.
 ///
@@ -59,7 +185,7 @@ const EXIT_BAD_ARGUMENTS: i32 = 2;
 fn main() -> Result<()> {
     initialise_logging()?;
 
-    let options = match Options::parse(std::env::args().skip(1)) {
+    let options = match Options::parse(command_line()) {
         Ok(options) => options,
         Err(reason) => {
             error!("{reason}");
@@ -136,6 +262,26 @@ fn main() -> Result<()> {
             std::process::exit(EXIT_NO_SURFACE);
         }
     }
+}
+
+/// The arguments after the program name.
+///
+/// Normally the process's own. The two lines under `cfg(test)` are how the
+/// headless tests spawn *this* entry point out of the test executable
+/// (`crate::headless_tests::binary`): the harness parses its own arguments, so
+/// the panel's arrive through the environment instead. A shipped binary does not
+/// compile that branch at all.
+fn command_line() -> Vec<String> {
+    #[cfg(test)]
+    if let Some(arguments) = std::env::var_os("INOX_PANEL_ARGUMENTS") {
+        return arguments
+            .to_string_lossy()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+    }
+
+    std::env::args().skip(1).collect()
 }
 
 /// The command line, as data.

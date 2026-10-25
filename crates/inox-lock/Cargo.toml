@@ -15,52 +15,64 @@ anyhow.workspace = true
 # The protocol leg: the compositor's `ext-session-lock-v1` server, spoken as a
 # client. ADR 0022 decision 6 records why the bindings come from `inox-protocols`
 # (the single source of truth for protocols, ADR 0006) and why this is a legal
-# L3 -> L2 edge (ADR 0002 rule 1 allows downward dependencies; ADR 0013 forbids
-# only same-layer and compositor edges, and neither is added here).
+# L3 -> L2 edge.
 inox-protocols.workspace = true
 # The request loop and its signal handling: the same `calloop` the rest of the
-# session uses (root AGENTS.md §4).
+# session uses (root AGENTS.md §4). The lock surface is not a Qt window, so Qt's
+# event loop does not own this process.
 calloop.workspace = true
 # Reading the compositor's events and creating the lock surfaces.
 wayland-client.workspace = true
 # The lock frame is a shared-memory buffer; `memfd_create` is the safe way to get
 # an anonymous one, and clearing CLOEXEC is not needed because the pool is created
-# before the fd is handed over.
-rustix = { workspace = true, features = ["fs"] }
-# ADR 0003 fixes Iced for every shell component; the workspace entry selects the
-# tiny-skia renderer, which is what the headless render tests draw through.
-iced.workspace = true
-# The lock screen's own renderer (ADR 0025). A lock surface is not a window, so
-# `iced`'s Wayland support — which creates `xdg-shell` surfaces — cannot draw on
-# one; what it does expose is the pair `src/render.rs` uses: `UserInterface` lays
-# the widget tree out and routes events to it, and the tiny-skia renderer turns it
-# into the pixels `wl_shm` wants. `iced` re-exports neither, which is why the two
-# are named directly, and they are *dependencies* rather than dev-dependencies
-# because the binary draws with them.
-iced_core.workspace = true
-iced_runtime.workspace = true
-iced_tiny_skia.workspace = true
+# before the fd is handed over. `process` is for the protocol tests, which signal
+# the spawned binary.
+rustix = { workspace = true, features = ["fs", "process"] }
 # L1: the shared Fluent loader and the design tokens. L3 components take no
-# same-layer dependency and no dependency on the compositor (ADR 0013, 0018).
+# same-layer dependency and no dependency on the compositor.
 inox-common.workspace = true
 inox-config.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# The credential buffer overwrites itself with zeros on drop (ADR 0015).
+# The credential buffer overwrites itself with zeros on drop.
 zeroize.workspace = true
+# /0038: the interface is QML rendered by Qt Quick's software scene
+# graph into an offscreen window, and the pixels are written into the existing
+# `wl_shm` frame. `cxx-qt` is the Rust -> C++ bridge the C++ host is reached
+# through; `cxx` is the FFI layer underneath it.
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+# The projection QML reads is one JSON document per frame (contract §3), which
+# keeps the Rust -> QML boundary to one record instead of a property per field.
+serde_json.workspace = true
+
+[build-dependencies]
+# Compiles the bridge and the crate's C++ offscreen host, and bundles the QML
+# module (contract §2.2, ).
+cxx-qt-build.workspace = true
 
 [dev-dependencies]
-# `tests/protocol.rs` plays the compositor side of `ext-session-lock-v1` on a real
-# socket pair and drives the built binary as a subprocess, the pattern
+# The protocol test plays the compositor side of `ext-session-lock-v1` on a real
+# socket pair and drives the binary as a subprocess, the pattern
 # `inox-idle/tests/protocol.rs` established.
 wayland-server.workspace = true
 tempfile.workspace = true
 # `INOX_SCREENSHOT_DIR` writes the acceptance snapshots (Q02). The render harness
-# itself needs no dev-dependency: it draws through the same `crate::render` the
-# binary uses, which is the point.
+# itself needs no dev-dependency: it renders through the same `crate::render`
+# the binary commits with, which is the point.
 image.workspace = true
 proptest.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe` (root AGENTS.md §3.2), but the
+# `#[cxx_qt::bridge]` macro (see `src/cxxqt_object.rs`) emits
+# `unsafe extern "C++"` blocks without an `#[allow]` wrapper, so the generated
+# FFI glue cannot compile under `forbid`. Override it to `allow` here; Inox-authored code stays
+# unsafe-free.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"

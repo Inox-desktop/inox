@@ -12,22 +12,23 @@
 //!   server closes it too. Nothing in this crate holds a connection across a UI
 //!   decision, which is what makes "cancel" mean something: the accepted attempt is
 //!   continued by a *later* connection, when the person has actually asked for the
-//!   session (ADR 0029).
-//! - **The credential goes one way.** It arrives as a [`Secret`] and is moved into
-//!   the encoder here; there is no path on which this module keeps a copy, prints
-//!   one, or compares one.
+//!   session.
+//! - **The credential goes one way.** It arrives as a [`Secret`], is moved into the
+//!   request built here and is encoded straight into the socket; there is no path on
+//!   which this module keeps a copy, prints one, or compares one.
 //! - **The deadline is longer than the boundary's.** The server gives up on an
 //!   attempt after 30 s; this client waits a little longer (35 s) so that the
 //!   answer "the boundary failed" comes from the boundary rather than from a client
 //!   that stopped listening a moment too early.
-//! - **Blocking I/O in an `async fn` is deliberate.** These run on iced's thread
-//!   pool through [`iced::Task::perform`], one attempt at a time, and the work is a
-//!   connect, two writes and two reads with a timeout on each. Making it a real
-//!   reactor would mean another runtime in the login screen to do the same thing.
+//! - **The calls are blocking and synchronous, on purpose.** A request is a
+//!   connect, two writes and two reads with a timeout on each, and that is the whole
+//!   of it. [`crate::runtime`] runs each one on its own thread and hands the answer
+//!   back through a channel, so the Qt event loop is never blocked; making it a real
+//!   reactor would mean a second runtime in the login screen to do the same thing.
 
 use std::io;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use inox_auth::wire::{self, Reply, Request};
@@ -62,19 +63,14 @@ pub fn is_available(socket: &Path) -> bool {
 }
 
 /// Asks the boundary to check `credential` for `username`.
-pub async fn authenticate(
-    socket: PathBuf,
-    attempt: u64,
-    username: String,
-    credential: Secret,
-) -> Report {
+pub fn authenticate(socket: &Path, attempt: u64, username: String, credential: Secret) -> Report {
     let request = Request::Authenticate {
         attempt,
         username,
         credential,
     };
 
-    match converse(&socket, request) {
+    match converse(socket, request) {
         Ok(Reply::Accepted { .. }) => Report::Accepted,
         Ok(Reply::Rejected { .. }) => Report::Rejected,
         Ok(Reply::Unavailable { reason, .. }) => {
@@ -96,8 +92,8 @@ pub async fn authenticate(
 }
 
 /// Asks the boundary to start the session for an attempt it accepted.
-pub async fn start_session(socket: PathBuf, attempt: u64) -> Report {
-    match converse(&socket, Request::StartSession { attempt }) {
+pub fn start_session(socket: &Path, attempt: u64) -> Report {
+    match converse(socket, Request::StartSession { attempt }) {
         Ok(Reply::SessionStarted { started, .. }) => Report::SessionStarted(started),
         Ok(other) => {
             warn!(
@@ -118,11 +114,11 @@ pub async fn start_session(socket: PathBuf, attempt: u64) -> Report {
 /// The answer — there is none — is not something the screen waits for: the attempt
 /// is already over as far as the person is concerned, and a cancellation that never
 /// arrives simply expires on the boundary's side.
-pub async fn cancel(socket: PathBuf, attempt: u64) {
+pub fn cancel(socket: &Path, attempt: u64) {
     // The boundary does not answer a cancellation, so the conversation stops after
     // the write. A failure is logged rather than surfaced: cancelling is what the
     // user asked for, and there is nothing left for them to do about it.
-    if let Err(error) = converse(&socket, Request::Cancel { attempt }) {
+    if let Err(error) = converse(socket, Request::Cancel { attempt }) {
         debug!(%error, "the boundary could not be told about the cancellation");
     }
 }

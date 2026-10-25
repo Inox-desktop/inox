@@ -1,18 +1,25 @@
-//! Confirmed per-consumer application; all calls run on Iced's worker pool.
+//! Confirmed per-consumer application, one D-Bus round trip per consumer.
+//!
+//! Every call here runs on a worker thread the runtime owns
+//! ([`crate::runtime::Task::perform`]), never on the thread that renders: a
+//! consumer that takes seconds to answer must not freeze the window. The answers
+//! come back as [`Message`]s, so the state machine stays the only place that
+//! decides what a reply means.
 
+use crate::app::Message;
+use crate::apply::{Component, Generation};
+use crate::document::{Documents, SettingFile};
+use crate::draft::{Field, Settings};
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
-use inox_settings::app::Message;
-use inox_settings::apply::{Component, Generation};
-use inox_settings::document::{Documents, SettingFile};
-use inox_settings::draft::{Field, Settings};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 const PATH: &str = "/org/inox/Configuration";
 const INTERFACE: &str = "org.inox.Configuration1";
-/// The interface that can hold a display change provisionally and take it back
-/// (ADR 0028). The compositor serves it at the same object path as the v1
-/// interface, which stays as it was for every other consumer.
+/// The interface that can hold a display change provisionally and take it back.
+///
+/// The compositor serves it at the same object path as the v1 interface, which
+/// stays as it was for every other consumer.
 const INTERFACE_TRIAL: &str = "org.inox.Configuration2";
 /// The consumer that owns the displays, and therefore the only one asked for a
 /// display trial.
@@ -100,7 +107,7 @@ pub(super) fn apply(
         }
     };
     // A display change is asked for as a trial, and only the compositor is asked
-    // for one: it is the consumer that owns the displays (ADR 0028).
+    // for one: it is the consumer that owns the displays.
     let provisional = trial && component == Component::Compositor;
     let method = if provisional { "Trial" } else { "Reload" };
     let interface = if provisional {
@@ -176,7 +183,7 @@ pub(super) fn apply(
 ///
 /// A call that fails leaves the trial open: the compositor reverts it on its own
 /// when the countdown runs out, so the window reports the failure and keeps
-/// counting rather than pretending the change was kept (ADR 0028).
+/// counting rather than pretending the change was kept.
 pub(super) fn confirm_display(generation: Generation) -> Message {
     match display_call("Confirm", generation, true) {
         Ok(()) => Message::DisplayConfirmed { generation },

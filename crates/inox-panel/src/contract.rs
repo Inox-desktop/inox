@@ -1,5 +1,5 @@
+//! The panel's side of the window-service contract.
 //! The panel's side of the window-service contract (ADR 0013).
-//!
 //! The panel does not guess window state, and it does not treat a click as an
 //! accomplished action. ADR 0013 decision 1 gives it a snapshot plus events, and
 //! decision 2 asks it to distinguish what happened to a request it sent:
@@ -109,6 +109,11 @@ pub enum ServiceFailure {
     /// The service did not answer within its budget.
     Timeout,
     /// The service answered with an error of its own.
+    ///
+    /// No transport produces this yet — the window service is not implemented —
+    /// but it is the shape of an answer the contract already has words for, so
+    /// it stays part of the vocabulary rather than becoming a fourth case later.
+    #[allow(dead_code)]
     Reported {
         /// The service's own words, for the log and the message.
         detail: String,

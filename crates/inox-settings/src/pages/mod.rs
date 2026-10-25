@@ -2,9 +2,11 @@
 //!
 //! A page is a **pure description** — the fields it edits, the label of its
 //! entry in the navigation list, the sentence under its title, and the cards its
-//! fields are grouped into — plus the builder that draws it (`view`). Nothing on
-//! a page holds state: the values come from [`crate::draft`], what the page shows
-//! comes from [`crate::view_model`], and the widgets come from [`crate::view`].
+//! fields are grouped into. Nothing on a page holds state and nothing on a page
+//! draws: the values come from [`crate::draft`], what the page shows comes from
+//! [`crate::view_model`], and the drawing is the QML tree's job. The page
+//! modules describe *what* a card is; `crate::view` decides how it is rendered
+//! and `crate::theme` decides what it looks like.
 //!
 //! The settings pages are the areas of PRD §9 the settings application owns:
 //!
@@ -31,12 +33,7 @@ pub mod locale;
 pub mod notifications;
 pub mod panel;
 
-use iced::Element;
-use inox_config::Theme as Tokens;
-
-use crate::app::Message;
 use crate::draft::Field;
-use crate::view_model::{FieldView, PageView, SettingsViewModel};
 
 /// One card of a page: a heading and the fields under it.
 ///
@@ -309,65 +306,6 @@ impl PageId {
         }
 
         ids
-    }
-}
-
-/// Draws the open page.
-///
-/// The window asks the page that is open to draw itself, which is what gives
-/// each module in this tree its own `view` rather than one function with four
-/// arms.
-pub fn view<'a>(
-    page: PageId,
-    model: &SettingsViewModel,
-    tokens: &'a Tokens,
-) -> Element<'a, Message> {
-    let entry = model
-        .pages
-        .iter()
-        .find(|entry| entry.page == page)
-        .cloned()
-        .unwrap_or_else(|| standalone_entry(page, model));
-
-    let fields: Vec<FieldView> = page
-        .fields()
-        .iter()
-        .filter_map(|field| model.field(*field).cloned())
-        .collect();
-
-    match page {
-        PageId::InputMethod
-        | PageId::Displays
-        | PageId::Input
-        | PageId::Layout
-        | PageId::Launcher
-        | PageId::Wallpaper => crate::view::page_section(&entry, &fields, tokens),
-        PageId::Appearance => appearance::view(&entry, &fields, tokens),
-        PageId::Panel => panel::view(&entry, &fields, tokens),
-        PageId::Notifications => notifications::view(&entry, &fields, tokens),
-        PageId::Locale => locale::view(&entry, &fields, tokens),
-    }
-}
-
-/// A page entry for the case where the model has none.
-///
-/// The projection draws every page, so this is only reachable for a hand-built
-/// model; the page is drawn with its own message id rather than not at all.
-fn standalone_entry(page: PageId, model: &SettingsViewModel) -> PageView {
-    PageView {
-        page,
-        label: page.label_id().to_owned(),
-        description: page.description_id().to_owned(),
-        groups: page
-            .groups()
-            .iter()
-            .map(|group| crate::view_model::GroupView {
-                title: group.title_id.to_owned(),
-                fields: group.fields.to_vec(),
-            })
-            .collect(),
-        selected: page == model.page,
-        focused: false,
     }
 }
 

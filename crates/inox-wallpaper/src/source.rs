@@ -4,10 +4,10 @@
 //! this module answers "is it there". The two are separate because the answers
 //! are reported differently: nothing to draw is the theme background and
 //! deserves no complaint, while something configured and missing is a defect the
-//! user has to be told about (ADR 0014, acceptance D05). The case in between is
+//! user has to be told about. The case in between is
 //! the shipped default a user never chose: it degrades with a warning rather
 //! than an error, because nobody can act on a wallpaper they did not pick
-//! (ADR 0030).
+//!.
 //!
 //! The check is deliberately shallow — exists, is a file, opens — so that the
 //! diagnosis arrives before a decode commits any memory. Whatever happens
@@ -91,7 +91,7 @@ pub fn resolve(selection: &Selection, dirs: &[PathBuf]) -> OutputSource {
 ///
 /// An explicitly chosen wallpaper that is nowhere to be found is a
 /// [`OutputSource::Unavailable`] like any other selected-and-missing resource
-/// (ADR 0014); the default the user never asked for falls back to the theme
+///; the default the user never asked for falls back to the theme
 /// background with only a warning, because a user cannot be expected to act on
 /// a wallpaper they did not choose.
 fn resolve_bundled(

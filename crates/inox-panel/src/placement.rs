@@ -93,7 +93,7 @@ pub enum KeyboardInteractivity {
     /// What an ordinary panel asks for (D01): showing a strip must not take the
     /// keyboard away from the window the user is typing in. Explicit navigation
     /// and a tray menu are separate interactions with their own focus handling
-    /// (ADR 0013), not a permanently focused panel.
+    ///, not a permanently focused panel.
     #[default]
     None,
     /// The surface receives input while the pointer is over it.
