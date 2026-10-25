@@ -23,6 +23,9 @@
 | `try-rollback.sh` | — | 结束试运行：停该实例与边界，把画面切回开机链的 greeter |
 | `rollback-to-greetd.sh` | — | **先**把 `display-manager.service` 与 `enabled` 交回 greetd、**再**停 Inox 单元 |
 | `uninstall.sh` | — | 停/禁用并移除单元与 PAM 栈；**不删** `getty@tty3`、greeter 账户与状态目录。`--remove-binaries` 才删 `/usr/bin/inox-*` 与 `/usr/share/inox/wallpapers`（发行版包拥有的同一批路径，默认不碰） |
+| `sysusers/inox.conf` | `/usr/lib/sysusers.d/inox.conf` | `greeter` 系统账户的声明，供 AUR 包经 pacman 的 `systemd-sysusers` 钩子创建；必须与 `install.sh` 的 `useradd --system` 参数一致 |
+| `aur/PKGBUILD.in` 与 `aur/inox.install` | — | AUR 配方模板与 pacman 安装钩子（钩子只打印切换开机链的步骤，不启用任何东西）。渲染、构建验证与推送见 `aur/README.md` |
+| `aur/publish.sh` | — | AUR 配方的唯一实现：渲染 PKGBUILD、`makepkg --printsrcinfo` 生成 `.SRCINFO`、校验依赖名、`makepkg` 构建与产物断言、幂等推送。决策见 ADR 0043 |
 
 ## 为什么是三个栈
 
@@ -62,7 +65,13 @@
 合成器里加一个接受注入键鼠事件的套接字（`inox-compositor/test-input`），不是能交给测试者的东西。
 它会真的运行暂存的 `inox-compositor --test-input` 来证明这一点。
 
-决策：ADR 0042。
+第三条路径是 **AUR 源码包**（`packaging/aur/`）：`Release` 工作流在 tag 发布后把同一个 tag 的
+PKGBUILD 推到 AUR（稳定 tag → `inox`，预发布 → `inox-canary`）。它由 Arch 用户本机用 `makepkg`
+构建，不是 CI 产出的二进制，所以**不能**当 E4 证据；它与 `install.sh` 装的 `/usr/bin` 文件互斥，
+pacman 会拒绝覆盖非包所有的文件。发布前工作流会在 `archlinux:base-devel` 里完整构建一遍，
+并通过同一套 `--test-input` 断言。决策：ADR 0043；配方与凭据见 `aur/README.md`。
+
+决策：ADR 0042（tarball）与 ADR 0043（AUR）。
 
 ## 与代码的接缝
 
@@ -84,7 +93,7 @@
 所有脚本都可以只做静态检查：
 
 ```bash
-for script in packaging/*.sh; do bash -n "$script"; done
+for script in packaging/*.sh packaging/aur/*.sh; do bash -n "$script"; done
 ```
 
 唯一会真的启动东西的是 `rehearse-headless.sh`，而它只在自己的 `mktemp -d` 里启动真实组件：

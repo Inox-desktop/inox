@@ -21,6 +21,7 @@
 | `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见[验收规范 §1](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md)） |
 | `book` | 先 `scripts/check-docs.py`，再 `mdbook build docs/book` | 本站点的结构、链接与构建（见[本站点的门禁](#本站点的门禁)） |
 | `package` | `packaging/package.sh --output-dir target/dist` | 产出金丝雀 tarball 并作为 `inox-canary-tarball` artifact 上传（见[发布制品 job 与 Release 工作流](#发布制品-job-与-release-工作流)） |
+| `aur` | `packaging/aur/publish.sh --version <版本> --sha256 SKIP`（两个渠道各一次，`archlinux:base-devel` 容器） | 渲染 AUR 配方的两个渠道、生成 `.SRCINFO`、逐个校验 `depends`/`makedepends` 能在 Arch 官方仓库解析。**不构建**：完整 `makepkg` 在 release 当天、推送之前做（见下） |
 
 上表只列与「怎么判定一次改动」直接相关的 job。另有四个专项 job 不在表内：`msrv`（用 Rust 1.89 跑 `cargo check --locked --workspace --all-targets --all-features`，守住工作区 MSRV）、`session-e2e`（L4 无头会话的启动、会话锁与限时注销）、`input-method-e2e`（Fcitx5 真实拼音预编辑与中文上屏）与 `license-audit`（用 `ldd` 断言只链接已声明的 LGPL Qt 模块，不得出现 GPL-only 模块）。
 
@@ -72,7 +73,7 @@
 
 它依次做四件事：
 
-1. 对所有 `packaging/*.sh` 与 `scripts/*.sh` 跑 `bash -n`，对 `scripts/*.py` 跑 `python3 -m py_compile`，并跑 `package.sh --help`、`install.sh --help`、`uninstall.sh --help`。安装面与辅助脚本是仓库里没有任何别的 job 编译或测试的部分，语法错误必须在 CI 上暴露，而不是等到某人的机器处于半安装状态时。注意这**只是语法与入口检查**：`install.sh` 与 `preflight.sh` 需要 root，CI 不执行它们；
+1. 对所有 `packaging/*.sh`、`packaging/aur/*.sh` 与 `scripts/*.sh` 跑 `bash -n`，对 `scripts/*.py` 跑 `python3 -m py_compile`，并跑 `package.sh --help`、`install.sh --help`、`uninstall.sh --help`、`aur/publish.sh --help`。安装面与辅助脚本是仓库里没有任何别的 job 编译或测试的部分，语法错误必须在 CI 上暴露，而不是等到某人的机器处于半安装状态时。注意这**只是语法与入口检查**：`install.sh` 与 `preflight.sh` 需要 root，CI 不执行它们；
 2. `packaging/package.sh --output-dir target/dist` —— 用**默认特性**构建（不是 `--all-features`）、暂存 14 个二进制与 `data/wallpapers`、`packaging/`，写 `BUILD-INFO` 与 `SHA256SUMS`；
 3. 校验 `.sha256`、把 `BUILD-INFO` 从压缩包里读出来，并断言压缩包只有一个顶层目录、含全部 14 个二进制、壁纸与 `packaging/install.sh`；
 4. 上传 artifact。
@@ -85,6 +86,17 @@
 - 发布版本必须以根 `Cargo.toml` 的工作区版本开头（`0.1.1-canary.2` 可以，清单还写着 `0.1.1` 时的 `0.2.0-canary.1` 会被拒绝）：否则 `BUILD-INFO`、文件名与 release 标题会一起描述一个没人能复现的构建；
 - 版本里含 `-canary`、`-alpha`、`-beta`、`-rc`、`-dev` 时标为 **prerelease**；
 - 创建 Release 前断言 `BUILD-INFO` 的 `commit` 就是正在发布的那个提交；
-- 手工 dispatch **只上传 workflow artifact，不创建 Release**。
+- 手工 dispatch **只上传 workflow artifact，不创建 Release**；
+- Release 创建后，`publish-aur` job 在 `archlinux:base-devel` 里**完整构建** AUR 源码包
+  （`makepkg`，跑配方里的 `--test-input` 断言与产物文件清单断言），通过才推送到
+  `aur.archlinux.org`：稳定 tag → `inox`，预发布 → `inox-canary`。构建失败不会回滚 Release，
+  重跑这次 run 的失败 job 即可；AUR 推送是幂等的。凭据、两个包名的映射与边界见
+  [AUR 包](https://github.com/Inox-desktop/inox/blob/main/packaging/aur/README.md) 与
+  [ADR 0043](../architecture/decisions.md)。
 
-制品怎么拿、怎么装、怎么切一个金丝雀、以及它**不能声明什么**，见[发布制品与金丝雀渠道](./release.md)。
+`aur (recipe)` job 只做便宜的静态检查（渲染、`.SRCINFO`、依赖名），因为它要在**每个 PR** 上跑；
+完整的 `makepkg` 构建是半小时级的成本，只在 release 当天、推送之前执行一次。这与 `package.sh`
+在 CI 中持续产出 tarball 的分工一致：便宜的路径每天跑，把「配方语法对但依赖名打错」这类问题
+在合并前暴露；代价高的验证在公开之前做完。
+
+制品怎么拿、怎么装、AUR 包怎么发、以及它**不能声明什么**，见[发布制品与金丝雀渠道](./release.md)。
