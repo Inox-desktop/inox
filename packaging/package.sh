@@ -290,9 +290,23 @@ fi
 commit="$(cd -- "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || printf 'unknown')"
 commit_short="$(cd -- "$REPO_ROOT" && git rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 commit_date="$(cd -- "$REPO_ROOT" && git show -s --format=%cI HEAD 2>/dev/null || printf 'unknown')"
+# `git status --porcelain` ignores whatever .gitignore covers, so build output
+# under target/ does not make this dirty. Anything it *does* report is a tracked
+# file modified or an untracked file that is not ignored — both mean the artifact
+# does not correspond to the commit recorded below, which is the one thing
+# BUILD-INFO exists to be trusted for.
 worktree_state="clean"
-if [ -n "$(cd -- "$REPO_ROOT" && git status --porcelain 2>/dev/null)" ]; then
-    worktree_state="dirty"
+worktree_dirty_list=""
+if [ -n "$(cd -- "$REPO_ROOT" && git rev-parse --git-dir 2>/dev/null)" ]; then
+    worktree_dirty_list="$(cd -- "$REPO_ROOT" && git status --porcelain 2>/dev/null)"
+    if [ -n "$worktree_dirty_list" ]; then
+        worktree_state="dirty"
+    fi
+else
+    # No git at all (a tarball of a tarball, a CI checkout without history): the
+    # commit is unknown rather than clean, and saying so is better than claiming a
+    # cleanliness nobody checked.
+    worktree_state="unknown: not a git worktree"
 fi
 rustc_version="$(rustc -V)"
 cargo_version="$(cargo -V)"
@@ -323,6 +337,11 @@ EOF
 # local build is a legitimate thing to want.
 if [ "$worktree_state" = dirty ]; then
     warn "the worktree has uncommitted changes; BUILD-INFO records commit $commit_short but the binaries are not that commit"
+    # Naming the files is what makes this actionable in a CI log: a warning that
+    # only says "dirty" leaves whoever reads it to guess.
+    printf '%s\n' "$worktree_dirty_list" | while IFS= read -r line; do
+        [ -n "$line" ] && warn "  uncommitted: $line"
+    done
 fi
 
 # --- checksums -------------------------------------------------------------

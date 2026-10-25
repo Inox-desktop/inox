@@ -555,22 +555,38 @@ jobs:
           tar -xzOf "$tarball" --wildcards '*/BUILD-INFO'
           # The archive must carry exactly one top-level directory, all fourteen
           # shipped binaries, the wallpapers and the install surface.
-          roots="$(tar -tzf "$tarball" | cut -d/ -f1 | sort -u)"
+          #
+          # The listing is read ONCE into a file. `tar -tzf ... | grep -q` looks
+          # equivalent but is not: grep exits at the first match, tar then dies of
+          # SIGPIPE, and `pipefail` turns that into a failure — so the check
+          # reports "missing" for a file it just found. That is not theoretical;
+          # it failed this job on its first run.
+          tar -tzf "$tarball" >"$RUNNER_TEMP/archive-listing.txt"
+
+          roots="$(cut -d/ -f1 "$RUNNER_TEMP/archive-listing.txt" | sort -u)"
           if [ "$(printf '%s\n' "$roots" | wc -l)" -ne 1 ]; then
             echo "the archive does not have exactly one top-level directory:" >&2
             printf '%s\n' "$roots" >&2
             exit 1
           fi
+          echo "top-level directory: $roots"
+
+          missing=()
           for binary in inox-auth inox-host inox-compositor inox-greet inox-session \
               inox-shell inox-panel inox-lock inox-wallpaper inox-notifications \
               inox-idle inox-xwayland inox-launcher inox-settings; do
-            tar -tzf "$tarball" | grep -qx "$roots/bin/$binary" || {
-              echo "the archive is missing bin/$binary" >&2
-              exit 1
-            }
+            grep -qx "$roots/bin/$binary" "$RUNNER_TEMP/archive-listing.txt" \
+              || missing+=("bin/$binary")
           done
-          tar -tzf "$tarball" | grep -qx "$roots/packaging/install.sh"
-          tar -tzf "$tarball" | grep -q "^$roots/data/wallpapers/"
+          grep -qx "$roots/packaging/install.sh" "$RUNNER_TEMP/archive-listing.txt" \
+            || missing+=("packaging/install.sh")
+          grep -q "^$roots/data/wallpapers/" "$RUNNER_TEMP/archive-listing.txt" \
+            || missing+=("data/wallpapers/")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "the archive is missing:" >&2
+            printf '  %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
           echo "ok: $tarball contains the binaries, the wallpapers and the install surface"
       - name: Upload the tarball
         uses: actions/upload-artifact@v4
