@@ -91,6 +91,40 @@ mod boundary {
             }
         }
 
+        /// Starts a server that is merely *listening*: it accepts connections and
+        /// holds them open, answering nothing.
+        ///
+        /// This exists because `Fake::start(Vec::new())` does not mean "a socket
+        /// that is there". With an empty script the accept loop runs zero times,
+        /// so the `UnixListener` is dropped the instant the thread starts and the
+        /// socket path stops accepting connections. `is_available` only checks
+        /// that `connect` succeeds, so a test using the empty script was racing
+        /// the listener's teardown: green when the connect won, `ECONNREFUSED`
+        /// when it lost. A test for "a socket is available" needs a listener that
+        /// stays up, not one that is already gone.
+        fn start_listening() -> Self {
+            let directory = tempfile::tempdir().expect("a temporary directory");
+            let socket = directory.path().join("auth.sock");
+            let listener = UnixListener::bind(&socket).expect("the socket is created");
+            let (_sender, seen) = mpsc::channel();
+
+            thread::spawn(move || {
+                // Held so the accepted streams stay open: closing them is fine for
+                // `connect`, but holding them makes the fake unmistakably alive for
+                // the duration of the test.
+                let mut held = Vec::new();
+                while let Ok((stream, _)) = listener.accept() {
+                    held.push(stream);
+                }
+            });
+
+            Self {
+                _directory: directory,
+                socket,
+                seen,
+            }
+        }
+
         /// What the boundary saw, in the order the connections arrived.
         fn seen(&self) -> Seen {
             self.seen
@@ -300,7 +334,9 @@ mod boundary {
 
     #[test]
     fn availability_is_about_a_socket_and_not_about_a_promise() {
-        let fake = Fake::start(Vec::new());
+        // `start_listening`, not `start(Vec::new())`: the latter's listener is
+        // dropped before the test connects, which made this assertion a race.
+        let fake = Fake::start_listening();
         assert!(boundary::is_available(&fake.socket));
 
         let directory = tempfile::tempdir().expect("a temporary directory");

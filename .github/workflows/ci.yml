@@ -457,3 +457,143 @@ jobs:
             esac
           done < /tmp/linkcheck.modules
           echo "license-audit: only LGPL Qt modules linked"
+
+  # The documentation site is built here, and its structure is checked.
+  #
+  # `mdbook build` on its own is a weak gate — it exits 0 when a chapter listed in
+  # SUMMARY.md does not exist (it emits a placeholder page carrying the chapter
+  # title) and it says nothing about relative links written in prose. Both classes
+  # of breakage reach the published site as 404s, which is how `docs/quality/`
+  # kept a dead `../../PRD.md` link and ADR references after the ADR directory was
+  # deleted. `scripts/check-docs.py` closes exactly that gap:
+  #
+  #   - every chapter in SUMMARY.md exists, and every page under `src/` is in it
+  #   - every relative link and image target under `docs/` resolves
+  #
+  # Network links are skipped on purpose (a gate that needs the network fails for
+  # the wrong reason). markdownlint runs in the separate Docs workflow and covers
+  # style only.
+  book:
+    name: book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+      - name: Check the documentation structure and links
+        run: scripts/check-docs.py
+      - name: Build the documentation site
+        run: mdbook build docs/book
+
+  # Build the release tarball on every PR and every push to main.
+  #
+  # This job exists so the artifact E4 hardware acceptance runs on (acceptance.md
+  # §1: "E4 使用 CI 产出的二进制") is produced and exercised continuously, rather
+  # than assembled by hand on release day. It builds with DEFAULT features —
+  # `--all-features` would compile in `inox-compositor/test-input`, a socket that
+  # accepts injected keyboard and pointer events.
+  #
+  # The verification that the staged binary really is a default-features build is
+  # inside packaging/package.sh: it runs the staged compositor with `--test-input`
+  # and fails if the option is accepted. A unit test cannot cover that, because the
+  # property belongs to the artifact rather than to the source tree.
+  package:
+    name: package (canary tarball)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # BUILD-INFO records the commit; a shallow clone still has HEAD, and
+          # `git status --porcelain` needs a worktree rather than history.
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The release build links Qt and Mesa for real, and needs the PAM/clang
+      # includes for `inox-auth`'s server feature.
+      - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
+      # The packaging directory is the install surface the tarball ships, and it is
+      # the one part of this repository no other job compiles or tests. A syntax
+      # error in `uninstall.sh` or `rollback-to-greetd.sh` is invisible until the
+      # moment somebody needs it — which is the moment their machine is in the
+      # half-installed state those scripts exist to get out of.
+      - name: Check the packaging scripts
+        run: |
+          set -euo pipefail
+          for script in packaging/*.sh scripts/*.sh; do
+            bash -n "$script"
+            printf 'ok: %s\n' "$script"
+          done
+          # The Python helpers are not run here (check-docs is its own job), but a
+          # syntax error should surface in the same place as a shell one.
+          for script in scripts/*.py; do
+            python3 -m py_compile "$script"
+            printf 'ok: %s\n' "$script"
+          done
+          # --help must not touch the system: it is answered before any root check.
+          packaging/package.sh --help >/dev/null
+          packaging/install.sh --help >/dev/null
+          packaging/uninstall.sh --help >/dev/null
+
+      - name: Build and package
+        run: packaging/package.sh --output-dir target/dist
+      - name: Check the tarball and its metadata
+        run: |
+          set -euo pipefail
+          cd target/dist
+          ls -l
+          # The tarball is what a tester downloads; its checksum file must agree
+          # with it or the install instructions are a lie.
+          sha256sum --check ./*.tar.gz.sha256
+          # BUILD-INFO is inside the archive; print it from there so a broken
+          # archive (wrong root directory, missing metadata) fails this job rather
+          # than the person who downloaded it.
+          tarball="$(ls ./*.tar.gz)"
+          tar -xzOf "$tarball" --wildcards '*/BUILD-INFO'
+          # The archive must carry exactly one top-level directory, all fourteen
+          # shipped binaries, the wallpapers and the install surface.
+          #
+          # The listing is read ONCE into a file. `tar -tzf ... | grep -q` looks
+          # equivalent but is not: grep exits at the first match, tar then dies of
+          # SIGPIPE, and `pipefail` turns that into a failure — so the check
+          # reports "missing" for a file it just found. That is not theoretical;
+          # it failed this job on its first run.
+          tar -tzf "$tarball" >"$RUNNER_TEMP/archive-listing.txt"
+
+          roots="$(cut -d/ -f1 "$RUNNER_TEMP/archive-listing.txt" | sort -u)"
+          if [ "$(printf '%s\n' "$roots" | wc -l)" -ne 1 ]; then
+            echo "the archive does not have exactly one top-level directory:" >&2
+            printf '%s\n' "$roots" >&2
+            exit 1
+          fi
+          echo "top-level directory: $roots"
+
+          missing=()
+          for binary in inox-auth inox-host inox-compositor inox-greet inox-session \
+              inox-shell inox-panel inox-lock inox-wallpaper inox-notifications \
+              inox-idle inox-xwayland inox-launcher inox-settings; do
+            grep -qx "$roots/bin/$binary" "$RUNNER_TEMP/archive-listing.txt" \
+              || missing+=("bin/$binary")
+          done
+          grep -qx "$roots/packaging/install.sh" "$RUNNER_TEMP/archive-listing.txt" \
+            || missing+=("packaging/install.sh")
+          grep -q "^$roots/data/wallpapers/" "$RUNNER_TEMP/archive-listing.txt" \
+            || missing+=("data/wallpapers/")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "the archive is missing:" >&2
+            printf '  %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+          echo "ok: $tarball contains the binaries, the wallpapers and the install surface"
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: inox-canary-tarball
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30

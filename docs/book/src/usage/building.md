@@ -7,8 +7,8 @@
 | 能力 | 现状 |
 |------|------|
 | 构建 `inox-compositor` 并启动 headless 合成器 | **可以**：创建 `wl_output`、接受客户端、平铺窗口、渲染帧 |
-| 在物理显示器上看到画面 | **不行**：没有 DRM/KMS 后端，输出是逻辑输出，渲染到离屏缓冲 |
-| 用真实键盘/鼠标操作 | **不行**：没有 libinput/udev 后端；输入事件只能由测试注入（M3 起经测试专用套接字，需 `test-input` feature 构建） |
+| 在物理显示器上看到画面 | **代码已实现，未验收**：DRM/KMS 物理后端已落地（libseat 取设备、逐 GPU 枚举 connector、逐输出渲染），默认后端 `auto` 就会走它；但 **E4 真机验收尚未执行**，因此不声明任何显示组合可用。headless 路径则渲染到离屏缓冲，屏幕上不会出现东西 |
+| 用真实键盘/鼠标操作 | **代码已实现，未验收**：libinput/udev 后端已落地（`crates/inox-compositor/src/backend/input.rs`），真实会话下键鼠走真实设备；**同样缺 E4 真机证据**。CI 里的输入来自测试注入路径（M3 起经测试专用套接字，需 `test-input` feature 构建） |
 | 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件的界面是 QML + Qt Quick。面板与锁屏**不是普通窗口**——它们自己创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，QML 只做离屏渲染，所以需要支持对应协议的合成器，缺协议时以可读错误与非零码退出；启动器、设置、通知与壁纸是普通 Qt 窗口，放置策略只被建模与测试、未被应用；`inox-lock` 默认以可读错误非零退出（认证边界未评审），`--take-lock` 则真实取锁并把界面画到每个输出上 |
 | 启动与监督会话 | **部分可以**：`inox-session` 能启动合成器及桌面组件，提供有限重启、故障隔离和注销；尚无完整服务 ready，也未接入 XWayland 的 DISPLAY 发布 |
 | 真实登录、自动锁定与挂起 | **未验证**：登录链（`inox-host` 起合成器与登录界面，`inox-auth` 认证并建立用户会话）与部署面 `packaging/` 已接线，但**没有任何真机登录证据**；`inox-greet` 不带 `--preview` 时要求认证边界，`inox-idle` 有协议客户端与策略，而 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线。步骤见[登录与开机链](login.md) |
@@ -111,13 +111,14 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
 - `LIBGL_ALWAYS_SOFTWARE=1` 让 Mesa 走 llvmpipe 软件光栅化，在无 GPU 或驱动不可用的环境里也能渲染。
 - `--exit-after-frames 120` 渲染 120 帧后以退出码 0 结束，便于脚本化验证；省略它则一直运行到收到终止信号。
 
-进程会创建逻辑输出并渲染帧，但**屏幕上不会出现任何东西** —— 没有 DRM/KMS 后端，渲染目标是离屏缓冲。这是 headless 路径的定义，不是配置问题。
+进程会创建逻辑输出并渲染帧，但**屏幕上不会出现任何东西** —— headless 后端把渲染目标放在离屏缓冲。这是 headless 路径的定义，不是配置问题：要上真实显示器，用 `--backend drm`（或默认的 `auto`）走物理后端，那条路径**已实现但尚无 E4 真机验收**。
 
 ## 命令行选项
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
-| `--headless` | 使用 headless 后端（目前唯一可用的后端） | — |
+| `--backend <KIND>` | 后端选择：`auto`、`headless`、`drm`。`auto` 选枚举到的物理设备，`drm` **显式要求**物理后端且**永不回落** headless，`headless` 固定走离屏路径 | `auto` |
+| `--headless` | `--backend=headless` 的别名（早于后端选择器存在，保留以兼容既有调用）。与 `--backend` 同时给出时**以最后出现的那个为准**，所以 `--backend drm --headless` 是 headless，反过来是 drm | — |
 | `--output-size <WxH>` | headless 输出尺寸（像素） | `1280x720` |
 | `--refresh-rate <HZ>` | 输出刷新率（Hz） | `60` |
 | `--socket <NAME>` | Wayland 套接字名 | 自动选择下一个空闲名字 |
@@ -181,7 +182,7 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
 XDG_RUNTIME_DIR=/tmp/inox-runtime WAYLAND_DISPLAY=wayland-1 weston-simple-shm
 ```
 
-窗口会按 master/stack 平铺排列（`master_ratio` 60%、`gap` 8 像素），但同样只在离屏缓冲中渲染，看不到画面。`Alt+Tab` / `Alt+Shift+Tab` 切换焦点、`Super+Q` 触发干净退出 —— 注意由于没有真实输入后端，这些按键绑定只有在输入事件经测试注入路径（M3 起为 `test-input` 套接字）送达时才生效，用真实键盘按下不会触发。
+窗口会按 master/stack 平铺排列（`master_ratio` 60%、`gap` 8 像素），但同样只在离屏缓冲中渲染，看不到画面。`Alt+Tab` / `Alt+Shift+Tab` 切换焦点、`Super+Q` 触发干净退出 —— 注意这一节用的是 **headless** 后端，按键要有输入事件才会生效：CI 与本节经测试注入路径（M3 起为 `test-input` 套接字）送达，真实键盘则需要物理后端（`--backend drm`，已实现但尚无 E4 真机验收）。
 
 ## 运行 X11 应用（XWayland）
 
@@ -206,7 +207,7 @@ X11 窗口会像 Wayland 窗口一样进入 master/stack 平铺，但同样只�
 
 **剪贴板与拖放**：
 
-- 剪贴板的读取权**跟随键盘焦点**：只有焦点客户端能读取或设置选区。X11↔Wayland 的粘贴因此要走正常的焦点交接 —— 先把焦点切到目标窗口（`Alt+Tab`；没有真实输入后端时按键只能经测试注入路径送达，见上一节），再粘贴；焦点不在对端时它不会收到任何选区事件。
+- 剪贴板的读取权**跟随键盘焦点**：只有焦点客户端能读取或设置选区。X11↔Wayland 的粘贴因此要走正常的焦点交接 —— 先把焦点切到目标窗口（`Alt+Tab`；这一节用的是 headless 后端，按键只能经测试注入路径送达，见上一节；真实键盘需要物理后端），再粘贴；焦点不在对端时它不会收到任何选区事件。
 - 拖放：Wayland↔Wayland 与 X11 内部（X 客户端之间）可用；**跨 X11/Wayland 边界的拖放不可用**，因为 `xwayland-satellite` v0.8.3 未实现 XDND。
 - 锁屏时读剪贴板（验收项 X02 的一部分）与全局、无焦点限制的 `wlr-data-control` 都**不在 M3 范围内**，推迟到 M5。
 
