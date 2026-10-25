@@ -76,6 +76,7 @@ L4  inox-session, inox-idle, inox-greet, inox-host
 - 必须使用 **calloop** 作为主事件循环；禁止自建线程轮询循环处理核心事件。
 - 渲染与输入处理不得阻塞事件循环；耗时任务放入 calloop 的异步/线程机制。
 - Shell 组件基于 **QML + Qt Quick**（ADR 0033，自 Iced 迁移，经 Rust 绑定；迁移进行中）。领域模型与逻辑留在 Rust，UI 交给声明式 QML；合成器始终是 **Smithay**，绝不使用 Qt Wayland Compositor（GPL-only）。
+- 有 Qt 窗口的 Shell 组件由 Qt 事件循环驱动；`inox-panel` 与 `inox-lock` 保留自己的 calloop 主循环，QML 仅做离屏渲染（ADR 0038），这两处不得退化为普通窗口。
 - 只消费主题令牌（design tokens），**禁止在组件中硬编码颜色/尺寸**（见 PRD §9）。
 - 新增 Wayland 协议前，必须先在 `inox-protocols` 定义/引用，并说明安全与生命周期约束。
 - 需要改变分层、依赖方向、核心依赖或 IPC/配置格式的破坏性变更时，**必须先写 ADR**（PRD §5.4）并获得批准。

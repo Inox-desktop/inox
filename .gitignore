@@ -13,3 +13,6 @@ target/
 
 # Local probe artifacts from headless compositor experiments (runtime output, not source).
 /.probe-run*/
+
+# Local Iced→QML migration probes (not part of the crate tree)
+.probe-qtbridge/
