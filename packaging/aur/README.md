@@ -36,6 +36,23 @@ Ubuntu 的 glibc 与 Qt；装到 Arch 上不是「换个路径」的问题。AUR
 `check()` 真的运行构建出来的合成器、要求它拒绝 `--test-input` 并在错误里点名该选项——
 与 `packaging/package.sh` 对发布 tarball 做的是同一条断言（ADR 0042 §4）。
 
+### 配方必须 `options=('!lto')`
+
+这不是偏好，是构建能不能过的问题。makepkg 的默认 `OPTIONS` 含 `lto`，会把
+`LTOFLAGS`（`-flto=auto`）追加到 `CFLAGS`、`CXXFLAGS` **和** `LDFLAGS`。cxx-qt 用那个
+C++ 编译器编译 Rust↔C++ bridge，所以开了 LTO 之后这些目标文件变成 GCC 的 LTO 字节码
+（`.gnu.lto_*` 段，`nm` 报 `no symbols`）。Rust 最终经 `rust-lld` 链接
+（`qt-build-utils` 选它），而 rust-lld 读不了 GCC 的 LTO 字节码，
+`libcxx-qt-lib-cxxqt-generated.a` 里的 `cxxbridge1$…` / `cxx_qt_init_*` 定义因此全部变成
+undefined symbol，`inox-lock`、`inox-settings`、`inox-greet`、`inox-launcher`、
+`inox-qml-prototype` 的链接全部失败。
+
+这条结论是实测的：同一个 tag 把 `-flto=auto` 放进 `CFLAGS`/`CXXFLAGS`/`LDFLAGS` 能复现
+undefined symbol 的链接失败，去掉它同一个构建就成功。当前没有能让 rust-lld 理解 GCC LTO
+字节码的工具链，所以对这个包关掉 lto 是唯一可行路径。首次金丝雀 `v0.1.1-canary.1` 就是
+这样在 `publish-aur` job 里失败的：CI 的 `aur (recipe)` job 只渲染配方不构建，所以这个缺陷
+只有在发布时才暴露（已由这条 `options` 修复）。
+
 ## 自动发布
 
 `release.yml` 的顺序是：`package` job 构建 tarball 并创建 GitHub Release，然后

@@ -324,6 +324,20 @@ if [ "$sha256" != "SKIP" ]; then
 fi
 log "generated .SRCINFO"
 
+# `options=('!lto')` is load-bearing, not cosmetic, and it is exactly the kind of
+# line a future edit deletes because it looks like a preference. Without it
+# makepkg appends `-flto=auto` to CXXFLAGS; cxx-qt's bridge objects then become
+# GCC LTO bytecode, rust-lld cannot resolve the `cxxbridge1$…` definitions inside
+# them, and every QML component fails to link. The first canary release failed
+# exactly this way, and the cheap `aur (recipe)` CI job could not catch it because
+# it only renders the recipe. This assertion is cheap enough to run on every PR,
+# so that failure cannot come back silently.
+grep -qE "^[[:space:]]*options=\('[^']*!lto" "$workdir_pkgbuild" ||
+    die "the recipe must carry options=('!lto'): makepkg's default lto adds -flto=auto to CXXFLAGS, cxx-qt's bridge objects become GCC LTO bytecode, and rust-lld cannot link them (see packaging/aur/README.md)"
+grep -qE "^[[:space:]]*options = !lto\$" "$workdir/.SRCINFO" ||
+    die ".SRCINFO does not report the !lto option; the AUR page would advertise a package that cannot build"
+log "recipe disables lto (required for cxx-qt + rust-lld)"
+
 # Dependency names are the part of a PKGBUILD that a syntax check cannot catch: a
 # typo there only shows up on an AUR user's machine, as a failed dependency
 # resolution. `pacman -Si` answers against the same repositories that user has.

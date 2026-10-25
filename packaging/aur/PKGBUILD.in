@@ -59,6 +59,24 @@ optdepends=(
   'greetd: fall back to greetd when the Inox login screen cannot start'
   'xwayland-satellite: run X11 applications inside an Inox session'
 )
+# `lto` must stay off, and this is not a preference.
+#
+# makepkg's default OPTIONS include `lto`, which appends `-flto=auto` (LTOFLAGS)
+# to CFLAGS, CXXFLAGS *and* LDFLAGS. cxx-qt compiles the Rust<->C++ bridge with
+# that C++ compiler, so with LTO on those object files become GCC LTO bytecode:
+# `.gnu.lto_*` sections, `nm` reports "no symbols". Rust links the final binary
+# through rust-lld (qt-build-utils selects it), and rust-lld cannot read GCC's
+# LTO bytecode, so every `cxxbridge1$…` / `cxx_qt_init_*` definition in
+# libcxx-qt-lib-cxxqt-generated.a becomes an undefined symbol and the link fails
+# for inox-lock, inox-settings, inox-greet, inox-launcher and inox-qml-prototype.
+#
+# This is verified, not inferred: building the same tag with `-flto=auto` in
+# CFLAGS/CXXFLAGS/LDFLAGS reproduces the undefined-symbol link failure, and the
+# same build without it succeeds. Turning lto off for this package is the
+# supported path; an LTO-linking C++ toolchain that rust-lld understands does not
+# exist yet.
+options=('!lto')
+
 # The install hook only prints how to switch the boot chain; it enables nothing.
 install=inox.install
 source=@SOURCE@
