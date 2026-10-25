@@ -15,6 +15,11 @@ name: Release
 # The CI workflow already builds and verifies the same tarball on every PR — this
 # workflow is the part that attaches it to a release.
 #
+# After the GitHub Release is created, the `publish-aur` job publishes the same
+# tag to the AUR as a *source* package (decision: docs/adr/0043). That job builds
+# the AUR recipe with makepkg on Arch first; nothing is pushed to the AUR unless
+# the package builds and passes the compositor's `--test-input` assertion.
+#
 # Why not `--all-features`: it would compile `inox-compositor/test-input`, a socket
 # that accepts injected keyboard and pointer events, into a binary a tester runs.
 # `packaging/package.sh` builds with default features and asserts the staged
@@ -212,8 +217,11 @@ jobs:
             implemented, but no real-machine acceptance has been executed.
           - **No claim that logging in on real hardware works.** The login chain is
             wired; its evidence is still outstanding.
-          - **No SBOM, no second distribution channel, no upgrade/rollback test.**
-            Those are M6 gates (L01/L02) and are unmet.
+          - **No SBOM, no lifecycle-verified second distribution channel, no
+            upgrade/rollback test.** The AUR package is a build recipe, not a
+            verified channel: it is built on the user's machine and has no
+            install/upgrade/rollback evidence. Those are M6 gates (L01/L02) and
+            are unmet.
 
           Read \`BUILD-INFO\` inside the tarball for the exact commit, toolchain and
           feature set, and \`docs/book/src/development/release.md\` in the repository
@@ -246,3 +254,94 @@ jobs:
           gh release create "${args[@]}"
 
           echo "published: $(gh release view "v${version}" --json url --jq .url)"
+
+  # Publish the same tag to the AUR as a source package (decision: ADR 0043).
+  #
+  # Ordering is deliberate: the GitHub Release above is created first, so a broken
+  # AUR recipe cannot keep a release that CI already verified from being
+  # downloadable. A failure here turns the run red and leaves the AUR on the
+  # previous version; re-running only this job (Actions -> the run -> "Re-run
+  # failed jobs") republishes without touching the Release.
+  #
+  # Why the recipe is built here before it is pushed: `makepkg` is what an AUR
+  # user runs, so a recipe that has never been built is a guess. The build also
+  # runs the PKGBUILD's check(), which proves the packaged compositor rejects
+  # `--test-input` — the same assertion packaging/package.sh makes for the
+  # tarball.
+  publish-aur:
+    name: publish to AUR
+    needs: package
+    # A manual dispatch is a test build, not a release: it creates no GitHub
+    # Release and must not move an AUR package either.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The AUR package is built by Arch users, so it is built on Arch here. The
+    # image is the official base-devel image: `makepkg`, `rust`, `pacman` and
+    # `fakeroot` are already there.
+    container:
+      image: archlinux:base-devel
+    # A dependency install plus one full workspace build on a shared runner. The
+    # default ceiling is six hours, but a named budget makes a hang visible in the
+    # job list. The build is the same one CI proves on Ubuntu; here it happens a
+    # second time, on Arch, which is what AUR users compile.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Install git and the AUR transport
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed git openssh curl
+          useradd -m builder
+          # `makepkg --syncdeps` installs missing build dependencies with
+          # `sudo pacman`; the build user needs exactly that and nothing else.
+          printf 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman\n' >/etc/sudoers.d/builder
+          chmod 0440 /etc/sudoers.d/builder
+      - uses: actions/checkout@v4
+      - name: Build, verify and publish the AUR package
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ]; then
+            echo "::error::AUR_SSH_PRIVATE_KEY is not configured: add the AUR account's deploy key as a repository secret (see packaging/aur/README.md)"
+            exit 1
+          fi
+          if [ -z "${RELEASE_VERSION}" ]; then
+            echo "::error::the package job did not output a version"
+            exit 1
+          fi
+
+          install -d -o builder -g builder -m 0700 /home/builder/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >/home/builder/.ssh/aur
+          chown builder:builder /home/builder/.ssh/aur
+          chmod 0600 /home/builder/.ssh/aur
+          # The AUR's git remote is ssh: scan its host key instead of shipping a
+          # copy that will one day be stale.
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >/home/builder/.ssh/known_hosts 2>/dev/null
+          if [ ! -s /home/builder/.ssh/known_hosts ]; then
+            echo "::error::could not scan aur.archlinux.org's ssh host key"
+            exit 1
+          fi
+          chown builder:builder /home/builder/.ssh/known_hosts
+
+          # Work on a builder-owned copy instead of chowning the checkout: the
+          # checkout action's post step runs as root and would then be looking at
+          # a repository owned by somebody else.
+          install -d -o builder -g builder -m 0755 /home/builder/work
+          cp -a -- "$GITHUB_WORKSPACE/." /home/builder/work/
+          chown -R builder:builder /home/builder/work
+
+          runuser -u builder -- env \
+            HOME=/home/builder \
+            GIT_SSH_COMMAND="ssh -i /home/builder/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/builder/.ssh/known_hosts" \
+            bash -c 'cd "$1" && packaging/aur/publish.sh --version "$2" --build --push' _ \
+            /home/builder/work "$RELEASE_VERSION"
+
+          case "$RELEASE_VERSION" in
+            *-canary* | *-alpha* | *-beta* | *-rc* | *-dev*) aur_package=inox-canary ;;
+            *) aur_package=inox ;;
+          esac
+          echo "AUR: https://aur.archlinux.org/packages/${aur_package}" >>"$GITHUB_STEP_SUMMARY"

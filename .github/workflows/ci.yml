@@ -523,7 +523,10 @@ jobs:
       - name: Check the packaging scripts
         run: |
           set -euo pipefail
-          for script in packaging/*.sh scripts/*.sh; do
+          # `packaging/aur` is spelled out rather than relying on `packaging/*.sh`:
+          # the AUR recipe's script lives one directory down and would silently
+          # escape a non-recursive glob.
+          for script in packaging/*.sh packaging/aur/*.sh scripts/*.sh; do
             bash -n "$script"
             printf 'ok: %s\n' "$script"
           done
@@ -537,6 +540,9 @@ jobs:
           packaging/package.sh --help >/dev/null
           packaging/install.sh --help >/dev/null
           packaging/uninstall.sh --help >/dev/null
+          # The AUR script's --help answers without makepkg, so it is checkable
+          # here even though its real checks run in the `aur` job.
+          packaging/aur/publish.sh --help >/dev/null
 
       - name: Build and package
         run: packaging/package.sh --output-dir target/dist
@@ -597,3 +603,63 @@ jobs:
             target/dist/*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 30
+
+  # Check the AUR recipe on Arch, where its users run it.
+  #
+  # The recipe is the one deliverable whose consumer is another distribution's
+  # package manager: a typo in a dependency name or a malformed .SRCINFO is not
+  # visible from the source tree, and a broken PKGBUILD is published to a public
+  # AUR page, not to a red CI job. This job therefore renders the recipe for both
+  # channels and runs `makepkg --printsrcinfo` and the dependency-name check
+  # (inside packaging/aur/publish.sh) on every PR and every push to main.
+  #
+  # What it deliberately does NOT do is build the package: the full workspace
+  # build is ~half an hour and belongs in the release workflow, which builds and
+  # verifies the package before anything is pushed to the AUR
+  # (`.github/workflows/release.yml`, job `publish-aur`). Cheap and continuous
+  # here, complete once before a release.
+  aur:
+    name: aur (recipe)
+    runs-on: ubuntu-latest
+    # Arch is the target: `makepkg` only exists there, and the dependency names
+    # must resolve against Arch's repositories, not Ubuntu's.
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install git into the container
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed git
+          useradd -m builder
+      - uses: actions/checkout@v4
+      - name: Render the recipe for both channels
+        run: |
+          set -euo pipefail
+          version="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+            | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)"
+          [ -n "$version" ] || { echo "could not read the workspace version" >&2; exit 1; }
+
+          # makepkg refuses to run as root. Work on a builder-owned copy rather
+          # than chowning the checkout, so the checkout action's root-owned post
+          # step keeps working.
+          install -d -o builder -g builder -m 0755 /home/builder/work
+          cp -a -- "$GITHUB_WORKSPACE/." /home/builder/work/
+          chown -R builder:builder /home/builder/work
+
+          # `runuser` only swaps uid/gid; HOME has to be set explicitly or the
+          # build user would inherit root's /root.
+          check_recipe() {
+            runuser -u builder -- env HOME=/home/builder bash -c '
+              cd "$1"
+              shift
+              packaging/aur/publish.sh "$@"
+            ' _ /home/builder/work "$@"
+          }
+
+          # Stable channel: package `inox`.
+          check_recipe --version "$version" --sha256 SKIP
+          # Pre-release channel: package `inox-canary`, pkgver with `_` instead of
+          # `-`. Checking it here is what keeps the mapping from rotting between
+          # releases, which is the only time it matters.
+          check_recipe --version "$version-canary.1" --sha256 SKIP

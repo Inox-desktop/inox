@@ -67,6 +67,7 @@ proposed ──► accepted ──► superseded
 | 0038 | panel/lock 用离屏 QML 保留 layer-shell 与会话锁表面 | accepted |
 | 0039 | 完成全量迁移，并确立私有 ABI / 私有协议的授权边界 | accepted |
 | 0042 | 发布制品与金丝雀渠道 | proposed |
+| 0043 | AUR 源码包与发布后自动同步 | proposed |
 
 上表只列与当前架构直接相关的条目。当前 Shell 的 UI 栈
 （QML + Qt Quick、cxx-qt、panel/lock 离屏渲染）由 0033/0035/0036/0038/0039 固定，

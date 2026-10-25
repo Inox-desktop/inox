@@ -42,6 +42,9 @@ artifact 保留 30 天。这条路径的用途是「我想现在试这个 PR 的
 `Cargo.toml` 的版本加 `-dev.<sha12>`）：这条路**只上传 workflow artifact，不创建 Release**。
 它的用途是「从某个提交造一个能测的包，但还没决定版本号」。
 
+同一个 tag 还会发布成 AUR 源码包（见下面的「AUR：Arch 上的源码包」）。它是一条**安装路径**，不是
+第二条被验收过的渠道：AUR 包由用户本机构建，E4 仍然只能用 CI 产出的 tarball。
+
 ### 拿到之后先校验
 
 ```bash
@@ -128,6 +131,40 @@ sudo packaging/try-rollback.sh          # 结束试运行，把画面切回原�
 二进制与壁纸；加 `--remove-binaries` 才连它们一起删。默认不删是有意的——那两个位置也可能是
 本地构建装的。
 
+## AUR：Arch 上的源码包
+
+`Release` 工作流在 GitHub Release 创建之后，还会把同一个 tag 发布成 AUR 源码包
+（决策见 [ADR 0043](../architecture/decisions.md)，实现见
+[packaging/aur/README.md](https://github.com/Inox-desktop/inox/blob/main/packaging/aur/README.md)）。
+它与上面的 tarball 是两条安装路径，不是两种已验证的渠道：包由用户本机编译，不是 CI 产出的
+二进制。
+
+| tag | AUR 包 | `pkgver` |
+|-----|--------|----------|
+| `vX.Y.Z` | `inox` | `X.Y.Z` |
+| `vX.Y.Z-canary.N`（及 `-alpha`/`-beta`/`-rc`/`-dev`） | `inox-canary` | `X.Y.Z_canary.N` |
+
+AUR 的 `pkgver` 不允许连字符，所以预发布 tag 的 `-` 在版本里写成 `_`；`source=` 仍指向原始 tag。
+两个包互斥（`inox-canary` 提供/冲突 `inox`），装一个会替换另一个。
+
+```bash
+# 任选一个 AUR helper，或手工构建
+yay -S inox                                  # 稳定线
+yay -S inox-canary                           # 预发布
+# 手工：
+git clone https://aur.archlinux.org/inox.git && cd inox && makepkg -si
+```
+
+包安装 14 个二进制、壁纸、三个 PAM 栈、三个 systemd unit 与 `greeter` 系统账户（sysusers）；
+**默认不启用开机链**，安装后的提示给出切换命令。它与 tarball 安装互斥：`install.sh` 放的
+`/usr/bin/inox-*` 不归 pacman 管，pacman 会拒绝覆盖，先
+`sudo packaging/uninstall.sh --remove-binaries` 再装包。
+
+发布前，工作流在 `archlinux:base-devel` 容器里用 `makepkg` **完整构建**这个配方，跑 PKGBUILD 的
+`check()`（与 tarball 同一条断言：构建出来的 `inox-compositor` 必须拒绝 `--test-input`），并断言
+产物的文件清单；构建通过才推送。这一步失败不会回滚已经建好的 GitHub Release——对那次 run 点
+**Re-run failed jobs** 只重跑 AUR job。
+
 ## 怎么切一个金丝雀
 
 前提：**要打 tag 的提交必须已经在 CI 上全绿**。tag 是对某几份比特的承诺，不是对「应该差不多」的
@@ -162,10 +199,13 @@ tag 必须是 **annotated**（`-a`）的：它要携带说明，而轻量 tag �
 3. 用 `packaging/package.sh --version <V> --output-dir target/dist` 打包；
 4. 校验 `.sha256`、把 `BUILD-INFO` 从压缩包里读出来，并断言其中的 `commit` **就是**正在发布的那个提交；
 5. 创建 GitHub Release，附件是 tarball 与 `.sha256`。版本里含 `-canary`、`-alpha`、`-beta`、
-   `-rc`、`-dev` 时一律标为 **prerelease**。
+   `-rc`、`-dev` 时一律标为 **prerelease**；
+6. 在 Arch 容器里构建 AUR 源码包（`makepkg` + `--test-input` 断言 + 产物清单断言），通过后推送到
+   `aur.archlinux.org`（稳定 tag → `inox`，预发布 → `inox-canary`）。这一步只在 tag push 时运行；
+   手工 dispatch 不发布 AUR。
 
-release 说明正文本身写着这份制品不是什么（不声明硬件支持、不是稳定版、没有 SBOM 与第二种渠道）。
-那句话与下面「这份制品不能声明什么」是同一份约束。
+release 说明正文本身写着这份制品不是什么（不声明硬件支持、不是稳定版、没有 SBOM、没有经过生命周期
+验证的第二条渠道）。那句话与下面「这份制品不能声明什么」是同一份约束。
 
 ### 想造包但不想切版本
 
@@ -213,8 +253,9 @@ tarball:  <tarball 的 sha256>
   **从未执行**，所以没有任何结论支撑「日常可用」。
 - **不能声称支持任何硬件配置。** 没有 GPU、内核、显示器或输入设备组合因为「金丝雀能启动」而
   进入支持清单。支持声明只由验收项 H01–H03 建立。
-- **不能声称有两种分发渠道。** 只有这一个渠道（tarball）。L02 要求至少两种已声明渠道在全新目标
-  环境里完成安装、启动、注销、升级、回退、卸载，这些**全都没有自动化验证**。
+- **不能声称有两种已验证的分发渠道。** 现在有两条安装路径：CI 产出的 tarball，和 AUR 上的源码包。
+  但 AUR 包由用户本机编译，安装 → 启动 → 注销 → 升级 → 回退 → 卸载的生命周期没有在 CI 里验证过，
+  所以 L02 仍然不满足；AUR 包也不能当作 E4 要求的「CI 产出的二进制」。
 - **不能声称有 SBOM，或超出 tarball 自带 `SHA256SUMS` 的校验。** `cargo-deny` 只看 Cargo 依赖图，
   看不到实际链接的 Qt/Mesa 共享库；L01 要求的「SBOM 覆盖运行时系统组件」不满足。
 - **不能称之为稳定发布。** 金丝雀是预发布。L03（人类发布审查、P0/P1 清零）完全没有被触及。
@@ -226,7 +267,9 @@ tarball:  <tarball 的 sha256>
 
 ## 相关
 
-- 决策：[架构决策记录](../architecture/decisions.md)（ADR 0042，状态 `proposed`）
+- 决策：[架构决策记录](../architecture/decisions.md)（ADR 0042 与 ADR 0043，状态均为 `proposed`）
+- AUR 包（配方、凭据、边界）：
+  [packaging/aur/README.md](https://github.com/Inox-desktop/inox/blob/main/packaging/aur/README.md)
 - 安装与真机步骤：[登录与开机链](../usage/login.md)
 - 构建命令与前置条件：[构建与运行](../usage/building.md)
 - 安装面（PAM 栈、unit、脚本清单）：
