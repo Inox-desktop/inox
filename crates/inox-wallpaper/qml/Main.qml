@@ -17,6 +17,27 @@ Window {
     // One JSON document, republished by Rust whenever the state changes.
     property var vm: JSON.parse(app.modelJson)
 
+    // The drawing for the notice's control: the one place in this tree whose
+    // appearance answers the pointer. It only chooses *which* of the four
+    // drawings Rust projected applies (see `view::action_values`); it never
+    // spells a colour itself.
+    //
+    // It sits on the root because both the control and the label inside it bind
+    // to it. A property declared on the control is only reachable unqualified
+    // from the control's own bindings, so the label's `retryStyle.text` was a
+    // ReferenceError once QML compiled the file.
+    property var retryStyle: {
+        var notice = root.vm.notice
+        if (notice === null || notice === undefined)
+            return root.vm.tokens.card
+        var styles = notice.action.styles
+        if (retryMouse.pressed && notice.action.enabled)
+            return styles.pressed
+        if (retryMouse.containsMouse && notice.action.enabled)
+            return styles.hovered
+        return notice.action.style
+    }
+
     width: vm.tokens.window.width
     height: vm.tokens.window.height
     visible: true
@@ -210,27 +231,12 @@ Window {
                             width: parent.width
                             height: root.vm.tokens.sizes.controlHeight
                             enabled: root.vm.notice !== null && root.vm.notice.action.enabled
-                            color: retryStyle.background
-                            radius: retryStyle.radius
-                            border.width: retryStyle.borderWidth
-                            border.color: retryStyle.border
+                            color: root.retryStyle.background
+                            radius: root.retryStyle.radius
+                            border.width: root.retryStyle.borderWidth
+                            border.color: root.retryStyle.border
                             activeFocusOnTab: true
                             focus: visible && enabled
-
-                            // The drawing for the pointer's state, from the four
-                            // states Rust projected. A QML file never spells a
-                            // colour; it only chooses which drawing applies.
-                            property var retryStyle: {
-                                var notice = root.vm.notice
-                                if (notice === null || notice === undefined)
-                                    return root.vm.tokens.card
-                                var styles = notice.action.styles
-                                if (retryMouse.pressed && notice.action.enabled)
-                                    return styles.pressed
-                                if (retryMouse.containsMouse && notice.action.enabled)
-                                    return styles.hovered
-                                return notice.action.style
-                            }
 
                             Accessible.role: Accessible.Button
                             Accessible.name: root.vm.notice !== null ? root.vm.notice.action.label : ""
@@ -241,7 +247,7 @@ Window {
                             Text {
                                 anchors.centerIn: parent
                                 text: root.vm.notice !== null ? root.vm.notice.action.label : ""
-                                color: root.vm.notice !== null ? retryStyle.text : root.vm.tokens.colors.textMuted
+                                color: root.vm.notice !== null ? root.retryStyle.text : root.vm.tokens.colors.textMuted
                                 font.family: root.vm.tokens.font.family
                                 font.pixelSize: root.vm.notice !== null ? root.vm.notice.action.size : root.vm.tokens.font.size.body
                                 font.weight: root.vm.notice !== null ? root.vm.notice.action.weight : root.vm.tokens.font.weight.normal
