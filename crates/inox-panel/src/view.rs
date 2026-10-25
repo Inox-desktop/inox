@@ -560,6 +560,85 @@ impl Align {
     }
 }
 
+/// One drawing command, in **every** field the QML delegate binds on it.
+///
+/// [`Painter::rect`] and [`Painter::text`] both go through here, and that is the
+/// point: the delegate in `qml/Main.qml` reads the same property names off both
+/// kinds of item — `radius`, `border` and `border_color` off a line of text, and
+/// `text`, `size`, `bold` and `align` off a rectangle — because a renderer that
+/// branched on `kind` would be making a decision (contract §4). So a field an
+/// item's kind does not draw carries the structural neutral (`0`, no outline
+/// colour, an empty sentence, the left edge) rather than being *absent*. Absent
+/// is what made Qt log `Unable to assign [undefined] to
+/// double/QColor/QString/int/bool` once per binding, per item, per frame.
+///
+/// The complete set is pinned by this module's own test,
+/// `every_drawing_command_carries_every_field_the_renderer_binds`.
+#[allow(clippy::too_many_arguments)]
+fn rectangle(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    color: &str,
+    radius: f32,
+    border: f32,
+    border_color: &str,
+) -> Value {
+    json!({
+        "kind": "rect",
+        "x": x,
+        "y": y,
+        "w": width.max(0.0),
+        "h": height.max(0.0),
+        "color": color,
+        "radius": radius,
+        "border": border,
+        "border_color": border_color,
+        // A rectangle draws no sentence: the text fields of [`line`], at their
+        // neutral values.
+        "text": "",
+        "size": 0.0,
+        "bold": false,
+        "align": Align::Left.as_str(),
+    })
+}
+
+/// One line of text, in **every** field the QML delegate binds on it.
+///
+/// The counterpart of [`rectangle`]: a line of text draws no fill and no outline
+/// of its own, so those fields hold the neutral values the delegate expects.
+#[allow(clippy::too_many_arguments)]
+fn line(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    text: &str,
+    color: &str,
+    size: f32,
+    bold: bool,
+    align: Align,
+) -> Value {
+    json!({
+        "kind": "text",
+        "x": x,
+        "y": y,
+        "w": width.max(0.0),
+        "h": height.max(0.0),
+        "color": color,
+        "text": text,
+        "size": size,
+        "bold": bold,
+        "align": align.as_str(),
+        // A line of text has no fill and no outline: the rectangle fields of
+        // [`rectangle`], at their neutral values.
+        "radius": 0.0,
+        "border": 0.0,
+        "border_color": theme::TRANSPARENT,
+    })
+}
+
 /// Turns the model into JSON drawing commands and clickable areas.
 pub(super) struct Painter {
     surface: PanelSurface,
@@ -580,17 +659,16 @@ impl Painter {
 
     /// A filled rectangle with an optional radius.
     fn rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: &str, radius: f32) {
-        self.items.push(json!({
-            "kind": "rect",
-            "x": x,
-            "y": y,
-            "w": width.max(0.0),
-            "h": height.max(0.0),
-            "color": color,
-            "radius": radius,
-            "border": 0.0,
-            "border_color": theme::TRANSPARENT,
-        }));
+        self.items.push(rectangle(
+            x,
+            y,
+            width,
+            height,
+            color,
+            radius,
+            0.0,
+            theme::TRANSPARENT,
+        ));
     }
 
     /// An entry's fill and outline, in the state the theme decided.
@@ -600,17 +678,16 @@ impl Painter {
             .clone()
             .unwrap_or_else(|| theme::TRANSPARENT.to_owned());
 
-        self.items.push(json!({
-            "kind": "rect",
-            "x": x,
-            "y": y,
-            "w": width.max(0.0),
-            "h": height.max(0.0),
-            "color": background,
-            "radius": style.radius,
-            "border": style.border_width,
-            "border_color": style.border_color,
-        }));
+        self.items.push(rectangle(
+            x,
+            y,
+            width,
+            height,
+            &background,
+            style.radius,
+            style.border_width,
+            &style.border_color,
+        ));
     }
 
     /// A frosted pane, as the bands its colour stops describe.
@@ -667,18 +744,8 @@ impl Painter {
         bold: bool,
         align: Align,
     ) {
-        self.items.push(json!({
-            "kind": "text",
-            "x": x,
-            "y": y,
-            "w": width.max(0.0),
-            "h": height.max(0.0),
-            "text": text,
-            "color": color,
-            "size": size,
-            "bold": bold,
-            "align": align.as_str(),
-        }));
+        self.items
+            .push(line(x, y, width, height, text, color, size, bold, align));
     }
 
     /// The sentence the panel shows about itself, and its retry action.
@@ -998,6 +1065,81 @@ mod tests {
             "the strip itself is still painted"
         );
         assert!((geometry(&config).height - 34.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn every_drawing_command_carries_every_field_the_renderer_binds() {
+        // `qml/Main.qml` binds the same property names on both kinds of item, so
+        // the projection has to send all of them on every item: a field it left
+        // out is the `Unable to assign [undefined]` Qt logged once per binding,
+        // per item, per frame — the renderer then drew the *default* rather than
+        // what the tokens said. The list is the delegate's, not this module's.
+        const BOUND: [&str; 13] = [
+            "kind",
+            "x",
+            "y",
+            "w",
+            "h",
+            "color",
+            "radius",
+            "border",
+            "border_color",
+            "text",
+            "size",
+            "bold",
+            "align",
+        ];
+
+        let tokens = Tokens::builtin_dark();
+        let mut painter = Painter::new(PanelSurface::Taskbar, &tokens);
+        let style = theme::task_button(
+            &tokens,
+            TaskEmphasis::Idle,
+            false,
+            InteractionStatus::Active,
+        );
+
+        painter.rect(0.0, 0.0, 16.0, 16.0, &theme::panel_fill(&tokens), 0.0);
+        painter.entry(&style, 0.0, 0.0, 16.0, 16.0);
+        painter.text(
+            0.0,
+            0.0,
+            16.0,
+            16.0,
+            "Inox",
+            &theme::text(&tokens),
+            12.0,
+            false,
+            Align::Left,
+        );
+        painter.pane(
+            0.0,
+            0.0,
+            16.0,
+            16.0,
+            &theme::glass_stops(&tokens, false, 16.0, true),
+            theme::radius_md(&tokens),
+        );
+
+        let scene = painter.finish(16.0, 16.0);
+        let items = scene.json["items"]
+            .as_array()
+            .expect("the scene holds its drawing commands");
+
+        assert!(
+            items.len() >= 5,
+            "the commands are all in the scene: {}",
+            items.len()
+        );
+
+        for item in items {
+            for field in BOUND {
+                assert!(
+                    item.get(field).is_some(),
+                    "every item carries `{field}`, because the renderer binds it: {item}"
+                );
+            }
+        }
     }
 
     #[test]

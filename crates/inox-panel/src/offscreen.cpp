@@ -6,6 +6,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlEngine>
 #include <QQuickWindow>
+#include <QSurfaceFormat>
 #include <QUrl>
 
 // The offscreen QML host of the panel.
@@ -20,8 +21,12 @@
 //   2. There is exactly one `QGuiApplication` per process. Qt allows no
 //      second one, and the panel creates one interface per surface.
 //   3. `grabWindow()` returns the frame the software scene graph rendered —
-//      RGBA8, premultiplied. That is the only pixel format the layer surface's
-//      `wl_shm` buffer accepts once the channels are reordered.
+//      RGBA8, premultiplied, **with the real alpha channel**. That is the only
+//      pixel format the layer surface's `wl_shm` buffer accepts once the
+//      channels are reordered, and the alpha is what makes a glass pane a pane
+//      instead of an opaque square. The window is therefore created with an
+//      alpha buffer (see `ensure_app`), and a grab that comes back without one
+//      is an error rather than a frame.
 
 struct Offscreen::Impl {
   QQmlApplicationEngine *engine = nullptr;
@@ -38,6 +43,24 @@ QGuiApplication *ensure_app() {
     // Before the application: a platform plugin is chosen when it is created.
     qputenv("QT_QPA_PLATFORM", "offscreen");
     qputenv("QT_QUICK_BACKEND", "software");
+
+    // The frames this host grabs are the panel's only pixels, and every surface
+    // is structural transparency with a translucent glass pane (or an opaque
+    // strip) drawn on it: the layer surface is `Argb8888` and the root
+    // background is `#00000000`. A window carries an alpha channel in its grab
+    // only when its surface format asked for one, and the request has to be made
+    // *before* the window exists — the QML engine creates it inside `load()`.
+    // Qt builds that infer the alpha buffer from the window's translucent clear
+    // colour hide the omission; one that does not (the CI image's Qt did not)
+    // returns a fully opaque grab, and the panel then paints an opaque square
+    // over the desktop instead of a pane. Both requests are made here — the
+    // window's own (`setDefaultAlphaBuffer`) and the platform format's — so the
+    // alpha is a property of this host rather than of the Qt build it runs on.
+    QQuickWindow::setDefaultAlphaBuffer(true);
+
+    QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+    format.setAlphaBufferSize(8);
+    QSurfaceFormat::setDefaultFormat(format);
 
     static int argc = 1;
     static char name[] = "inox-panel";
@@ -117,8 +140,29 @@ QByteArray Offscreen::render(int width, int height) {
     QCoreApplication::processEvents();
   }
 
+  const QImage grabbed = d->window->grabWindow();
+
+  if (grabbed.isNull()) {
+    d->error = QStringLiteral("the QML window produced no image to grab");
+    return {};
+  }
+
+  // A grab with no alpha channel cannot be the panel: the root background is
+  // structurally transparent and the glass panes are translucent tints, so
+  // every pixel of this frame is already the wrong answer. Saying so is a
+  // readable failure; handing the pixels on would draw an opaque square over
+  // the desktop and leave the caller looking for a rendering bug it cannot see.
+  if (!grabbed.hasAlphaChannel()) {
+    d->error = QStringLiteral("the offscreen QML window grabbed a %1x%2 image "
+                              "with no alpha channel, so the translucent pane "
+                              "cannot be drawn from it")
+                   .arg(grabbed.width())
+                   .arg(grabbed.height());
+    return {};
+  }
+
   const QImage image =
-      d->window->grabWindow().convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+      grabbed.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
 
   if (image.isNull()) {
     d->error = QStringLiteral("the QML window produced no image to grab");
