@@ -48,6 +48,12 @@ Ubuntu 的 glibc 与 Qt；装到 Arch 上不是「换个路径」的问题。AUR
    （14 个二进制、壁纸、三个 PAM 栈、三个 unit、sysusers 配置、LICENSE）；
 4. 推送 `PKGBUILD`、`.SRCINFO`、`inox.install` 到 `aur.archlinux.org/<包名>.git`。
 
+**`inox` 的历史**：AUR 上 `inox` 这个 pkgbase 曾被一个 2018 年的 Chromium spin-off 使用过，
+后来被删除。AUR **保留已删除包的 git 仓库**，所以第一次发布 `inox` 时 clone 回来的是那段旧历史，
+`publish.sh` 会在它上面追加一个 `upgpkg:` commit（fast-forward，不需要强推，也不会失败）。
+`inox-canary` 是新名字，历史为空。这不是缺陷，是 AUR 对已删除包名的既定行为；如果你更希望
+`inox` 有一个干净历史，只能请 AUR 管理员清理仓库，或改用别的 pkgbase。
+
 **失败语义**：GitHub Release 先于 AUR 发布，所以 AUR 失败不会让已经验证过的 Release 失效；
 它只会让这次 run 变红，AUR 停在上一个版本。修好之后在 Actions 里对这次 run 点
 **Re-run failed jobs** 即可只重跑 AUR job（`package` job 不会重复创建 Release）。
