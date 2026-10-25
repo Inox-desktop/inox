@@ -433,6 +433,14 @@ if [ "$do_push" = true ]; then
         fi
     fi
 
+    # AUR keeps the git repository of a *deleted* package, so `inox` (previously a
+    # Chromium spin-off that was deleted years ago) clones with that history. The
+    # commit below then lands on top of it and the push is a fast-forward; saying so
+    # in the log keeps the old history from looking like a bug.
+    if git -C "$aur_repo" rev-parse --verify --quiet HEAD >/dev/null; then
+        log "the AUR repository already has $(git -C "$aur_repo" rev-list --count HEAD) commit(s); committing on top"
+    fi
+
     cp -- "$workdir_pkgbuild" "$workdir/.SRCINFO" "$workdir/inox.install" "$aur_repo/"
     git -C "$aur_repo" add -- PKGBUILD .SRCINFO inox.install
 

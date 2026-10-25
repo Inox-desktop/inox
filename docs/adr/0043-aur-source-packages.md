@@ -168,6 +168,10 @@ LICENSE。
 - **校验和钉的是 GitHub 生成的 tag 归档**：`sha256` 在发布时从 `github.com/.../archive/refs/tags/v*`
   下载算出。GitHub 若改变归档的生成方式，同一 tag 的字节会变，用户校验会失败；那时只能发一个
   `pkgrel` 递增的配方并重算校验和。这是 AUR 源码包常见的边界，不是这套流程引入的新风险。
+- **`inox` 会继承一段旧历史**：AUR 上 `inox` 是被删除的 Chromium spin-off 的旧 pkgbase，AUR 保留
+  已删除包的 git 仓库。第一次发布会在那段 2018 年的历史上追加 commit（fast-forward），因此 AUR
+  页面会带旧历史。`inox-canary` 不受影响。要彻底清空历史只能请 AUR 管理员处理，这不属于本项目
+  能自动化的事情。
 - **AUR 包只声明 `x86_64`**：没有 aarch64 的构建证据，也没有对应 tag 的 Arch 构建记录
   （`BUILD-INFO` 是 tarball 的概念，AUR 包没有）。`pkgver` 只表示上游版本。
 - **首次发布依赖 AUR 账号**：包名与密钥都属于一个具体的人类账号；账号失效则自动发布中断
