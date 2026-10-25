@@ -35,8 +35,11 @@
 //! - **It verifies a launch by process liveness.** asks for readiness
 //!   evidence — a window, a D-Bus name — and neither is reachable from here yet;
 //!   see [`activation`]'s module documentation.
-//! - **It does not load icon themes.** An entry's icon is drawn as a
-//!   placeholder; a missing icon is visible as such rather than silent.
+//! - **It resolves icons, it does not install them.** [`icons`] looks an entry's
+//!   `Icon=` up in the icon directories the session already has (`hicolor` first)
+//!   and the tile draws the file; an application whose icon no installed theme
+//!   provides falls back to its first letter, so a missing icon is visible as one
+//!   rather than silent.
 //! - **The semantic tree is the Qt one.** QML marks its controls with
 //!   `Accessible.role`/`Accessible.name`, so a screen reader reaches them through
 //!   Qt's QPA bridge; the headless test only asserts that the items exist, so
@@ -76,11 +79,13 @@ use crate::runtime::Task;
 
 mod activation;
 mod app;
+mod categories;
 mod contract;
 mod cxxqt_object;
 mod desktop_entry;
 mod exec;
 mod i18n;
+mod icons;
 mod index;
 mod placement;
 mod reload;

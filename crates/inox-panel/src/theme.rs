@@ -27,15 +27,18 @@
 //! The **glass material** of the menu bar and the dock is built here too, from
 //! the `glass` token group alone (`docs/quality/ui-guidelines.md` §12): a pane
 //! is a translucent tint, a highlight along its top edge and a shade along its
-//! bottom one, and the blur radius it asks of the compositor is [`glass_blur`].
-//! No function in this file picks a tint of its own, so a theme can make the
-//! glass warm, cool, dark or light without the panel changing.
+//! bottom one, and the blur radius and refraction band it asks of the compositor
+//! come from the same group ([`glass_material`], [`glass_blur`] and the
+//! refraction accessors). No function in this file picks a tint or a band of its
+//! own, so a theme can make the glass warm, cool, dark or light without the panel
+//! changing.
 //!
 //! the L3 component architecture explains why there is a copy of this file in every L3 component
 //! instead of one shared crate: the duplication is the price of not adding a
 //! same-layer Cargo dependency that would need its own ADR.
 
 use inox_config::{Rgba, Theme as Tokens};
+use inox_glass::{Corners, Material, Refraction};
 
 use crate::view_model::PanelStatus;
 
@@ -169,6 +172,66 @@ pub fn font_family(tokens: &Tokens) -> String {
 /// means the pane is plain translucency with no blur requested.
 pub fn glass_blur(tokens: &Tokens) -> u16 {
     tokens.glass.blur
+}
+
+/// The refraction band thickness the glass asks the compositor for, in logical
+/// pixels.
+///
+/// The lens itself is drawn by the compositor (ADR 0040): this is the width of
+/// the band along the inside of the pane's edge in which the backdrop is
+/// displaced. `0` means the pane asks for no refraction at all, which is the
+/// explicit "v1 frosted pane" value and not an error.
+pub fn glass_refraction(tokens: &Tokens) -> u16 {
+    tokens.glass.refraction
+}
+
+/// The peak displacement at the pane's outline, in logical pixels.
+///
+/// The displacement is strongest on the contour and fades to nothing where the
+/// [`glass_refraction`] band reaches the interior. `0` disables the lens just
+/// like a band of `0` does.
+pub fn glass_refraction_amount(tokens: &Tokens) -> u16 {
+    tokens.glass.refraction_amount
+}
+
+/// Whether the radial "depth" component of the lens is asked for.
+pub fn glass_depth(tokens: &Tokens) -> bool {
+    tokens.glass.depth
+}
+
+/// Whether the lens splits its refracted edge per channel (the chromatic
+/// fringe), which the compositor only draws when it advertises the feature.
+pub fn glass_dispersion(tokens: &Tokens) -> bool {
+    tokens.glass.dispersion
+}
+
+/// The corner radius the compositor must use for the pane's refracting shape.
+///
+/// ADR 0040 §4 makes the pane's shape the `radii.md` token — the radius the QML
+/// pane is drawn with ([`radius_md`]) — because the refracted outline has to be
+/// the shape the user sees, not a second number that can drift from it.
+pub fn pane_corner_radius(tokens: &Tokens) -> u16 {
+    tokens.radii.md
+}
+
+/// The complete liquid-glass material, from the tokens alone.
+///
+/// This is the one place the crate turns `[glass]` into the material the
+/// compositor is asked for: the blur, the four refraction tokens and the pane's
+/// own corner radius. [`inox_glass::Material::from_tokens`] is the library's
+/// translation of the same tokens, and a test pins the two together, so a token
+/// that stops being read here cannot go unnoticed.
+pub fn glass_material(tokens: &Tokens) -> Material {
+    Material::new(
+        glass_blur(tokens),
+        Corners::uniform(pane_corner_radius(tokens)),
+        Refraction::new(
+            glass_refraction(tokens),
+            glass_refraction_amount(tokens),
+            glass_depth(tokens),
+            glass_dispersion(tokens),
+        ),
+    )
 }
 
 /// The tint a frosted pane is filled with.
@@ -1034,6 +1097,68 @@ mod tests {
             glass_blur(&tokens),
             0,
             "a theme may ask for plain translucency and no backdrop blur"
+        );
+    }
+
+    #[test]
+    fn the_lens_the_glass_asks_for_is_the_token_group() {
+        let mut tokens = Tokens::builtin_dark();
+
+        assert_eq!(glass_refraction(&tokens), tokens.glass.refraction);
+        assert_eq!(
+            glass_refraction_amount(&tokens),
+            tokens.glass.refraction_amount
+        );
+        assert!(glass_refraction(&tokens) > 0 && glass_refraction_amount(&tokens) > 0);
+        assert!(
+            !glass_depth(&tokens),
+            "the reference glass has no depth component"
+        );
+        assert!(
+            glass_dispersion(&tokens),
+            "the reference glass splits the refracted edge per channel"
+        );
+
+        // The refracting shape is the pane's own radius, not a second number.
+        assert_eq!(pane_corner_radius(&tokens), tokens.radii.md);
+        assert!(
+            (f32::from(pane_corner_radius(&tokens)) - radius_md(&tokens)).abs() < f32::EPSILON,
+            "the compositor and the QML pane are drawn with the same radius"
+        );
+
+        tokens.glass.refraction = 0;
+        tokens.glass.refraction_amount = 0;
+        tokens.glass.depth = true;
+        assert_eq!(glass_refraction(&tokens), 0);
+        assert_eq!(glass_refraction_amount(&tokens), 0);
+        assert!(glass_depth(&tokens));
+        assert!(
+            glass_dispersion(&tokens),
+            "dispersion is independent of the band being on"
+        );
+    }
+
+    #[test]
+    fn the_material_is_the_library_translation_of_the_same_tokens() {
+        for tokens in [Tokens::builtin_dark(), Tokens::builtin_light()] {
+            assert_eq!(
+                glass_material(&tokens),
+                Material::from_tokens(&tokens.glass, tokens.radii.md),
+                "the panel's material and the library's translation cannot drift"
+            );
+            assert!(
+                glass_material(&tokens).has_effect(),
+                "a built-in theme asks the compositor for the material"
+            );
+        }
+
+        let mut tokens = Tokens::builtin_dark();
+        tokens.glass.blur = 0;
+        tokens.glass.refraction = 0;
+
+        assert!(
+            !glass_material(&tokens).has_effect(),
+            "both halves off is plain translucency: no glass object is asked for"
         );
     }
 

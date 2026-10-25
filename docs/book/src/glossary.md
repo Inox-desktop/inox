@@ -12,7 +12,7 @@
 | **层级表** | 根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`，声明每个 crate 属于 L1–L4 还是测试层，是分层成员的唯一事实来源 |
 | **分层检查（B04）** | `cargo test -p inox-integration --test layering`，读取真实依赖图断言分层规则的依赖方向规则 |
 | **`inox-ipc`** | Inox 私有的不稳定 Wayland 协议，用于合成器与 Shell 之间的控制与配置重载 |
-| **`inox-glass-v1`** | Inox 私有的不稳定 Wayland 协议：客户端请求合成器模糊自己表面背后的区域（磨砂玻璃）。合成器已在 headless 路径实现，物理（DRM）路径报 0 并保持场景锐利 |
+| **`inox-glass-v1`** | Inox 私有的不稳定 Wayland 协议：客户端请求合成器处理自己表面背后的区域——v1 是背景模糊，v2（当前版本）加圆角边缘折射、可选 depth 与色散。合成器已在 headless 路径实现，物理（DRM）路径报 0 并保持场景锐利 |
 | **ADR** | Architecture Decision Record，架构决策记录，见[架构决策记录](./architecture/decisions.md) |
 | **DoD** | Definition of Done，里程碑验收标准 |
 | **MSRV** | Minimum Supported Rust Version，最低支持的 Rust 版本；本工作区统一为 1.86 |

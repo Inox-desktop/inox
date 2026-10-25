@@ -1,5 +1,4 @@
 //! The two boundaries this component talks across.
-//! The two boundaries this component talks across.
 //! A lock screen has no state of its own that matters: the compositor owns the
 //! lock, and a privileged authentication boundary owns the answer to "is this
 //! the user?". What is left for `inox-lock` is to be an honest client of both,
@@ -149,6 +148,13 @@ pub enum ServiceFailure {
     /// retry could reach either, which is why the interface offers none (see
     /// [`ServiceFailure::is_retryable`]).
     NotProvided,
+    /// The compositor offered no keyboard, so nothing can be typed at all.
+    ///
+    /// The boundary may be perfectly healthy; without a keyboard the screen must
+    /// not ask for a password it cannot receive. Not retryable through the retry
+    /// control, because retrying the *boundary* is not what is missing — the
+    /// keyboard would have to appear on its own.
+    NoInput,
 }
 
 impl ServiceFailure {
@@ -158,6 +164,7 @@ impl ServiceFailure {
             Self::Disconnected => "lock-boundary-disconnected",
             Self::Timeout => "lock-boundary-timeout",
             Self::NotProvided => "lock-boundary-not-provided",
+            Self::NoInput => "lock-boundary-no-input",
         }
     }
 
@@ -172,6 +179,7 @@ impl ServiceFailure {
     pub const fn disabled_message_id(self) -> &'static str {
         match self {
             Self::NotProvided => "lock-disabled-boundary-missing",
+            Self::NoInput => "lock-disabled-no-input",
             Self::Disconnected | Self::Timeout => "lock-disabled-boundary",
         }
     }
@@ -199,6 +207,19 @@ pub enum AuthFailure {
     TimedOut,
     /// The boundary could not be reached.
     Unavailable,
+    /// The boundary is already busy with another attempt.
+    ///
+    /// Not the same fact as [`Rejected`](Self::Rejected): nothing was checked. The
+    /// wire reports it as `Unavailable` with reason `Busy`, and a screen that
+    /// called it "rejected" would be telling the person their password was wrong.
+    Busy,
+    /// The boundary's own rolling allowance is spent.
+    ///
+    /// Also not a rejection — this one is what a handful of typos looks like — and,
+    /// like every wait this crate draws, nothing on the screen says how long it is.
+    RateLimited,
+    /// The authenticator itself failed (PAM returned an error).
+    AuthenticatorFailed,
     /// The attempt was abandoned before it was answered — the screen was hidden,
     /// the user cancelled, the session suspended.
     Cancelled,
@@ -211,6 +232,9 @@ impl AuthFailure {
             Self::Rejected => "lock-failure-rejected",
             Self::TimedOut => "lock-failure-timed-out",
             Self::Unavailable => "lock-failure-unavailable",
+            Self::Busy => "lock-failure-busy",
+            Self::RateLimited => "lock-failure-rate-limited",
+            Self::AuthenticatorFailed => "lock-failure-authenticator",
             Self::Cancelled => "lock-failure-cancelled",
         }
     }
@@ -548,6 +572,9 @@ mod tests {
             AuthFailure::Rejected,
             AuthFailure::TimedOut,
             AuthFailure::Unavailable,
+            AuthFailure::Busy,
+            AuthFailure::RateLimited,
+            AuthFailure::AuthenticatorFailed,
             AuthFailure::Cancelled,
         ] {
             let outcome = AuthOutcome::Failure(failure);
@@ -587,6 +614,9 @@ mod tests {
             AuthFailure::Rejected,
             AuthFailure::TimedOut,
             AuthFailure::Unavailable,
+            AuthFailure::Busy,
+            AuthFailure::RateLimited,
+            AuthFailure::AuthenticatorFailed,
             AuthFailure::Cancelled,
         ] {
             assert!(failure.message_id().starts_with("lock-"));

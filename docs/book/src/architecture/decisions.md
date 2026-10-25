@@ -66,6 +66,8 @@ proposed ──► accepted ──► superseded
 | 0036 | 逐组件迁移的实施顺序与验收（Phase 2d） | accepted |
 | 0038 | panel/lock 用离屏 QML 保留 layer-shell 与会话锁表面 | accepted |
 | 0039 | 完成全量迁移，并确立私有 ABI / 私有协议的授权边界 | accepted |
+| 0040 | 液态玻璃材质、`inox-glass-v1` v2 与系统玻璃组件库 | proposed |
+| 0041 | `session-control-v1`：手动与空闲触发锁定的私有控制通道 | accepted |
 
 上表只列与当前架构直接相关的条目。当前 Shell 的 UI 栈
 （QML + Qt Quick、cxx-qt、panel/lock 离屏渲染）由 0033/0035/0036/0038/0039 固定，

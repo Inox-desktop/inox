@@ -92,19 +92,17 @@ mod tests {
     }
 
     #[test]
-    fn the_message_that_explains_a_blocked_lock_says_which_block_i_t_is() {
+    fn the_message_that_explains_a_blocked_start_names_the_missing_token() {
         let localizer = load(&Locale::default_locale()).expect("the catalogs parse");
 
         let reason = localizer.message("lock-start-blocked-reason");
         let message =
             localizer.message_with("lock-start-blocked", &[("reason", Arg::from(reason))]);
 
-        // The block is the *authentication boundary*, not the protocol: the
-        // compositor offers `ext-session-lock-v1` from the session-lock and
-        // notification bus work onwards, so a message that still blamed the
-        // protocol would be telling the operator to look in the wrong place.
-        assert!(message.contains("security review"), "{message}");
-        assert!(message.contains("authentication"), "{message}");
+        // What blocks a bare run is the token `inox-session` delivers, not the
+        // authentication boundary: the boundary is wired up now, and a message that
+        // still blamed a missing review would send the operator to the wrong place.
+        assert!(message.contains("token"), "{message}");
         assert!(message.contains("--take-lock"), "{message}");
         assert!(
             !message.contains("lock-start-blocked"),
@@ -114,6 +112,7 @@ mod tests {
         let chinese = load(&zh_cn()).expect("the catalogs parse");
         let reason = chinese.message("lock-start-blocked-reason");
         let message = chinese.message_with("lock-start-blocked", &[("reason", Arg::from(reason))]);
+        assert!(message.contains("令牌"), "{message}");
         assert!(message.contains("--take-lock"), "{message}");
         assert!(!message.contains("lock-start-blocked"), "{message}");
     }

@@ -17,6 +17,10 @@ wayland-backend.workspace = true
 wayland-client.workspace = true
 wayland-server.workspace = true
 wayland-scanner.workspace = true
+# `inox-glass-v1` v2 declares `refraction_flag` as a bitfield, which the
+# scanner generates with `bitflags!`; the generated code names this crate
+# directly, so it must be a dependency here.
+bitflags.workspace = true
 wayland-protocols = { workspace = true, features = [
     "client",
     "server",

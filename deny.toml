@@ -24,10 +24,12 @@ yanked = "warn"
 #
 # The three `users` entries are **not** that shape: two of them are real defects
 # in the crate, and they are ignored because no code in this workspace reaches
-# the functions they are about. `users` 0.10 is reachable only through `pam`
-# 0.8, whose one call is `get_user_by_name` to set `HOME`/`SHELL`/`USER` during
-# `pam_open_session`; that path reads `pw_name`/`pw_uid`/`pw_gid`/`pw_dir`/
-# `pw_shell` and touches none of the affected code:
+# the functions they are about. `users` 0.10 is reachable through `pam` 0.8
+# (`get_user_by_name`, to set `HOME`/`SHELL`/`USER` during `pam_open_session`, which
+# reads `pw_name`/`pw_uid`/`pw_gid`/`pw_dir`/`pw_shell`) and through `inox-lock`,
+# whose `boundary::session_account` calls `get_user_by_uid` to learn the account
+# name of the uid the lock screen runs under. Both are single-record lookups and
+# touch none of the affected code:
 #
 #   * RUSTSEC-2023-0040 — the crate is unmaintained (`pam` has not moved off it);
 #   * RUSTSEC-2023-0059 — an unsound unaligned read in the `gr_mem` handling of

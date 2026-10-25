@@ -37,13 +37,18 @@ calloop 主循环（session.rs，信号源先于任何线程装好掩码）
 | `view_model`、`view`、`theme`、`i18n` | 状态到画面的纯投影（提示、验证中、失败与原因、限流等待、无可信 UI、不可用 + 重试；标题跟着画面走）、**Qt-free 的 JSON 文档**（颜色为 `#AARRGGBB`、尺寸为数值、句子来自 Fluent）、Fluent 目录 | D05、Q01、Q02、Q03 |
 | `app` | Elm 循环：`State`/`Message`/`update`，键入、提交、限流、挂起编排、按键绑定；凭据以**移动**而非拷贝的方式离开状态进入待发命令 | D05 |
 | `render` | 界面真正落到像素上：离屏 Qt Quick 宿主渲染 `view` 的投影，取回 `RGBA8888` 预乘帧并转成 `wl_shm` 的 `Argb8888` | S02、Q02 |
-| `session` | `ext-session-lock-v1` 客户端：认领角色、取锁、每个输出一块锁表面、按 configure 提交渲染帧、输出消失时显式销毁表面、信号不解锁 | S02、S03 |
+| `session` | `ext-session-lock-v1` 客户端：认领角色、取锁、每个输出一块锁表面、按 configure 提交渲染帧、输出消失时显式销毁表面；绑定 `wl_seat`/`wl_keyboard` 把按键喂进 `app::update`；成功后**唯一的**解锁请求（`unlock_and_destroy`，且发送后 flush）；信号不解锁 | S02、S03 |
+| `main::--request-lock` | 手动触发的客户端：`session-control-v1` 的一条 `lock` 请求（`ok` 只表示已派发，不表示已锁），没有会话时如实报错并非零退出 | S02 |
+| `boundary` | `auth-v1` 客户端：每次尝试一条连接、一次自有拷贝后随两段缓冲清零、代次对齐、答复只映射成 `contract::AuthOutcome`；失败分类（拒绝/超时/忙碌/限额/认证器失败/版本不符/不可达）；账号名取自会话 uid 的口令数据库条目 | D05、S03 |
+| `input` | keymap 编译（`xkbcommon` 安全文本路径、拒绝内部 NUL、有界读取）与 keycode→`app::Key`：字符、空格、Backspace、Enter、Escape、Tab；控制字符（`Ctrl+…`）与死键不产生字符 | D05、Q01 |
 | `runtime` | 最小的 `Task`（消息列表），保留 `update` → 后续工作的形状，不引入异步运行时 | — |
 
 **未实现 / 被阻塞**（不声称上表之外的任何等级）：
 
-- **没有认证，因此没有解锁路径。** 没有 PAM 调用、没有 helper、没有特权进程、没有任何口令校验。`contract::AuthOutcome` 是答复将到达的形状；谁有权产生它，就是会话锁边界点名的那项评审。`--take-lock` 因此**不能释放**会话——释放靠注销，收到 `SIGTERM`/`SIGINT` 时退出而**不发 `unlock_and_destroy`**（合成器保持锁定），并明确告诉操作者会话仍处于锁定。默认（不带该开关）行为不变：以非零状态码退出并说明审查尚未完成。
-- **界面在真实表面上只呈现它诚实的那个状态。** `--take-lock` 把界面真正画到每个锁表面，但本构建没有认证边界，状态里的事实就是 `ServiceFailure::NotProvided`，所以屏幕上出现的是不可用画面：它说这里没法校验任何东西，而不是请人输密码。**键盘与指针都没有接**：屏幕上没有可操作的东西，输入路径会是不可能执行的代码。认证边界本身已落地（`inox-auth`），但**本 crate 尚未接上它**。
+- **空闲触发没有接。** 运行期触发已有一条通道（`--request-lock` → `session-control-v1`），但空闲链路还缺合成器的 `ext-idle-notify` 实现与 `inox-idle` 对 `session_lock_state` 的订阅；快捷键也还没有绑定到这条通道。
+- **指针、触摸、IME 与按键重复没有接。** 键盘已接（见上表），但只读键盘：布局在 QML 里，Rust 侧命中测试会是第二份布局数学；`wl_surface` 没有 `text-input`，所以用输入法或 compose 死键打的字符（例如 `é`、CJK）打不出来；本会话没有任何东西合成按键重复，因此长按退格只删一个字符。这三条是**已知限制**，不是待修的 bug。
+- **「重试」控件还按不到。** `Face::Unavailable { retry: Some(_) }` 会画出重试控件，但焦点里只有凭据与提交两项；重试需要一个重新探测边界的消息路径，尚未接线（`Message::BoundaryRetried` 存在，启动探测不会重跑）。
+- **挂起传输没有接。** `suspend` 模块的「先锁定、确认后才允许挂起」是纯逻辑并已被测试；本 crate 没有 logind 传输，`OutgoingCommand::AllowSuspend` 目前只记一条 warn。
 - **没有 AT-SPI 语义树。** 锁屏的 Qt 应用跑在 `offscreen` 平台上，没有 QPA 无障碍桥；QML 侧写了 `Accessible` 角色与名称，但今天没有任何东西把它们导出。
 - **凭据字段不是文本框。** 掩码由凭据的**长度**推出，按键以消息形式到达；密码明文因此从不进入控件树。代价是没有光标、没有选区、没有 IME、字段内没有复制粘贴。
 
@@ -52,7 +57,9 @@ calloop 主循环（session.rs，信号源先于任何线程装好掩码）
 ```
 src/main.rs            crate 文档、模块声明、日志、配置、目录；默认说明并退出，--take-lock 运行协议腿
 src/render.rs          离屏 QML 帧：投影 → Qt Quick → Argb8888
-src/session.rs         协议腿：取锁、覆盖每个输出、提交渲染帧、信号不解锁
+src/session.rs         协议腿：取锁、覆盖每个输出、提交渲染帧、键盘、唯一的解锁请求
+src/boundary.rs        `auth-v1` 客户端：一条连接一次尝试，答复经 channel 回到事件循环
+src/input.rs           keymap → 键意：`wl_keyboard` 的 keycode 变成 `app::Key`
 src/cxxqt_object.rs    cxx-qt 桥（唯一的 QML↔Rust 边界）
 src/offscreen.cpp/h    C++ 宿主：QGuiApplication + QQmlApplicationEngine + grabWindow（每个表面一份引擎）
 qml/Main.qml           QML 渲染器（无颜色/尺寸/文案字面量）

@@ -1,10 +1,11 @@
 //! The projection from state to what the view shows.
 //!
 //! Everything the user reads is decided here, and only here: labels come from
-//! the Fluent catalogs, disabled rows carry the reason they cannot be launched,
-//! and the banner says which of the states the acceptance criteria name this is
+//! the Fluent catalogs, disabled tiles carry the reason they cannot be launched,
+//! the category chips are chosen from what the index actually holds, and the
+//! banner says which of the states the acceptance criteria name this is
 //! (loading, empty, no matches, index unavailable, acceptance D05). The view
-//! then has no decisions left to make — it walks the rows and draws them — which
+//! then has no decisions left to make — it walks the tiles and draws them — which
 //! is what keeps a colour or a message out of the widget tree.
 //!
 //! The module is pure: it reads the index, the service state, the newest search
@@ -15,37 +16,55 @@ use inox_common::i18n::{Arg, Localizer};
 use inox_config::LauncherConfig;
 
 use crate::activation::{Activation, LaunchOutcome};
+use crate::categories::{CATEGORIES, Category};
 use crate::contract::{Failure, FailureKind, ServiceState};
+use crate::icons;
 use crate::index::AppIndex;
 use crate::search::SearchResult;
 
 /// The character a truncated label ends with.
 pub const ELLIPSIS: char = '…';
 
-/// One line of the result list.
+/// One tile of the application grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Row {
-    /// The entry's desktop file id, which the view sends back when the row is
+pub struct Tile {
+    /// The entry's desktop file id, which the view sends back when the tile is
     /// chosen.
     pub id: String,
-    /// What the icon column shows: the entry's first character, or the
-    /// placeholder when the entry names no icon at all.
+    /// What the letter tile shows when there is no icon file: the entry's first
+    /// character, or the placeholder when the entry names no icon at all.
     pub icon: String,
-    /// Whether the icon column shows the placeholder because the entry names no
-    /// icon at all, as opposed to standing in for one it does name.
+    /// Whether the letter tile is the catalog's placeholder because the entry
+    /// names no icon, as opposed to standing in for one it does name.
     pub icon_placeholder: bool,
+    /// The icon file the entry's `Icon=` resolved to, as a `file://` URL.
+    ///
+    /// `None` is the normal fallback: the tile draws its letter instead
+    /// (acceptance D05 — a missing icon is visible as one, not silent).
+    pub icon_url: Option<String>,
     /// The application's name, truncated to the space available.
     pub label: String,
     /// Whether the name had to be truncated.
     pub truncated: bool,
     /// The application's generic name, when it has one.
     pub detail: Option<String>,
-    /// Whether this row is the selection.
+    /// Whether this tile is the selection.
     pub selected: bool,
-    /// Whether the row can be launched.
+    /// Whether the tile can be launched.
     pub enabled: bool,
     /// Why it cannot be, when it cannot.
     pub disabled_reason: Option<String>,
+}
+
+/// One chip of the category row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chip {
+    /// The category's stable id, which the view sends back when it is chosen.
+    pub id: &'static str,
+    /// The chip's label, from the catalogs.
+    pub label: String,
+    /// Whether this chip is the one filtering the grid.
+    pub selected: bool,
 }
 
 /// The message that takes the result list's place.
@@ -108,10 +127,11 @@ pub struct Status {
 
 /// Everything the view draws, already localized.
 ///
-/// The focus order is the order of [`ViewModel::rows`]: the search field holds
+/// The focus order is the order of [`ViewModel::tiles`]: the search field holds
 /// the keyboard focus — and therefore the launcher's one focus ring — while the
-/// launcher is open, Up and Down move the selection through the rows, and the
-/// one action a banner offers is reachable with the pointer. That is acceptance
+/// launcher is open, the arrows move the selection through the tiles (one tile
+/// left and right, one grid row up and down), and the one action a banner offers
+/// is reachable with the pointer. That is acceptance
 /// Q01's "unique, visible focus, no keyboard trap" as far as this component can
 /// state it; the semantic tree a screen reader needs is not exported yet (see
 /// the crate README).
@@ -123,17 +143,28 @@ pub struct ViewModel {
     pub placeholder: String,
     /// The text in the search field.
     pub query: String,
-    /// What the list says while the query is empty.
-    ///
-    /// This is the launcher's *resting* state, and it is not a failure: the
-    /// index is readable and the rows below are the whole list. A query that
-    /// matches nothing is a different screen — see [`ViewModel::banner`] — and
-    /// the two must never be worded the same way.
-    pub prompt: Option<String>,
     /// The key hints under the list.
+    ///
+    /// The hint describes what *this* screen can do. With tiles, the arrows and
+    /// Enter are bound and the hint says so; without tiles — loading, empty, no
+    /// match, an unreadable index — the only key that does anything is Escape,
+    /// so a hint that still offered "Enter to launch" would be promising an
+    /// action the screen cannot carry out.
     pub hint: String,
-    /// The result rows.
-    pub rows: Vec<Row>,
+    /// The application tiles.
+    pub tiles: Vec<Tile>,
+    /// The category chips, in the fixed order of [`CATEGORIES`].
+    ///
+    /// Only the categories the index actually has entries for, plus
+    /// [`Category::All`], so the row never offers a chip that would empty the
+    /// grid.
+    pub chips: Vec<Chip>,
+    /// The surface title, drawn beside the search field.
+    ///
+    /// Always present: the title belongs to the window, not to the card, so a
+    /// banner replacing the grid does not move it (the card then holds the
+    /// banner's own message instead of a second heading of the same weight).
+    pub heading: String,
     /// What stands in for the rows, when nothing can be listed.
     pub banner: Option<Banner>,
     /// A note about the list itself (a truncated query, skipped entries).
@@ -143,14 +174,14 @@ pub struct ViewModel {
 }
 
 impl ViewModel {
-    /// The selected row.
-    pub fn selected(&self) -> Option<&Row> {
-        self.rows.iter().find(|row| row.selected)
+    /// The selected tile.
+    pub fn selected(&self) -> Option<&Tile> {
+        self.tiles.iter().find(|tile| tile.selected)
     }
 
-    /// The position of the selected row.
+    /// The position of the selected tile.
     pub fn selected_index(&self) -> Option<usize> {
-        self.rows.iter().position(|row| row.selected)
+        self.tiles.iter().position(|tile| tile.selected)
     }
 
     /// Whether the view should offer to read the index again.
@@ -193,6 +224,8 @@ pub struct Projection<'a> {
     pub query: &'a str,
     /// Which row is selected.
     pub selected: usize,
+    /// Which category chip is filtering the browse.
+    pub category: Category,
     /// The launch in progress or its outcome.
     pub activation: Option<&'a Activation>,
     /// How many characters fit in a row's label.
@@ -203,7 +236,7 @@ pub struct Projection<'a> {
 pub fn project(projection: &Projection<'_>) -> ViewModel {
     let localizer = projection.localizer;
 
-    let rows = projection
+    let tiles = projection
         .result
         .map(|result| {
             result
@@ -211,7 +244,7 @@ pub fn project(projection: &Projection<'_>) -> ViewModel {
                 .iter()
                 .enumerate()
                 .map(|(position, hit)| {
-                    row(
+                    tile(
                         projection,
                         &hit.id,
                         &hit.name,
@@ -223,22 +256,26 @@ pub fn project(projection: &Projection<'_>) -> ViewModel {
         })
         .unwrap_or_default();
 
-    // The list's own line only belongs on the screen while the list is: a
-    // banner takes the list's place, so it takes this line's place too.
+    // A banner takes the grid's place, so it takes the card over entirely.
     let banner = banner(projection);
-    let prompt = if banner.is_none() {
-        prompt(projection, &rows)
+
+    // Likewise one hint per screen, and only keys that are bound.
+    let hint = if tiles.is_empty() {
+        localizer.message("launcher-hint-close")
     } else {
-        None
+        localizer.message("launcher-search-hint")
     };
 
     ViewModel {
         title: localizer.message("launcher-window-title"),
         placeholder: localizer.message("launcher-search-placeholder"),
         query: projection.query.to_owned(),
-        prompt,
-        hint: localizer.message("launcher-search-hint"),
-        rows,
+        hint,
+        tiles,
+        chips: chips(projection),
+        // The title belongs to the window's top row, so it is there whether the
+        // card holds a grid or a banner.
+        heading: localizer.message("launcher-window-title"),
         banner,
         notice: notice(projection),
         status: projection
@@ -247,19 +284,41 @@ pub fn project(projection: &Projection<'_>) -> ViewModel {
     }
 }
 
-/// What the list says while the query is empty.
+/// The category chips the session currently offers.
 ///
-/// The launcher opens showing every application it indexed and a line telling
-/// the user that typing narrows it. That is the screen an empty query is,
-/// and it is deliberately not the same screen as a query that matched nothing
-/// (a [`BannerKind::NoMatch`] banner): one lists applications, the other says
-/// there are none and offers to clear the query.
-fn prompt(projection: &Projection<'_>, rows: &[Row]) -> Option<String> {
-    if !projection.query.trim().is_empty() || rows.is_empty() {
-        return None;
+/// The fixed order of [`CATEGORIES`], filtered to the categories the index has
+/// entries for — a chip that would empty the grid is not offered — with
+/// [`Category::All`] always present as the way back. Exactly one chip is marked
+/// selected: the state machine's category, or `All` when that category is no
+/// longer present (an index re-read can remove the only game on the machine).
+fn chips(projection: &Projection<'_>) -> Vec<Chip> {
+    let entries = projection
+        .index
+        .map(|index| index.entries())
+        .unwrap_or_default();
+
+    let mut chips: Vec<Chip> = CATEGORIES
+        .iter()
+        .filter(|category| {
+            **category == Category::All
+                || entries
+                    .iter()
+                    .any(|entry| category.matches(&entry.categories))
+        })
+        .map(|category| Chip {
+            id: category.id(),
+            label: projection.localizer.message(category.label_id()),
+            selected: *category == projection.category,
+        })
+        .collect();
+
+    if !chips.iter().any(|chip| chip.selected)
+        && let Some(first) = chips.first_mut()
+    {
+        first.selected = true;
     }
 
-    Some(projection.localizer.message("launcher-list-prompt"))
+    chips
 }
 
 /// The message that stands in for the rows.
@@ -368,24 +427,27 @@ fn status(activation: &Activation, localizer: &Localizer) -> Status {
     }
 }
 
-/// One row.
-fn row(
+/// One tile.
+fn tile(
     projection: &Projection<'_>,
     id: &str,
     name: &str,
     generic_name: Option<&str>,
     selected: bool,
-) -> Row {
+) -> Tile {
     let (enabled, disabled_reason) = launchability(projection, id, name);
     let (label, truncated) = truncate(name, projection.label_budget);
+    let entry = projection.index.and_then(|index| index.get(id));
 
-    Row {
+    Tile {
         id: id.to_owned(),
         icon: icon_glyph(projection, id),
-        icon_placeholder: projection
-            .index
-            .and_then(|index| index.get(id))
-            .is_none_or(|entry| entry.icon.is_none()),
+        icon_placeholder: entry.is_none_or(|entry| entry.icon.is_none()),
+        // The path was resolved during the scan; the URL is built here so the QML
+        // tree never has to know how a file path is spelled.
+        icon_url: entry
+            .and_then(|entry| entry.icon_path.as_deref())
+            .map(icons::file_url),
         label,
         truncated,
         detail: generic_name.map(str::to_owned),
@@ -528,6 +590,7 @@ fn join_directories(directories: &[std::path::PathBuf]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::categories::Category;
     use crate::index::{AppIndex, IndexedEntry};
     use crate::search::{self, SearchEngine};
     use inox_common::i18n::Locale;
@@ -581,6 +644,7 @@ mod tests {
                 result: self.engine.current(),
                 query: &self.query,
                 selected: self.selected,
+                category: Category::All,
                 activation: self.activation.as_ref(),
                 label_budget: self.label_budget,
             })
@@ -592,6 +656,42 @@ mod tests {
             AppIndex::test_entry("firefox.desktop", "Firefox", "firefox"),
             AppIndex::test_entry("editor.desktop", "Text Editor", "editor"),
         ])
+    }
+
+    #[test]
+    fn the_hint_and_the_heading_describe_the_screen_that_is_showing() {
+        let mut fixture = fixture();
+        fixture.search("");
+        let listing = fixture.project();
+
+        assert_eq!(
+            listing.hint,
+            fixture.localizer.message("launcher-search-hint"),
+            "a screen with tiles binds the arrows and Enter, and says so",
+        );
+        assert_eq!(
+            listing.heading,
+            fixture.localizer.message("launcher-window-title"),
+            "the top row carries the surface title",
+        );
+
+        fixture.search("zzzz");
+        let empty = fixture.project();
+        assert!(empty.tiles.is_empty());
+        assert_eq!(
+            empty.hint,
+            fixture.localizer.message("launcher-hint-close"),
+            "nothing to choose and nothing to launch is a close-only screen",
+        );
+        assert_eq!(
+            empty.heading,
+            fixture.localizer.message("launcher-window-title"),
+            "the title belongs to the window, so a banner does not remove it",
+        );
+        assert_ne!(
+            empty.hint,
+            fixture.localizer.message("launcher-search-hint")
+        );
     }
 
     #[test]
@@ -620,10 +720,10 @@ mod tests {
         fixture.selected = 0;
         let model = fixture.project();
 
-        assert_eq!(model.rows.len(), 1);
-        assert_eq!(model.rows[0].id, "firefox.desktop");
-        assert_eq!(model.rows[0].label, "Firefox");
-        assert!(model.rows[0].selected);
+        assert_eq!(model.tiles.len(), 1);
+        assert_eq!(model.tiles[0].id, "firefox.desktop");
+        assert_eq!(model.tiles[0].label, "Firefox");
+        assert!(model.tiles[0].selected);
         assert_eq!(model.selected_index(), Some(0));
         assert_eq!(
             model.selected().map(|row| row.id.as_str()),
@@ -639,9 +739,9 @@ mod tests {
         fixture.search("plain");
         let model = fixture.project();
 
-        assert_eq!(model.rows[0].icon, "P");
+        assert_eq!(model.tiles[0].icon, "P");
         assert!(
-            !model.rows[0].icon_placeholder,
+            !model.tiles[0].icon_placeholder,
             "the entry names an icon, so the letter stands in for it",
         );
 
@@ -649,10 +749,10 @@ mod tests {
         bare.search("bare");
         let model = bare.project();
         assert_eq!(
-            model.rows[0].icon,
+            model.tiles[0].icon,
             bare.localizer.message("launcher-row-icon-placeholder")
         );
-        assert!(model.rows[0].icon_placeholder);
+        assert!(model.tiles[0].icon_placeholder);
     }
 
     #[test]
@@ -663,7 +763,7 @@ mod tests {
         fixture.search("htop");
         let model = fixture.project();
 
-        let row = &model.rows[0];
+        let row = &model.tiles[0];
         assert!(!row.enabled);
         let reason = row.disabled_reason.as_deref().expect("a readable reason");
         assert!(
@@ -684,7 +784,7 @@ mod tests {
         fixture.config.terminal = vec!["alacritty".to_owned(), "-e".to_owned()];
         fixture.search("htop");
 
-        assert!(fixture.project().rows[0].enabled);
+        assert!(fixture.project().tiles[0].enabled);
     }
 
     #[test]
@@ -697,8 +797,8 @@ mod tests {
         fixture.search("broken");
         let model = fixture.project();
 
-        assert!(!model.rows[0].enabled);
-        let reason = model.rows[0].disabled_reason.as_deref().expect("a reason");
+        assert!(!model.tiles[0].enabled);
+        let reason = model.tiles[0].disabled_reason.as_deref().expect("a reason");
         assert!(reason.contains("%q"), "{reason}");
     }
 
@@ -713,9 +813,9 @@ mod tests {
         fixture.search("extremely");
         let model = fixture.project();
 
-        assert_eq!(model.rows[0].label.chars().count(), 10);
-        assert!(model.rows[0].truncated);
-        assert!(model.rows[0].label.ends_with(ELLIPSIS));
+        assert_eq!(model.tiles[0].label.chars().count(), 10);
+        assert!(model.tiles[0].truncated);
+        assert!(model.tiles[0].label.ends_with(ELLIPSIS));
     }
 
     #[test]
@@ -723,7 +823,7 @@ mod tests {
         let mut fixture = fixture();
         fixture.label_budget = 40;
         fixture.search("fire");
-        assert!(!fixture.project().rows[0].truncated);
+        assert!(!fixture.project().tiles[0].truncated);
     }
 
     #[test]
@@ -830,22 +930,29 @@ mod tests {
         fixture.search("zzzz");
         let no_match = fixture.project();
 
-        let prompt = resting.prompt.as_deref().expect("the resting prompt");
-        assert_eq!(prompt, fixture.localizer.message("launcher-list-prompt"));
         assert_eq!(
-            resting.rows.len(),
+            resting.tiles.len(),
             2,
             "the resting state lists what was indexed",
         );
         assert!(resting.banner.is_none());
+        assert_eq!(
+            resting.hint,
+            fixture.localizer.message("launcher-search-hint"),
+            "the resting screen is the grid, and its hint names the grid's keys",
+        );
 
-        assert!(no_match.rows.is_empty());
-        assert!(no_match.prompt.is_none());
+        assert!(no_match.tiles.is_empty());
+        assert_eq!(
+            no_match.hint,
+            fixture.localizer.message("launcher-hint-close"),
+            "an empty screen offers only the key that still works",
+        );
         let banner = no_match.banner.as_ref().expect("a banner");
         assert_eq!(banner.kind, BannerKind::NoMatch);
         assert_ne!(
-            banner.title, prompt,
-            "the one line must not be the other line",
+            banner.title, resting.hint,
+            "the banner's sentence is not the hint's",
         );
     }
 
@@ -855,11 +962,16 @@ mod tests {
         fixture.search("   ");
         let model = fixture.project();
 
-        assert!(
-            model.prompt.is_some(),
+        assert_eq!(
+            model.tiles.len(),
+            2,
             "a query that only holds spaces narrows nothing",
         );
         assert!(model.banner.is_none());
+        assert_eq!(
+            model.hint,
+            fixture.localizer.message("launcher-search-hint")
+        );
     }
 
     #[test]
@@ -1104,9 +1216,9 @@ mod tests {
         fixture.query = "ghost".to_owned();
 
         let model = fixture.project();
-        assert_eq!(model.rows.len(), 1);
-        assert!(!model.rows[0].enabled);
-        assert!(model.rows[0].disabled_reason.is_some());
+        assert_eq!(model.tiles.len(), 1);
+        assert!(!model.tiles[0].enabled);
+        assert!(model.tiles[0].disabled_reason.is_some());
     }
 
     #[test]
@@ -1117,7 +1229,7 @@ mod tests {
         fixture.search("gimp");
 
         assert_eq!(
-            fixture.project().rows[0].detail.as_deref(),
+            fixture.project().tiles[0].detail.as_deref(),
             Some("Photo Editor")
         );
     }

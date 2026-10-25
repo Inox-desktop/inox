@@ -21,6 +21,12 @@ pub enum Action {
     FocusNext,
     /// Move the keyboard focus to the previous window in layout order.
     FocusPrev,
+    /// Ask the focused window to close.
+    ///
+    /// This is `xdg_toplevel.close`, not a kill: the client decides whether to
+    /// save, prompt or refuse, which is the only thing a compositor may do to an
+    /// application that owns data.
+    CloseWindow,
     /// Ask the compositor to shut down cleanly.
     Quit,
     /// Switch to a virtual terminal through the runtime's libseat session.
@@ -51,11 +57,27 @@ pub fn action_for_key(sym: Keysym, modifiers: &ModifiersState) -> Option<Action>
         });
     }
 
-    if modifiers.logo && sym == Keysym::new(keysyms::KEY_q) {
-        return Some(Action::Quit);
+    if modifiers.logo && is_q(sym) {
+        // `Super+Shift+Q` closes the focused window; `Super+Q` on its own ends the
+        // session. Both levels of the key count: `Shift` moves `Q` to its second
+        // level, so the seat reports `Q` and not `q` for the close chord.
+        return Some(if modifiers.shift {
+            Action::CloseWindow
+        } else {
+            Action::Quit
+        });
     }
 
     None
+}
+
+/// Whether `sym` is `Q` at either of its levels.
+///
+/// The same second-level rule as [`is_tab`]: with `Shift` held the seat reports
+/// the uppercase symbol, so matching only the lowercase one would leave
+/// `Super+Shift+Q` unreachable.
+fn is_q(sym: Keysym) -> bool {
+    sym == Keysym::new(keysyms::KEY_q) || sym == Keysym::new(keysyms::KEY_Q)
 }
 
 /// Whether `sym` is `Tab` at either of its levels.
@@ -199,6 +221,37 @@ mod tests {
         };
 
         assert_eq!(action_for_key(q(), &modifiers), Some(Action::Quit));
+    }
+
+    #[test]
+    fn super_shift_q_closes_the_focused_window() {
+        let close = ModifiersState {
+            logo: true,
+            shift: true,
+            ..ModifiersState::default()
+        };
+        // `Shift` selects the second level of the key, which the seat reports as
+        // the uppercase symbol — the close chord has to match that one.
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_Q), &close),
+            Some(Action::CloseWindow)
+        );
+
+        // The two chords must not collapse into one: `Super+Q` still ends the
+        // session, and `Shift+Q` alone is the client's own `Q`.
+        let quit = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(action_for_key(q(), &quit), Some(Action::Quit));
+        let shift_only = ModifiersState {
+            shift: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_Q), &shift_only),
+            None
+        );
     }
 
     #[test]

@@ -424,15 +424,20 @@ fn layers_render_reserve_focus_and_release_resources() {
     let xdg_surface = xdg.get_xdg_surface(&app, &peer.queue.handle(), ());
     let toplevel = xdg_surface.get_toplevel(&peer.queue.handle(), ());
     app.commit();
+    // A toplevel is not a window until it draws. Wait for the compositor to see it,
+    // then give it a buffer — the focus assertion below is about the mapped window.
+    until(&mut display, &mut state, &mut [&mut peer], |state, _| {
+        state.awaiting_window_count() == 1
+    });
+    let app_buffer = peer.buffer(304, 224, RED);
+    app.attach(Some(&app_buffer), 0, 0);
+    app.commit();
     until(
         &mut display,
         &mut state,
         &mut [&mut peer],
         |state, peers| state.window_count() == 1 && peers[0].state.keyboard_focus.is_some(),
     );
-    let app_buffer = peer.buffer(304, 224, RED);
-    app.attach(Some(&app_buffer), 0, 0);
-    app.commit();
     for _ in 0..4 {
         step(&mut display, &mut state, &mut [&mut peer]);
     }

@@ -140,7 +140,10 @@ fn notifier_events_reach_policy_and_missing_capabilities_fail_closed() {
             let log = std::fs::read_to_string(&log_path).expect("log");
             if supported
                 && !signalled
-                && log.matches("Automatic locking is unavailable").count() == 2
+                && log
+                    .matches("did not accept the automatic lock request")
+                    .count()
+                    == 2
             {
                 use rustix::process::{Pid, Signal, kill_process};
                 kill_process(Pid::from_raw(child.id() as i32).expect("pid"), Signal::TERM)

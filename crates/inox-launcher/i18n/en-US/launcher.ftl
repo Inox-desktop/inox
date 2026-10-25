@@ -6,8 +6,21 @@
 
 launcher-window-title = Applications
 launcher-search-placeholder = Search applications
-launcher-search-hint = Up/Down to choose · Enter to launch · Esc to close
-launcher-list-prompt = Type to search, or choose from the list below.
+launcher-search-hint = Arrows to choose · Enter to launch · Esc to close
+launcher-hint-close = Esc to close
+
+launcher-category-all = All
+launcher-category-development = Development
+launcher-category-graphics = Graphics
+launcher-category-internet = Internet
+launcher-category-office = Office
+launcher-category-audio-video = Audio & Video
+launcher-category-game = Games
+launcher-category-utility = Utilities
+launcher-category-system = System
+launcher-category-education = Education
+launcher-category-science = Science
+launcher-category-other = Other
 
 launcher-state-loading = Reading the application index…
 launcher-state-empty-title = No applications found

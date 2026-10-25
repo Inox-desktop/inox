@@ -1,117 +1,57 @@
-//! Frosted glass: the client-side decisions, as pure data.
+//! Liquid glass: the panel's client-side decisions, as pure data.
 //!
-//! The panel does not blur anything itself. A client cannot sample the pixels
+//! The panel does not draw the effect itself. A client cannot sample the pixels
 //! behind its own surface — those live in the compositor's framebuffer — so the
-//! material the panel draws is a *translucent tint*, and the softening of
-//! whatever is behind it is asked of the compositor over `inox-glass-v1`
-//! .
+//! material the panel draws is a *translucent tint* with a hairline highlight and
+//! a shade, and the backdrop behind it is asked of the compositor over
+//! `inox-glass-v1` (ADR 0040).
 //!
-//! This module holds the decisions that follow from that, with no Wayland type
-//! in sight, so every one of them is unit-tested without a display:
+//! # What the panel decides, and what `inox-glass` decides
+//!
+//! The clamps, the version negotiation and the fallback *reasons* are one
+//! implementation in [`inox_glass`] — every L3 component has to ask the same
+//! questions, and a second copy of the arithmetic drifts. This module keeps only
+//! what is the **panel's** policy:
 //!
 //! - **Which surfaces are panes.** The menu bar and the dock are glass: their
 //!   root is the [`inox_config::Glass`] material and their backdrop should be
-//!   softened. The taskbar is a strip of the `surface` colour token — an opaque
-//!   strip has nothing to soften and nothing behind it to show, so it never
-//!   asks for a glass object at all.
-//! - **Whether a glass object is created.** `glass.blur == 0` is the tokens
-//!   saying "plain translucency": no object is created, and none is needed. A
-//!   blur of zero is a *decision*, not an error, which is why it is a `Plain`
-//!   reason rather than a failure.
-//! - **What to ask for once the compositor answers.** The protocol reports the
-//!   largest radius the compositor will apply through `capabilities`
-//!   (`max_radius`); the request is `min(glass.blur, max_radius)`, because
-//!   `set_radius` is clamped rather than refused and a client that scales its
-//!   pane keeps asking for "as much as the compositor can do". `max_radius == 0`
-//!   means the compositor will not frost this surface's backdrop — no renderer
-//!   support, a locked session, or a surface with no layer role. The panel then
-//!   draws plain translucency and **says so once**; it never claims a blur it
-//!   did not get, and it does not keep re-creating objects hoping for a
-//!   different answer.
+//!   softened and refracted. The taskbar is a strip of the `surface` colour
+//!   token — an opaque strip has nothing behind it to show — so it is not a pane
+//!   and never creates a glass object. That is why [`decide`] answers `None` for
+//!   it instead of one of [`inox_glass::Plain`]'s reasons: the library's reasons
+//!   are about a material that was asked for.
+//! - **Whether a glass object is created.** The object is created when the
+//!   material asks for *any* effect ([`Material::has_effect`]): a blur, a
+//!   refraction band, or both. `glass.blur = 0` with `glass.refraction > 0` is
+//!   therefore still an object — it is a lens without a blur, not plain
+//!   translucency. Both being zero is the tokens saying "plain translucency":
+//!   no object at all, which is a decision rather than an error.
 //! - **The region is the pane's own area.** For these surfaces the view's root
 //!   *is* the glass material, so the whole configured area is the pane. The
-//!   region is in the surface's own coordinates and starts at `(0, 0)`; it is
-//!   re-sent whenever the configured size changes, because a region that stayed
-//!   at the old size would frost the wrong part of the surface (or, for a
-//!   smaller pane, outside it).
+//!   region starts at `(0, 0)` and is re-sent whenever the configured size
+//!   changes, because a region that stayed at the old size would frost the wrong
+//!   part of the surface (or, for a smaller pane, outside it).
 //!
-//! A region with no positive area means "nothing to frost" in the protocol, so
-//! a pane the compositor configured to nothing asks for nothing rather than for
-//! an empty rectangle the compositor would have to interpret.
+//! Everything a compositor can answer — a maximum of zero, a v1 object with no
+//! refraction vocabulary, an empty pane — comes back as
+//! [`inox_glass::Outcome::Plain`], whose reason the caller turns into the one
+//! `info!` line this crate logs for a real degradation. A pane that gets no
+//! effect still draws its tint, highlight and shade; it never claims an effect it
+//! did not get.
+//!
+//! A region with no positive area means "nothing to frost" in the protocol, so a
+//! pane the compositor configured to nothing asks for nothing rather than for an
+//! empty rectangle the compositor would have to interpret.
 
 use inox_config::PanelSurface;
-
-/// The area of a surface to frost, in the surface's own logical coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Region {
-    /// Region origin on the x axis, surface-local.
-    pub x: i32,
-    /// Region origin on the y axis, surface-local.
-    pub y: i32,
-    /// Region width; not positive means "nothing to frost".
-    pub width: i32,
-    /// Region height; not positive means "nothing to frost".
-    pub height: i32,
-}
-
-impl Region {
-    /// The pane's own area: the whole configured surface.
-    ///
-    /// Dimensions larger than [`i32::MAX`] are clamped rather than wrapped: the
-    /// protocol carries `i32`, and a wrapped negative extent would mean the
-    /// opposite of what was asked for.
-    pub fn pane(width: u32, height: u32) -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            width: i32::try_from(width).unwrap_or(i32::MAX),
-            height: i32::try_from(height).unwrap_or(i32::MAX),
-        }
-    }
-
-    /// Whether this region has an area the compositor could frost.
-    pub const fn is_empty(&self) -> bool {
-        self.width <= 0 || self.height <= 0
-    }
-}
-
-/// What the panel asks the compositor to frost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Request {
-    /// Blur radius in logical pixels, already clamped to the compositor's
-    /// maximum.
-    pub radius: u32,
-    /// The pane's area, surface-local.
-    pub region: Region,
-}
-
-/// Why a pane is drawn as plain translucency rather than frosted glass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Plain {
-    /// `glass.blur == 0`: the tokens ask for no backdrop blur.
-    BlurDisabled,
-    /// The compositor answered `max_radius = 0`: it will not frost this
-    /// surface's backdrop.
-    CompositorCannotBlur,
-    /// The surface has no area to frost.
-    EmptyPane,
-    /// The surface is not a pane: the taskbar draws an opaque strip.
-    NotAPane,
-}
-
-/// The material one pane is drawn with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Material {
-    /// No blur: the tint, the highlight and the shade are all that is drawn.
-    Plain(Plain),
-    /// Ask the compositor for this much blur over this region.
-    Frosted(Request),
-}
+use inox_glass::{
+    Capabilities, Corners, Material, Outcome, Region, Request, decide as material_decision,
+};
 
 /// Whether `surface` is a glass pane at all.
 ///
 /// The menu bar and the dock float over the desktop with nothing of their own
-/// behind them; the taskbar is an opaque strip, so a blur request for it would
+/// behind them; the taskbar is an opaque strip, so a blur or a lens for it would
 /// describe an effect nothing could see.
 pub const fn is_pane(surface: PanelSurface) -> bool {
     matches!(surface, PanelSurface::Menubar | PanelSurface::Dock)
@@ -119,48 +59,85 @@ pub const fn is_pane(surface: PanelSurface) -> bool {
 
 /// Whether a glass object is created for `surface`.
 ///
-/// This is the question that has to be answered *before* the compositor is
-/// heard from: `glass.blur == 0` means no object is created at all, which is a
-/// different thing from creating one and then discovering the compositor will
-/// not blur.
-pub const fn asks_for_glass(surface: PanelSurface, blur: u16) -> bool {
-    is_pane(surface) && blur > 0
+/// This is the question that has to be answered *before* the compositor is heard
+/// from: a material that asks for neither a blur nor a refraction means no object
+/// is created at all, which is a different thing from creating one and then
+/// discovering the compositor will not draw on it.
+pub fn asks_for_glass(surface: PanelSurface, material: Material) -> bool {
+    is_pane(surface) && material.has_effect()
 }
 
-/// The material decision for one pane.
+/// The material decision for one pane, or `None` when the surface is not a pane.
 ///
-/// `blur` is `tokens.glass.blur`, `max_radius` what the compositor reported
-/// through `capabilities` (pass [`u32::MAX`] before the answer arrives, when the
-/// caller only needs to know that *something* will be asked for), and `size` the
-/// surface's configured size in logical pixels.
-pub fn decide(surface: PanelSurface, blur: u16, max_radius: u32, size: (u32, u32)) -> Material {
-    if !is_pane(surface) {
-        return Material::Plain(Plain::NotAPane);
-    }
-    if blur == 0 {
-        return Material::Plain(Plain::BlurDisabled);
-    }
-    if max_radius == 0 {
-        return Material::Plain(Plain::CompositorCannotBlur);
-    }
+/// `material` is the tokens' material ([`crate::theme::glass_material`]),
+/// `capabilities` what the compositor answered through `capabilities` /
+/// `liquid_capabilities` (pass a large [`Capabilities::from_legacy`] maximum
+/// before the answer arrives, when the caller only needs to know that *something*
+/// will be asked for), and `size` the surface's configured size in logical
+/// pixels.
+pub fn decide(
+    surface: PanelSurface,
+    material: Material,
+    capabilities: Capabilities,
+    size: (u32, u32),
+) -> Option<Outcome> {
+    is_pane(surface)
+        .then(|| material_decision(material, capabilities, Region::pane(size.0, size.1)))
+}
 
-    let region = Region::pane(size.0, size.1);
-
-    if region.is_empty() {
-        return Material::Plain(Plain::EmptyPane);
+/// The request that turns the effect off without destroying the glass object.
+///
+/// A radius of 0 and a region with no area both mean "nothing to frost", and
+/// neither is a protocol error, so a token change does not have to destroy and
+/// recreate the object. The corners and the refraction band are dropped with it:
+/// the shape only describes a lens, and there is no lens left to shape.
+pub fn off() -> Request {
+    Request {
+        radius: 0,
+        region: Region::pane(0, 0),
+        corners: Corners::ZERO,
+        refraction: None,
     }
-
-    Material::Frosted(Request {
-        radius: u32::from(blur).min(max_radius),
-        region,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use inox_glass::{Plain, REFRACTION_FLAG_DEPTH, REFRACTION_FLAG_DISPERSION, Refraction};
 
     const PANE: (u32, u32) = (640, 68);
+
+    /// A compositor that can draw everything ADR 0040 allows.
+    fn liquid() -> Capabilities {
+        Capabilities::from_liquid(
+            64,
+            128,
+            64,
+            REFRACTION_FLAG_DEPTH | REFRACTION_FLAG_DISPERSION,
+        )
+    }
+
+    /// A version 1 compositor: it can blur, and has no refraction vocabulary.
+    fn legacy() -> Capabilities {
+        Capabilities::from_legacy(64)
+    }
+
+    /// A material with the reference glass's refraction band and an 8 px corner.
+    fn glass(blur: u16, band: u16, amount: u16) -> Material {
+        Material::new(
+            blur,
+            Corners::uniform(8),
+            Refraction::new(band, amount, false, true),
+        )
+    }
+
+    /// The request of an `Effect` outcome.
+    fn effect(outcome: Option<Outcome>) -> Request {
+        match outcome {
+            Some(Outcome::Effect(request)) => request,
+            other => panic!("expected an effect, got {other:?}"),
+        }
+    }
 
     #[test]
     fn the_menu_bar_and_the_dock_are_panes_and_the_taskbar_is_not() {
@@ -173,46 +150,161 @@ mod tests {
     }
 
     #[test]
-    fn a_blur_of_zero_creates_no_glass_object_at_all() {
+    fn a_taskbar_never_asks_for_a_glass_object() {
+        let material = glass(128, 24, 12);
+
+        assert!(!asks_for_glass(PanelSurface::Taskbar, material));
+        assert_eq!(
+            decide(PanelSurface::Taskbar, material, liquid(), PANE),
+            None,
+            "not being a pane is the panel's answer, not a material fallback"
+        );
+    }
+
+    #[test]
+    fn a_material_with_neither_a_blur_nor_a_lens_creates_no_object_at_all() {
         for surface in [PanelSurface::Menubar, PanelSurface::Dock] {
             assert!(
-                !asks_for_glass(surface, 0),
-                "glass.blur = 0 means plain translucency, not an object that asks for nothing"
+                !asks_for_glass(surface, glass(0, 0, 0)),
+                "both halves off is plain translucency, not an object that asks for nothing"
             );
             assert_eq!(
-                decide(surface, 0, 64, PANE),
-                Material::Plain(Plain::BlurDisabled)
+                decide(surface, glass(0, 0, 0), liquid(), PANE),
+                Some(Outcome::Plain(Plain::BlurDisabled))
             );
         }
 
-        assert!(asks_for_glass(PanelSurface::Menubar, 1));
+        assert!(asks_for_glass(PanelSurface::Menubar, glass(1, 0, 0)));
         assert_eq!(
-            decide(PanelSurface::Menubar, 1, 64, PANE),
-            Material::Frosted(Request {
+            effect(decide(
+                PanelSurface::Menubar,
+                glass(1, 0, 0),
+                liquid(),
+                PANE
+            )),
+            Request {
                 radius: 1,
-                region: Region::pane(PANE.0, PANE.1)
-            })
+                region: Region::pane(PANE.0, PANE.1),
+                corners: Corners::uniform(8),
+                refraction: None,
+            }
         );
     }
 
     #[test]
-    fn a_taskbar_never_asks_for_a_glass_object() {
-        assert!(!asks_for_glass(PanelSurface::Taskbar, 128));
+    fn a_refraction_band_alone_still_creates_a_glass_object() {
+        // ADR 0040 §5: the object is created when *either* half is asked for.
+        // A lens without a blur is a legitimate material, not plain translucency.
+        let lens = glass(0, 24, 12);
+
+        assert!(asks_for_glass(PanelSurface::Menubar, lens));
+
+        let request = effect(decide(PanelSurface::Menubar, lens, liquid(), PANE));
+        assert_eq!(request.radius, 0, "the tokens asked for no blur");
         assert_eq!(
-            decide(PanelSurface::Taskbar, 128, 64, PANE),
-            Material::Plain(Plain::NotAPane)
+            request.refraction,
+            Some(inox_glass::RefractionRequest {
+                height: 24,
+                amount: 12,
+                flags: REFRACTION_FLAG_DISPERSION,
+            }),
+            "and the band is what the pane's edge is made of"
+        );
+        assert_eq!(request.corners, Corners::uniform(8));
+    }
+
+    #[test]
+    fn the_refraction_band_is_clamped_to_what_the_compositor_reported() {
+        let narrow = Capabilities::from_liquid(64, 10, 4, REFRACTION_FLAG_DISPERSION);
+        let request = effect(decide(PanelSurface::Dock, glass(40, 24, 12), narrow, PANE));
+
+        assert_eq!(
+            request.refraction,
+            Some(inox_glass::RefractionRequest {
+                height: 10,
+                amount: 4,
+                flags: REFRACTION_FLAG_DISPERSION,
+            }),
+            "a request above the maximum is clamped, not refused"
+        );
+
+        // Depth is passed through whenever the tokens ask for it (the protocol
+        // says a compositor ignores the bits it does not apply); dispersion is
+        // only asked for when the compositor advertised it, because a missing
+        // fringe is something a user can see.
+        let with_depth =
+            Material::new(40, Corners::uniform(8), Refraction::new(24, 12, true, true));
+        let no_dispersion = Capabilities::from_liquid(64, 128, 64, REFRACTION_FLAG_DEPTH);
+        let request = effect(decide(PanelSurface::Dock, with_depth, no_dispersion, PANE));
+
+        assert_eq!(
+            request.refraction,
+            Some(inox_glass::RefractionRequest {
+                height: 24,
+                amount: 12,
+                flags: REFRACTION_FLAG_DEPTH,
+            }),
+            "the depth bit the tokens ask for is sent; the dispersion they also ask for \
+             is not, because this compositor does not advertise it"
+        );
+
+        // The reference tokens have depth off, so a compositor that advertises
+        // neither component gets a band with no flags at all: the panel must not
+        // claim a component nothing asked for and nothing offers.
+        let bare = Capabilities::from_liquid(64, 128, 64, 0);
+        let request = effect(decide(PanelSurface::Dock, glass(40, 24, 12), bare, PANE));
+
+        assert_eq!(
+            request.refraction.map(|band| band.flags),
+            Some(0),
+            "no optional component is claimed"
         );
     }
 
     #[test]
-    fn a_compositor_that_cannot_blur_gets_no_radius_and_no_region() {
+    fn a_version_one_compositor_falls_back_to_the_blur_only() {
+        // A v1 object has no `set_refraction` and no `liquid_capabilities`; the
+        // blur is all there is, and the pane is still frosted.
+        let request = effect(decide(
+            PanelSurface::Menubar,
+            glass(40, 24, 12),
+            legacy(),
+            PANE,
+        ));
+
+        assert_eq!(request.radius, 40);
         assert_eq!(
-            decide(PanelSurface::Menubar, 128, 0, PANE),
-            Material::Plain(Plain::CompositorCannotBlur),
-            "max_radius = 0 is the compositor saying it will not blur this surface"
+            request.refraction, None,
+            "a v1 compositor cannot refract: the request must not describe one"
         );
+    }
+
+    #[test]
+    fn a_compositor_that_can_do_nothing_gets_a_plain_pane_and_the_reason() {
+        assert_eq!(
+            decide(
+                PanelSurface::Menubar,
+                glass(128, 24, 12),
+                Capabilities::NONE,
+                PANE
+            ),
+            Some(Outcome::Plain(Plain::CompositorCannotBlur)),
+            "max_radius = 0 is the compositor saying it will not frost this surface"
+        );
+
+        assert_eq!(
+            decide(
+                PanelSurface::Dock,
+                glass(0, 24, 12),
+                Capabilities::from_legacy(64),
+                PANE
+            ),
+            Some(Outcome::Plain(Plain::RefractionDisabled)),
+            "a lens without a blur has nothing left when the compositor cannot refract"
+        );
+
         assert!(
-            asks_for_glass(PanelSurface::Dock, 128),
+            asks_for_glass(PanelSurface::Dock, glass(128, 24, 12)),
             "the object is still created: only the compositor's answer says it cannot blur"
         );
     }
@@ -220,36 +312,26 @@ mod tests {
     #[test]
     fn the_radius_is_clamped_to_what_the_compositor_reported() {
         assert_eq!(
-            decide(PanelSurface::Dock, 200, 64, PANE),
-            Material::Frosted(Request {
-                radius: 64,
-                region: Region::pane(PANE.0, PANE.1)
-            }),
+            effect(decide(PanelSurface::Dock, glass(200, 0, 0), legacy(), PANE)).radius,
+            64,
             "a request above the maximum is clamped, not refused"
         );
         assert_eq!(
-            decide(PanelSurface::Dock, 40, 64, PANE),
-            Material::Frosted(Request {
-                radius: 40,
-                region: Region::pane(PANE.0, PANE.1)
-            }),
+            effect(decide(PanelSurface::Dock, glass(40, 0, 0), legacy(), PANE)).radius,
+            40,
             "and a request below it is honoured as asked"
         );
         assert_eq!(
-            decide(PanelSurface::Dock, 64, 64, PANE),
-            Material::Frosted(Request {
-                radius: 64,
-                region: Region::pane(PANE.0, PANE.1)
-            }),
+            effect(decide(PanelSurface::Dock, glass(64, 0, 0), legacy(), PANE)).radius,
+            64,
             "the boundary belongs to the compositor's maximum"
         );
     }
 
     #[test]
     fn the_region_is_the_whole_pane_and_starts_at_its_origin() {
-        let Material::Frosted(request) = decide(PanelSurface::Dock, 32, 64, (320, 68)) else {
-            panic!("a pane with a blur and a maximum is frosted");
-        };
+        let outcome = decide(PanelSurface::Dock, glass(32, 0, 0), legacy(), (320, 68));
+        let request = effect(outcome);
 
         assert_eq!(
             request.region,
@@ -265,9 +347,9 @@ mod tests {
 
     #[test]
     fn a_configure_of_a_different_size_asks_for_a_different_region() {
-        let narrow = decide(PanelSurface::Dock, 32, 64, (320, 68));
-        let wide = decide(PanelSurface::Dock, 32, 64, (640, 68));
-        let taller = decide(PanelSurface::Dock, 32, 64, (320, 96));
+        let narrow = decide(PanelSurface::Dock, glass(32, 0, 0), legacy(), (320, 68));
+        let wide = decide(PanelSurface::Dock, glass(32, 0, 0), legacy(), (640, 68));
+        let taller = decide(PanelSurface::Dock, glass(32, 0, 0), legacy(), (320, 96));
 
         assert_ne!(
             narrow, wide,
@@ -276,7 +358,7 @@ mod tests {
         assert_ne!(narrow, taller, "and so is a taller pane");
         assert_eq!(
             narrow,
-            decide(PanelSurface::Dock, 32, 64, (320, 68)),
+            decide(PanelSurface::Dock, glass(32, 0, 0), legacy(), (320, 68)),
             "the same size asks for the same region: nothing is re-sent twice"
         );
     }
@@ -284,12 +366,12 @@ mod tests {
     #[test]
     fn a_pane_with_no_area_asks_for_no_region() {
         assert_eq!(
-            decide(PanelSurface::Dock, 32, 64, (0, 68)),
-            Material::Plain(Plain::EmptyPane)
+            decide(PanelSurface::Dock, glass(32, 24, 12), liquid(), (0, 68)),
+            Some(Outcome::Plain(Plain::EmptyPane))
         );
         assert_eq!(
-            decide(PanelSurface::Dock, 32, 64, (320, 0)),
-            Material::Plain(Plain::EmptyPane)
+            decide(PanelSurface::Dock, glass(32, 24, 12), liquid(), (320, 0)),
+            Some(Outcome::Plain(Plain::EmptyPane))
         );
         assert!(Region::pane(0, 68).is_empty());
         assert!(Region::pane(320, 0).is_empty());
@@ -303,6 +385,30 @@ mod tests {
                 height: i32::MAX
             },
             "a protocol extent that cannot be represented is clamped, not wrapped"
+        );
+    }
+
+    #[test]
+    fn turning_the_effect_off_clears_the_region_radius_and_lens() {
+        let off = off();
+
+        assert_eq!(off.radius, 0);
+        assert!(off.region.is_empty());
+        assert_eq!(off.refraction, None);
+        assert_eq!(
+            off.corners,
+            Corners::ZERO,
+            "with no lens there is no shape to describe"
+        );
+        assert_ne!(
+            off,
+            effect(decide(
+                PanelSurface::Dock,
+                glass(32, 24, 12),
+                liquid(),
+                PANE
+            )),
+            "the off request is not the material's request"
         );
     }
 }

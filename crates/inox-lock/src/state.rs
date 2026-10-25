@@ -1,6 +1,5 @@
 //! The lock state machine.
-//! The lock state machine.
-//! the session-lock boundary puts the lock state in the compositor and makes `inox-lock` its
+//! The session-lock boundary puts the lock state in the compositor and makes `inox-lock` its
 //! trusted client. What this module owns is the part that has to hold whatever
 //! the two sides are: the *state*, its transitions, and the invariants that must
 //! survive every sequence of events a session can produce.
@@ -839,6 +838,9 @@ mod tests {
             AuthFailure::Rejected,
             AuthFailure::TimedOut,
             AuthFailure::Unavailable,
+            AuthFailure::Busy,
+            AuthFailure::RateLimited,
+            AuthFailure::AuthenticatorFailed,
             AuthFailure::Cancelled,
         ] {
             let mut machine = locked();

@@ -34,6 +34,7 @@ use inox_config::{PanelSurface, Rgba, ShellConfig, Theme as Tokens};
 use crate::app::{self, Message, State};
 use crate::dock::DockGeometry;
 use crate::layer::Interface;
+use crate::offscreen::Host;
 use crate::tasks::{SessionGeneration, WindowId, WindowKey, WindowState};
 use crate::view::PanelGeometry;
 
@@ -90,6 +91,7 @@ fn one_frame_renders_through_the_offscreen_host() {
 
     render_a_taskbar_frame();
     render_a_translucent_dock_frame();
+    render_the_glass_catalog_page();
 }
 
 /// The pixel path the host took, asserted against the one this child asked for.
@@ -233,6 +235,184 @@ fn render_a_translucent_dock_frame() {
     }
 
     let _ = state.take_outgoing();
+}
+
+/// The shared glass component library's only pixel evidence.
+///
+/// `inox-glass` links no Qt, so it cannot draw by itself: it ships
+/// `CatalogWindow.qml` and the five stateless components as assets, and this
+/// crate compiles them into its own QML module (ADR 0040 §3). The page is
+/// rendered here through the same offscreen host, the same platform plugin and
+/// the same `grabWindow()` path as the panel's own frame, from
+/// `inox_glass::catalog_model(&tokens)` — one projection whose every rectangle
+/// carries its own geometry, so this test reads the coordinates it samples out of
+/// the model instead of guessing a layout.
+///
+/// What is asserted is what makes a glass component a glass component: the pane
+/// is the `glass.tint` token and nothing outside its rounded corner is painted,
+/// a checked toggle's track is the accent token, and the slider's fill ends where
+/// its `value` says.
+fn render_the_glass_catalog_page() {
+    let tokens = Tokens::builtin_dark();
+    let model: serde_json::Value = serde_json::from_str(&inox_glass::catalog_model(&tokens))
+        .expect("the catalog projection is JSON");
+    let width = number(&model, "", "width");
+    let height = number(&model, "", "height");
+
+    let mut host =
+        Host::with_url(crate::offscreen::CATALOG_URL).expect("the catalog page loads and renders");
+    host.set_model(&model)
+        .expect("the catalog page takes its projection");
+
+    let frame = host
+        .frame(width, height)
+        .expect("the catalog page renders a frame");
+
+    assert_eq!(
+        frame.len(),
+        width as usize * height as usize * 4,
+        "a frame is exactly the size of the page it draws"
+    );
+
+    // The page's own fill is the structural "no colour" sentinel: the corners the
+    // components do not reach are transparent, not a clear colour the host chose.
+    for (x, y) in [(0, 0), (width - 1, 0), (width - 1, height - 1)] {
+        assert_eq!(
+            rgba(&frame, width, x, y)[3],
+            0,
+            "the page paints nothing at ({x}, {y}), so the frame is transparent there"
+        );
+    }
+
+    // The pane: the tint token at its centre, and no paint outside its rounded
+    // corner — the corner is what the compositor's SDF mask has to agree with.
+    let (pane_x, pane_y) = (number(&model, "pane", "x"), number(&model, "pane", "y"));
+    let (pane_w, pane_h) = (
+        number(&model, "pane", "width"),
+        number(&model, "pane", "height"),
+    );
+
+    assert_close(
+        rgba(&frame, width, pane_x + pane_w / 2, pane_y + pane_h / 2),
+        premultiplied_rgba(tokens.glass.tint),
+        "the pane's centre is the `glass.tint` token over the transparent page",
+    );
+    assert_eq!(
+        rgba(&frame, width, pane_x + 1, pane_y + 1)[3],
+        0,
+        "the pane's rounded corner is not painted: the shape is the radius, not a rectangle"
+    );
+
+    // The toggle: the catalog shows it checked, and a checked track is the accent
+    // token the projection named — not a colour of the component's own.
+    let (toggle_x, toggle_y) = (number(&model, "toggle", "x"), number(&model, "toggle", "y"));
+    let (toggle_w, toggle_h) = (
+        number(&model, "toggle", "width"),
+        number(&model, "toggle", "height"),
+    );
+    let toggle_track = (toggle_x + toggle_w / 4, toggle_y + toggle_h / 2);
+
+    assert_close(
+        rgba(&frame, width, toggle_track.0, toggle_track.1),
+        opaque_rgba(tokens.colors.accent),
+        "a checked toggle is drawn in the accent token",
+    );
+
+    // The slider: the fill is the accent token and ends where `value` says, and
+    // the rest of the track is the `surface_variant` token.
+    let (slider_x, slider_y) = (number(&model, "slider", "x"), number(&model, "slider", "y"));
+    let (slider_w, slider_h) = (
+        number(&model, "slider", "width"),
+        number(&model, "slider", "height"),
+    );
+    let value = model["slider"]["value"]
+        .as_f64()
+        .expect("the slider projects its value");
+    let mid = slider_y + slider_h / 2;
+    let along = |fraction: f64| slider_x + (f64::from(slider_w) * fraction) as u32;
+
+    assert_close(
+        rgba(&frame, width, along(value / 2.0), mid),
+        opaque_rgba(tokens.colors.accent),
+        "the filled half of the track is the accent token",
+    );
+    assert_close(
+        rgba(&frame, width, along((value + 1.0) / 2.0), mid),
+        opaque_rgba(tokens.colors.surface_variant),
+        "and the empty half is the track token",
+    );
+
+    // Move the value and the fill follows it: the switch happens where `value`
+    // is, not at a fraction the component chose.
+    let mut fuller = model.clone();
+    fuller["slider"]["value"] = serde_json::json!(0.75);
+    host.set_model(&fuller)
+        .expect("the catalog page takes the moved slider");
+
+    let frame = host
+        .frame(width, height)
+        .expect("the catalog page renders the moved slider");
+
+    assert_close(
+        rgba(&frame, width, along(0.6), mid),
+        opaque_rgba(tokens.colors.accent),
+        "a value of 0.75 fills the track past the 0.6 mark",
+    );
+    assert_eq!(
+        rgba(&frame, width, along(0.85), mid)[3],
+        0xff,
+        "and the far end of the track is still painted, not blank"
+    );
+}
+
+/// One integer of the catalog projection; `part` is a component name or empty for
+/// the page itself.
+fn number(model: &serde_json::Value, part: &str, key: &str) -> u32 {
+    let value = if part.is_empty() {
+        &model[key]
+    } else {
+        &model[part][key]
+    };
+
+    u32::try_from(value.as_u64().expect("a projected integer")).expect("a u32 dimension")
+}
+
+/// One pixel of a host frame, as the host hands it over: `R, G, B, A`,
+/// premultiplied. (The layer's frames are `B, G, R, A` — see [`pixel`].)
+fn rgba(frame: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    pixel(frame, width, x, y)
+}
+
+/// A token colour as a translucent pane contributes it over the transparent page,
+/// in the host's `R, G, B, A` order.
+fn premultiplied_rgba(colour: Rgba) -> [u8; 4] {
+    let alpha = u32::from(colour.a);
+    let channel = |value: u8| u8::try_from((u32::from(value) * alpha + 127) / 255).unwrap_or(0);
+
+    [
+        channel(colour.r),
+        channel(colour.g),
+        channel(colour.b),
+        colour.a,
+    ]
+}
+
+/// An opaque token colour, in the host's `R, G, B, A` order.
+fn opaque_rgba(colour: Rgba) -> [u8; 4] {
+    [colour.r, colour.g, colour.b, colour.a]
+}
+
+/// Assert a pixel is a token, allowing the one 8-bit step a premultiplied pass
+/// rounds by (`reconstruct_alpha` in `src/offscreen.cpp`).
+fn assert_close(actual: [u8; 4], expected: [u8; 4], why: &str) {
+    for (index, channel) in ["red", "green", "blue", "alpha"].iter().enumerate() {
+        assert!(
+            actual[index].abs_diff(expected[index]) <= 1,
+            "{why}: {channel} is {} for {} (pixel {actual:?}, token {expected:?})",
+            actual[index],
+            expected[index]
+        );
+    }
 }
 
 /// A panel state with one window, so a frame has something to draw.

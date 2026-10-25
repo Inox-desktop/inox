@@ -1104,6 +1104,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "inox-glass"
+version = "0.1.1"
+dependencies = [
+ "inox-config",
+ "inox-protocols",
+ "proptest",
+ "serde_json",
+ "wayland-client",
+]
+
+[[package]]
 name = "inox-greet"
 version = "0.1.1"
 dependencies = [
@@ -1200,6 +1211,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "image 0.25.10",
+ "inox-auth",
  "inox-common",
  "inox-config",
  "inox-protocols",
@@ -1210,8 +1222,10 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "users",
  "wayland-client",
  "wayland-server",
+ "xkbcommon",
  "zeroize",
 ]
 
@@ -1251,8 +1265,10 @@ dependencies = [
  "cxx-qt-lib",
  "inox-common",
  "inox-config",
+ "inox-glass",
  "inox-protocols",
  "proptest",
+ "qt-build-utils",
  "rustix 1.1.5",
  "serde_json",
  "tempfile",
@@ -1268,6 +1284,7 @@ dependencies = [
 name = "inox-protocols"
 version = "0.1.1"
 dependencies = [
+ "bitflags",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",

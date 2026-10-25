@@ -21,7 +21,7 @@
 - **帧必须带真实 alpha，取不到就重建。** Qt 6.8 之前 offscreen 插件的 backing store 硬编码为 `QImage::Format_RGB32`（`qoffscreencommon.cpp`），任何 `QSurfaceFormat` / `setDefaultAlphaBuffer` / 窗口标志都改不了，单次 `grabWindow()` 必然不透明。因此宿主要先按正常路径取一帧，**首帧**发现没有 alpha 通道就缓存该判定，此后每帧用黑/白两次清屏抓帧重建：`a = 255 - max(white - black)`，预乘颜色取黑底那一帧（推导与舍入见 `src/offscreen.cpp` 的 `reconstruct_alpha`）。两条路径输出同一帧，`src/layer.rs` 不得分支；重建是宿主的事，不是协议腿的事。`INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 是测试钩子，强制走重建路径，生产环境不设。
 - **三种表面是同一份数据的三种呈现**：`[panel] surface` 决定进程画哪一种（`taskbar` / `menubar` / `dock`），三者共用 `view_model` 的投影与 `tasks` / `tray` / `clock` 模型；菜单栏与 Dock 只各自新增几何与排布（`src/view/menubar.rs`、`src/view/dock.rs`），不得新增窗口/托盘/时钟数据。运行中不得改变 `surface`：那是另一个窗口，重载**不得采用候选文档里的值**，必须保留运行中的表面并记一条 `warn!`（`Message::ConfigReloaded` 同理），而不是让整次重载失败。
 - **菜单栏没有应用菜单可画**：Inox 没有应用菜单协议，菜单栏只显示焦点应用名（`show_app_name`）、面板自身的状态与重试、托盘项与时钟；**禁止**编造 "File"/"Edit"/"View" 之类的菜单标题。这条必须同时留在 `src/menubar.rs` 的模块文档里。
-- **玻璃材质只来自 `glass` 令牌**（`tint` / `tint_strong` / `highlight` / `shade` / `blur`）：`src/theme.rs` 是唯一把它们变成绘制值的地方（`glass_stops` 分档、`glass_tint` / `glass_highlight` / `glass_shade`），组件不得自选颜色或透明度。窗格是「一条 highlight 发丝 + tint 主体（+ 一条 shade 发丝）」的分档矩形，不是渲染器里的渐变；两道发丝边是窗格自身的一部分，**不得**用占满宽度的子控件去画。背景模糊由合成器绘制，`glass_blur` 只是请求值：面板不得声称自己画了模糊。
+- **玻璃材质只来自 `glass` 令牌**（`tint` / `tint_strong` / `highlight` / `shade` / `blur` / `refraction` / `refraction_amount` / `depth` / `dispersion`）：`src/theme.rs` 是唯一把它们变成绘制值与请求值的地方（`glass_stops` 分档、`glass_tint` / `glass_highlight` / `glass_shade`、`glass_material` 与折射访问器），组件不得自选颜色、透明度或折射量。窗格是「一条 highlight 发丝 + tint 主体（+ 一条 shade 发丝）」的分档矩形，不是渲染器里的渐变；两道发丝边是窗格自身的一部分，**不得**用占满宽度的子控件去画。背景模糊**与边缘折射**都由合成器绘制，`glass_blur` / 折射令牌只是请求值：面板不得声称自己画了模糊或折射。
 - **Dock 的图块是徽标，不是图标**：面板没有图标主题解码器，也不得为此新增依赖；图块用应用名首字符，没有名字用 `panel-dock-icon-placeholder`（与启动器 `row_widget` 同类的降级）。图块是条目（`button` 语义），消息与任务栏一致（`TaskActivated` / `TaskToggled`），数量受既有 `panel.max_task_buttons` 限制，溢出不滚动、不加溢出指示。图块的点击区域覆盖徽标与其下方活动标记槽位，不得只盖住其中一半。
 - **玻璃表面的背景是结构性透明**：三个表面的根背景都是 `theme::TRANSPARENT`（`#00000000`，结构性哨兵，不是设计颜色）；菜单栏与 Dock 的玻璃窗格画在它上面，任务栏则自己画不透明的 `surface` 填充，其投影不得因 `glass` 令牌改变一个值（有测试断言）。
 - **Dock 的表面宽度必须覆盖它会画的一切**：`DockContent { tiles, tray_width, notice_width }` 是宽度的唯一输入（`src/dock.rs` → `DockGeometry::surface_width` → `PanelPlacement::dock(config, tokens, content)`），托盘宽度与句子宽度都是**字符估算**（`AVERAGE_ADVANCE_RATIO`，与启动器 `label_budget` 同一类做法；**不得**为此引入字体度量依赖），句子另有 `minimum_width` 保底槽位，因此没有窗口服务时空 dock 也必须是一个可读的居中胶囊。窗格宽度必须等于表面宽度：合成器磨砂的是整个 configure 区域（`headless_tests::protocol` 断言 `set_region == (0,0,width,height)`）。字符估算是估算而非度量：CJK 托盘标签可能被低估、更宽的字体可能裁掉最后的字形，这两条是已知的、被记录的残余误差。
@@ -31,17 +31,17 @@
 - **协议腿自己建连、自己画帧、自己收指针**：`src/layer.rs` 用 `Connection::connect_to_env()` + `calloop` 事件循环（与 `inox-lock/src/session.rs` 同一套模式：`wl_registry` 收集 globals、`memfd_create` + `wl_shm` 帧、`wl_buffer.release` 记账、`MAX_FRAMES_IN_FLIGHT` 上限、`Generic` 连接源）。帧是离屏 QML 在 configure 尺寸下渲染、再经 `write_argb` 换过通道的像素，格式**必须是 `Argb8888`**（窗格半透明；`Xrgb8888` 会画成不透明方块），字节序为**预乘** `B, G, R, A`（Qt 的 `Format_RGBA8888_Premultiplied` 已经是预乘；写成非预乘会在圆角与字形周围出现光晕）。根背景必须是结构性透明，否则圆角外会是一整块颜色。
 - **只提交与 configure 同尺寸的帧**：ack 必须在第一次 attach 之前；`set_size` 之后要等下一次 configure 再画；尺寸不是本组件会画的（0 或超过 `MAX_FRAME_BYTES`）就不提交，`Input::resize` 与 `Interface::resize` 都拒绝这种尺寸。重绘只在有变化时发生（状态变了、configure、指针交互、glass 参数需要下一次 commit 生效、`wl_buffer.release`）——时钟是 `calloop::timer` 喂同一个 `app::Message::Tick`，不得自建第二个时钟，也不得每帧重画。
 - **指针输入在 Rust 里命中，不经 QML**：`wl_pointer` 的 enter/leave/motion/button 翻译成 `Pointer`（纯数据），经 `layer::Interface::pointer` 交给 `layer::Input`，按**最近提交的那一帧的场景**（`Input::scene`，由 `render_argb` 写入）里的 `entries` 命中，产生的 `Message` 由 `app::update` 应用；坐标按表面 scale factor 化成逻辑坐标（`logical`），`SCALE_FACTOR` 是唯一的缩放因子。点击任务图块必须产生与投影测试相同的 `Message::TaskActivated` / `TaskToggled`。
-- **玻璃请求由 `src/frost.rs` 决策、由 `layer.rs` 发送**：`glass.blur == 0` → 完全不创建 glass 对象（`asks_for_glass`）；`capabilities` 的 `max_radius == 0` → 纯半透明 + **一条** `info!`；`max_radius > 0` → `radius = min(blur, max_radius)`，region 是窗格自身区域，configure 尺寸变化时重发。glass 对象必须在 layer role 存在**之后**创建，拆卸时先 `destroy()` 它。任务是**不透明条带**，不是窗格：任务栏不创建 glass 对象。
+- **玻璃请求由 `src/frost.rs` 决策、由 `layer.rs` 发送，clamp 与 v1/v2 协商在 `inox-glass`**：面板只在 `frost` 里保留自己的策略——菜单栏与 Dock 是窗格、任务栏不是（`is_pane`，任务栏返回 `None` 而不是一种降级理由）；只要材质请求了**模糊或折射之一**（`Material::has_effect`）就创建 glass 对象，`blur = 0` + `refraction > 0` 依然是对象（无模糊的透镜），两者皆 0 才是「纯半透明、不创建对象」。`capabilities`（v1）与 `liquid_capabilities`（v2，优先）都归一到 `inox_glass::Capabilities`；`inox_glass::decide` 给出 `Effect`（半径、区域、四角半径、被钳制的折射带，由 `Request::apply` 发到线上）或带理由的 `Plain`，后者只记**一条** `info!` 并清掉对象的请求（`frost::off()`，不销毁对象）。合成器既不能模糊也不能折射（两个上限都为 0）时必须接受纯半透明，绝不自造效果。glass 对象必须在 layer role 存在**之后**创建，拆卸时先 `destroy()` 它；`since=2` 的请求只能发给 v2 对象（库的适配器与 `apply` 双重把关）。configure 尺寸、令牌或重载变化时重发。
 - **启动必须自检**：没有可用的 Wayland 显示时，`main` 必须以可读错误与非零退出码结束；`zwlr_layer_shell_v1` 的存在性查询由 `layer::run` 在绑定 globals 后完成，缺失即 `LegError::MissingGlobal` + 非零退出。
 - **窗口服务与 SNI 传输不在本 crate 内**：两者的协议仍不实现。配置重载由 `src/reload.rs` 通过会话 D-Bus（`org.inox.Panel`）与 `SIGHUP` 接入，把 `Request` 放进通道并用 `calloop::ping::Ping` 唤醒 `layer.rs` 的循环。**SIGINT / SIGTERM / SIGHUP 的信号源由 `layer.rs` 持有，且必须在任何线程（含离屏 Qt 宿主）创建前装好掩码**：`signalfd` 只收到「在所有线程里都被阻塞」的信号。测试子进程同样依赖这一点：`headless_tests` 在 spawn 之前先在父线程阻塞这些信号，让子进程经 `exec` 继承掩码（`signalfd` 才能收到），**不要**把「子进程跑在 main 线程」当作前提。`update` 不做 I/O，只把意图放进 `State` 的 `OutgoingCommand` 队列；`layer.rs` 把队列取出并丢弃（一次 `info!` 说明没有传输）。新增 `Message` 必须同时给出测试。
 - **任务区是弹性区域**：任务按钮按顺序排布并各自裁剪，时钟与托盘项从右边缘向内排布，因此长标题只会被裁掉，不会把时钟挤出表面。显示数量受 `panel.max_task_buttons` 限制，不得用滚动或溢出指示替代（尚未实现）。
 - **普通展示不夺焦点**：`keyboard_interactivity = None`；时钟与托盘项是纯展示，不进入 `entries`。显式导航焦点只能落在可点击（enabled）的条目标上，且至多一个（D01）。
-- 新增依赖前先确认依赖方向合法（根级 §2）：本 crate 依赖 L1（`inox-common`、`inox-config`）以及一条**向下的 L3 → L2 边**。为协议腿新增：`wayland-client`、`rustix`；为界面新增：`cxx` / `cxx-qt` / `cxx-qt-lib` / `cxx-qt-build`、`serde_json`。**不得**引入同层依赖、`inox-compositor` 或任何 Qt Wayland 模块；协议绑定也不得绕过 `inox-protocols` 直接依赖 `wayland-protocols*`。改依赖后跑 `cargo test -p inox-integration --test layering`。
+- 新增依赖前先确认依赖方向合法（根级 §2）：本 crate 依赖 L1（`inox-common`、`inox-config`）、一条**向下的 L3 → L2 边**（`inox-protocols`），以及一条**同层例外** `inox-glass`（L3 → L3，ADR 0040 授权并登记在根 `Cargo.toml` 的 `same_layer_exceptions`；删除这条边时登记必须一起删）。为协议腿新增：`wayland-client`、`rustix`；为界面新增：`cxx` / `cxx-qt` / `cxx-qt-lib` / `cxx-qt-build`、`serde_json`；为把共享玻璃 QML 编进本 crate 的 qrc 新增构建期 `qt-build-utils`（与 `cxx-qt-build` 0.10 同一版本行）与 `inox-glass` 的 build-dependency。**不得**引入其它同层依赖、`inox-compositor` 或任何 Qt Wayland 模块；协议绑定也不得绕过 `inox-protocols` 直接依赖 `wayland-protocols*`。改依赖后跑 `cargo test -p inox-integration --test layering`。
 
 ## 主要依赖
 
-- 上游 Inox crate：`inox-common`（i18n 目录加载）、`inox-config`（shell 配置、设计令牌）、`inox-protocols`（`wlr-layer-shell`、核心 `wl_*` 与 `inox-glass-v1` 的绑定；L3 → L2 的合法向下边）。
-- 界面：`cxx` / `cxx-qt` / `cxx-qt-lib`与构建期 `cxx-qt-build`（QML 模块 + C++ 宿主）。
+- 上游 Inox crate：`inox-common`（i18n 目录加载）、`inox-config`（shell 配置、设计令牌）、`inox-protocols`（`wlr-layer-shell`、核心 `wl_*` 与 `inox-glass-v1` 的绑定；L3 → L2 的合法向下边）、`inox-glass`（玻璃材质决策与共享玻璃 QML 组件；ADR 0040 的同层例外）。
+- 界面：`cxx` / `cxx-qt` / `cxx-qt-lib`与构建期 `cxx-qt-build`（QML 模块 + C++ 宿主）与 `qt-build-utils`（把 `inox-glass` 的 QML 以显式别名编进本 crate 的 qrc）。
 - 第三方：`serde_json`（投影的序列化）、`calloop`（事件循环、信号源与时钟）、`wayland-client`（连接、globals 与指针）、`rustix`（`memfd_create` 共享内存帧）、`chrono`（本地时间）、`zbus`（`org.inox.Panel` 重载端点）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
 - 测试：`wayland-server`（协议测试扮演合成器一侧）、`tempfile`、`proptest`。
 
@@ -73,10 +73,10 @@
 - 托盘：`register` 幂等、未注册条目的事件被拒绝（`TrayError::UnknownItem`）、菜单项可跨子菜单查找、**同一快照应用两次不产生任何变化**、快照删除已消失条目并加入新条目。
 - 时钟：`CLOCK_DIRECTIVES` 的**每个**指令都被投影，`%Q` 之类报错（含位置），结尾孤立 `%` 报错，zh-CN 的星期/月份与 `%p` 与 en-US 不同，`%Z` 为 UTC 偏移。
 - **投影测试**（`headless_tests::projection`）取代了旧的像素渲染测试：断言每个表面的场景值——背景等于 `surface` 令牌、启用与禁用条目不同（禁用的没有填充也没有描边）、超长标题后时钟仍在右边缘内、点击任务按钮产生 `Message::TaskActivated` 且只产生一次、玻璃表面用的确实是半透明的 `glass.tint` 且不是不透明 `surface`、顶边有 highlight 发丝、Dock 浮在底部 margin 之上、任务栏的投影**不因 `glass` 令牌改变一个值**、场景里每个颜色都是 `#AARRGGBB`（即令牌转换结果）。
-- **QML 加载/渲染测试**（`headless_tests::qml`）：在 `QT_QPA_PLATFORM=offscreen` 子进程里，经与二进制相同的 `layer::Interface` 真实渲染任务栏与 Dock 各一帧，断言帧长等于 configure、首像素等于 `surface` 令牌的预乘 `B,G,R,A`、Dock 的 margin 条带透明、玻璃确实半透明且窗格像素就是 `glass.tint` 令牌（±1 舍入），并断言「画出来的场景」就是「指针命中用的场景」。**同一组断言要跑两遍**：一遍走平台给的像素路径，一遍用 `INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 强制走 alpha 重建路径；强制那一遍必须断言自己确实走了重建（`Interface::reconstructs_alpha`），平台那一遍不猜平台能力（有 alpha 的 Qt 与无 alpha 的 Qt 都必须通过同一组像素断言）——这是重建「精确而非近似」的唯一本地证据。
+- **QML 加载/渲染测试**（`headless_tests::qml`）：在 `QT_QPA_PLATFORM=offscreen` 子进程里，经与二进制相同的 `layer::Interface` 真实渲染任务栏与 Dock 各一帧，断言帧长等于 configure、首像素等于 `surface` 令牌的预乘 `B,G,R,A`、Dock 的 margin 条带透明、玻璃确实半透明且窗格像素就是 `glass.tint` 令牌（±1 舍入），并断言「画出来的场景」就是「指针命中用的场景」。**同一组断言要跑两遍**：一遍走平台给的像素路径，一遍用 `INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 强制走 alpha 重建路径；强制那一遍必须断言自己确实走了重建（`Interface::reconstructs_alpha`），平台那一遍不猜平台能力（有 alpha 的 Qt 与无 alpha 的 Qt 都必须通过同一组像素断言）——这是重建「精确而非近似」的唯一本地证据。**此外还渲染 `inox-glass` 的组件目录页**（`Host::with_url(CATALOG_URL)`，模型来自 `inox_glass::catalog_model(&tokens)`）：断言窗格中心是 `glass.tint` 令牌、圆角外完全透明、勾选开关的轨道是 accent 令牌、滑杆填充在 `value` 处结束（改 `value` 后填充跟着走）。这是共享玻璃组件库唯一的像素证据，坐标一律从投影里读，不得写死。
 - `headless_tests::catalog`：`compare_catalogs(en-US, zh-CN)` 必须干净（Q03），id 前缀为 `panel-` 且不含点号，未翻译的 id 必须回退到默认语言。
 - `headless_tests::binary`：把测试二进制自身作为子进程跑本面板入口，覆盖 `--surface` / `--help` / 未知参数 / 没有显示时的非零退出。
-- `headless_tests::protocol` 用真实 `wayland-server` 在 socket pair 上扮演合成器并驱动本二进制，必须断言：按 `[panel] surface` 创建的 layer surface 的**锚点 / layer / exclusive zone / margin / 键盘交互 / namespace / 尺寸**与 `placement.rs` 的数据一致；`get_glass` **晚于** layer role，且 `set_radius` 已按 `capabilities` 钳制、`set_region` 是窗格尺寸，configure 尺寸变化时重发；提交的帧声明的尺寸等于 configure、字节是预乘 `Argb8888`；`max_radius = 0` 时仍然提交帧且不发 radius/region；`glass.blur = 0` 时**不创建** glass 对象；合成器不广告 `zwlr_layer_shell_v1` 时二进制以非零码退出并在日志里点名该协议；`SIGHUP` 重载会按新尺寸重新 configure 并提交新帧。
+- `headless_tests::protocol` 用真实 `wayland-server` 在 socket pair 上扮演合成器并驱动本二进制，必须断言：按 `[panel] surface` 创建的 layer surface 的**锚点 / layer / exclusive zone / margin / 键盘交互 / namespace / 尺寸**与 `placement.rs` 的数据一致；`get_glass` **晚于** layer role；`inox-glass-v1` 的 manager 绑定在 **v2**（`min(advertised, 2)`），`capabilities` 先到、`liquid_capabilities` 后到，请求里 `set_radius` 已按上限钳制、`set_region` 是窗格尺寸、`set_corner_radii` 是 `radii.md`、`set_refraction` 是被钳制的折射带与合成器实际广告的 flags；配置成 v1 的合成器只收到 `set_radius` / `set_region`（绝不发 `since=2` 的请求，也不收 `liquid_capabilities`）；提交的帧声明的尺寸等于 configure、字节是预乘 `Argb8888`；两个上限都是 0 时仍然提交帧且不发任何效果请求、日志里出现那**一条**降级说明；`blur = 0` 但 `refraction > 0` 时**创建**对象并只发透镜；两者皆 0 时**不创建** glass 对象；合成器不广告 `zwlr_layer_shell_v1` 时二进制以非零码退出并在日志里点名该协议；`SIGHUP` 重载会按新尺寸重新 configure 并提交新帧。
 - 覆盖率目标：核心纯逻辑（`tasks`、`tray`、`clock`、`placement`、`view_model`、`contract`、`frost`、`view`、`theme`）≥70%（E1）。
 
 ## 目录结构
@@ -95,18 +95,18 @@ src/app.rs             State / Message / update（Elm）
 src/view.rs            Qt-free 的 JSON 场景、几何与 entries
 src/view/menubar.rs    菜单栏的场景
 src/view/dock.rs       Dock 的场景
-src/theme.rs           令牌 → 场景颜色与尺寸（含 glass 分档）
-src/frost.rs           磨砂玻璃的客户端决策（纯，含降级表）
-src/layer.rs           协议腿：wlr-layer-shell 表面、ARGB 共享内存帧、指针输入
+src/theme.rs           令牌 → 场景颜色与尺寸（含 glass 分档、玻璃材质与折射访问器）
+src/frost.rs           液态玻璃的客户端决策（纯，含降级表；clamp 与 v1/v2 协商在 inox-glass）
+src/layer.rs           协议腿：wlr-layer-shell 表面、ARGB 共享内存帧、指针输入、inox-glass-v1 v2
 src/reload.rs          SIGHUP 与 org.inox.Panel 的重载请求
 src/cxxqt_object.rs    cxx-qt 桥（唯一 QML↔Rust 边界）
-src/offscreen.rs       离屏宿主的 Rust 面
+src/offscreen.rs       离屏宿主的 Rust 面（含测试用的 `Host::with_url`）
 src/offscreen.cpp/h    C++ 宿主：QGuiApplication + QQmlApplicationEngine + grabWindow
 src/i18n.rs            内嵌 Fluent 目录
 qml/Main.qml           QML 渲染器
 i18n/en-US/panel.ftl, i18n/zh-CN/panel.ftl
 src/headless_tests/    binary / catalog / projection / protocol / qml / support
-build.rs               CxxQtBuilder：QML 模块 + 桥 + C++ 宿主
+build.rs               CxxQtBuilder：QML 模块 + 桥 + C++ 宿主 + inox-glass 的玻璃组件（显式 qrc 别名）
 ```
 
 工作区级文件（`Cargo.toml`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`LICENSE`、CI 工作流）在仓库根目录，**各 crate 不再各自保留一份**。

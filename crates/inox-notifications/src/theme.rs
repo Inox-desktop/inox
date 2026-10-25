@@ -278,6 +278,25 @@ pub fn control_radius(tokens: &Theme) -> f32 {
     f32::from(tokens.radii.sm)
 }
 
+/// How wide the urgency rail on the leading edge of a critical card is.
+///
+/// ui-guidelines §1 forbids a literal, so the rail is one small spacing step: the
+/// thinnest mark that still reads as a deliberate edge rather than as a second
+/// border. It is drawn in [`urgency_color`], and it is never the only thing that
+/// says "critical" — the urgency sentence on the card says it in words (§5, §6).
+pub fn urgency_rail_width(tokens: &Theme) -> f32 {
+    f32::from(tokens.spacing.sm)
+}
+
+/// How far a card rises while it enters (ui-guidelines §8).
+///
+/// One medium step of the spacing rhythm: enough to read as motion, small enough
+/// that the resting position is already where the eye expects the card. The
+/// animation ends here, and a card that never animated sits here too.
+pub fn entry_rise(tokens: &Theme) -> f32 {
+    f32::from(tokens.spacing.md)
+}
+
 /// How thick the focus ring of a control is (ui-guidelines §1 and §5).
 ///
 /// The accent colour, drawn as thick as `spacing.xs`. This stack never takes
@@ -624,6 +643,38 @@ mod tests {
 
         assert_eq!(focus_ring_width(&tokens), f32::from(tokens.spacing.xs));
         assert!(focus_ring_width(&tokens) > BORDER_WIDTH);
+    }
+
+    #[test]
+    fn the_urgency_rail_and_the_entry_rise_are_token_steps() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(urgency_rail_width(&tokens), f32::from(tokens.spacing.sm));
+        assert_eq!(entry_rise(&tokens), f32::from(tokens.spacing.md));
+        assert!(
+            urgency_rail_width(&tokens) > BORDER_WIDTH,
+            "a rail is a mark of its own, not a second hairline"
+        );
+        assert!(
+            urgency_rail_width(&tokens) < card_inset(&tokens),
+            "the rail stays out of the card's inset"
+        );
+    }
+
+    #[test]
+    fn the_motion_tokens_are_the_durations_the_surface_animates_with() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(tokens.motion.normal_ms, 200);
+        assert!(
+            tokens.motion.fast_ms < tokens.motion.normal_ms
+                && tokens.motion.normal_ms < tokens.motion.slow_ms,
+            "the three durations are ordered"
+        );
+        assert!(
+            tokens.motion.slow_ms > 0,
+            "an entrance has to take some time"
+        );
     }
 
     #[test]

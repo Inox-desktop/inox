@@ -33,6 +33,7 @@ use crate::runtime::Task;
 use crate::activation::{
     self, Activation, Activator, LaunchOutcome, LaunchRequest, Observation, READINESS_GRACE,
 };
+use crate::categories::Category;
 use crate::contract::{Failure, FailureKind, ServiceState};
 use crate::index::{self, AppIndex, IndexOptions};
 use crate::placement::Placement;
@@ -46,13 +47,21 @@ use crate::view_model::{self, Projection, ViewModel};
 /// an interface identifier is not one.
 pub const SEARCH_INPUT_ID: &str = "inox-launcher-search-field";
 
-/// Which way the selection moves.
+/// Which way the selection moves, in the grid's terms.
+///
+/// The grid is what the arrows step through: `Left`/`Right` move one tile and
+/// `Up`/`Down` move a whole row, which is [`crate::theme::Grid::columns`] tiles —
+/// the same number the projection draws the tiles with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// Towards the first row.
-    Previous,
-    /// Towards the last row.
-    Next,
+    /// One tile towards the first.
+    Left,
+    /// One tile towards the last.
+    Right,
+    /// One row towards the top.
+    Up,
+    /// One row towards the bottom.
+    Down,
 }
 
 /// Everything `main` resolves before the window exists.
@@ -98,6 +107,12 @@ pub struct State {
     pub engine: SearchEngine,
     /// The text in the search field.
     pub query: String,
+    /// Which category chip is filtering the browse.
+    ///
+    /// The chip only narrows the list a person is browsing; a query searches
+    /// every application (see [`State::research`]), because narrowing a search by
+    /// a category the user is not looking at is how results go missing.
+    pub category: Category,
     /// Which row is selected.
     pub selected: usize,
     /// The generation of the current selection.
@@ -167,6 +182,7 @@ impl State {
             scan_generation: 1,
             engine: SearchEngine::new(),
             query: String::new(),
+            category: Category::All,
             selected: 0,
             selection_generation: 1,
             activator: Activator::new(),
@@ -208,6 +224,7 @@ impl State {
                 result: self.engine.current(),
                 query: &self.query,
                 selected: self.selected,
+                category: self.category,
                 activation: self.activation.as_ref(),
                 label_budget: self.placement.label_chars,
             };
@@ -246,17 +263,50 @@ impl State {
     }
 
     /// Runs the current query and applies the result.
+    ///
+    /// An empty query is the *browse*: every application, in name order, narrowed
+    /// by the selected category chip. A query is a *search*: it runs over every
+    /// application and the chip does not narrow it — a person who types "fire"
+    /// while the Graphics chip happens to be selected is looking for Firefox, not
+    /// for a graphics application whose name starts with "fire".
+    ///
+    /// The browse is not limited to `launcher.max_results`: that number says how
+    /// many results a *search* may show, and a grid of applications exists to
+    /// show the applications (the card scrolls when they do not fit).
     fn research(&mut self) {
         let Some(index) = self.index.as_ref() else {
             return;
         };
 
-        let request = self.engine.request(
-            &self.query,
-            usize::from(self.config.max_query_chars),
-            usize::from(self.config.max_results),
-        );
-        let result = search::execute(index, &request);
+        let browsing = self.query.trim().is_empty();
+        let limit = if browsing {
+            index.len().max(1)
+        } else {
+            usize::from(self.config.max_results)
+        };
+
+        // A category the new index no longer has anything for cannot stay the
+        // filter: an empty grid with a chip selected is a screen with no way out.
+        if self.category != Category::All
+            && !index
+                .entries()
+                .iter()
+                .any(|entry| self.category.matches(&entry.categories))
+        {
+            self.category = Category::All;
+        }
+
+        let request =
+            self.engine
+                .request(&self.query, usize::from(self.config.max_query_chars), limit);
+        let mut result = search::execute(index, &request);
+        if browsing && self.category != Category::All {
+            result.hits.retain(|hit| {
+                index
+                    .get(&hit.id)
+                    .is_some_and(|entry| self.category.matches(&entry.categories))
+            });
+        }
         self.engine.apply(result);
 
         let rows = self
@@ -284,6 +334,8 @@ pub enum Message {
     QueryCleared,
     /// The selection moved.
     SelectionMoved(Step),
+    /// A category chip was chosen.
+    CategorySelected(Category),
     /// A row was chosen with the pointer.
     RowChosen(String),
     /// Enter was pressed.
@@ -313,8 +365,10 @@ pub fn key_binding(key: &str, repeat: bool) -> Option<Message> {
         return None;
     }
     match key {
-        "up" | "arrowup" => Some(Message::SelectionMoved(Step::Previous)),
-        "down" | "arrowdown" => Some(Message::SelectionMoved(Step::Next)),
+        "up" | "arrowup" => Some(Message::SelectionMoved(Step::Up)),
+        "down" | "arrowdown" => Some(Message::SelectionMoved(Step::Down)),
+        "left" | "arrowleft" => Some(Message::SelectionMoved(Step::Left)),
+        "right" | "arrowright" => Some(Message::SelectionMoved(Step::Right)),
         "enter" | "return" => Some(Message::Activated),
         "escape" | "esc" => Some(Message::Dismissed),
         _ => None,
@@ -354,9 +408,10 @@ pub(crate) fn empty_model() -> ViewModel {
         title: String::new(),
         placeholder: String::new(),
         query: String::new(),
-        prompt: None,
         hint: String::new(),
-        rows: Vec::new(),
+        tiles: Vec::new(),
+        chips: Vec::new(),
+        heading: String::new(),
         banner: None,
         notice: None,
         status: None,
@@ -384,6 +439,18 @@ fn handle(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::SelectionMoved(step) => {
             move_selection(state, step);
+            Task::none()
+        }
+        Message::CategorySelected(category) => {
+            if category == state.category {
+                return Task::none();
+            }
+            state.category = category;
+            // A new filter is a new list: the first tile is the selection, and
+            // the next Enter is a new request.
+            state.selected = 0;
+            state.selection_generation += 1;
+            state.research();
             Task::none()
         }
         Message::RowChosen(id) => {
@@ -449,8 +516,11 @@ fn on_new_query(state: &mut State) {
 
 /// Moves the selection, stopping at the ends.
 ///
-/// The ends are ends rather than a wrap-around: a list that cycles makes "how
-/// many results are there" harder to answer, and Escape is always available.
+/// The ends are ends rather than a wrap-around: a grid that cycles makes "how
+/// many applications are there" harder to answer, and Escape is always available.
+/// `Up`/`Down` move by one grid row, and the row's width is the projected
+/// [`crate::theme::Grid::columns`] — the window and the keyboard cannot disagree
+/// about it because there is one value.
 fn move_selection(state: &mut State, step: Step) {
     let rows = state
         .engine
@@ -461,9 +531,13 @@ fn move_selection(state: &mut State, step: Step) {
         return;
     }
 
+    let columns = state.placement.grid.columns.max(1);
+    let last = rows - 1;
     let moved = match step {
-        Step::Previous => state.selected.saturating_sub(1),
-        Step::Next => (state.selected + 1).min(rows - 1),
+        Step::Left => state.selected.saturating_sub(1),
+        Step::Right => (state.selected + 1).min(last),
+        Step::Up => state.selected.saturating_sub(columns),
+        Step::Down => (state.selected + columns).min(last),
     };
 
     if moved != state.selected {
@@ -687,18 +761,26 @@ mod tests {
         assert!(state.index.is_some());
         assert_eq!(state.config, config.config);
         assert_eq!(state.tokens, config.tokens);
-        assert_eq!(state.model.rows.len(), 1);
+        assert_eq!(state.model.tiles.len(), 1);
     }
 
     #[test]
-    fn the_four_handled_keys_map_to_their_messages() {
+    fn the_handled_keys_map_to_their_messages() {
         assert_eq!(
             key_binding("up", false),
-            Some(Message::SelectionMoved(Step::Previous))
+            Some(Message::SelectionMoved(Step::Up))
         );
         assert_eq!(
-            key_binding("down", false),
-            Some(Message::SelectionMoved(Step::Next))
+            key_binding("arrowdown", false),
+            Some(Message::SelectionMoved(Step::Down))
+        );
+        assert_eq!(
+            key_binding("left", false),
+            Some(Message::SelectionMoved(Step::Left))
+        );
+        assert_eq!(
+            key_binding("arrowright", false),
+            Some(Message::SelectionMoved(Step::Right))
         );
         assert_eq!(key_binding("enter", false), Some(Message::Activated));
         assert_eq!(key_binding("escape", false), Some(Message::Dismissed));
@@ -709,7 +791,7 @@ mod tests {
 
     #[test]
     fn a_repeated_key_is_ignored() {
-        for key in ["up", "down", "enter", "escape"] {
+        for key in ["up", "down", "left", "right", "enter", "escape"] {
             assert_eq!(
                 key_binding(key, true),
                 None,
@@ -759,10 +841,10 @@ mod tests {
     #[test]
     fn the_initial_state_lists_the_applications_by_name() {
         let state = state();
-        assert_eq!(state.model.rows.len(), 3);
-        assert_eq!(state.model.rows[0].label, "Example");
-        assert_eq!(state.model.rows[1].label, "htop");
-        assert_eq!(state.model.rows[2].label, "Second");
+        assert_eq!(state.model.tiles.len(), 3);
+        assert_eq!(state.model.tiles[0].label, "Example");
+        assert_eq!(state.model.tiles[1].label, "htop");
+        assert_eq!(state.model.tiles[2].label, "Second");
         assert_eq!(state.selected, 0);
         assert!(state.service.is_usable());
     }
@@ -771,8 +853,8 @@ mod tests {
     fn typing_then_enter_produces_exactly_one_launch() {
         let mut state = state();
         send(&mut state, Message::QueryChanged("ex".to_owned()));
-        assert_eq!(state.model.rows.len(), 1);
-        assert_eq!(state.model.rows[0].id, "example.desktop");
+        assert_eq!(state.model.tiles.len(), 1);
+        assert_eq!(state.model.tiles[0].id, "example.desktop");
 
         let selection = state.selection_generation;
         press(&mut state, "enter");
@@ -815,24 +897,146 @@ mod tests {
         press(&mut state, "up");
         assert_eq!(
             state.selection_generation, started,
-            "the first row is already selected",
+            "the first tile is already selected",
         );
 
-        press(&mut state, "down");
+        press(&mut state, "right");
         assert_eq!(state.selection_generation, started + 1);
 
-        // Down to the last row, then one press too many.
-        while state.selected < state.model.rows.len() - 1 {
-            press(&mut state, "down");
-        }
+        // Down is a whole grid row; with three tiles it lands on the last one.
+        press(&mut state, "down");
+        assert_eq!(state.selected, state.model.tiles.len() - 1);
         let at_the_end = state.selection_generation;
-        assert_eq!(at_the_end, started + (state.model.rows.len() - 1) as u64);
+        assert_eq!(at_the_end, started + 2);
 
         press(&mut state, "down");
+        press(&mut state, "right");
         assert_eq!(
             state.selection_generation, at_the_end,
-            "the last row is a wall, so it is not a new selection",
+            "the last tile is a wall, so it is not a new selection",
         );
+    }
+
+    #[test]
+    fn the_grid_arrows_step_by_one_tile_and_by_one_row() {
+        // Three rows of applications on a grid whose columns come from the
+        // placement: the keyboard and the window read the same number.
+        let count = 30;
+        let entries = (0..count)
+            .map(|index| {
+                AppIndex::test_entry(
+                    &format!("app{index}.desktop"),
+                    &format!("Application {index}"),
+                    "true",
+                )
+            })
+            .collect();
+        let mut state = State::with_index(&prepared(), AppIndex::from_entries(entries, 1), 1);
+        let columns = state.placement.grid.columns;
+        assert!(
+            columns >= 4 && columns < count,
+            "the fixture grid is wider than a few columns: {columns}",
+        );
+
+        press(&mut state, "right");
+        assert_eq!(state.selected, 1, "right is one tile");
+        press(&mut state, "left");
+        assert_eq!(state.selected, 0);
+        press(&mut state, "left");
+        assert_eq!(state.selected, 0, "the first tile is a wall");
+
+        press(&mut state, "down");
+        assert_eq!(state.selected, columns, "down is one grid row");
+        press(&mut state, "down");
+        assert_eq!(state.selected, columns * 2, "and another");
+        press(&mut state, "up");
+        assert_eq!(state.selected, columns);
+
+        // Past the last row the selection clamps to the last tile.
+        for _ in 0..4 {
+            press(&mut state, "down");
+        }
+        assert_eq!(state.selected, count - 1);
+        press(&mut state, "down");
+        press(&mut state, "right");
+        assert_eq!(
+            state.selected,
+            count - 1,
+            "the last tile is a wall, not a wrap-around",
+        );
+    }
+
+    #[test]
+    fn a_category_chip_narrows_the_browse_but_not_a_search() {
+        let mut gamed = AppIndex::test_entry("game.desktop", "Game", "true");
+        gamed.categories = vec!["Game".to_owned()];
+        let mut editor = AppIndex::test_entry("editor.desktop", "Editor", "true");
+        editor.categories = vec!["Utility".to_owned(), "TextEditor".to_owned()];
+        let mut state = State::with_index(
+            &prepared(),
+            AppIndex::from_entries(vec![gamed, editor], 1),
+            1,
+        );
+        assert_eq!(state.model.tiles.len(), 2, "the browse shows everything");
+
+        send(&mut state, Message::CategorySelected(Category::Game));
+        assert_eq!(state.category, Category::Game);
+        assert_eq!(state.model.tiles.len(), 1);
+        assert_eq!(state.model.tiles[0].label, "Game");
+        assert_eq!(
+            state
+                .model
+                .chips
+                .iter()
+                .filter(|chip| chip.selected)
+                .count(),
+            1,
+            "exactly one chip is the filter",
+        );
+
+        // A query searches every application: the chip does not hide the editor.
+        send(&mut state, Message::QueryChanged("editor".to_owned()));
+        assert_eq!(state.model.tiles.len(), 1);
+        assert_eq!(state.model.tiles[0].label, "Editor");
+
+        // Clearing the query brings the filter back.
+        send(&mut state, Message::QueryCleared);
+        assert_eq!(state.model.tiles.len(), 1);
+        assert_eq!(state.model.tiles[0].label, "Game");
+
+        // The same chip twice is not a new filter.
+        let generation = state.selection_generation;
+        send(&mut state, Message::CategorySelected(Category::Game));
+        assert_eq!(state.selection_generation, generation);
+
+        // Back to everything.
+        send(&mut state, Message::CategorySelected(Category::All));
+        assert_eq!(state.model.tiles.len(), 2);
+    }
+
+    #[test]
+    fn a_category_the_index_no_longer_has_falls_back_to_all() {
+        let mut game = AppIndex::test_entry("game.desktop", "Game", "true");
+        game.categories = vec!["Game".to_owned()];
+        let mut state = State::with_index(&prepared(), AppIndex::from_entries(vec![game], 1), 1);
+        send(&mut state, Message::CategorySelected(Category::Game));
+        assert_eq!(state.category, Category::Game);
+
+        // A re-read finds no game at all: the filter cannot stay on an empty chip.
+        let mut index = prepared();
+        index.config.max_results = 8;
+        send(
+            &mut state,
+            Message::IndexLoaded(
+                1,
+                AppIndex::from_entries(
+                    vec![AppIndex::test_entry("editor.desktop", "Editor", "true")],
+                    1,
+                ),
+            ),
+        );
+        assert_eq!(state.category, Category::All);
+        assert_eq!(state.model.tiles.len(), 1);
     }
 
     #[test]
@@ -840,12 +1044,14 @@ mod tests {
         let mut state = state();
         for _ in 0..5 {
             press(&mut state, "up");
+            press(&mut state, "left");
         }
         assert_eq!(state.selected, 0);
         for _ in 0..9 {
             press(&mut state, "down");
+            press(&mut state, "right");
         }
-        assert_eq!(state.selected, state.model.rows.len() - 1);
+        assert_eq!(state.selected, state.model.tiles.len() - 1);
     }
 
     #[test]
@@ -869,10 +1075,10 @@ mod tests {
     fn clearing_the_query_restores_the_full_list() {
         let mut state = state();
         send(&mut state, Message::QueryChanged("ex".to_owned()));
-        assert_eq!(state.model.rows.len(), 1);
+        assert_eq!(state.model.tiles.len(), 1);
         send(&mut state, Message::QueryCleared);
         assert!(state.query.is_empty());
-        assert_eq!(state.model.rows.len(), 3);
+        assert_eq!(state.model.tiles.len(), 3);
 
         let generation = state.selection_generation;
         send(&mut state, Message::QueryCleared);
@@ -883,7 +1089,7 @@ mod tests {
     fn a_query_with_no_matches_shows_the_no_match_banner() {
         let mut state = state();
         send(&mut state, Message::QueryChanged("zzzz".to_owned()));
-        assert!(state.model.rows.is_empty());
+        assert!(state.model.tiles.is_empty());
         assert_eq!(
             state.model.banner.as_ref().map(|it| it.title.as_str()),
             Some(
@@ -1033,8 +1239,8 @@ mod tests {
 
         assert_eq!(state.index.as_ref().map(|index| index.len()), Some(1));
         assert_eq!(state.service.generation(), 2);
-        assert_eq!(state.model.rows.len(), 1);
-        assert_eq!(state.model.rows[0].label, "Other");
+        assert_eq!(state.model.tiles.len(), 1);
+        assert_eq!(state.model.tiles[0].label, "Other");
     }
 
     #[test]
@@ -1050,8 +1256,8 @@ mod tests {
     #[test]
     fn the_placement_decides_how_much_of_a_name_fits() {
         let state = state();
-        assert_eq!(state.model.rows[0].label, "Example");
-        assert!(!state.model.rows[0].truncated);
+        assert_eq!(state.model.tiles[0].label, "Example");
+        assert!(!state.model.tiles[0].truncated);
         assert!(state.placement.label_chars > 0);
     }
 }

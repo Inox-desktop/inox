@@ -5,8 +5,21 @@
 
 launcher-window-title = 应用程序
 launcher-search-placeholder = 搜索应用程序
-launcher-search-hint = 上下键选择 · 回车启动 · Esc 关闭
-launcher-list-prompt = 输入以搜索，或从下面的列表中选择。
+launcher-search-hint = 方向键选择 · 回车启动 · Esc 关闭
+launcher-hint-close = Esc 关闭
+
+launcher-category-all = 全部
+launcher-category-development = 开发
+launcher-category-graphics = 图形
+launcher-category-internet = 网络
+launcher-category-office = 办公
+launcher-category-audio-video = 影音
+launcher-category-game = 游戏
+launcher-category-utility = 实用工具
+launcher-category-system = 系统
+launcher-category-education = 教育
+launcher-category-science = 科学
+launcher-category-other = 其他
 
 launcher-state-loading = 正在读取应用程序索引…
 launcher-state-empty-title = 没有找到应用程序

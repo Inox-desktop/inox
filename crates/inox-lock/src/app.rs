@@ -68,6 +68,16 @@ pub enum OutgoingCommand {
     CoverOutput(OutputId),
     /// Hand an attempt to the trusted authentication boundary.
     Authenticate(AuthAttempt),
+    /// Ask the compositor to take the lock away: the boundary authenticated the
+    /// user.
+    ///
+    /// The compositor owns the lock, so this is a request and not a decision: the
+    /// session is unlocked when the compositor says the lock surfaces are gone
+    /// ([`Message::UnlockConfirmed`]), not when this is queued. It is queued from
+    /// exactly one place — the branch that has just interpreted
+    /// [`AuthOutcome::Success`] — which is what keeps "nothing else unlocks"
+    /// readable from the code and not just from the tests.
+    Unlock,
     /// Tell the session the lock is confirmed and the suspend may proceed.
     AllowSuspend(Generation),
     /// Tell the session the suspend must not happen.
@@ -373,8 +383,6 @@ pub enum Named {
     Escape,
     /// Tab, which the lock screen does not use.
     Tab,
-    /// Shift, which the lock screen does not use.
-    Shift,
 }
 
 /// A key press, without a toolkit attached.
@@ -391,9 +399,13 @@ pub enum Key {
 /// Pure, and tested on its own: an input path is a two-line adapter from this
 /// function to the state, so "Enter submits, Backspace deletes, Escape clears" is
 /// a property of this function rather than of a running window (acceptance Q01:
-/// the whole lock and unlock path is reachable from the keyboard). No such
-/// adapter exists yet — see the crate `AGENTS.md` on why the lock surface reads
-/// no keyboard — and this is what it will map onto.
+/// The binding the lock surface's keyboard adapter maps onto.
+///
+/// The adapter itself is [`crate::input::Keyboard`] fed by
+/// [`crate::session`]: `wl_keyboard` keycodes become [`Key`] values there, and
+/// this function is the only place that turns one into a message — which is what
+/// keeps "nothing but a typed key and a submitted form reaches the state machine"
+/// readable from the code.
 pub fn key_binding(key: &Key) -> Option<Message> {
     match key {
         Key::Named(Named::Enter) => Some(Message::Submitted),
@@ -403,11 +415,16 @@ pub fn key_binding(key: &Key) -> Option<Message> {
             let mut characters = typed.chars();
 
             match (characters.next(), characters.next()) {
-                (Some(character), None) => Some(Message::Character(character)),
+                // A control character is a chord (`Ctrl+A` is not the letter `a`
+                // typed into a password), and a multi-character payload is a paste
+                // this field does not have.
+                (Some(character), None) if !character.is_control() => {
+                    Some(Message::Character(character))
+                }
                 _ => None,
             }
         }
-        Key::Named(Named::Tab | Named::Shift) => None,
+        Key::Named(Named::Tab) => None,
     }
 }
 
@@ -556,6 +573,10 @@ fn handle(state: &mut State, message: Message) {
                 AuthOutcome::Success => {
                     state.limiter.record_success();
                     state.forget_credential("the session was unlocked");
+                    // The machine is in `Unlocking` on the strength of this one
+                    // outcome; asking the compositor for the release is the only
+                    // thing left, and `UnlockConfirmed` is what says it happened.
+                    state.outgoing.push_back(OutgoingCommand::Unlock);
                     info!("the trusted boundary authenticated the user");
                 }
                 AuthOutcome::Failure(failure) => {
@@ -919,11 +940,37 @@ mod tests {
         );
         assert!(state.machine().holds_session());
 
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(commands.as_slice(), [OutgoingCommand::Unlock]),
+            "the one thing a success asks for is the release of the lock: {commands:?}"
+        );
+
         send(&mut state, Message::UnlockConfirmed);
 
         assert_eq!(state.machine().phase(), crate::state::Phase::Unlocked);
         assert_eq!(state.boundary(), &BoundaryState::Idle);
         assert!(state.take_outgoing().is_empty());
+    }
+
+    #[test]
+    fn a_refused_attempt_never_asks_for_the_release() {
+        let mut state = locked();
+        type_text(&mut state, "hunter2");
+        send(&mut state, Message::Submitted);
+        let generation = state.boundary().generation().expect("an attempt");
+        let _ = state.take_outgoing();
+
+        send(
+            &mut state,
+            Message::AuthAnswered(generation, AuthOutcome::Failure(AuthFailure::Rejected)),
+        );
+
+        assert!(state.take_outgoing().is_empty());
+        assert!(
+            state.machine().holds_session(),
+            "a refusal leaves the session covered"
+        );
     }
 
     #[test]
@@ -1359,18 +1406,19 @@ mod tests {
     }
 
     #[test]
-    fn what_is_typed_while_a_suspend_waits_for_the_lock_does_not_ride_into_it() {
+    fn nothing_can_be_typed_while_the_lock_is_being_confirmed() {
         let mut state = locking();
         send(&mut state, Message::SuspendRequested);
         assert_eq!(state.suspend().phase(), SuspendPhase::Locking);
 
-        // The lock is still being confirmed and the field is still typable, so
-        // there is a second credential to clear by the time the suspend is
-        // allowed: the request alone is not the whole of the suspend.
+        // `Locking` and `Covering` still run the interface, but the compositor has
+        // not confirmed the lock: a credential submitted now could authenticate a
+        // session that was never covered.
         type_text(&mut state, "typed while the lock is confirmed");
-        assert!(
-            state.credential_len() > 0,
-            "the window this test is about does not exist: the field is disabled while the lock is confirmed"
+        assert_eq!(
+            state.credential_len(),
+            0,
+            "the field is disabled until the compositor confirms the lock"
         );
         let _ = state.take_outgoing();
 
@@ -1383,11 +1431,6 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, OutgoingCommand::AllowSuspend(_))),
             "the suspend is allowed once every output is covered"
-        );
-        assert_eq!(
-            state.credential_len(),
-            0,
-            "the session-lock boundary: nothing typed survives the session it was typed into walking away"
         );
     }
 
@@ -1515,7 +1558,6 @@ mod tests {
             "a paste is not a keystroke: it is refused, not truncated"
         );
         assert_eq!(key_binding(&Key::Named(Named::Tab)), None);
-        assert_eq!(key_binding(&Key::Named(Named::Shift)), None);
     }
 
     #[test]

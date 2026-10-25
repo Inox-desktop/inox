@@ -105,6 +105,17 @@ struct Observed {
     glass_radius: Vec<u32>,
     /// Every `set_region`, in order.
     glass_regions: Vec<(i32, i32, i32, i32)>,
+    /// Every `set_corner_radii`, in order, as `(top_left, top_right, bottom_right,
+    /// bottom_left)`.
+    glass_corners: Vec<(u32, u32, u32, u32)>,
+    /// Every `set_refraction`, in order, as `(height, amount, flags)`.
+    glass_refraction: Vec<(u32, u32, u32)>,
+    /// The version of every `inox_glass_v1` object the client created.
+    glass_versions: Vec<u32>,
+    /// How many version 1 `capabilities` events were sent.
+    capabilities_events: usize,
+    /// How many version 2 `liquid_capabilities` events were sent.
+    liquid_capabilities_events: usize,
 }
 
 /// What the layer surface asked the compositor to do.
@@ -195,8 +206,21 @@ struct Plan {
     shell: Option<String>,
     /// The `[glass] blur` the theme asks for.
     blur: u16,
+    /// The `[glass] refraction` band the theme asks for; 0 is the explicit "no
+    /// lens" of a frosted-only theme.
+    refraction: u16,
+    /// The `[glass] refraction_amount` displacement the theme asks for.
+    refraction_amount: u16,
     /// What the compositor reports as its maximum radius.
     max_radius: u32,
+    /// The `inox-glass-v1` version the compositor advertises: 2 is a liquid-glass
+    /// compositor, 1 is the frosted-only one a v1 client is answered with.
+    manager_version: u32,
+    /// The largest refraction band the compositor reports (version 2 only).
+    max_refraction_height: u32,
+    /// The largest refraction displacement the compositor reports (version 2
+    /// only).
+    max_refraction_amount: u32,
     /// Whether this compositor advertises `zwlr_layer_shell_v1` at all.
     layer_shell: bool,
     /// A second configure to send after the first frame, if any.
@@ -211,7 +235,12 @@ impl Default for Plan {
             arguments: Vec::new(),
             shell: None,
             blur: 40,
+            refraction: 24,
+            refraction_amount: 12,
             max_radius: 64,
+            manager_version: 2,
+            max_refraction_height: 128,
+            max_refraction_amount: 64,
             layer_shell: true,
             reconfigure_to: None,
             pointer: true,
@@ -687,16 +716,38 @@ impl Dispatch<glass_manager::InoxGlassManagerV1, ()> for Server {
     ) {
         if let glass_manager::Request::GetGlass { id, .. } = request {
             let glass = init.init(id, ());
+            let version = glass.version();
             let max_radius = state.plan.max_radius;
 
             state.observations.record(|observed| {
                 observed.trace.push("get_glass");
                 observed.glass_objects += 1;
+                observed.glass_versions.push(version);
             });
 
             // Sent once, right after creation, and never a promise the
-            // compositor would not honour for this surface.
+            // compositor would not honour for this surface. The version 1 event
+            // goes first and always — a client that only listens for it must not
+            // think its object is mute — and the version 2 one follows for a v2
+            // object, where it is the authoritative answer (ADR 0040 §1).
+            state.observations.record(|observed| {
+                observed.trace.push("capabilities");
+                observed.capabilities_events += 1;
+            });
             glass.capabilities(max_radius);
+
+            if version >= 2 {
+                state.observations.record(|observed| {
+                    observed.trace.push("liquid_capabilities");
+                    observed.liquid_capabilities_events += 1;
+                });
+                glass.liquid_capabilities(
+                    max_radius,
+                    state.plan.max_refraction_height,
+                    state.plan.max_refraction_amount,
+                    glass_object::RefractionFlag::Depth | glass_object::RefractionFlag::Dispersion,
+                );
+            }
         }
     }
 }
@@ -727,6 +778,31 @@ impl Dispatch<glass_object::InoxGlassV1, ()> for Server {
                 state.observations.record(|observed| {
                     observed.trace.push("set_region");
                     observed.glass_regions.push((x, y, width, height));
+                });
+            }
+            glass_object::Request::SetCornerRadii {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            } => {
+                state.observations.record(|observed| {
+                    observed.trace.push("set_corner_radii");
+                    observed
+                        .glass_corners
+                        .push((top_left, top_right, bottom_right, bottom_left));
+                });
+            }
+            glass_object::Request::SetRefraction {
+                height,
+                amount,
+                flags,
+            } => {
+                let flags = into_bits(flags);
+
+                state.observations.record(|observed| {
+                    observed.trace.push("set_refraction");
+                    observed.glass_refraction.push((height, amount, flags));
                 });
             }
             glass_object::Request::Destroy => {
@@ -786,7 +862,13 @@ impl Fixture {
         if plan.layer_shell {
             handle.create_global::<Server, layer_shell::ZwlrLayerShellV1, ()>(4, ());
         }
-        handle.create_global::<Server, glass_manager::InoxGlassManagerV1, ()>(1, ());
+        // A liquid-glass compositor advertises version 2; `Plan::manager_version`
+        // lets a test be a version 1 one instead, which the client must bind
+        // without asking for anything `since=2`.
+        handle.create_global::<Server, glass_manager::InoxGlassManagerV1, ()>(
+            plan.manager_version,
+            (),
+        );
 
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let server_stop = Arc::clone(&stop);
@@ -958,7 +1040,10 @@ fn write_configuration(root: &std::path::Path, plan: &Plan) {
 
     std::fs::write(
         theme.join("theme.toml"),
-        format!("[glass]\nblur = {}\n", plan.blur),
+        format!(
+            "[glass]\nblur = {}\nrefraction = {}\nrefraction_amount = {}\n",
+            plan.blur, plan.refraction, plan.refraction_amount
+        ),
     )
     .expect("theme.toml");
 
@@ -1192,6 +1277,55 @@ fn the_menu_bar_asks_for_frosted_glass_after_its_layer_role_exists() {
             "the pane is the whole configured surface"
         );
 
+        // The version 2 wire. The manager is bound at `min(advertised, 2)`, both
+        // capability events arrived in the protocol's order, and the request
+        // carries the lens the tokens describe: the pane's own corner radius and
+        // the reference refraction band, with dispersion because this compositor
+        // advertises it.
+        assert_eq!(
+            observed.glass_versions,
+            vec![2],
+            "a version 2 compositor gets a version 2 object"
+        );
+        assert_eq!(
+            observed.capabilities_events, 1,
+            "the version 1 answer is still sent first, so a v1-only client is not left \
+             thinking its object is mute"
+        );
+        assert_eq!(
+            observed.liquid_capabilities_events, 1,
+            "and the version 2 answer follows it"
+        );
+
+        let capabilities = observed
+            .trace
+            .iter()
+            .position(|name| *name == "capabilities")
+            .expect("the v1 capabilities event was sent");
+        let liquid = observed
+            .trace
+            .iter()
+            .position(|name| *name == "liquid_capabilities")
+            .expect("the v2 capabilities event was sent");
+
+        assert!(
+            capabilities < liquid,
+            "capabilities comes before liquid_capabilities: {:?}",
+            observed.trace
+        );
+        assert_eq!(
+            observed.glass_corners,
+            vec![(8, 8, 8, 8)],
+            "the refracting shape is the pane's own `radii.md` token, not a second radius"
+        );
+        assert_eq!(
+            observed.glass_refraction,
+            vec![(24, 12, inox_glass::REFRACTION_FLAG_DISPERSION)],
+            "the reference band (24 px, 12 px displacement), dispersed because the compositor \
+             advertised it and not deeper because the tokens do not ask for depth: {:?}",
+            observed.trace
+        );
+
         let frame = observed.frames.first().copied().expect("a frame");
         assert_eq!(frame.bytes, (OUTPUT_WIDTH * height) as usize * 4);
         assert!(
@@ -1393,6 +1527,10 @@ fn a_compositor_that_cannot_blur_still_gets_frames_and_is_told_apart() {
     let plan = Plan {
         arguments: vec!["--surface".to_owned(), "dock".to_owned()],
         max_radius: 0,
+        // A compositor that can draw nothing reports nothing in *both* capability
+        // events: the panel must not fabricate a lens out of the tokens.
+        max_refraction_height: 0,
+        max_refraction_amount: 0,
         ..Plan::default()
     };
     let fixture = Fixture::start(plan);
@@ -1421,6 +1559,16 @@ fn a_compositor_that_cannot_blur_still_gets_frames_and_is_told_apart() {
         "and no region is frosted"
     );
     assert!(
+        observed.glass_corners.is_empty() && observed.glass_refraction.is_empty(),
+        "a lens nothing can draw is not described either: the panel asked for neither \
+         `set_corner_radii` nor `set_refraction`"
+    );
+    assert_eq!(
+        observed.liquid_capabilities_events, 1,
+        "the honest zero answer did arrive; it is the compositor's to give, not the client's \
+         to assume"
+    );
+    assert!(
         observed
             .frames
             .first()
@@ -1437,10 +1585,14 @@ fn a_compositor_that_cannot_blur_still_gets_frames_and_is_told_apart() {
 }
 
 #[test]
-fn a_blur_of_zero_creates_no_glass_object_at_all() {
+fn a_theme_that_asks_for_neither_half_creates_no_glass_object_at_all() {
     let plan = Plan {
         arguments: vec!["--surface".to_owned(), "menubar".to_owned()],
+        // Both halves off. `blur = 0` *alone* would still be a lens (ADR 0040
+        // §5), which is the next test; this is the tokens saying plain
+        // translucency.
         blur: 0,
+        refraction: 0,
         ..Plan::default()
     };
     let fixture = Fixture::start(plan);
@@ -1452,7 +1604,7 @@ fn a_blur_of_zero_creates_no_glass_object_at_all() {
 
     assert_eq!(
         observed.glass_objects, 0,
-        "glass.blur = 0 is the tokens saying plain translucency: no object is created"
+        "a material with neither a blur nor a band is plain translucency: no object is created"
     );
     assert!(
         !observed.trace.contains(&"get_glass"),
@@ -1463,6 +1615,120 @@ fn a_blur_of_zero_creates_no_glass_object_at_all() {
 
     fixture.signal(Signal::TERM);
     let _ = fixture.wait_for_exit();
+}
+
+#[test]
+fn a_refraction_band_alone_creates_the_object_and_asks_for_no_blur() {
+    // ADR 0040 §5: "create the glass object when blur > 0 *or* refraction > 0".
+    // This compositor cannot blur at all; the tokens ask for no blur anyway, so
+    // the only effect on the wire is the lens.
+    let plan = Plan {
+        arguments: vec!["--surface".to_owned(), "dock".to_owned()],
+        blur: 0,
+        max_radius: 0,
+        ..Plan::default()
+    };
+    let fixture = Fixture::start(plan);
+    let placement = dock_placement();
+    let width = points(placement.width.expect("content sized"));
+    let height = points(placement.height);
+
+    fixture.wait_for("the lens request", |observed| {
+        !observed.glass_refraction.is_empty()
+    });
+    fixture.wait_for_frame(width, height);
+
+    let observed = fixture.observed();
+
+    assert_eq!(
+        observed.glass_objects, 1,
+        "a band without a blur is still an object: either half creates it"
+    );
+    assert_eq!(
+        observed.glass_radius,
+        vec![0],
+        "the tokens asked for no blur, and the compositor can draw none"
+    );
+    assert_eq!(
+        observed.glass_regions,
+        vec![(0, 0, width as i32, height as i32)],
+        "the lens covers the whole pane"
+    );
+    assert_eq!(
+        observed.glass_corners,
+        vec![(8, 8, 8, 8)],
+        "the refracting shape is the pane's `radii.md` token"
+    );
+    assert_eq!(
+        observed.glass_refraction,
+        vec![(24, 12, inox_glass::REFRACTION_FLAG_DISPERSION)],
+        "the band and its dispersal, from the tokens"
+    );
+
+    fixture.signal(Signal::TERM);
+    let status = fixture.wait_for_exit();
+    assert!(status.success(), "a lens-only pane is not an error");
+}
+
+#[test]
+fn a_version_one_compositor_gets_the_blur_only_and_no_version_two_requests() {
+    // The protocol's own rule: a manager bound at version 1 creates version 1
+    // objects, which have no `set_corner_radii`, no `set_refraction` and never
+    // receive `liquid_capabilities`. Sending one of those would be a protocol
+    // error, so the panel must simply not have a lens there.
+    let plan = Plan {
+        arguments: vec!["--surface".to_owned(), "menubar".to_owned()],
+        manager_version: 1,
+        ..Plan::default()
+    };
+    let fixture = Fixture::start(plan);
+    let height = points(menubar_placement().height);
+
+    fixture.wait_for("the glass request", |observed| {
+        !observed.glass_regions.is_empty()
+    });
+    fixture.wait_for_frame(OUTPUT_WIDTH, height);
+
+    let observed = fixture.observed();
+
+    assert_eq!(
+        observed.glass_versions,
+        vec![1],
+        "the manager is bound at min(advertised, 2)"
+    );
+    assert_eq!(
+        observed.liquid_capabilities_events, 0,
+        "a version 1 object never receives the version 2 event"
+    );
+    assert_eq!(
+        observed.capabilities_events, 1,
+        "the version 1 answer is the whole answer here"
+    );
+    assert!(
+        !observed.trace.contains(&"set_corner_radii"),
+        "a `since=2` request on a version 1 object is a protocol error: {:?}",
+        observed.trace
+    );
+    assert!(
+        observed.glass_refraction.is_empty(),
+        "a v1 compositor cannot refract, so no band is described: {:?}",
+        observed.trace
+    );
+    assert_eq!(
+        observed.glass_radius,
+        vec![40],
+        "the blur is still asked for, and clamped the same way it always was"
+    );
+    assert_eq!(
+        observed.glass_regions,
+        vec![(0, 0, OUTPUT_WIDTH as i32, height as i32)],
+        "and the region is still the pane"
+    );
+    assert!(!observed.frames[0].opaque, "the pane is still translucent");
+
+    fixture.signal(Signal::TERM);
+    let status = fixture.wait_for_exit();
+    assert!(status.success());
 }
 
 #[test]

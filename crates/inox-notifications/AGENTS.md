@@ -76,7 +76,6 @@
 - **layer 表面**：弹窗栈目前是普通窗口，`src/placement.rs` 的策略没有被应用。
 - **图标解码与正文图片**：`icon-static` / `body-images` capability 故意不声明；带图标的弹窗画图标将占用的空位，正文 `<img>` 画 alt 文本。
 - **声音 / 持久化**：不声明 `sound` / `persistence` capability；`sound-name`、`suppress-sound`、`resident` 会被读取并记录。
-- **`<u>` 的下划线**：模型保留 `underline` 强调，QML 的 `Text` 富文本路径尚未实现它。
 
 ## 目录结构
 

@@ -172,8 +172,13 @@ pub fn project(input: Projection<'_>) -> LockViewModel {
     // A boundary that cannot be reached is not a reason to let a user type a
     // password nobody will check.
     let boundary_usable = input.boundary.failure().is_none();
-    let accepts_input =
-        input.phase.ui_running() && protocol_ready && boundary_usable && !in_flight && !waiting;
+    // Input is accepted only once the compositor has *confirmed* the lock and every
+    // output is covered. `Locking` and `Covering` still run the interface, but a
+    // credential submitted there could authenticate a session whose lock was never
+    // confirmed: the screen would leave the person looking at "verifying" over an
+    // unlocked desktop.
+    let locked = matches!(input.phase, Phase::Locked);
+    let accepts_input = locked && protocol_ready && boundary_usable && !in_flight && !waiting;
 
     // The reasons are ordered the way a user meets them: with no protocol there
     // is no lock at all, then no boundary to check anything, then a session that
@@ -189,15 +194,18 @@ pub fn project(input: Projection<'_>) -> LockViewModel {
         Some(message("lock-disabled-unlocked"))
     } else if !input.phase.ui_running() {
         Some(message("lock-disabled-no-ui"))
+    } else if !locked {
+        Some(message("lock-disabled-locking"))
     } else if in_flight {
         Some(message("lock-disabled-verifying"))
     } else if waiting {
         Some(message("lock-disabled-waiting"))
     } else {
         // `accepts_input` is false and none of the reasons above holds, which
-        // cannot happen while `ui_running` implies a locked phase. Answering with
-        // a reason rather than `None` keeps a disabled control from ever being
-        // disabled without one, which is the property the test below asserts.
+        // cannot happen while a locked phase with a usable boundary is exactly
+        // what `accepts_input` describes. Answering with a reason rather than
+        // `None` keeps a disabled control from ever being disabled without one,
+        // which is the property the test below asserts.
         Some(message("lock-disabled-unlocked"))
     };
 
@@ -656,7 +664,7 @@ mod tests {
         );
         assert_eq!(
             model.disabled_reason.as_deref(),
-            Some("This build has no authentication service")
+            Some("This session has no authentication service to use")
         );
     }
 

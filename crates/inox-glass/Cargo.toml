@@ -1,0 +1,35 @@
+[package]
+name = "inox-glass"
+description = "Liquid-glass material decisions and the shared glass QML components of the Inox desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# L1: the design tokens the material is built from (`tokens.glass`, `radii`,
+# `typography`; docs/quality/ui-guidelines.md §12, ADR 0040 §4). No other Inox
+# crate is above L2, so this crate stays inside the downward-only rule.
+inox-config.workspace = true
+# L2: the `inox-glass-v1` v2 bindings. `src/protocol.rs` is the only module that
+# names a wayland type, and it is the seam the panel (and every later consumer)
+# talks to the wire through.
+inox-protocols.workspace = true
+# The adapter asks a proxy for its interface version (`Proxy::version`) and
+# converts the `WEnum<RefractionFlag>` of `liquid_capabilities` into the `u32`
+# bitfield the material API speaks.
+wayland-client.workspace = true
+# The catalog page is a JSON projection, one string per frame, exactly like every
+# other L3 QML renderer (`crates/inox-panel/src/view.rs`).
+serde_json.workspace = true
+
+[dev-dependencies]
+# Clamps and negotiation are proptested, not just example-tested.
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,5 @@
 //! Prepare-to-suspend ordering.
-//! Prepare-to-suspend ordering.
-//! the session-lock boundary states the order as a rule and gives no room to hope:
+//! The session-lock boundary states the order as a rule and gives no room to hope:
 //!
 //! > 触发顺序为准备锁定→收到锁完成确认→允许挂起；锁定失败按明确策略阻止/取消挂起，
 //! > 不能先休眠再寄望恢复时补锁

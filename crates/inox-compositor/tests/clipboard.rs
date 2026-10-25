@@ -34,8 +34,8 @@ use smithay::reexports::wayland_server::Display;
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     protocol::{
-        wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
-        wl_registry, wl_seat, wl_surface,
+        wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
+        wl_data_source, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
     },
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -103,6 +103,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
 }
 
 wayland_client::delegate_noop!(Client: ignore wl_compositor::WlCompositor);
+wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
+wayland_client::delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
+wayland_client::delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(Client: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(Client: ignore wl_seat::WlSeat);
 wayland_client::delegate_noop!(Client: ignore wl_data_device_manager::WlDataDeviceManager);
@@ -174,6 +177,27 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for Client {
     }
 }
 
+/// Attach a small `wl_shm` buffer and commit, so the toplevel draws something.
+///
+/// The size is irrelevant to the clipboard assertions; what matters is that the
+/// compositor has a buffer to map, because a toplevel without one is not a window.
+fn attach_test_buffer(
+    shm: &wl_shm::WlShm,
+    surface: &wl_surface::WlSurface,
+    queue: &QueueHandle<Client>,
+) -> (wl_buffer::WlBuffer, wl_shm_pool::WlShmPool) {
+    const SIZE: i32 = 16;
+    let stride = SIZE * 4;
+    let file = tempfile::tempfile().expect("failed to create the buffer file");
+    file.set_len((stride * SIZE) as u64)
+        .expect("failed to size the buffer file");
+    let pool = shm.create_pool(file.as_fd(), stride * SIZE, queue, ());
+    let buffer = pool.create_buffer(0, SIZE, SIZE, stride, wl_shm::Format::Argb8888, queue, ());
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    (buffer, pool)
+}
+
 /// One client connection plus the protocol objects it bound.
 struct TestClient {
     connection: Connection,
@@ -183,8 +207,11 @@ struct TestClient {
     compositor: Option<wl_compositor::WlCompositor>,
     xdg: Option<xdg_wm_base::XdgWmBase>,
     manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    shm: Option<wl_shm::WlShm>,
     device: Option<wl_data_device::WlDataDevice>,
     surface: Option<wl_surface::WlSurface>,
+    _buffer: Option<wl_buffer::WlBuffer>,
+    _pool: Option<wl_shm_pool::WlShmPool>,
     _seat: Option<wl_seat::WlSeat>,
     _xdg_surface: Option<xdg_surface::XdgSurface>,
     _toplevel: Option<xdg_toplevel::XdgToplevel>,
@@ -213,8 +240,11 @@ impl TestClient {
             compositor: None,
             xdg: None,
             manager: None,
+            shm: None,
             device: None,
             surface: None,
+            _buffer: None,
+            _pool: None,
             _seat: None,
             _xdg_surface: None,
             _toplevel: None,
@@ -261,6 +291,7 @@ impl TestClient {
         self.compositor = Some(self.bind::<wl_compositor::WlCompositor, ()>(4));
         self.xdg = Some(self.bind::<xdg_wm_base::XdgWmBase, ()>(6));
         self.manager = Some(self.bind::<wl_data_device_manager::WlDataDeviceManager, ()>(3));
+        self.shm = Some(self.bind::<wl_shm::WlShm, ()>(1));
 
         let seat: wl_seat::WlSeat = self.bind::<wl_seat::WlSeat, ()>(8);
         let manager = self.manager.clone().expect("the manager was just bound");
@@ -278,6 +309,13 @@ impl TestClient {
         let xdg_surface = xdg.get_xdg_surface(&surface, &queue, ());
         let toplevel = xdg_surface.get_toplevel(&queue, ());
         surface.commit();
+
+        // A toplevel becomes a window only when it draws: attach a real `wl_shm`
+        // buffer, which is what makes this client a focus candidate at all.
+        let shm = self.shm.clone().expect("bind_all has not run");
+        let (buffer, pool) = attach_test_buffer(&shm, &surface, &queue);
+        self._buffer = Some(buffer);
+        self._pool = Some(pool);
 
         self.surface = Some(surface);
         self._xdg_surface = Some(xdg_surface);

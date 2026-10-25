@@ -17,6 +17,21 @@ anyhow.workspace = true
 #  and why this is a legal
 # L3 -> L2 edge.
 inox-protocols.workspace = true
+# The authentication boundary, spoken as a client. This crate must not be able to
+# check a password — that is `inox-auth`'s job and the session-lock boundary's
+# human-review item — so the dependency is taken with the workspace's
+# `default-features = false` and only the `wire` contract's client half is linked.
+# Another legal L3 -> L2 edge, like `inox-protocols`.
+inox-auth.workspace = true
+# The account the lock screen authenticates as: the password-database entry for
+# the uid this process runs under. `getuid` is the kernel's answer; `USER` is the
+# person's, and a lock screen pointed at another account would be a lock screen
+# that unlocks somebody else's session.
+users.workspace = true
+# What a keycode means: the keymap `wl_keyboard` hands the client, compiled by the
+# same `xkbcommon` the compositor links. Hand-reading it would produce the wrong
+# character on every layout but US.
+xkbcommon.workspace = true
 # The request loop and its signal handling: the same `calloop` the rest of the
 # session uses (root AGENTS.md §4). The lock surface is not a Qt window, so Qt's
 # event loop does not own this process.

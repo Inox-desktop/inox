@@ -14,7 +14,8 @@
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）：在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明一次，本 crate 用 `{ workspace = true }` 引用。**新增依赖前先确认依赖方向合法**（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
 
 - **锁屏令牌是能力，不是身份。** 会话为每个会话生成一次性令牌，传给合成器（`--lock-token`）并**只**放进可信锁屏客户端的环境（`INOX_LOCK_TOKEN`）。不得把它加进会话级环境：那会把取锁权限发给 shell 与它启动的一切。令牌不得进日志、不得落盘。`ServiceSpec::environment` 就是为此存在的逐组件环境。
-- **锁屏客户端只在 `INOX_SESSION_TAKE_LOCK=1` 时启动。** `inox-lock --take-lock` 没有解锁路径，无条件启动会锁住一个没人要求锁住的会话。手动锁定与空闲触发的锁定仍未接线，这条开关是在那之前唯一的启动途径。
+- **锁屏客户端只由「请求」启动。** 它在服务表里始终存在，但 `ServiceSpec::start` 是 `OnDemand`：`INOX_SESSION_TAKE_LOCK=1` 是开机即锁的请求，`session-control-v1`（`inox-lock --request-lock`、将来的快捷键与空闲守护）是运行期请求。无条件启动会锁住一个没人要求锁住的会话。`OnDemand` 服务**从不自动重启**：已锁时重启必然被合成器拒绝，解锁后重启又会把桌面重新锁上；成功退出（解锁）后由下一次请求再启动。
+- **控制套接字是会话的能力，不是通用控制面。** `src/control.rs` 只接受一个动词 `lock`，目录 `0700`、套接字 `0600`，在读取任何字节前用 `SO_PEERCRED` 校验对端 uid 等于自身 uid。**不得**为它增加动词、参数、令牌或「启动任意进程」的能力；任何扩展都要先改 `inox-protocols/protocol/session-control-v1.md` 与 ADR 0041。`ok` 只表示已派发，**不是**锁定确认（确认来自合成器的 `session_lock_state`），也永远不能用来解锁。
 - **桌面首页是两个面板实例，不是一个。** 会话按 `--surface menubar` 与 `--surface dock` 各启动一个 `inox-panel`：一个 `wlr-layer-shell` 表面属于一条客户端连接，菜单栏（顶边）与 Dock（底边）因此必须分别是进程。两者都是必需服务，任一耗尽重启预算都会结束会话（与原先单个面板实例的严格程度一致）。`[panel] surface` 只是单独运行 `inox-panel` 时的默认值，**不**决定会话拉起哪几个表面；改这条前先确认 `component=panel-menubar` / `component=panel-dock` 的日志断言（`tests/headless.rs`）仍是准确的证据。
 
 ## 主要依赖

@@ -71,12 +71,16 @@ fast_ms = 100
 normal_ms = 200
 slow_ms = 400
 
-[glass]    # 玻璃材质（背景模糊）；blur=0 表示只做半透明
+[glass]    # 玻璃材质（背景模糊 + 边缘折射）；blur=0 表示只做半透明
 tint = "#141822cc"
 tint_strong = "#0d1018e6"
 highlight = "#ffffff40"
 shade = "#00000059"
 blur = 128
+refraction = 24          # 折射带厚度（逻辑像素），0 关闭折射
+refraction_amount = 12   # 轮廓峰值位移（逻辑像素）
+depth = false            # 叠加球面深度分量
+dispersion = true        # 边缘色散
 ```
 
 ### 颜色（`[colors]`）
@@ -144,13 +148,19 @@ blur = 128
 | `highlight` | `#ffffff40` | `#ffffffcc` | 窗格顶边高光 —— 让它读起来像玻璃 |
 | `shade` | `#00000059` | `#0000001f` | 窗格底边压暗 |
 | `blur` | `128` | `128` | 向合成器请求的背景模糊半径（逻辑像素） |
+| `refraction` | `24` | `24` | 向合成器请求的边缘折射带厚度（逻辑像素）；`0` 关闭折射 |
+| `refraction_amount` | `12` | `12` | 轮廓处的峰值位移（逻辑像素），沿折射带向内衰减到 0 |
+| `depth` | `false` | `false` | 是否叠加指向中心的球面深度分量 |
+| `dispersion` | `true` | `true` | 是否把折射边缘按通道拆开（细彩色边缘） |
 
-`blur` 是一个**请求**：模糊本身由合成器经私有协议 `inox-glass-v1` 绘制，组件拿到的半径上限由合成器的 `capabilities` 回答，超限会被钳制。`blur = 0` 或 `capabilities = 0`（没有渲染支持、表面不是 layer 角色、会话已锁定）时，组件必须退化为**纯半透明**：`tint`/`highlight`/`shade` 照旧，只是没有背景软化，不得假装画出了模糊。决策与安全边界见 （`proposed`）；合成器只在 **headless** 路径绘制模糊，物理（DRM）路径报 0 并保持场景锐利，因此真机上目前仍走纯半透明路径。
+`blur` 与 `refraction*` 都是**请求**：模糊与边缘折射本身由合成器经私有协议 `inox-glass-v1` 绘制，组件拿到的上限由合成器的 `capabilities` / `liquid_capabilities` 回答，超限会被钳制。`blur = 0` 或 `capabilities = 0`（没有渲染支持、表面不是 layer 角色、会话已锁定）时，组件必须退化为**纯半透明**：`tint`/`highlight`/`shade` 照旧，只是没有背景软化，不得假装画出了模糊。决策与安全边界见 ADR 0040（`proposed`）；合成器只在 **headless** 路径绘制模糊与折射，物理（DRM）路径报 0 并保持场景锐利，因此真机上目前仍走纯半透明路径。
+
+`refraction` / `refraction_amount` 是液态玻璃的四个令牌字段，任一为 `0` 就是显式的「不做折射」，语义与 `blur = 0` 相同；`blur = 0` 与 `refraction > 0` 可以同时成立（只要折射、不要模糊），此时组件仍然创建玻璃对象。`refraction` 的取值是折射带的**厚度**，不是圆角：四角半径来自 `[radii]` 的 `md`，由组件投影后经 `set_corner_radii` 发送。`depth` 与 `dispersion` 只是开关，强度不可调。三者同为**美术参数**而非光学模型：合成器无法绘制时报告 0，组件同样退化为纯半透明。
 
 ## 自定义主题与缺失字段
 
 - 主题文件中的 `name` 省略时取目录名。
-- **缺失的令牌回退到内置的深色默认值。** 这是需要特别当心的一条：只写了一半令牌的浅色主题，剩下的一半会拿到深色取值，视觉上会明显不一致。自定义浅色主题时请把上表中 `inox-light` 的 11 个颜色逐项写全；`[glass]` 组同理，只写 `blur` 会让其余四个 tint 令牌继承深色玻璃。
+- **缺失的令牌回退到内置的深色默认值。** 这是需要特别当心的一条：只写了一半令牌的浅色主题，剩下的一半会拿到深色取值，视觉上会明显不一致。自定义浅色主题时请把上表中 `inox-light` 的 11 个颜色逐项写全；`[glass]` 组同理，只写 `blur` 会让其余 tint 令牌与四个折射令牌继承深色玻璃（`refraction = 24`、`refraction_amount = 12`、`depth = false`、`dispersion = true`）。
 - 与所有配置文件一致，**未知字段是错误**：拼错的令牌名会让解析失败，而不是静默取默认值。
 
 ## 当前实现状态

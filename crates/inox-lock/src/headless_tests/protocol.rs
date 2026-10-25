@@ -839,7 +839,7 @@ fn the_binary_claims_covers_and_never_unlocks_on_a_signal() {
     );
     let log = fixture.log();
     assert!(
-        log.contains("stays locked until you log out"),
+        log.contains("Stopped while the session is locked"),
         "the operator must be told the session is still locked ({status:?}): {log}"
     );
 }

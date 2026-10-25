@@ -4,8 +4,9 @@
 //! *resolves* the ones [`crate::view_model`] already made into the concrete
 //! values a QML tree binds to — colours as `#AARRGGBB` strings, distances and
 //! font sizes as numbers, and every user-visible sentence as the text the
-//! catalogs produced. QML then has nothing left to decide: it walks `rows` and
-//! draws them.
+//! catalogs produced. QML then has nothing left to decide: it walks `tiles` and
+//! draws them, and draws the chips and the grid geometry the same document
+//! carries.
 //!
 //! The shape is one JSON document (docs/qml-migration-contract.md §3). The whole
 //! document is re-sent on every change; that is the accepted trade of this
@@ -13,14 +14,18 @@
 //! there is data saying they are needed.
 //!
 //! ```text
-//! { "title", "query", "placeholder", "hint", "heading", "prompt", "notice",
-//!   "rows": [ { …, "style": { … } } ],
+//! { "title", "query", "placeholder", "hint", "heading", "notice",
+//!   "selected", "category",
+//!   "tiles": [ { …, "icon_url", "style": { … } } ],
+//!   "chips": [ { "id", "label", "selected", "style": { … } } ],
+//!   "grid": { "columns", "cell_width", "cell_height", "gap", "image",
+//!             "label_lines" },
 //!   "banner": { "kind", …, "action": { "label", "type" } } | null,
 //!   "status": { "line", "reason", "color", "retry" } | null,
 //!   "flags": { "can_retry_index", "can_retry_launch" },
 //!   "focus": { "field", "serial" },
 //!   "window": { "width", "height" },
-//!   "theme": { "name", "colors", "font", "metrics", "styles" } }
+//!   "theme": { "name", "colors", "font", "metrics", "styles", "motion" } }
 //! ```
 //!
 //! The module is pure: no Qt, no I/O, no clock, so every state above is a unit
@@ -33,7 +38,7 @@ use serde_json::{Value, json};
 use crate::app::{SEARCH_INPUT_ID, State};
 use crate::placement::{LogicalSize, Placement};
 use crate::theme::{self, Metrics, TextRole};
-use crate::view_model::{Banner, BannerKind, Row, Status, ViewModel};
+use crate::view_model::{Banner, BannerKind, Chip, Status, Tile, ViewModel};
 
 /// How many items in the QML tree must carry an accessibility role.
 ///
@@ -124,10 +129,21 @@ fn project_model(
         "query": model.query,
         "placeholder": model.placeholder,
         "hint": model.hint,
-        "heading": model.title,
-        "prompt": model.prompt,
+        // The surface title in the top row, beside the search field. It belongs
+        // to the window, so it stays while a banner replaces the grid.
+        "heading": model.heading,
         "notice": model.notice,
-        "rows": rows(model, tokens),
+        // The selected tile's position, or `null` when nothing is selected. The
+        // grid scrolls to it; the index is the projection's decision, not QML's
+        // (`view_model::ViewModel::selected_index`).
+        "selected": model.selected_index(),
+        // The category the browse is filtered by. Exactly one chip carries
+        // `selected: true`, and this is that chip's id — the action channel sends
+        // it back when another chip is chosen.
+        "category": model.chips.iter().find(|chip| chip.selected).map(|chip| chip.id),
+        "tiles": tiles(model, tokens),
+        "chips": chips(model, tokens),
+        "grid": grid_json(placement),
         "banner": banner(model.banner.as_ref()),
         "status": status(model.status.as_ref(), tokens),
         "flags": {
@@ -157,12 +173,11 @@ fn theme_json(
     let control = metrics.control_padding();
     let card = metrics.card_padding();
 
-    // One row is as tall as the icon it shows, but never shorter than the type's
-    // own line box; the placement policy sizes the surface with the same number
-    // (`crate::placement::chrome`), which is what keeps the listed rows inside
-    // the window.
-    let row = (f32::from(config.icon_size)).max(metrics.space_xl) + metrics.space_sm * 2.0;
-    let field = theme::line_height(tokens, TextRole::Title) + metrics.space_sm * 2.0;
+    // The field is one title line plus the control padding and its hairline
+    // border, the same sum the placement sizes the top row with.
+    let field = theme::line_height(tokens, TextRole::Title)
+        + metrics.space_sm * 2.0
+        + metrics.hairline * 2.0;
 
     json!({
         "name": tokens.name,
@@ -199,8 +214,16 @@ fn theme_json(
             "hairline": px(metrics.hairline),
             "focus_ring": px(metrics.focus_ring),
             "icon_size": px(f32::from(config.icon_size)),
-            "row_height": px(row),
             "field_height": px(field),
+            // The line box of a caption: the hint strip is drawn at this height
+            // rather than at Qt's own line box, so the surface the placement
+            // computed and the surface QML lays out are the same height
+            // (acceptance Q02: nothing is clipped at 200 %).
+            "caption_line_height": px(theme::line_height(tokens, TextRole::Caption)),
+            // Every button in this surface — the banner's one action and the
+            // status bar's retry — is this tall (guidelines §4: at least
+            // `spacing.xl`, growing with the type).
+            "action_height": px(theme::action_height(tokens)),
             "window_padding": px(metrics.space_xl),
             "group_spacing": px(metrics.space_lg),
             "list_spacing": px(metrics.space_sm),
@@ -211,6 +234,15 @@ fn theme_json(
             "content_width": px(metrics.content_width(placement.size.width)),
         },
         "styles": styles(tokens, metrics),
+        // The token durations, in milliseconds. QML picks *where* motion helps
+        // (a hovered row, a state change, the window opening); it never picks a
+        // duration of its own (guidelines §8 — the only durations a surface may
+        // use are these three).
+        "motion": {
+            "fast": tokens.motion.fast_ms,
+            "normal": tokens.motion.normal_ms,
+            "slow": tokens.motion.slow_ms,
+        },
     })
 }
 
@@ -264,33 +296,96 @@ fn styles(tokens: &Theme, metrics: &Metrics) -> Value {
     })
 }
 
-/// The result rows, each with the colours its state resolves to.
-fn rows(model: &ViewModel, tokens: &Theme) -> Vec<Value> {
+/// The grid's geometry, as QML draws it.
+///
+/// The numbers come from [`crate::placement::Placement::grid`], which is also
+/// where the keyboard's row step comes from: the tiles a person sees and the
+/// tiles an arrow key moves by are the same count.
+fn grid_json(placement: &Placement) -> Value {
+    let grid = &placement.grid;
+
+    json!({
+        "columns": grid.columns,
+        "cell_width": px(grid.cell_width),
+        "cell_height": px(grid.cell_height),
+        "gap": px(grid.gap),
+        "image": px(grid.image),
+        "label_lines": crate::theme::TILE_LABEL_LINES,
+    })
+}
+
+/// The application tiles, each with the colours its state resolves to.
+fn tiles(model: &ViewModel, tokens: &Theme) -> Vec<Value> {
     let metrics = Metrics::from_tokens(tokens);
     model
-        .rows
+        .tiles
         .iter()
-        .map(|row| {
-            let mut value = row_json(row);
+        .map(|tile| {
+            let mut value = tile_json(tile);
             if let Value::Object(object) = &mut value {
-                object.insert("style".to_owned(), row_style(row, tokens, &metrics));
+                object.insert("style".to_owned(), tile_style(tile, tokens, &metrics));
             }
             value
         })
         .collect()
 }
 
-/// One row's text, icon and flags.
-fn row_json(row: &Row) -> Value {
+/// One tile's text, icon and flags.
+fn tile_json(tile: &Tile) -> Value {
     json!({
-        "id": row.id,
-        "icon": row.icon,
-        "label": row.label,
-        "truncated": row.truncated,
-        "detail": row.detail,
-        "selected": row.selected,
-        "enabled": row.enabled,
-        "disabled_reason": row.disabled_reason,
+        "id": tile.id,
+        "icon": tile.icon,
+        "icon_url": tile.icon_url,
+        "label": tile.label,
+        "truncated": tile.truncated,
+        "detail": tile.detail,
+        "selected": tile.selected,
+        "enabled": tile.enabled,
+        "disabled_reason": tile.disabled_reason,
+    })
+}
+
+/// The category chips, each with the colours its state resolves to.
+fn chips(model: &ViewModel, tokens: &Theme) -> Vec<Value> {
+    let metrics = Metrics::from_tokens(tokens);
+    model
+        .chips
+        .iter()
+        .map(|chip| {
+            let mut value = json!({
+                "id": chip.id,
+                "label": chip.label,
+                "selected": chip.selected,
+            });
+            if let Value::Object(object) = &mut value {
+                object.insert("style".to_owned(), chip_style(chip, tokens, &metrics));
+            }
+            value
+        })
+        .collect()
+}
+
+/// The colours a chip is drawn with.
+///
+/// The same five states a row has (§5): resting is transparent with `text`,
+/// hovering takes the alternate surface, pressing fills with the accent, and the
+/// selected chip is the accent fill itself — with `on_accent` on it, because a
+/// chip that keeps `text` on `accent` is unreadable. A selected chip does not
+/// change its fill under the pointer: there is no hover variant of `accent`, and
+/// swapping it for `surface_variant` would read as disabled.
+fn chip_style(chip: &Chip, tokens: &Theme, metrics: &Metrics) -> Value {
+    let colors = &tokens.colors;
+    let accent = theme::qml_color(colors.accent);
+
+    json!({
+        "background": if chip.selected { accent.clone() } else { transparent() },
+        "background_hover": if chip.selected { accent.clone() } else { theme::qml_color(colors.surface_variant) },
+        "background_pressed": accent.clone(),
+        "text": if chip.selected { theme::qml_color(colors.on_accent) } else { theme::qml_color(colors.text) },
+        "text_pressed": theme::qml_color(colors.on_accent),
+        "border": if chip.selected { accent } else { theme::qml_color(colors.border) },
+        "border_width": px(metrics.hairline),
+        "radius": px(metrics.radius_sm),
     })
 }
 
@@ -308,7 +403,7 @@ fn row_json(row: &Row) -> Value {
 /// because it is not one. A row that is both selected and unusable keeps the
 /// muted text and no background: the selection can be moved onto it (so that
 /// Enter can explain why it will not run), but it must not look launchable.
-fn row_style(row: &Row, tokens: &Theme, metrics: &Metrics) -> Value {
+fn tile_style(row: &Tile, tokens: &Theme, metrics: &Metrics) -> Value {
     let colors = &tokens.colors;
 
     let background = if !row.enabled {
@@ -444,6 +539,7 @@ fn theme_block(value: &Value) -> &Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::categories::Category;
     use crate::contract::{Failure, FailureKind, ServiceState};
     use crate::index::AppIndex;
     use crate::view_model;
@@ -462,6 +558,7 @@ mod tests {
         service: ServiceState,
         query: String,
         selected: usize,
+        category: Category,
         activation: Option<crate::activation::Activation>,
     }
 
@@ -480,6 +577,7 @@ mod tests {
                 index,
                 query: String::new(),
                 selected: 0,
+                category: Category::All,
                 activation: None,
             }
         }
@@ -511,6 +609,7 @@ mod tests {
                 result: engine.current(),
                 query: &self.query,
                 selected: self.selected,
+                category: self.category,
                 activation: self.activation.as_ref(),
                 label_budget: self.placement.label_chars,
             });
@@ -587,18 +686,18 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_follow_the_search_result_and_mark_the_selection() {
+    fn the_tiles_follow_the_search_result_and_mark_the_selection() {
         let mut fixture = fixture("en-US");
         fixture.query = "fi".to_owned();
         fixture.selected = 0;
         let value = fixture.project_with(&[("firefox.desktop", "Firefox")]);
 
-        let rows = value["rows"].as_array().expect("a row list");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["id"].as_str(), Some("firefox.desktop"));
-        assert_eq!(rows[0]["label"].as_str(), Some("Firefox"));
-        assert_eq!(rows[0]["selected"].as_bool(), Some(true));
-        assert_eq!(rows[0]["enabled"].as_bool(), Some(true));
+        let tiles = value["tiles"].as_array().expect("a tile list");
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0]["id"].as_str(), Some("firefox.desktop"));
+        assert_eq!(tiles[0]["label"].as_str(), Some("Firefox"));
+        assert_eq!(tiles[0]["selected"].as_bool(), Some(true));
+        assert_eq!(tiles[0]["enabled"].as_bool(), Some(true));
     }
 
     #[test]
@@ -704,9 +803,6 @@ mod tests {
         let doubled_body = doubled["theme"]["font"]["body"].as_f64().expect("a size");
         assert_eq!(doubled_body, normal_body * 2.0);
 
-        let normal_row = normal["theme"]["metrics"]["row_height"]
-            .as_f64()
-            .expect("a height");
         let doubled_field = doubled["theme"]["metrics"]["field_height"]
             .as_f64()
             .expect("a height");
@@ -717,7 +813,6 @@ mod tests {
             doubled_field > normal_field,
             "the search field grows with the type: {doubled_field} vs {normal_field}",
         );
-        assert!(normal_row > 0.0);
     }
 
     #[test]
@@ -725,7 +820,7 @@ mod tests {
         let mut fixture = fixture("en-US");
         fixture.selected = 0;
         let value = fixture.project_with(&[("firefox.desktop", "Firefox")]);
-        let style = &value["rows"][0]["style"];
+        let style = &value["tiles"][0]["style"];
 
         assert_eq!(
             style["background"].as_str(),
@@ -738,8 +833,8 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_states_are_drawn_apart() {
-        // The guidelines' §5 states, as this surface draws a row: resting,
+    fn the_tile_states_are_drawn_apart() {
+        // The guidelines' §5 states, as this surface draws a tile: resting,
         // hovered, pressed, selected and unusable. `Fixture` selects the first
         // row by default, so "resting" is the fixture that selects nothing.
         let mut plain = fixture("en-US");
@@ -749,15 +844,15 @@ mod tests {
         selected.selected = 0;
         let highlighted = selected.project_with(&[("editor.desktop", "Text Editor")]);
 
-        // A row that cannot be launched stays muted and says why.
+        // A tile that cannot be launched stays muted and says why.
         let unusable = {
             let mut entry = AppIndex::test_entry("htop.desktop", "htop", "htop");
             entry.terminal = true;
             Fixture::new("en-US", vec![entry]).project_with(&[("htop.desktop", "htop")])
         };
 
-        // A row that names an icon draws the icon tile; one that names none draws
-        // the placeholder. `AppIndex::test_entry` names no icon, so the icon row
+        // A tile that names an icon draws the icon; one that names none draws the
+        // placeholder. `AppIndex::test_entry` names no icon, so the icon row
         // is spelled out explicitly.
         let placeholder_row = {
             let mut bare = fixture("en-US");
@@ -776,11 +871,11 @@ mod tests {
             named.project_with(&[("editor.desktop", "Text Editor")])
         };
 
-        let resting_style = &resting["rows"][0]["style"];
-        let selected_style = &highlighted["rows"][0]["style"];
-        let unusable_style = &unusable["rows"][0]["style"];
-        let bare_style = &placeholder_row["rows"][0]["style"];
-        let named_style = &icon_row["rows"][0]["style"];
+        let resting_style = &resting["tiles"][0]["style"];
+        let selected_style = &highlighted["tiles"][0]["style"];
+        let unusable_style = &unusable["tiles"][0]["style"];
+        let bare_style = &placeholder_row["tiles"][0]["style"];
+        let named_style = &icon_row["tiles"][0]["style"];
 
         let looks: Vec<(&str, Value, Value)> = vec![
             (
@@ -833,17 +928,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unusable_row_is_muted_and_carries_its_reason() {
+    fn an_unusable_tile_is_muted_and_carries_its_reason() {
         let mut entry = AppIndex::test_entry("htop.desktop", "htop", "htop");
         entry.terminal = true;
         entry.icon = Some("utilities-terminal".to_owned());
         let mut fixture = Fixture::new("en-US", vec![entry]);
         let value = fixture.project_with(&[("htop.desktop", "htop")]);
 
-        let row = &value["rows"][0];
-        assert_eq!(row["enabled"].as_bool(), Some(false));
+        let tile = &value["tiles"][0];
+        assert_eq!(tile["enabled"].as_bool(), Some(false));
         assert!(
-            row["disabled_reason"]
+            tile["disabled_reason"]
                 .as_str()
                 .is_some_and(|reason| reason.contains(
                     &fixture
@@ -851,44 +946,48 @@ mod tests {
                         .message("launcher-failure-missing-terminal")
                 )),
             "{:?}",
-            row["disabled_reason"],
+            tile["disabled_reason"],
         );
         assert_eq!(
-            row["style"]["text"].as_str(),
+            tile["style"]["text"].as_str(),
             Some(theme::qml_color(fixture.tokens.colors.text_muted).as_str()),
             "a row that cannot be launched must not look like the selection",
         );
         assert_ne!(
-            row["style"]["background"].as_str(),
+            tile["style"]["background"].as_str(),
             Some(theme::qml_color(fixture.tokens.colors.accent).as_str())
         );
 
-        // The same row, selected: still muted and still not filled.
+        // The same tile, selected: still muted and still not filled.
         fixture.selected = 0;
         let selected = fixture.project_with(&[("htop.desktop", "htop")]);
         assert_eq!(
-            selected["rows"][0]["style"]["text"].as_str(),
+            selected["tiles"][0]["style"]["text"].as_str(),
             Some(theme::qml_color(fixture.tokens.colors.text_muted).as_str())
         );
         assert_ne!(
-            selected["rows"][0]["style"]["background"].as_str(),
+            selected["tiles"][0]["style"]["background"].as_str(),
             Some(theme::qml_color(fixture.tokens.colors.accent).as_str())
         );
     }
 
     #[test]
-    fn an_empty_query_lists_every_application_and_says_what_typing_does() {
+    fn an_empty_query_lists_every_application_without_a_browsing_line() {
         let fixture = fixture("en-US");
         let value = fixture.project_with(&[
             ("editor.desktop", "Text Editor"),
             ("firefox.desktop", "Firefox"),
         ]);
 
-        assert_eq!(value["rows"].as_array().map(Vec::len), Some(2));
+        assert_eq!(value["tiles"].as_array().map(Vec::len), Some(2));
         assert_eq!(value["banner"], Value::Null);
+        assert!(
+            value.get("prompt").is_none(),
+            "the card is the grid: the placeholder says what the field is for",
+        );
         assert_eq!(
-            value["prompt"].as_str(),
-            Some(fixture.localizer.message("launcher-list-prompt").as_str())
+            value["hint"].as_str(),
+            Some(fixture.localizer.message("launcher-search-hint").as_str()),
         );
     }
 
@@ -904,7 +1003,7 @@ mod tests {
         };
         let value = fixture.project_with(&[]);
 
-        assert_eq!(value["rows"].as_array().map(Vec::len), Some(0));
+        assert_eq!(value["tiles"].as_array().map(Vec::len), Some(0));
         assert_eq!(value["banner"]["kind"].as_str(), Some("no-match"));
         assert_eq!(
             value["banner"]["title"].as_str(),
@@ -1077,6 +1176,368 @@ mod tests {
     }
 
     #[test]
+    fn the_hint_offers_only_the_keys_the_screen_binds() {
+        // With rows, Up/Down and Enter are bound, so the hint names them.
+        let plain = fixture("en-US");
+        let listing = plain.project_with(&[("firefox.desktop", "Firefox")]);
+        assert_eq!(
+            listing["hint"].as_str(),
+            Some(plain.localizer.message("launcher-search-hint").as_str()),
+        );
+
+        // Without rows there is nothing to choose and nothing to launch, so the
+        // hint is the one binding that still does something.
+        let mut no_match = fixture("en-US");
+        no_match.query = "zzzz".to_owned();
+        no_match.service = ServiceState::Ready {
+            generation: 1,
+            entries: 2,
+            skipped: 0,
+            directories: Vec::new(),
+        };
+        let mut loading = fixture("en-US");
+        loading.service = ServiceState::Loading { generation: 2 };
+        let mut unavailable = fixture("en-US");
+        unavailable.service = ServiceState::Unavailable {
+            generation: 1,
+            failure: Failure::service(FailureKind::IndexUnavailable {
+                detail: "no HOME".to_owned(),
+            }),
+        };
+        let mut empty = Fixture::new("en-US", Vec::new());
+        empty.service = ServiceState::Ready {
+            generation: 1,
+            entries: 0,
+            skipped: 0,
+            directories: Vec::new(),
+        };
+
+        for (name, state) in [
+            ("no-match", &no_match),
+            ("loading", &loading),
+            ("unavailable", &unavailable),
+            ("empty", &empty),
+        ] {
+            let value = state.project_with(&[]);
+            assert!(
+                value["tiles"].as_array().is_some_and(Vec::is_empty),
+                "{name} still lists rows",
+            );
+            assert_eq!(
+                value["hint"].as_str(),
+                Some(state.localizer.message("launcher-hint-close").as_str()),
+                "{name}: the hint promises keys that are not bound",
+            );
+            assert_ne!(
+                value["hint"], listing["hint"],
+                "{name}: an empty screen must not offer Enter",
+            );
+        }
+    }
+
+    #[test]
+    fn the_hint_follows_the_negotiated_language_in_both_states() {
+        let en = fixture("en-US");
+        let zh = fixture("zh-CN");
+        let en_hint = en.localizer.message("launcher-hint-close");
+        let zh_hint = zh.localizer.message("launcher-hint-close");
+
+        assert!(!en_hint.is_empty() && !zh_hint.is_empty());
+        assert_ne!(en_hint, zh_hint, "the close hint is translated");
+        assert_ne!(
+            zh_hint,
+            zh.localizer.message("launcher-search-hint"),
+            "a close-only hint is not the list hint with fewer words",
+        );
+
+        let mut en_empty = fixture("en-US");
+        en_empty.service = ServiceState::Loading { generation: 2 };
+        let mut zh_empty = fixture("zh-CN");
+        zh_empty.service = ServiceState::Loading { generation: 2 };
+        assert_eq!(
+            en_empty.project_with(&[])["hint"].as_str(),
+            Some(en_hint.as_str())
+        );
+        assert_eq!(
+            zh_empty.project_with(&[])["hint"].as_str(),
+            Some(zh_hint.as_str())
+        );
+    }
+
+    #[test]
+    fn the_surface_title_stays_while_a_banner_replaces_the_grid() {
+        let plain = fixture("en-US");
+        let listing = plain.project_with(&[("firefox.desktop", "Firefox")]);
+        assert_eq!(
+            listing["heading"].as_str(),
+            Some(plain.localizer.message("launcher-window-title").as_str()),
+            "the top row carries the surface title",
+        );
+
+        let mut no_match = fixture("en-US");
+        no_match.query = "zzzz".to_owned();
+        no_match.service = ServiceState::Ready {
+            generation: 1,
+            entries: 2,
+            skipped: 0,
+            directories: Vec::new(),
+        };
+        let with_banner = no_match.project_with(&[]);
+        assert_eq!(with_banner["banner"]["kind"].as_str(), Some("no-match"));
+        assert_eq!(
+            with_banner["heading"].as_str(),
+            Some(no_match.localizer.message("launcher-window-title").as_str()),
+            "the title belongs to the window, so a banner does not remove it",
+        );
+        assert!(
+            with_banner["banner"]["title"]
+                .as_str()
+                .is_some_and(|title| !title.is_empty()),
+            "a banner carries the message the grid would have shown",
+        );
+        assert_eq!(
+            with_banner["title"].as_str(),
+            Some(no_match.localizer.message("launcher-window-title").as_str()),
+        );
+        assert!(
+            with_banner["tiles"].as_array().is_some_and(Vec::is_empty),
+            "the banner is what the card holds instead of the tiles",
+        );
+    }
+
+    #[test]
+    fn the_projection_names_the_selected_row() {
+        let mut selected = fixture("en-US");
+        selected.selected = 1;
+        let value = selected.project_with(&[
+            ("firefox.desktop", "Firefox"),
+            ("editor.desktop", "Text Editor"),
+        ]);
+        assert_eq!(value["selected"].as_u64(), Some(1));
+        assert_eq!(value["tiles"][1]["selected"].as_bool(), Some(true));
+        assert_eq!(value["tiles"][0]["selected"].as_bool(), Some(false));
+
+        // A selection that is no row at all — the state before the first
+        // result, and what a query that matched nothing leaves behind.
+        let mut none = fixture("en-US");
+        none.selected = usize::MAX;
+        let unselected = none.project_with(&[("firefox.desktop", "Firefox")]);
+        assert_eq!(
+            unselected["selected"],
+            Value::Null,
+            "no row is the selection, so the index is null and not 0",
+        );
+        assert!(unselected["tiles"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .all(|row| row["selected"].as_bool() != Some(true))
+        }),);
+
+        // And the same when there are no rows at all: a banner's screen.
+        let mut banner = fixture("en-US");
+        banner.service = ServiceState::Loading { generation: 2 };
+        assert_eq!(banner.project_with(&[])["selected"], Value::Null);
+    }
+
+    #[test]
+    fn the_action_height_clears_the_interaction_target_and_grows_with_the_type() {
+        let plain = fixture("en-US");
+        let value = plain.project_with(&[]);
+        let metrics = Metrics::from_tokens(&plain.tokens);
+        let height = value["theme"]["metrics"]["action_height"]
+            .as_f64()
+            .expect("a height");
+
+        assert_eq!(height, px(theme::action_height(&plain.tokens)));
+        assert!(
+            height >= px(metrics.space_xl),
+            "an action is never shorter than spacing.xl: {height} vs {}",
+            px(metrics.space_xl),
+        );
+
+        // 200 % text: the label's own line box takes over and the control grows.
+        let mut scaled = plain;
+        scaled.tokens.typography.scale *= 2.0;
+        let scaled_value = scaled.project_with(&[]);
+        let scaled_height = scaled_value["theme"]["metrics"]["action_height"]
+            .as_f64()
+            .expect("a height");
+        assert!(
+            scaled_height > height,
+            "the action height follows the font scale: {scaled_height} vs {height}",
+        );
+        assert_eq!(
+            scaled_height,
+            px(theme::action_height(&scaled.tokens)),
+            "the projected height is the derivation, not a second formula",
+        );
+    }
+
+    #[test]
+    fn the_motion_durations_are_the_token_values() {
+        let fixture = fixture("en-US");
+        let value = fixture.project_with(&[]);
+        let motion = &value["theme"]["motion"];
+        let tokens = &fixture.tokens.motion;
+
+        assert_eq!(
+            motion["fast"].as_u64(),
+            Some(u64::from(tokens.fast_ms)),
+            "the fast duration is the token",
+        );
+        assert_eq!(motion["normal"].as_u64(), Some(u64::from(tokens.normal_ms)));
+        assert_eq!(motion["slow"].as_u64(), Some(u64::from(tokens.slow_ms)));
+        assert!(tokens.fast_ms <= tokens.normal_ms && tokens.normal_ms <= tokens.slow_ms);
+        // The two durations this surface uses — a hover and a state change — sit
+        // under the guidelines' §8 ceiling. `slow` is the entering/leaving surface
+        // duration the token set defines and this surface does not use.
+        assert!(
+            tokens.fast_ms < 300 && tokens.normal_ms < 300,
+            "guidelines §8: a UI transition stays under 300 ms",
+        );
+    }
+
+    #[test]
+    fn the_grid_is_the_placement_grid() {
+        let plain = fixture("en-US");
+        let value = plain.project_with(&[]);
+        let grid = &plain.placement.grid;
+
+        assert_eq!(
+            value["grid"]["columns"].as_u64(),
+            Some(grid.columns as u64),
+            "the drawn columns are the keyboard's columns",
+        );
+        assert_eq!(
+            value["grid"]["cell_width"].as_f64(),
+            Some(px(grid.cell_width))
+        );
+        assert_eq!(
+            value["grid"]["cell_height"].as_f64(),
+            Some(px(grid.cell_height))
+        );
+        assert_eq!(value["grid"]["gap"].as_f64(), Some(px(grid.gap)));
+        assert_eq!(value["grid"]["image"].as_f64(), Some(px(grid.image)));
+        assert_eq!(
+            value["grid"]["label_lines"].as_u64(),
+            Some(crate::theme::TILE_LABEL_LINES as u64),
+            "a tile's label wraps to the lines the view draws",
+        );
+        assert!(grid.columns >= 1);
+    }
+
+    #[test]
+    fn the_chips_are_the_categories_with_entries_plus_all() {
+        let mut development = AppIndex::test_entry("dev.desktop", "Development Tool", "dev");
+        development.categories = vec!["Development".to_owned(), "IDE".to_owned()];
+        let mut game = AppIndex::test_entry("game.desktop", "Game", "game");
+        game.categories = vec!["Game".to_owned()];
+        let mut bare = AppIndex::test_entry("bare.desktop", "Bare", "bare");
+        bare.categories = Vec::new();
+
+        let plain = Fixture::new("en-US", vec![development, game, bare]);
+        let value = plain.project_with(&[]);
+        let chips = value["chips"].as_array().expect("a chip row");
+        let ids: Vec<&str> = chips
+            .iter()
+            .filter_map(|chip| chip["id"].as_str())
+            .collect();
+
+        assert_eq!(
+            ids,
+            ["all", "development", "game", "other"],
+            "only the categories with entries, in the fixed order, plus all",
+        );
+        assert_eq!(
+            value["category"].as_str(),
+            Some("all"),
+            "the default filter is the unfiltered browse",
+        );
+        assert_eq!(
+            chips
+                .iter()
+                .filter(|chip| chip["selected"].as_bool() == Some(true))
+                .count(),
+            1,
+            "exactly one chip is the filter",
+        );
+        assert_eq!(
+            chips[1]["label"].as_str(),
+            Some(
+                plain
+                    .localizer
+                    .message("launcher-category-development")
+                    .as_str()
+            ),
+            "a chip's label comes from the catalog",
+        );
+        // The selected chip is the accent fill, like a selected row.
+        assert_eq!(
+            chips[0]["style"]["background"].as_str(),
+            Some(theme::qml_color(plain.tokens.colors.accent).as_str()),
+        );
+        assert_eq!(
+            chips[0]["style"]["text"].as_str(),
+            Some(theme::qml_color(plain.tokens.colors.on_accent).as_str()),
+        );
+        assert_ne!(
+            chips[1]["style"]["background"], chips[0]["style"]["background"],
+            "an unselected chip has no fill",
+        );
+    }
+
+    #[test]
+    fn the_chip_labels_follow_the_negotiated_language() {
+        let mut game = AppIndex::test_entry("game.desktop", "Game", "game");
+        game.categories = vec!["Game".to_owned()];
+
+        let en = Fixture::new("en-US", vec![game.clone()]).project_with(&[]);
+        let zh = Fixture::new("zh-CN", vec![game]).project_with(&[]);
+
+        let en_label = en["chips"][1]["label"].as_str().expect("a label");
+        let zh_label = zh["chips"][1]["label"].as_str().expect("a label");
+        assert!(!en_label.is_empty() && !zh_label.is_empty());
+        assert_ne!(en_label, zh_label, "the chips are translated");
+    }
+
+    #[test]
+    fn a_tile_carries_its_icon_file_as_a_file_url() {
+        let mut with_icon = AppIndex::test_entry("icon.desktop", "Icon", "icon");
+        with_icon.icon = Some("icon".to_owned());
+        with_icon.icon_path = Some(std::path::PathBuf::from(
+            "/usr/share/icons/hicolor/96x96/apps/icon.png",
+        ));
+        let with_space = {
+            let mut entry = AppIndex::test_entry("spaced.desktop", "Spaced", "spaced");
+            entry.icon = Some("spaced".to_owned());
+            entry.icon_path = Some(std::path::PathBuf::from("/tmp/My Icons/spaced.png"));
+            entry
+        };
+        let bare = AppIndex::test_entry("bare.desktop", "Bare", "bare");
+
+        let plain = Fixture::new("en-US", vec![with_icon, with_space, bare]);
+        let value = plain.project_with(&[
+            ("icon.desktop", "Icon"),
+            ("spaced.desktop", "Spaced"),
+            ("bare.desktop", "Bare"),
+        ]);
+
+        assert_eq!(
+            value["tiles"][0]["icon_url"].as_str(),
+            Some("file:///usr/share/icons/hicolor/96x96/apps/icon.png"),
+        );
+        assert_eq!(
+            value["tiles"][1]["icon_url"].as_str(),
+            Some("file:///tmp/My%20Icons/spaced.png"),
+            "a space in the path is percent-encoded for QML",
+        );
+        assert_eq!(
+            value["tiles"][2]["icon_url"],
+            Value::Null,
+            "an entry with no icon file falls back to its letter",
+        );
+    }
+
+    #[test]
     fn the_document_is_valid_json_with_every_key_the_tree_binds_to() {
         let fixture = fixture("en-US");
         let value = fixture.project_with(&[]);
@@ -1089,9 +1550,12 @@ mod tests {
             "placeholder",
             "hint",
             "heading",
-            "prompt",
             "notice",
-            "rows",
+            "selected",
+            "category",
+            "tiles",
+            "chips",
+            "grid",
             "banner",
             "status",
             "flags",
@@ -1103,7 +1567,7 @@ mod tests {
         }
 
         let theme = theme_block(&parsed);
-        for key in ["name", "colors", "font", "metrics", "styles"] {
+        for key in ["name", "colors", "font", "metrics", "styles", "motion"] {
             assert!(theme.get(key).is_some(), "the theme lacks {key}");
         }
         for style in ["window", "card", "field", "action"] {
@@ -1112,16 +1576,27 @@ mod tests {
                 "the styles lack {style}"
             );
         }
+        // The fields the list and the actions bind to: how tall an action is,
+        // and which durations the motion may use.
+        assert!(
+            theme["metrics"].get("action_height").is_some(),
+            "the metrics lack action_height"
+        );
+        for key in ["fast", "normal", "slow"] {
+            assert!(theme["motion"].get(key).is_some(), "the motion lacks {key}");
+        }
     }
 
     #[test]
     fn the_fallback_projection_is_total_and_empty() {
         let value = empty_projection();
 
-        assert_eq!(value["rows"].as_array().map(Vec::len), Some(0));
+        assert_eq!(value["tiles"].as_array().map(Vec::len), Some(0));
         assert_eq!(value["banner"], Value::Null);
         assert_eq!(value["status"], Value::Null);
         assert_eq!(value["title"].as_str(), Some(""));
+        assert_eq!(value["heading"].as_str(), Some(""));
+        assert_eq!(value["selected"], Value::Null);
         assert_eq!(value["focus"]["serial"].as_u64(), Some(0));
         assert!(
             value["theme"]["styles"]["window"]["background"]

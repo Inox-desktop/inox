@@ -86,15 +86,26 @@
 //! draws at [`SCALE_FACTOR`]), so [`logical`] is the one place that division
 //! happens.
 //!
-//! # Frosted glass
+//! # Liquid glass
 //!
 //! The glass object is created **after** the layer role exists, because the
 //! protocol answers `max_radius = 0` for a surface with no layer role and a
 //! client that asks earlier is told a maximum the compositor would not honour.
-//! The decision itself (whether to ask at all, how the radius is clamped, what
-//! the region is) lives in [`crate::frost`] as pure data with unit tests; this
-//! module only carries it to the wire and degrades honestly when the answer is
-//! "no": plain translucency, said once.
+//! The manager is bound at [`GLASS_MANAGER_VERSION`] — `min(advertised, 2)` —
+//! and the object it creates carries the refraction vocabulary only when the
+//! compositor is a version 2 one (`set_corner_radii`, `set_refraction`).
+//!
+//! Both capability events are normalised through [`inox_glass::Capabilities`]:
+//! the v1 `capabilities` event is the whole answer on a v1 object, and on a v2
+//! object it is only the first half — `liquid_capabilities` follows it and wins,
+//! because it is the event that says whether the backdrop can be refracted at
+//! all. Nothing is sent before one of them has arrived.
+//!
+//! The decision itself (whether to ask at all, how the radius and the band are
+//! clamped, what the region is) lives in [`crate::frost`] on top of
+//! [`inox_glass::decide`], with unit tests; this module only carries the
+//! resulting request to the wire and degrades honestly when the answer is "no":
+//! plain translucency, said once.
 //!
 //! # Lifecycle
 //!
@@ -121,6 +132,8 @@ use calloop::{
 use chrono::Local;
 use inox_common::i18n::Localizer;
 use inox_config::{ConfigPaths, PanelSurface, ShellConfig, Theme as Tokens};
+use inox_glass::Capabilities;
+use inox_glass::protocol::liquid_flags;
 use inox_protocols::{
     glass::inox_glass::client::{
         inox_glass_manager_v1::InoxGlassManagerV1, inox_glass_v1 as glass_object,
@@ -180,6 +193,17 @@ pub const SCALE_FACTOR: f32 = 1.0;
 /// that never releases anything cannot have this process allocate a frame per
 /// change for ever.
 pub const MAX_FRAMES_IN_FLIGHT: usize = 4;
+
+/// The `inox-glass-v1` version this client binds: `min(advertised, 2)`.
+///
+/// Version 2 is the one that carries the refraction vocabulary
+/// (`set_corner_radii`, `set_refraction`) and the `liquid_capabilities` event
+/// (ADR 0040 §1). A compositor that only offers version 1 still gets a glass
+/// object — it just has no lens, and the client must not send `since=2`
+/// requests to it. [`inox_glass::REFRACTION_SINCE_VERSION`] is the library's
+/// name for the same number, and `inox-glass`'s drift test pins it against the
+/// generated bindings.
+pub const GLASS_MANAGER_VERSION: u32 = inox_glass::REFRACTION_SINCE_VERSION;
 
 /// The largest frame this component will draw, in bytes.
 ///
@@ -717,13 +741,19 @@ struct Client {
     surface: Option<WlSurface>,
     role: Option<ZwlrLayerSurfaceV1>,
     glass: Option<glass_object::InoxGlassV1>,
-    /// The largest radius the compositor reported for this surface, once the
-    /// `capabilities` event arrived.
-    max_radius: Option<u32>,
-    /// The glass request the surface is currently carrying; `None` is frosting
-    /// off.
-    glass_request: Option<frost::Request>,
-    /// Whether the "the compositor will not blur" degradation has been said.
+    /// What the compositor reported for this surface, once a capability event
+    /// arrived: the v1 `capabilities` answer, or — on a v2 object — the
+    /// `liquid_capabilities` one, which wins because it also says whether the
+    /// backdrop can be refracted.
+    capabilities: Option<Capabilities>,
+    /// Whether `liquid_capabilities` has answered, so a later (or re-sent)
+    /// legacy `capabilities` event cannot overwrite the stronger answer.
+    liquid_capabilities: bool,
+    /// The glass request the surface is currently carrying; `None` is the
+    /// effect turned off.
+    glass_request: Option<inox_glass::Request>,
+    /// Whether the "the compositor will not draw the effect" degradation has
+    /// been said — once, however many ways it can be unavailable.
     degraded_reported: bool,
     /// Whether the "no inox-glass-v1" degradation has been said.
     no_glass_reported: bool,
@@ -798,7 +828,8 @@ impl Dispatch<WlRegistry, ()> for Client {
                     // Optional by design: without it the panel draws the plain
                     // translucent material it already has (see `crate::frost`).
                     "inox_glass_manager_v1" => {
-                        state.glass_manager = Some(registry.bind(name, version.min(1), qh, ()));
+                        state.glass_manager =
+                            Some(registry.bind(name, version.min(GLASS_MANAGER_VERSION), qh, ()));
                     }
                     _ => {}
                 }
@@ -1046,16 +1077,52 @@ impl Dispatch<glass_object::InoxGlassV1, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let glass_object::Event::Capabilities { max_radius } = event {
-            state.max_radius = Some(max_radius);
-            state.sync_glass();
+        match event {
+            // The version 1 answer. On a v2 object it is only the first half;
+            // `liquid_capabilities` follows and replaces it, so a legacy answer
+            // that arrives after the liquid one is history, not news.
+            glass_object::Event::Capabilities { max_radius } => {
+                if state.liquid_capabilities {
+                    return;
+                }
 
-            if max_radius > 0 {
+                state.capabilities = Some(Capabilities::from_legacy(max_radius));
+                state.sync_glass();
+
                 debug!(
                     max_radius,
                     "the compositor will frost the panel's backdrop up to this radius"
                 );
             }
+            // The version 2 answer: the blur maximum repeated, plus whether
+            // this surface can be refracted and with which components. It is
+            // authoritative for this object.
+            glass_object::Event::LiquidCapabilities {
+                max_radius,
+                max_refraction_height,
+                max_refraction_amount,
+                flags,
+            } => {
+                let flags = liquid_flags(flags);
+
+                state.liquid_capabilities = true;
+                state.capabilities = Some(Capabilities::from_liquid(
+                    max_radius,
+                    max_refraction_height,
+                    max_refraction_amount,
+                    flags,
+                ));
+                state.sync_glass();
+
+                debug!(
+                    max_radius,
+                    max_refraction_height,
+                    max_refraction_amount,
+                    flags,
+                    "the compositor reported its liquid-glass capabilities"
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -1256,17 +1323,18 @@ impl Client {
 
     /// Creates the glass object, if this surface is a pane that wants one.
     ///
-    /// Called once the layer role exists. `glass.blur == 0` creates nothing at
-    /// all; a compositor without `inox-glass-v1` is a degradation the panel says
-    /// once and draws through.
+    /// Called once the layer role exists. A material with neither a blur nor a
+    /// refraction creates nothing at all; a compositor without `inox-glass-v1` is
+    /// a degradation the panel says once and draws through.
     fn create_glass(&mut self, qh: &QueueHandle<Self>) {
         if self.glass.is_some() {
             return;
         }
 
-        let blur = theme::glass_blur(self.state.tokens());
+        let tokens = self.state.tokens();
+        let material = theme::glass_material(tokens);
 
-        if !frost::asks_for_glass(self.state.surface(), blur) {
+        if !frost::asks_for_glass(self.state.surface(), material) {
             return;
         }
 
@@ -1292,65 +1360,99 @@ impl Client {
 
     /// Carries the glass decision to the wire, and re-sends it when it changes.
     ///
-    /// The decision itself (the clamp, the region, the reasons to draw plain
-    /// translucency) is [`crate::frost`]; this is only the transport. Nothing is
-    /// sent before the compositor has answered `capabilities`: the maximum radius
-    /// is part of the request.
+    /// The decision itself (the clamps, the region, the reasons to draw plain
+    /// translucency) is [`crate::frost`] over [`inox_glass::decide`]; this is only
+    /// the transport. Nothing is sent before the compositor has answered
+    /// `capabilities` (or, on a v2 object, `liquid_capabilities`): both maxima are
+    /// part of the request.
+    ///
+    /// On a v2 object the version 1 answer is deliberately **not** acted on: the
+    /// protocol sends it first so a v1-only client is not left with a mute
+    /// object, but it cannot say whether the backdrop can be refracted, and acting
+    /// on it would send a blur-only request and immediately replace it with the
+    /// real one. The v2 answer arrives in the same batch; until then the surface
+    /// keeps its tint and the effect follows.
     fn sync_glass(&mut self) {
-        let Some(glass) = self.glass.as_ref() else {
+        let Some(version) = self.glass.as_ref().map(Proxy::version) else {
             return;
         };
 
-        let Some(max_radius) = self.max_radius else {
+        if version >= GLASS_MANAGER_VERSION && !self.liquid_capabilities {
+            return;
+        }
+
+        let Some(capabilities) = self.capabilities else {
             return;
         };
 
-        let blur = theme::glass_blur(self.state.tokens());
+        let tokens = self.state.tokens();
+        let material = theme::glass_material(tokens);
         let size = self.configured.unwrap_or((0, 0));
 
-        let wanted = match frost::decide(self.state.surface(), blur, max_radius, size) {
-            frost::Material::Frosted(request) => Some(request),
-            frost::Material::Plain(reason) => {
-                if reason == frost::Plain::CompositorCannotBlur && !self.degraded_reported {
-                    self.degraded_reported = true;
-                    // The one line the brief of this change asks for: a real
-                    // degradation, named once, never a claimed blur.
-                    info!(
-                        "the compositor will not frost this surface's backdrop \
-                         (inox-glass-v1 max_radius = 0); the pane is drawn as plain translucency"
-                    );
+        let wanted = match frost::decide(self.state.surface(), material, capabilities, size) {
+            Some(inox_glass::Outcome::Effect(request)) => Some(request),
+            Some(inox_glass::Outcome::Plain(reason)) => {
+                if !self.degraded_reported {
+                    match reason {
+                        // The one line a real degradation gets: named once,
+                        // never a claimed effect. Which half was unavailable is
+                        // what the message says.
+                        inox_glass::Plain::CompositorCannotBlur => {
+                            self.degraded_reported = true;
+                            info!(
+                                "the compositor will not frost this surface's backdrop \
+                                 (inox-glass-v1 max_radius = 0); the pane is drawn as plain \
+                                 translucency"
+                            );
+                        }
+                        inox_glass::Plain::RefractionDisabled => {
+                            self.degraded_reported = true;
+                            info!(
+                                "the compositor will not refract this surface's edge \
+                                 (inox-glass-v1 liquid_capabilities report no refraction); the \
+                                 pane is drawn as plain translucency"
+                            );
+                        }
+                        // The tokens asked for nothing, or there is nothing to
+                        // cover. Neither is a degradation.
+                        inox_glass::Plain::BlurDisabled | inox_glass::Plain::EmptyPane => {}
+                    }
                 }
 
                 None
             }
+            // Not a pane: the taskbar draws an opaque strip, and no glass
+            // object exists for it in the first place.
+            None => None,
         };
 
         if wanted == self.glass_request {
             return;
         }
 
-        match &wanted {
-            Some(request) => {
-                glass.set_radius(request.radius);
-                glass.set_region(
-                    request.region.x,
-                    request.region.y,
-                    request.region.width,
-                    request.region.height,
-                );
-                debug!(
-                    radius = request.radius,
-                    region = ?request.region,
-                    "asked the compositor to frost the panel's pane"
-                );
-            }
-            None => {
-                // Turning the effect off: a radius of 0 and a region with no area
-                // both mean "nothing to frost", and neither destroys the object,
-                // so a later `glass.blur` change does not have to recreate it.
-                glass.set_radius(0);
-                glass.set_region(0, 0, 0, 0);
-                debug!("turned the panel's frosting off");
+        {
+            let Some(glass) = self.glass.as_mut() else {
+                return;
+            };
+
+            match &wanted {
+                Some(request) => {
+                    request.apply(glass);
+                    debug!(
+                        radius = request.radius,
+                        region = ?request.region,
+                        corners = ?request.corners,
+                        refraction = ?request.refraction,
+                        "asked the compositor for the pane's liquid glass"
+                    );
+                }
+                None => {
+                    // Turning the effect off: a radius of 0 and a region with no
+                    // area both mean "nothing to frost", and neither destroys the
+                    // object, so a later token change does not have to recreate it.
+                    frost::off().apply(glass);
+                    debug!("turned the panel's glass effect off");
+                }
             }
         }
 
@@ -1538,7 +1640,12 @@ impl Client {
     }
 
     /// Takes every configuration reload the bus or `SIGHUP` prepared.
-    fn drain_reloads(&mut self) {
+    ///
+    /// A reload can change the `[glass]` tokens, which is a change to the request
+    /// the surface is carrying: the object may have to be created (the material
+    /// asked for nothing before), kept but re-parameterised, or switched off. The
+    /// queue handle is needed for the first case only.
+    fn drain_reloads(&mut self, qh: &QueueHandle<Self>) {
         for request in self.reload.take_requests() {
             let result = reload::apply(&mut self.state, &request);
             let applied = result.is_ok();
@@ -1549,6 +1656,13 @@ impl Client {
                 info!("applied a configuration reload");
                 self.drawn = None;
                 self.pending_repaint = true;
+
+                // The tokens may have moved the material under the surface: ask
+                // for an object if the new material wants one, then re-send the
+                // (possibly different) request. Both calls are no-ops when
+                // nothing changed.
+                self.create_glass(qh);
+                self.sync_glass();
             }
         }
     }
@@ -1665,7 +1779,8 @@ pub fn run(
         surface: None,
         role: None,
         glass: None,
-        max_radius: None,
+        capabilities: None,
+        liquid_capabilities: false,
         glass_request: None,
         degraded_reported: false,
         no_glass_reported: false,
@@ -1798,8 +1913,15 @@ fn drive(
         })
         .map_err(|error| LegError::EventLoop(error.to_string()))?;
 
+    // A reload can create the glass object (the new material may ask for an
+    // effect the old one did not), and creating one needs the queue handle, so
+    // the loop hands the same handle in rather than making the reload path own a
+    // second queue.
+    let reload_qh = qh.clone();
     handle
-        .insert_source(wake_source, |_, _, client| client.drain_reloads())
+        .insert_source(wake_source, move |_, _, client| {
+            client.drain_reloads(&reload_qh);
+        })
         .map_err(|error| LegError::EventLoop(error.to_string()))?;
 
     // The clock is a timer, not a frame clock: it feeds `Message::Tick` at the

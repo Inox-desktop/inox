@@ -57,7 +57,7 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 | **图标解码**：`icon-static` 与 `body-images` capability 故意不声明 | 解析主题图标或正文图片需要在交互循环之外做文件查找与解码。带图标的弹窗画出图标将占用的**空位**（按 `display.icon_size`），正文 `<img>` 画 alt 文本。 |
 | **声音**：不声明 `sound` capability | `sound-name` / `suppress-sound` 会被记录，但 Inox 目前不播放任何声音。 |
 | **持久化**：不声明 `persistence` capability | 该 capability 承诺的是 `resident` hint 的行为——动作被触发后保留通知；本守护进程在动作触发时即关闭通知。`resident` 仍会被读取并记录（`protocol::Hints`）。 |
-| `<u>` 的下划线 | 清理器保留 `underline` 强调，但 QML 的 `Text` 富文本路径尚未实现它（模型里有，画面上没有）。 |
+| **正文的富文本** | 清理器保留的强调（`<b>` / `<i>` / `<u>` / 链接）由 `src/view.rs` 变成**转义过的**富文本串 `bodyHtml`：每个文本片段的 `& < > "` 都被转义，标签只由投影自己写出，所以正文会按卡片宽度换行、下划线可见，而 `<script>` 只会是字面文本。纯文本句子仍以 `bodyText` 投影给语义树。 |
 | `<b>`/`<i>` 在正文里生效，在 **summary** 里被展平为纯文本 | 标题只画一行文字，标记在那里没有视觉意义；展平还保证摘要里的 `javascript:` 链接不会变成可点的东西。 |
 | **E2/E3 GUI 证据** | 需要支持 layer-shell 的宿主与真实会话总线，CI 目前都没有。 |
 
@@ -75,7 +75,7 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 | `src/lock_state.rs` | `inox-ipc` 锁状态观察者（自己的连接与线程） |
 | `src/placement.rs` | layer-shell 摆放策略（数据，未应用） |
 | `src/view_model.rs` | 状态 → 弹窗栈语义 |
-| `src/view.rs` | 弹窗栈的 JSON 投影 |
+| `src/view.rs` | 弹窗栈的 JSON 投影（含窗口可见性、正文富文本、动效时长与高度契约） |
 | `src/theme.rs` | 设计令牌 → QML 颜色与尺寸 |
 | `src/app.rs` | `State` / `Message` / `update`（Elm） |
 | `src/runtime.rs` | `Runtime`（pump 的唯一实现）、`Task`、`Reply`、`UiAction` |

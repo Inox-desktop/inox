@@ -22,7 +22,7 @@
 - **启动辅助是同一个二进制，不是第二个 bin**：`main` 见到 `--exec-application` 就装好 SIGHUP 遮罩并 `exec` 目标程序，所以被启动的应用不以本 crate 的线程/信号状态运行。`cargo build -p inox-launcher` 只产出一个 target（bin-only 也正因如此不必处理 cxx-qt 的多 target 链接问题）。
 - **编辑器内的焦点是一次串行请求，不是一个 widget 句柄**：QML 是焦点的主人，Rust 只递增 `focus_serial`，桥把它发布成 `focusSerial`，QML 在变化时 `forceActiveFocus()`。不要为了「直接 focus」把 QML 控件塞进状态。
 - **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`catalog_tests` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」，所以新增/删除文案必须两边一起改。
-- **颜色、尺寸、间距、圆角只能来自 `inox_config::Theme`**。`view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；`placement.rs` 里的字面量只有无量纲比例与个数（表面尺寸是配置与令牌的乘积），`theme::text_size` 缩放的是 Qt Quick 在 96 dpi 下的名义正文尺寸。
+- **颜色、尺寸、间距、圆角只能来自 `inox_config::Theme`**。`view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；`placement.rs` 里的字面量只有无量纲比例与个数（表面尺寸是输出尺寸的份额，份额之内每一段的高度由令牌推出），`theme::text_size` 缩放的是 Qt Quick 在 96 dpi 下的名义正文尺寸。
 - **它仍是普通窗口，不是 layer 表面。** 合成器尚未广告 `zwlr_layer_shell_v1`，`placement::Placement` 只是算好并写进日志的数据；启动时**恰好一条** `warn!` 说明这一点。不得声称摆放已生效，也不得为了「像 panel」把它变成 layer 表面——那是 panel/lock 的路径。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 只依赖 L1：`inox-common`（i18n 与 XDG 路径）、`inox-config`（`shell.toml` 的 `[launcher]` 与主题令牌）。**不得**新增 L2 或 L3 依赖。
 - 令牌映射、Fluent 装配与 layer 引导在每个 L3 组件里各有一份，这是 L3 组件架构明确接受的成本；**不要**为此新建共享 crate 或同层依赖，那需要先有 ADR。
@@ -51,7 +51,7 @@
 - 纯逻辑必须有单元测试（`#[cfg(test)]`），**含拒绝与错误路径**，不只覆盖成功路径。
 - 属性测试每项 ≥1000 样本（`ProptestConfig::with_cases(1000)`）：`Exec` 展开、搜索排序与代次、解析器健壮性。
 - `catalog_tests`：`compare_catalogs` 的 id 与占位符一致性，加上代码 ↔ 目录的双向检查。
-- `headless_tests`：投影断言（颜色 = 令牌转换、字号/间距 = 令牌推导、标题/提示来自 Fluent 且中英不同）、QML 动作经 `dispatch` 进入真实 `update`（打字、Enter 只启动一次、Esc、上下键、指针选择、按住不重复）、以及**离屏 QML 加载**——测试进程以 `QT_QPA_PLATFORM=offscreen` 自 spawn 子进程，等 `reportReady` 确认根对象与语义树（QML 里 `Accessible.role` 的控件数量）后才算通过。这些取代了 Iced 的 `tests/render.rs` 像素断言。
+- `headless_tests`：投影断言（颜色 = 令牌转换、字号/间距 = 令牌推导、标题/提示来自 Fluent 且中英不同）、QML 动作经 `dispatch` 进入真实 `update`（打字、Enter 只启动一次、Esc、←/→ 步进一格、↑/↓ 步进 `columns` 格、指针选择、按住不重复）、以及**离屏 QML 加载**——测试进程以 `QT_QPA_PLATFORM=offscreen` 自 spawn 子进程，等 `reportReady` 确认根对象与语义树（QML 里 `Accessible.role` 的控件数量）后才算通过。这些取代了 Iced 的 `tests/render.rs` 像素断言。
 - 测试代码不受「禁止 unwrap/expect/panic」约束。
 
 ## 已知缺口（诚实记录）
@@ -76,7 +76,9 @@ crates/inox-launcher/
   src/runtime.rs    Queue / Task / oneshot（替代 iced::Task 与 Subscription）
   src/reload.rs     SIGHUP + org.inox.Launcher 重载桥（状态仍在 Qt 线程改）
   src/app.rs        State / Message / update（纯状态机）
-  src/view_model.rs 状态 → 画面语义（纯投影）
+  src/view_model.rs 状态 → 画面语义（纯投影：瓦片、分类 chips、横幅）
+  src/icons.rs      Icon= → 图标文件（XDG 图标主题查找、file:// URL）
+  src/categories.rs freedesktop Categories= → 固定分类 chips
   src/desktop_entry.rs, exec.rs, index.rs, search.rs, contract.rs,
   activation.rs, placement.rs, i18n.rs
   src/catalog_tests.rs, src/headless_tests.rs   #[cfg(test)] 证据
