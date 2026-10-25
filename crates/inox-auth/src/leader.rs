@@ -1,6 +1,6 @@
 //! The session leader: one process per login, and the parent that starts it.
 //!
-//! the boot login chain
+//! The boot login chain replaces "the helper opens the session in its own long-lived
 //! process" with "the helper starts a one-shot child that becomes the login". The
 //! reason is PAM's: `pam_open_session` registers the session for the process that
 //! calls it (`pam_systemd` asks logind to create a session for that pid, and logind

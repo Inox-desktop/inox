@@ -94,7 +94,7 @@ impl HeadlessOutput {
 ///
 /// - [`BackendKind::Auto`] selects an enumerated libseat DRM device and fails if no
 ///   physical output can be driven. Headless must be explicitly requested.
-/// - [`BackendKind::Headless`] keeps the M1/M2 surfaceless EGL path 
+/// - [`BackendKind::Headless`] keeps the M1/M2 surfaceless EGL path
 ///   as a fixed choice; it is what CI exercises.
 /// - [`BackendKind::Drm`] requires the real backend and never falls back, so a
 ///   session or present failure surfaces to the operator instead of quietly
