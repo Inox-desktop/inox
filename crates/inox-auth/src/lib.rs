@@ -1,4 +1,4 @@
-//! The Inox authentication boundary (ADR 0015, ADR 0029).
+//! The Inox authentication boundary.
 //!
 //! This crate is the one place in the workspace that may check a password. It has
 //! two halves, and they are deliberately separable:
@@ -14,7 +14,7 @@
 //!   `#![forbid(unsafe_code)]`), the socket service, the peer-credential check,
 //!   the rolling allowance, the logind VT arbitration and the one-shot session
 //!   leader that opens the PAM session in its own process and then becomes the
-//!   session (ADR 0037 §决策 2 and §决策 5).
+//!   session.
 //!
 //! What this crate is not: it is not a display manager and it draws nothing. It
 //! also does not decide *policy* for the desktop — the session program it starts
@@ -46,7 +46,7 @@
 //!                                              exec the session program as them
 //! ```
 //!
-//! The session leader is one process per login (ADR 0037 §决策 5): PAM's session
+//! The session leader is one process per login: PAM's session
 //! stack (`pam_systemd`, `pam_env`, `pam_limits`) registers the logind session for
 //! the process that will become the login, so the session and its VT belong to the
 //! person rather than to a long-lived helper. The leader never sees a credential —

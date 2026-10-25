@@ -1,6 +1,6 @@
 //! The session leader: one process per login, and the parent that starts it.
 //!
-//! ADR 0037 §决策 5 replaces "the helper opens the session in its own long-lived
+//! the boot login chain
 //! process" with "the helper starts a one-shot child that becomes the login". The
 //! reason is PAM's: `pam_open_session` registers the session for the process that
 //! calls it (`pam_systemd` asks logind to create a session for that pid, and logind
@@ -211,7 +211,7 @@ impl SessionLauncher for ShippedLauncher {
         // session for a process that cannot create one. A development instance is
         // exactly that — `inox-auth --socket /tmp/…` — and it still has to be able
         // to log in, so it starts the session program directly, as this crate did
-        // before ADR 0037, and says what is missing.
+        // before the boot login chain, and says what is missing.
         //
         // The shipped deployment is root and always goes through the leader. This
         // branch cannot start a session as anybody but the invoking user:
@@ -334,7 +334,7 @@ pub fn run(config: &Config, request: &LeaderRequest, localizer: &Localizer) -> R
     // PAM's session stack runs here, in the process that is about to become the
     // login: `pam_systemd` registers this pid with logind, which is what gives the
     // session its cgroup, its runtime directory and its VT. No credential reaches
-    // this process (ADR 0037 §失败、恢复与安全).
+    // this process.
     let opened = match pam::open_session(&config.session_service, &account) {
         Ok(opened) => opened,
         Err(error) => {
@@ -394,7 +394,7 @@ pub fn run(config: &Config, request: &LeaderRequest, localizer: &Localizer) -> R
 
     // The session program is execed, not spawned: this process becomes it, which
     // is what keeps the logind session, the cgroup and the PAM session attached to
-    // the login (ADR 0037 §决策 5 step 3). `exec` only returns on failure.
+    // the login. `exec` only returns on failure.
     let error = session::exec(&plan);
 
     // The `exec` failed, so this process still owns the PAM session; dropping the

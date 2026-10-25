@@ -3,10 +3,10 @@
 //! explicit account of what this crate deliberately does not do.
 //!
 //! `inox-lock` is the L3 component PRD §3.1 lists as the lock screen, and
-//! ADR 0015 is its specification. That ADR decides two things that shape every
+//! the session-lock boundary is its specification. That ADR decides two things that shape every
 //! module here, and both of them are constraints rather than features:
 //!
-//! - **A lock is not an overlay.** ADR 0015 rejects a top-level window or a
+//! - **A lock is not an overlay.** the session-lock boundary rejects a top-level window or a
 //!   `wlr-layer-shell` surface as a lock screen, because neither can show that
 //!   input and other layers are isolated, or that the session is still covered
 //!   when the UI has died. The compositor owns the lock state and `inox-lock` is
@@ -19,7 +19,7 @@
 //!   land, and Inox must not roll its own password hashing or verification. A
 //!   test stub does not count as authentication.
 //!
-//! The binary runs in the two modes ADR 0015 and ADR 0022 leave it (ADR 0022
+//! The binary runs in the two modes the session-lock boundary and the session-lock and notification bus work leave it (the session-lock and notification bus work
 //! decision 6). Without a flag it starts no lock screen at all: it loads the
 //! configuration, says through Fluent that this build cannot verify anyone, and
 //! exits non-zero — a window that looks like a lock screen over an unlocked
@@ -28,7 +28,7 @@
 //! the token `inox-session` delivered in `INOX_LOCK_TOKEN`, asks the compositor
 //! for the session lock, gives every output a lock surface, and draws the
 //! interface onto each of them — the projected screen, rendered by QML
-//! offscreen and committed to the surface (ADR 0025, ADR 0038). That mode exists
+//! offscreen and committed to the surface. That mode exists
 //! so the security-critical half of the component can be exercised against a
 //! real compositor, and it is deliberately incomplete:
 //!
@@ -37,13 +37,13 @@
 //! - the state is told the truth about that, so what it draws is the screen's
 //!   *unavailable* face: a person reading it is told nothing here can check a
 //!   password, rather than invited to type one;
-//! - it reads no keyboard (ADR 0022 decision 6): with no boundary there is
+//! - it reads no keyboard: with no boundary there is
 //!   nothing on the screen to operate;
 //! - it never sends `unlock_and_destroy`, not even when it is signalled.
 //!
 //! Everything above the protocol leg — the state machine, the limiter, the
 //! credential buffer and the suspend ordering — is exercised by tests rather
-//! than by a running session, at evidence level E0/E1 (ADR 0018).
+//! than by a running session, at evidence level E0/E1.
 //!
 //! # This crate is bin-only, on purpose
 //!
@@ -130,7 +130,7 @@
 //!   accessibility bridge, so the role/name/state/action export is recorded as a
 //!   gap, not as a solved problem. The QML tree carries `Accessible`
 //!   roles and names, and nothing exports them today.
-//! - **Taking over a lock whose UI died.** ADR 0025 decision 2: the compositor
+//! - **Taking over a lock whose UI died.** the lock-screen surface, rule 2: the compositor
 //!   refuses the second client, so the session stays locked until it is logged out.
 
 // cxx-qt's `#[cxx_qt::bridge]` macro emits `unsafe extern "C++"` glue with no
@@ -188,11 +188,11 @@ const USAGE: &str = "\
 inox-lock [OPTIONS]
 
 OPTIONS:
-    --take-lock    Take the real session lock and hold it, drawing the lock screen
+    --take-lock Take the real session lock and hold it, drawing the lock screen
                    on every output. Needs INOX_LOCK_TOKEN, which inox-session
                    delivers. This mode has no authentication and no way to release
                    the lock again: what it draws says so.
-    -h, --help     Print this help and exit
+    -h, --help Print this help and exit
 ";
 
 fn main() -> Result<()> {

@@ -141,7 +141,7 @@ pub mod wp {
 
     /// `fractional-scale-v1`: the exact (non-integer) scale a surface should render at.
     ///
-    /// PRD §2.3 support level: `计划` until ADR 0020's pixel and geometry evidence
+    /// PRD §2.3 support level: `计划` until fractional scaling's pixel and geometry evidence
     /// exists; the compositor advertises the global from that ADR's implementation.
     /// This protocol is a hint: a client may ignore it, so a compositor must composite
     /// a surface correctly whatever buffer size it is handed.
@@ -165,7 +165,7 @@ pub mod ext {
         pub use wayland_protocols::ext::idle_notify::v1::server;
     }
 
-    /// `ext-session-lock-v1`: the secure session lock (PRD §2.3, ADR 0015).
+    /// `ext-session-lock-v1`: the secure session lock.
     ///
     /// PRD §2.3 support level: `必须` from M5.
     ///

@@ -1,6 +1,6 @@
 //! Searching the index: a bounded query, a deterministic ranking, and the
 //! request generations that keep a stale result from overwriting a newer one.
-//! Three of ADR 0013's requirements land here.
+//! Three of the interaction contract's requirements land here.
 //! Three requirements land here.
 //!
 //! **Bounded.** The query is truncated to `launcher.max_query_chars` and the

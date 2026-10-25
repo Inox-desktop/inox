@@ -10,7 +10,7 @@
 //! setting it from inside this process would call `std::env::set_var`, which
 //! edition 2024 makes `unsafe` — and Inox-authored code writes no `unsafe` (root
 //! `AGENTS.md` §3.2; the crate's `unsafe_code = "allow"` exists only for the
-//! cxx-qt generated glue, ADR 0035). The honest way to choose a platform from a
+//! cxx-qt generated glue, the cxx-qt binding). The honest way to choose a platform from a
 //! test is therefore to spawn this test binary again with the variable already
 //! set — the pattern `docs/qml-migration-contract.md` §7.3 names.
 //!

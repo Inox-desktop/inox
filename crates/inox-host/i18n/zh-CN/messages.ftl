@@ -11,7 +11,7 @@ host-usage = inox-host [--bin-dir DIR] [--socket NAME] [--auth-socket PATH] [--c
 # 版本行。`inox-host` 是专有名词，不翻译。
 host-version = inox-host { $version }
 
-# ADR 0037 §决策 3.1：边界在合成器存在之前就被检查，拒绝必须同时说清缺的是什么与
+# the boot login chain，拒绝必须同时说清缺的是什么与
 # 由哪个进程提供——tests/cli.rs 依赖这两件事出现在同一句里。
 host-boundary-missing = { $socket } 上的系统认证边界（inox-auth）不可用，因此 greeter 宿主没有启动合成器。
 

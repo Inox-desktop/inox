@@ -9,7 +9,7 @@
 //! `docs/quality/ui-guidelines.md` is the contract this file implements: §1 token
 //! discipline, §2 the four type roles, §3 the spacing rhythm, §4 the control and
 //! card geometry, §5 the five states a control is drawn in.
-//! ADR 0018 explains why there is a copy of this file in every L3 component
+//! the L3 component architecture explains why there is a copy of this file in every L3 component
 //! A lock screen has one job for its colours: it must cover everything under it
 //! and it must not be confusable with the desktop it is hiding. The card is drawn
 //! on the `surface` token over the `background` token, so the whole surface is
@@ -17,7 +17,7 @@
 //!
 //! # What this surface does *not* draw
 //!
-//! A lock surface reads no keyboard and no pointer (crate `AGENTS.md`, ADR 0025),
+//! A lock surface reads no keyboard and no pointer,
 //! so no control on it can be hovered, pressed or focused. The states are defined
 //! here — [`ControlState`] has all five, and the tests below walk them — because a
 //! theme that could not name them could not be checked, but the projection hands
@@ -31,14 +31,14 @@
 //! is drawn with — and so a test can render the same state under the light and
 //! the dark tokens (acceptance Q02).
 //!
-//! ADR 0018 explains why there is a copy of this file in every L3 component
+//! the L3 component architecture explains why there is a copy of this file in every L3 component
 //! instead of one shared crate: the duplication is the price of not adding a
 //! same-layer Cargo dependency that would need its own ADR.
 
 use inox_config::{Rgba, Theme as Tokens};
 
 /// A token colour as QML spells a colour with an alpha channel: `#AARRGGBB`.
-/// what is under it (ADR 0015), so a scrim that let the desktop show through would
+/// what is under it, so a scrim that let the desktop show through would
 /// Qt's `QColor::name(QColor::HexArgb)` format, and the one Qt Quick parses
 /// without a `Qt.rgba(...)` call. The alpha comes first, which is the opposite of
 /// the `#RRGGBBAA` order the token files use — a swapped pair would draw the lock

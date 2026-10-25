@@ -1,17 +1,17 @@
 # AGENTS.md — inox-launcher
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
 应用启动器：XDG 应用索引、搜索与排序、按条目规范启动并验证结果。所属层级：**L3**（见根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`）。
 
-表面模式：**普通窗口**。`main` 引导 `QGuiApplication` + `QQmlApplicationEngine`，加载内嵌的 `qml/Main.qml`（`Window` 根）；QML 只渲染 Rust 的 JSON 投影并通过一个窄动作通道回报（ADR 0033、ADR 0035、ADR 0039，`docs/qml-migration-contract.md` §1–§3）。
+表面模式：**普通窗口**。`main` 引导 `QGuiApplication` + `QQmlApplicationEngine`，加载内嵌的 `qml/Main.qml`（`Window` 根）；QML 只渲染 Rust 的 JSON 投影并通过一个窄动作通道回报。
 
 ## crate 特有约束
 
-- **`unsafe` 例外仅限 cxx-qt 生成的胶水**：`[lints.rust] unsafe_code = "allow"` 覆盖工作区的 `forbid`，因为 `#[cxx_qt::bridge]` 宏必然生成 `unsafe extern "C++"`（ADR 0035 §实施执行约束）。Inox 手写的 Rust 仍不写 `unsafe`；不要为了绕开某条约束去写字面 `unsafe`。
-- **不引入私有 ABI**（ADR 0039）：本 crate 只用 cxx-qt / Qt 的公开 API（`QGuiApplication`、`QQmlApplicationEngine`、`QUrl`、`QString`）。需要 Qt 私有头或私有 Qt Quick 接口时先改 ADR 记录范围，再动代码。
+- **`unsafe` 例外仅限 cxx-qt 生成的胶水**：`[lints.rust] unsafe_code = "allow"` 覆盖工作区的 `forbid`，因为 `#[cxx_qt::bridge]` 宏必然生成 `unsafe extern "C++"`。Inox 手写的 Rust 仍不写 `unsafe`；不要为了绕开某条约束去写字面 `unsafe`。
+- **不引入私有 ABI**：本 crate 只用 cxx-qt / Qt 的公开 API（`QGuiApplication`、`QQmlApplicationEngine`、`QUrl`、`QString`）。需要 Qt 私有头或私有 Qt Quick 接口时先改 ADR 记录范围，再动代码。
 - **bin-only**：没有 `src/lib.rs`，所有模块挂在 `main.rs` 的 `mod` 上。cxx-qt 0.10 把 bridge 的 `cxx_qt_init_*` 定义嵌进声明 bridge 的 target，独立库 target / `tests/` 集成测试会以 `undefined reference` 链接失败（KDAB/cxx-qt#770，契约 §2.1）。因此断言只能写在 `#[cfg(test)] mod catalog_tests` / `headless_tests` 里。
 - **QML↔Rust 只有一条数据通道和一条动作通道**：`model_json`（整份投影，每次变化整体重发）与 `dispatch(json)`；不要为每个字段加 `#[qproperty]`，也不要在 QML 里做业务决策（契约 §3）。
 - **QML 里没有颜色、像素或用户可见文案**：`qml/Main.qml` 只绑定 `vm.*`（契约 §4）。新增视觉值先加到 `view.rs` 的投影，再在 QML 里绑定；文案永远来自 Fluent。
@@ -23,9 +23,9 @@
 - **编辑器内的焦点是一次串行请求，不是一个 widget 句柄**：QML 是焦点的主人，Rust 只递增 `focus_serial`，桥把它发布成 `focusSerial`，QML 在变化时 `forceActiveFocus()`。不要为了「直接 focus」把 QML 控件塞进状态。
 - **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`catalog_tests` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」，所以新增/删除文案必须两边一起改。
 - **颜色、尺寸、间距、圆角只能来自 `inox_config::Theme`**。`view.rs` 与 `theme.rs` 里没有字面量颜色或像素尺寸；`placement.rs` 里的字面量只有无量纲比例与个数（表面尺寸是配置与令牌的乘积），`theme::text_size` 缩放的是 Qt Quick 在 96 dpi 下的名义正文尺寸。
-- **它仍是普通窗口，不是 layer 表面。** 合成器尚未广告 `zwlr_layer_shell_v1`，`placement::Placement` 只是算好并写进日志的数据；启动时**恰好一条** `warn!` 说明这一点（ADR 0018）。不得声称摆放已生效，也不得为了「像 panel」把它变成 layer 表面——那是 panel/lock 的路径（ADR 0038）。
-- 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 只依赖 L1：`inox-common`（i18n 与 XDG 路径）、`inox-config`（`shell.toml` 的 `[launcher]` 与主题令牌）。**不得**新增 L2 或 L3 依赖（ADR 0013、ADR 0018）。
-- 令牌映射、Fluent 装配与 layer 引导在每个 L3 组件里各有一份，这是 ADR 0018 明确接受的成本；**不要**为此新建共享 crate 或同层依赖，那需要先有 ADR。
+- **它仍是普通窗口，不是 layer 表面。** 合成器尚未广告 `zwlr_layer_shell_v1`，`placement::Placement` 只是算好并写进日志的数据；启动时**恰好一条** `warn!` 说明这一点。不得声称摆放已生效，也不得为了「像 panel」把它变成 layer 表面——那是 panel/lock 的路径。
+- 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 只依赖 L1：`inox-common`（i18n 与 XDG 路径）、`inox-config`（`shell.toml` 的 `[launcher]` 与主题令牌）。**不得**新增 L2 或 L3 依赖。
+- 令牌映射、Fluent 装配与 layer 引导在每个 L3 组件里各有一份，这是 L3 组件架构明确接受的成本；**不要**为此新建共享 crate 或同层依赖，那需要先有 ADR。
 
 ## 主要依赖
 

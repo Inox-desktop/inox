@@ -5,8 +5,8 @@
 target/
 
 # mdBook output for the documentation site (`docs/book/book/`). The site used to
-# carry its own .gitignore for this; ADR 0016 removed per-component ignore files,
-# so the root one has to cover it.
+# carry its own .gitignore for this; the single-repository decision removed
+# per-component ignore files, so the root one has to cover it.
 /docs/book/book/
 
 .commandcode/

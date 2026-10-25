@@ -1,6 +1,6 @@
 //! The component's message catalogs.
 //!
-//! ADR 0018 puts the Fluent machinery in `inox-common::i18n` — loading a catalog
+//! the L3 component architecture puts the Fluent machinery in `inox-common::i18n` — loading a catalog
 //! and resolving a locale is not UI code — and leaves each component with the
 //! one thing that is its own: the catalogs themselves, embedded at compile time
 //! and handed over. That is all this module does.

@@ -141,7 +141,7 @@
 | `crates/inox-settings/src/pages/mod.rs:426` | 新增「卡片分组顺序 == `PageId::fields` 顺序 == 单卡不重复」 | **更强**，并与键盘顺序挂钩 |
 | `crates/inox-settings/tests/workflow.rs` | 只增不删（+136 行） | 无削弱 |
 | `crates/inox-notifications/src/theme.rs`（close button） | 删 `assert_ne!(idle.text_color, hovered.text_color)`，改为断言 hover 背景 = `surface_variant` | **更合规**：§5 悬停是背景 |
-| `crates/inox-notifications/tests/bus.rs` | `zbus::Error::MethodError(name,..)` 改为 `matches!(error, zbus::Error::FDO(...UnknownMethod))` | **接口迁移等价**：仍断言 `UnknownMethod`（属 ADR 0027 迁移，非本次 UI） |
+| `crates/inox-notifications/tests/bus.rs` | `zbus::Error::MethodError(name,..)` 改为 `matches!(error, zbus::Error::FDO(...UnknownMethod))` | **接口迁移等价**：仍断言 `UnknownMethod` |
 | `crates/inox-launcher/src/view_model.rs`（loading 横幅） | `banner.retry.is_none()` → `banner.action.is_none()`，并新增 `banner.kind` | **重命名 + 增强** |
 
 ### 5.3 「主按钮 hover == rest」两条理由的独立核对

@@ -1,6 +1,6 @@
 //! The daemon's side of the notification contract.
-//! The daemon's side of the notification contract (ADR 0013).
-//! ADR 0013 asks every L3 component to model its service boundary rather than
+//! The daemon's side of the notification contract.
+//! the interaction contract asks every L3 component to model its service boundary rather than
 //! assume it: a snapshot with a generation for state that belongs to someone
 //! else, and requests whose sent / accepted / applied / rejected outcomes are
 //! distinguishable with a diagnosable reason. For the notification daemon the
@@ -17,7 +17,7 @@
 //!   malformed.
 //! - **A repeated call is answered, not repeated.** [`Calls`] remembers the
 //!   answer to the last [`CALL_MEMORY`] calls, so a redelivered `Notify` — the
-//!   deduplication ADR 0013 decision 3 asks for — returns the identifier it
+//!   deduplication the interaction contract, rule 3 asks for — returns the identifier it
 //!   already produced instead of admitting a second notification. The memory is
 //!   bounded and says how many answers it has forgotten, because "bounded" is
 //!   only honest if the bound is visible.

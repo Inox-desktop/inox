@@ -7,12 +7,12 @@
 
 ## The windowed preview.
 # The title of the window a human looks at while no compositor advertises
-# wlr-layer-shell (ADR 0018).
+# wlr-layer-shell.
 wallpaper-window-title = Inox wallpaper
 # Shown at the foot of the preview so nobody mistakes it for the real thing.
 wallpaper-windowed-notice =
     Previewing in a window: this compositor has no layer-shell host yet, so the
-    wallpaper placement is computed and tested, and not applied (ADR 0018).
+    wallpaper placement is computed and tested, and not applied.
 
 ## What one output is drawing.
 # The status card is read top to bottom: which output, what is on it, where that
@@ -36,7 +36,7 @@ wallpaper-mode-center = center
 wallpaper-mode-tile = tile
 # The phase the component is in, one line under the facts above. "Applied" is
 # what the state contract confirms — the frame is committed for this output; it
-# does not claim that a layer-shell host exists (ADR 0018).
+# does not claim that a layer-shell host exists.
 wallpaper-phase-loading = Loading…
 wallpaper-phase-ready = Applied
 wallpaper-phase-degraded = Not applied
@@ -44,7 +44,7 @@ wallpaper-phase-idle = No image
 # The empty state is a state of its own rather than the absence of one: it says
 # what is on screen and what would change that (UI spec §6). It is reached by
 # `wallpaper.image = "none"` and by nothing else — an *absent* key is the
-# bundled default, not this state (ADR 0030) — so the remedy can name the value
+# bundled default, not this state  — so the remedy can name the value
 # that produced it.
 wallpaper-empty-remedy =
     wallpaper.image is set to none, so the theme background is drawn. Name a

@@ -35,7 +35,7 @@ const DEFAULT_SCALE: f64 = 1.0;
 ///
 /// The logical size of an output is its mode size divided by the scale, so the
 /// lower bound keeps that division far away from the coordinate range the
-/// compositor can represent (ADR 0020).
+/// compositor can represent.
 const SCALE_MIN: f64 = 0.25;
 
 /// Largest accepted scale factor of an output.
@@ -100,11 +100,11 @@ pub struct CompositorConfig {
 /// oversized dimension or refresh rate would build an output that cannot be
 /// driven, a scale outside 0.25..=8.0 would make the logical geometry
 /// unrepresentable, and a position outside ±4194304 could
-/// overflow the space arithmetic. Per ADR 0009 decision 4 an out-of-range value
+/// overflow the space arithmetic. Per the configuration model, rule 4 an out-of-range value
 /// is a parse error naming the field, never a silent correction.
 ///
 /// An entry with no `position` is placed by the compositor automatically, to the
-/// right of everything already placed (ADR 0019).
+/// right of everything already placed.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OutputConfig {
@@ -123,7 +123,7 @@ pub struct OutputConfig {
     /// Scale factor between physical and logical pixels, between 0.25 and 8.
     /// Fractional values are accepted; the compositor
     /// advertises their ceiling to clients that only understand integer scales
-    /// (ADR 0020).
+    /// .
     #[serde(deserialize_with = "validate_scale")]
     pub scale: f64,
     /// Where the output's top-left corner sits in the global logical coordinate
@@ -208,7 +208,7 @@ impl Default for InputConfig {
 ///
 /// Every parameter is checked while the file is parsed, so an out-of-range
 /// value is a parse error naming the field rather than a silent correction
-/// (ADR 0009, decision 4): a master ratio outside 10..=90, a master count below
+/// : a master ratio outside 10..=90, a master count below
 /// 1 and a negative gap are all rejected by [`crate::store::InoxConfig::load`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]

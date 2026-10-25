@@ -1,6 +1,6 @@
 //! The credential buffer.
-//! The credential buffer (ADR 0015).
-//! ADR 0015 makes three demands of the thing that holds what a user typed, and
+//! The credential buffer.
+//! the session-lock boundary makes three demands of the thing that holds what a user typed, and
 //! they are the whole of this module:
 //!
 //! 1. **It does not linger.** The bytes are overwritten with zeros as soon as
@@ -12,7 +12,7 @@
 //! 3. **There is exactly one way out.** [`Secret::expose`] is the only accessor
 //!    for the plaintext in the crate, and its only caller is
 //!    [`crate::contract::AuthAttempt`] on its way to the trusted boundary that
-//!    ADR 0015 requires a review for.
+//!    the session-lock boundary requires a review for.
 //!
 //! Two things this type deliberately is not. It is not `Clone` — a credential
 //! that can be copied is a credential that can be left behind in an allocation
@@ -24,7 +24,7 @@
 //! can still reach a swap file, and a reallocation can leave a copy in memory
 //! this type has stopped tracking. Both are properties of the process, not of
 //! this type, and both belong to the authentication boundary's review
-//! (ADR 0015) rather than to a claim made here.
+//!  rather than to a claim made here.
 
 use std::fmt;
 
@@ -130,7 +130,7 @@ impl Secret {
     /// There is no `&str`, no `AsRef`, no `Deref` and no `Into<String>`: the
     /// plaintext leaves this type through one door, so there is one place to
     /// review and no accidental `format!` between here and the boundary. The
-    /// boundary itself does not exist in this build — ADR 0015 makes it a human
+    /// boundary itself does not exist in this build — the session-lock boundary makes it a human
     /// review item — so today nothing calls this.
     pub fn expose(&self) -> &[u8] {
         &self.buffer[..self.length]

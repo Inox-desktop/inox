@@ -1,6 +1,6 @@
 //! The Elm loop: state, messages, and `update`.
-//! ADR 0003 fixes this shape for every component and ADR 0013 repeats it for
-//! ADR 0003 fixes this shape for every component and ADR 0013 repeats it for
+//! the technology stack fixes this shape for every component and the interaction contract repeats it for
+//! the technology stack fixes this shape for every component and the interaction contract repeats it for
 //! interactions: a message goes in, the state changes, and anything slow leaves as
 //! a command. Nothing here draws and nothing here blocks: the two things a greeter
 //! asks of other processes — check this account, start that session — come out of
@@ -72,7 +72,7 @@ pub enum Message {
     /// Operate whatever the keyboard focus is on.
     Activate,
     /// The boundary answered the attempt.
-    /// itself — the boundary hears about it (ADR 0029).
+    /// itself — the boundary hears about it.
     /// The transport answers with [`Message::TransportAnswered`] and this is what
     /// that becomes once the wire's identifier is the model's again; the tests drive
     /// it directly, which is why a release build has no constructor for it.

@@ -1,6 +1,6 @@
 //! The host's orchestration rules, as a pure state machine.
 //!
-//! ADR 0037 §决策 3 puts the login chain in one small process: the compositor and
+//! the boot login chain
 //! the login screen are the host's children, and everything the host decides —
 //! when to start them, when to restart the login screen, when a failure ends the
 //! whole stage — is a rule about *events* and *time*, not about the kernel. This
@@ -29,10 +29,10 @@
 //!   be a login screen that lies; [`Supervisor::boundary`] is the only transition out
 //!   of `Preflight`, and it either starts the compositor or ends the host.
 //! - **The compositor is never restarted.** Its exit is the end of this stage
-//!   (ADR 0037 §决策 3.4): the login screen's clients have lost their display, and
+//!   : the login screen's clients have lost their display, and
 //!   systemd restarts the whole unit. Only the login screen has a restart budget.
 //! - **Only the login screen has a restart budget.** Three restarts inside sixty
-//!   seconds with a bounded backoff (ADR 0015), after which the host exits and lets
+//!   seconds with a bounded backoff, after which the host exits and lets
 //!   systemd record one failed start instead of looping forever.
 //! - **Shutdown is ordered, not simultaneous.** The login screen is stopped first and
 //!   the compositor only once it is gone (or once its grace period has expired), so
@@ -47,10 +47,10 @@ use std::time::{Duration, Instant};
 
 use crate::process::CommandSpec;
 
-/// How long the compositor has to create its Wayland socket (ADR 0037 §决策 3.2).
+/// How long the compositor has to create its Wayland socket.
 pub const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The rolling window the login screen's restart budget is accounted over (ADR 0015).
+/// The rolling window the login screen's restart budget is accounted over.
 pub const RESTART_WINDOW: Duration = Duration::from_secs(60);
 
 /// How many times the login screen may be restarted inside [`RESTART_WINDOW`].
@@ -153,7 +153,7 @@ pub struct Observed {
 #[derive(Debug, Clone)]
 pub struct Plan {
     /// The Wayland socket name, passed to the compositor and to the login screen
-    /// as `WAYLAND_DISPLAY` (ADR 0037 §决策 3.2).
+    /// as `WAYLAND_DISPLAY`.
     pub wayland_display: String,
     /// The socket file that has to appear before the login screen is started.
     pub wayland_socket: PathBuf,
@@ -168,7 +168,7 @@ pub struct Plan {
 
 /// How the login screen's restarts are accounted for.
 ///
-/// The rule is ADR 0015's: at most [`RESTART_ATTEMPTS`] restarts inside a rolling
+/// The rule is the session-lock boundary's: at most [`RESTART_ATTEMPTS`] restarts inside a rolling
 /// [`RESTART_WINDOW`], each one delayed by a backoff that doubles. A reservation
 /// counts even if the replacement then fails to start, so a login screen that
 /// cannot be executed at all exhausts the budget just like one that crashes.
@@ -283,7 +283,7 @@ impl Supervisor {
 
     /// Answers the one question asked before a single process exists.
     ///
-    /// `reachable == false` finishes the host without starting anything: ADR 0037
+    /// `reachable == false` finishes the host without starting anything: the boot login chain
     /// §决策 3.1 puts the refusal *before* the compositor, so the screen never shows
     /// a login interface that cannot check a password.
     pub fn boundary(&mut self, reachable: bool) -> Vec<Action> {
@@ -329,7 +329,7 @@ impl Supervisor {
     /// Records that `target` exited.
     ///
     /// A login-screen exit is a crash for this purpose whether or not its status was
-    /// successful: ADR 0037 §决策 4 makes the login screen stay resident after a
+    /// successful: the boot login chain
     /// session starts, so any exit means the screen is gone and has to come back.
     pub fn exited(&mut self, now: Instant, target: Target) -> Vec<Action> {
         match target {
@@ -359,7 +359,7 @@ impl Supervisor {
             Phase::WaitingForSocket { deadline } => {
                 if observed.wayland_socket {
                     // The compositor is up and its socket exists: the login screen
-                    // now has a display to connect to (ADR 0037 §决策 3.3).
+                    // now has a display to connect to.
                     self.phase = Phase::Supervising;
                     self.restart_at = None;
                     return vec![Action::Start(Target::Greeter)];

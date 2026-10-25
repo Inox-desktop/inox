@@ -1,7 +1,7 @@
 # 通知配置（`notifications.toml`）
 
 > **状态：字段模型已实现，守护进程为部分实现。** 模型位于 `inox-config` 的 `src/notifications.rs`，
-> 有默认值与范围校验的单元测试。`inox-notifications` 按 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)
+> 有默认值与范围校验的单元测试。`inox-notifications` 按 
 > 交付到 **E0/E1**：协议契约、有界队列与丢弃策略、文本脱敏、锁定时隐藏正文与界面模型均已实现，
 > 并有单元、属性与**离屏渲染**测试（见[测试策略](../development/testing.md)）。**D-Bus 服务本身属 M5**
 > （PRD §13 的 D06），尚未实现，因此本页不是「通知已经可用」的声明；需要 layer-shell 宿主的 E2/E3
@@ -67,7 +67,7 @@ hide_body_when_locked = true
 |----|------|--------|------|
 | `do_not_disturb` | 布尔 | `false` | **仅启动初值**：勿扰状态由守护进程持有，面板在运行期切换；配置不描述运行期状态 |
 | `show_actions` | 布尔 | `true` | 是否显示通知动作按钮 |
-| `hide_body_when_locked` | 布尔 | `true` | 会话锁定时隐藏正文、应用名与图标，改显示通用摘要（ADR 0015：锁定状态不得显示敏感正文） |
+| `hide_body_when_locked` | 布尔 | `true` | 会话锁定时隐藏正文、应用名与图标，改显示通用摘要 |
 
 勿扰只抑制**呈现**，不抑制投递：队列照常计数，动作仍然有效，且勿扰不会抢走焦点（验收 D06）。
 

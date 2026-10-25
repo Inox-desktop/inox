@@ -12,11 +12,11 @@
 //!   authenticated uid with that user's groups", "the working directory is the
 //!   account's home") are unit-testable without a child process.
 //!
-//! Since ADR 0037 there are two ways a plan is turned into a running login, and
+//! Since the boot login chain there are two ways a plan is turned into a running login, and
 //! they are deliberately different primitives:
 //!
 //! - [`start`] spawns the program as a child. It is used by the tests' session
-//!   launcher, and it is the shape this crate used before ADR 0037.
+//!   launcher, and it is the shape this crate used before the boot login chain.
 //! - [`exec`] replaces the calling process with the session program. That is what
 //!   the session leader does: the process that ran `pam_open_session` *is* the
 //!   login, so the logind session, the cgroup and the VT stay attached to it.
@@ -91,7 +91,7 @@ pub struct Account {
 /// Resolves `username` into an account this boundary will start a session for.
 ///
 /// `minimum_uid` is the floor below which an account is a system account: the
-/// shipped default (ADR 0029) is 1000, and root is refused whatever the floor is.
+/// shipped default is 1000, and root is refused whatever the floor is.
 ///
 /// # Errors
 ///
@@ -305,7 +305,7 @@ impl SessionPlan {
             // not reach the session. This is not `setsid`: a new *session* cannot be
             // created through `Command` without `pre_exec`, which this crate may not
             // use (`#![forbid(unsafe_code)]`), and the login's real session
-            // leadership comes from `pam_systemd`/logind. ADR 0029 records it.
+            // leadership comes from `pam_systemd`/logind. The authentication boundary records it.
             .process_group(0)
             // What the session phase answered with (logind's session id, the seat,
             // the VT) first, so the account's own values below win.
@@ -404,7 +404,7 @@ pub fn start(plan: &SessionPlan) -> Result<Child, SessionError> {
 
 /// Becomes the session program, replacing this process.
 ///
-/// This is the session leader's last act (ADR 0037 §决策 5): the process that
+/// This is the session leader's last act: the process that
 /// opened the PAM session and claimed the VT `exec`s the configured program, which
 /// is why the logind session, the cgroup and the PAM session survive as the login
 /// rather than as a helper. The process environment is preserved because the plan's

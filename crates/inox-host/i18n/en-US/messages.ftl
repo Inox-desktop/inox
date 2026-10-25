@@ -14,7 +14,7 @@ host-usage = inox-host [--bin-dir DIR] [--socket NAME] [--auth-socket PATH] [--c
 # The version line. `inox-host` is a proper noun and stays as it is.
 host-version = inox-host { $version }
 
-# ADR 0037 §决策 3.1: the boundary is checked before a compositor exists, and the
+# the boot login chain, and the
 # refusal has to name both what is missing and the process that provides it —
 # `tests/cli.rs` depends on those two facts being in the same sentence.
 host-boundary-missing = The system authentication boundary (inox-auth) is not available on { $socket }, so the greeter host did not start a compositor.

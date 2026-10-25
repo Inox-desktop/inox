@@ -1,6 +1,6 @@
 # AGENTS.md — inox-idle
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
@@ -38,8 +38,8 @@
 
 - 纯逻辑必须有单元测试（`#[cfg(test)]`）。
 - 测试代码不受“禁止 unwrap/expect/panic”约束。
-- 监督/策略/登录状态与边界失败必须有测试；证据以 CI 为准，限制见 ADR 0021。
-- 真实认证、锁屏与挂起接线必须先满足 ADR 0015 的人类安全审查前提。
+- 监督/策略/登录状态与边界失败必须有测试；证据以 CI 为准，限制见 L4 会话服务。
+- 真实认证、锁屏与挂起接线必须先满足会话锁边界的人类安全审查前提。
 
 ## 目录结构
 

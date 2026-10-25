@@ -55,8 +55,8 @@ tempfile.workspace = true
 [lints.rust]
 # Root AGENTS.md §3.2 exception. The workspace defaults to `forbid`; this crate
 # narrows it to `deny` because it holds the two approved `unsafe` sites:
-# `src/render.rs` (EGL/GLES construction, ADR 0005) and `src/runtime.rs` (the
-# calloop `Display` hand-off, ADR 0005). ADR 0010 §7 pre-authorises the same
+# `src/render.rs`  and `src/runtime.rs` (the
+# calloop `Display` hand-off, the headless runtime). The real backend
 # pattern for the DRM/GBM/libinput backend as it lands. Each site still needs
 # its `// SAFETY:` note, and a new `allow` outside the AGENTS.md whitelist still
 # needs an ADR first.

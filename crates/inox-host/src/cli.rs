@@ -1,6 +1,6 @@
 //! The command line: a pure parse from arguments to an invocation.
 //!
-//! ADR 0037 §决策 3 leaves the host with one job and therefore very little to
+//! the boot login chain
 //! configure. Everything it would otherwise hard-code is an option here — where the
 //! sibling binaries live, which Wayland socket name the greeter stage uses, which
 //! boundary socket to require, and whatever extra arguments a development machine
@@ -20,7 +20,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
-/// The Wayland socket name the greeter stage uses (ADR 0037 §决策 1 and 3).
+/// The Wayland socket name the greeter stage uses.
 pub const DEFAULT_WAYLAND_DISPLAY: &str = "wayland-inox-greet";
 
 /// The values the parse starts from, read from the process by the caller.
@@ -30,7 +30,7 @@ pub struct Defaults {
     /// directory this executable was started from.
     pub bin_dir: PathBuf,
     /// The boundary socket to require, by default `$INOX_AUTH_SOCKET` and then
-    /// `/run/inox/auth.sock` (ADR 0029).
+    /// `/run/inox/auth.sock`.
     pub auth_socket: PathBuf,
 }
 

@@ -31,7 +31,7 @@
 //! No function in this file picks a tint of its own, so a theme can make the
 //! glass warm, cool, dark or light without the panel changing.
 //!
-//! ADR 0018 explains why there is a copy of this file in every L3 component
+//! the L3 component architecture explains why there is a copy of this file in every L3 component
 //! instead of one shared crate: the duplication is the price of not adding a
 //! same-layer Cargo dependency that would need its own ADR.
 

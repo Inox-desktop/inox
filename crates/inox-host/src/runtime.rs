@@ -44,7 +44,7 @@ const TICK: Duration = Duration::from_millis(50);
 
 /// Whether an authentication boundary is listening at `socket`.
 ///
-/// ADR 0037 §决策 3.1 makes this the *first* thing the host does, before a compositor
+/// the boot login chain, before a compositor
 /// or a window exists, because a login screen that could collect a password and only
 /// then discover there is nobody to check it would waste the one thing it must not
 /// waste. A `connect` — not the existence of the file — is what proves somebody is
@@ -55,7 +55,7 @@ pub fn boundary_is_reachable(socket: &Path) -> bool {
 
 /// Whether the compositor has bound its Wayland socket yet.
 ///
-/// ADR 0037 §决策 3.2 waits for the socket to appear; the host does not connect to it.
+/// the boot login chain; the host does not connect to it.
 /// "Appear" is checked as "the path is a socket", not "the path exists": a leftover
 /// regular file — a log someone pointed at the same name, a half-written artefact, a
 /// directory — would otherwise declare the stage ready while the compositor can still

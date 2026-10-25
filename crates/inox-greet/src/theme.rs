@@ -19,7 +19,7 @@
 //! fill — the accent on a plain control, and the on-accent colour on the filled
 //! log-in button — and nothing else on the screen uses the accent.
 //!
-//! ADR 0018 explains why there is a copy of this file in every component instead
+//! The L3 component architecture explains why there is a copy of this file in every component instead
 //! of one shared crate: the duplication is the price of not adding a same-layer
 //! Cargo dependency that would need its own ADR.
 

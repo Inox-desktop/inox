@@ -15,7 +15,7 @@
 //! — are testable today, without a bus in CI. `main.rs` says as much at startup
 //! rather than pretending the panel serves a tray it cannot reach.
 //!
-//! Two rules from ADR 0013 shape the API:
+//! Two rules from the interaction contract shape the API:
 //!
 //! - **An event for an item that is not registered is rejected, not applied.**
 //!   A status update that overtakes a registration, or arrives after an exit, is

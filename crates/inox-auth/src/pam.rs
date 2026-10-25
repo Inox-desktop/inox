@@ -1,5 +1,5 @@
 //! The PAM conversation: the only place in the workspace where a password is
-//! checked (ADR 0015, ADR 0029), and the session a leader opens after it.
+//! checked, and the session a leader opens after it.
 //!
 //! Three decisions are visible in this file, and each of them is a rule rather
 //! than an implementation detail:
@@ -9,7 +9,7 @@
 //!   reallocating copy of the password in this process that a later `format!`
 //!   could reach. What does exist is the `CString` the `pam` crate constructs for
 //!   `libpam` and frees when the conversation returns, and what `libpam` and its
-//!   modules do internally — both are named in ADR 0029 as reviewed limitations
+//!   modules do internally — both are named in the authentication boundary as reviewed limitations
 //!   rather than papered over here.
 //! - **PAM's message text is not logged.** An authenticator's informational and
 //!   error messages are written by third-party modules and can contain the
@@ -23,7 +23,7 @@
 //!   a login screen that makes people type their password into a broken machine
 //!   forever.
 //!
-//! # Two PAM transactions, two processes (ADR 0037)
+//! # Two PAM transactions, two processes 
 //!
 //! [`PamBoundary`] authenticates — it runs `pam_authenticate` and `pam_acct_mgmt`
 //! for the account the login screen named and then ends the transaction. The
@@ -90,7 +90,7 @@ impl Conversation for LoginConversation {
 /// named — that is how `PAM_USER` gets set, since the leader cannot set the item
 /// itself without `unsafe` — and refuses every blind prompt: this process holds no
 /// credential, and a session stack that asks for one is a stack this process cannot
-/// serve (ADR 0037 §失败、恢复与安全).
+/// serve.
 struct SessionConversation {
     /// The account the session is for.
     username: String,
@@ -154,11 +154,11 @@ impl Boundary for PamBoundary {
 
         // Whatever PAM decided, the credential is not needed after this point:
         // opening the session is a different transaction in a different process
-        // (ADR 0037 §决策 5), and no session stack asks for a credential.
+        // , and no session stack asks for a credential.
         client.conversation_mut().credential.clear();
 
         // Ending the transaction here rather than holding the handle for the
-        // session is the ADR 0037 shape: this process only ever authenticates. The
+        // session is the boot login chain shape: this process only ever authenticates. The
         // `Drop` runs `pam_setcred(Delete_Cred)` and `pam_end`.
         drop(client);
 
@@ -182,7 +182,7 @@ pub struct OpenedSession {
 
 /// Opens a PAM session for `account` in this process.
 ///
-/// This is the session leader's job (ADR 0037 §决策 5): `pam_open_session` runs
+/// This is the session leader's job: `pam_open_session` runs
 /// `pam_systemd`, which asks logind to create a session **for this pid**, and logind
 /// then places this process (and everything it goes on to `exec`) in the session's
 /// scope and on the VT in `XDG_VTNR`. A long-lived helper doing it would put the

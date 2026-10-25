@@ -1,6 +1,6 @@
 //! The lock state machine.
-//! The lock state machine (ADR 0015).
-//! ADR 0015 puts the lock state in the compositor and makes `inox-lock` its
+//! The lock state machine.
+//! the session-lock boundary puts the lock state in the compositor and makes `inox-lock` its
 //! trusted client. What this module owns is the part that has to hold whatever
 //! the two sides are: the *state*, its transitions, and the invariants that must
 //! survive every sequence of events a session can produce.
@@ -293,7 +293,7 @@ impl LockMachine {
 
     /// Whether the session may be reported locked.
     ///
-    /// ADR 0015: `locked` may only be declared once every existing output is
+    /// the session-lock boundary: `locked` may only be declared once every existing output is
     /// safely covered. A held session with an output still waiting for its frame
     /// is not reported locked, and a session that was reported locked stops being
     /// reported so the moment an output appears — it never stops being held.
@@ -968,7 +968,7 @@ mod tests {
         assert_eq!(machine.phase(), Phase::Locked);
         assert!(
             machine.reports_locked(),
-            "ADR 0015: a resume leaves the session locked"
+            "the session-lock boundary: a resume leaves the session locked"
         );
     }
 
@@ -999,7 +999,7 @@ mod tests {
 
     /// One step of the sequences the property tests drive the machine with.
     ///
-    /// Deliberately the set ADR 0015 names: what a session can throw at a lock
+    /// Deliberately the set the session-lock boundary names: what a session can throw at a lock
     /// screen that must not let go of it, plus the success that is allowed to.
     #[derive(Debug, Clone)]
     enum Step {

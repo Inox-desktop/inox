@@ -1,6 +1,6 @@
 # 总体架构
 
-Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`），禁止反向依赖、跨层横向依赖与循环依赖。该约束由 [ADR 0002](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0002-layering-and-dependency-direction.md) 固定，条款见 PRD §2.1。
+Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`），禁止反向依赖、跨层横向依赖与循环依赖。该约束由分层规则固定，条款见 PRD §2.1。
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -35,14 +35,14 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 ## 桌面 Shell 的 UI 栈
 
-七个 GUI 组件（面板、启动器、通知、设置、锁屏、壁纸、登录界面）的界面**不是 Rust 代码**：QML + Qt Quick 负责声明式界面，Rust 保留领域模型、Fluent 文案与设计令牌，两者经 [ADR 0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md) 选定的 **cxx-qt** 绑定连接。边界只有两条：Rust 把「当前状态 + 令牌 + 文案」投影成一份 JSON（`model_json`）交给 QML，QML 把用户动作写成一条窄 JSON 指令（`dispatch`）交回 Rust；不为每个字段单独开一个 `qproperty`。
+七个 GUI 组件（面板、启动器、通知、设置、锁屏、壁纸、登录界面）的界面**不是 Rust 代码**：QML + Qt Quick 负责声明式界面，Rust 保留领域模型、Fluent 文案与设计令牌，两者经选定的 **cxx-qt** 绑定连接。边界只有两条：Rust 把「当前状态 + 令牌 + 文案」投影成一份 JSON（`model_json`）交给 QML，QML 把用户动作写成一条窄 JSON 指令（`dispatch`）交回 Rust；不为每个字段单独开一个 `qproperty`。
 
-表面有两种模式（[ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)）：
+表面有两种模式：
 
 - **普通窗口**：壁纸、启动器、通知、设置与登录界面用 `QGuiApplication` + `QQmlApplicationEngine` 打开一个 Qt 窗口，QML 根是 `Window`；
 - **离屏渲染**：面板与锁屏**不**变成 Qt 窗口。它们仍由自己的代码创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，仍由 `calloop` 驱动主循环；Qt Quick 在 `offscreen` 平台把 QML 渲染成 RGBA 帧，帧被复制进这两个组件各自持有的 `wl_shm` 缓冲。QML 在这里只是渲染器，输入、焦点、放置与安全边界全部在 Rust。
 
-合成器始终是 **Smithay**，绝不用 Qt Wayland Compositor（GPL-only）；Iced 已从依赖图移除（[ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md)）。逐组件的表面模式与已知缺口见[组件清单](./components.md)。
+合成器始终是 **Smithay**，绝不用 Qt Wayland Compositor（GPL-only）；Iced 已从依赖图移除。逐组件的表面模式与已知缺口见[组件清单](./components.md)。
 
 ## 依赖规则
 
@@ -56,9 +56,9 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 ## 为什么这样分层
 
-ADR 0002 把依赖方向作为单条判据固定下来：任何一个 crate「可以引入什么依赖」只需看分层即可判断，无需逐个协商。这条判据原先靠仓库边界承载，实际并没有被任何检查执行；[ADR 0016](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0016-single-repository-cargo-workspace.md) 改为单一工作区后，它由 `cargo metadata` 驱动的 `layering.rs` 逐条机械断言。收益是每个 crate 仍可独立编译、独立测试（`cargo test -p <crate>`），同时跨 crate 的改动可以在一个 PR 内原子完成，不必走「上游打 tag → 下游逐个升级」；代价是跨组件调用仍需经过协议与序列化——这是设计约束，与代码组织形态无关。
+分层规则把依赖方向作为单条判据固定下来：任何一个 crate「可以引入什么依赖」只需看分层即可判断，无需逐个协商。这条判据原先靠仓库边界承载，实际并没有被任何检查执行；改为单一工作区后，它由 `cargo metadata` 驱动的 `layering.rs` 逐条机械断言。收益是每个 crate 仍可独立编译、独立测试（`cargo test -p <crate>`），同时跨 crate 的改动可以在一个 PR 内原子完成，不必走「上游打 tag → 下游逐个升级」；代价是跨组件调用仍需经过协议与序列化——这是设计约束，与代码组织形态无关。
 
-依赖图之外的硬性技术约束（Smithay 抽象、calloop 事件循环、Shell 的 QML + Qt Quick 与 cxx-qt 绑定）见 [ADR 0003](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0003-technology-stack.md)：其中 Shell 的 GUI 部分已由 [ADR 0033](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0033-qml-qt-quick-shell-evaluation.md) 与 [ADR 0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md) 取代——ADR 0003 原文固定的 Iced 已不再是 Shell 的 UI 栈，这条例外见 [ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md)。
+依赖图之外的硬性技术约束（Smithay 抽象、calloop 事件循环、Shell 的 QML + Qt Quick 与 cxx-qt 绑定）见技术栈的决策：其中 Shell 的 GUI 部分已由 QML + Qt Quick 与 cxx-qt 取代——技术栈原文固定的 Iced 已不再是 Shell 的 UI 栈，这条例外已记录。
 
 ## 运行时数据流
 
@@ -82,7 +82,7 @@ ADR 0002 把依赖方向作为单条判据固定下来：任何一个 crate「�
 
 ## 登录链：开机到桌面
 
-桌面之外还有一段链，它必须先跑起来，上面那些组件才存在（[ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)）：
+桌面之外还有一段链，它必须先跑起来，上面那些组件才存在：
 
 ```text
 systemd
@@ -116,4 +116,4 @@ systemd
 
 ## 当前实现边界
 
-架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与多窗口平铺（见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现。L3 的七个组件已从 Iced 迁到 QML + Qt Quick（[ADR 0033](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0033-qml-qt-quick-shell-evaluation.md)/[0035](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0035-cxx-qt-binding.md)/[0036](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0036-component-migration-plan.md)/[0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)）：面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染进 `wl_shm` 帧），其余五个是普通 Qt 窗口。**仍未取得**的是真实宿主上的截图证据——waydriver 宿主 job 尚未接线（[ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md) 的 M10）；离屏的面板与锁屏也没有 AT-SPI 语义桥。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按 ADR 0037 落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。
+架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与多窗口平铺（见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现。L3 的七个组件已从 Iced 迁到 QML + Qt Quick：面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染进 `wl_shm` 帧），其余五个是普通 Qt 窗口。**仍未取得**的是真实宿主上的截图证据——waydriver 宿主 job 尚未接线；离屏的面板与锁屏也没有 AT-SPI 语义桥。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按登录链落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。

@@ -1,8 +1,8 @@
-//! Cross-entry navigation: the rules of ADR 0013 as a pure state machine.
+//! Cross-entry navigation: the rules of the interaction contract as a pure state machine.
 //!
 //! The shell coordinator draws nothing. What it owns is the rule that decides
 //! where the keyboard goes when one of the session's entries opens or closes,
-//! and ADR 0013 states it in one sentence: an entry saves a valid return target
+//! and the interaction contract states it in one sentence: an entry saves a valid return target
 //! when it opens, `Esc` closes exactly one layer at a time and returns, and a
 //! window that no longer exists is never the target of a focus change — the
 //! coordinator falls back to the compositor's focus policy instead of
@@ -18,7 +18,7 @@
 //! [`SessionGeneration`] it was assigned in — never a PID, a title or an index
 //! in whatever list the caller happens to hold. All three of those can be reused
 //! for a different window, and a return target that points at the wrong window
-//! is worse than no return target at all (ADR 0013, decision 1).
+//! is worse than no return target at all.
 
 use std::fmt;
 
@@ -27,7 +27,7 @@ use crate::i18n::id;
 
 /// One of the entries the shell coordinates.
 ///
-/// The four names are the entries a session knows about (ADR 0013): the panel,
+/// The four names are the entries a session knows about: the panel,
 /// the launcher, the notification daemon and the settings application. The
 /// wallpaper is not an entry — nothing opens or closes it — and a general
 /// third-party plugin platform is out of scope pending its own ADR.
@@ -181,7 +181,7 @@ pub enum FallbackReason {
 }
 
 impl FallbackReason {
-    /// A user-readable explanation (ADR 0013: fall back to the compositor's
+    /// A user-readable explanation (the interaction contract: fall back to the compositor's
     /// focus policy rather than delivering to an invalid object).
     pub fn describe(&self) -> Diagnostic {
         match *self {
@@ -236,7 +236,7 @@ impl Entry {
 
 /// What a navigation request did.
 ///
-/// The three closing outcomes are deliberately distinct: ADR 0013 requires the
+/// The three closing outcomes are deliberately distinct: the interaction contract requires the
 /// coordinator to fall back to the compositor's focus policy when the window it
 /// saved is gone, and an outcome that cannot tell "nothing was open" from "the
 /// target died" would let a stale window be focused again.
@@ -260,7 +260,7 @@ pub enum NavigationOutcome {
     /// The entry was already open; the stack is unchanged.
     ///
     /// Opening the same entry twice never leaves two indistinguishable layers
-    /// (ADR 0013: the coordinator keeps one layer per entry).
+    /// .
     AlreadyOpen {
         /// The entry that was already open.
         entry: EntryId,
@@ -409,7 +409,7 @@ impl NavigationStack {
     /// is filled in when this close emptied the stack; while a layer remains,
     /// the stack still holds the keyboard and the outcome reports that no window
     /// focus changes. A layer whose saved window is gone reports
-    /// [`NavigationOutcome::ReturnedToFallback`] instead: ADR 0013 falls back to
+    /// [`NavigationOutcome::ReturnedToFallback`] instead: the interaction contract falls back to
     /// the compositor's focus policy rather than delivering to an object that no
     /// longer exists.
     pub fn close_top(&mut self) -> NavigationOutcome {
@@ -467,7 +467,7 @@ impl NavigationStack {
     ///
     /// Returns how many targets were invalidated. Called when the session is
     /// rebuilt: the windows the entries were opened over belong to the previous
-    /// session, and their numeric ids must not be reused (ADR 0013, decision 1).
+    /// session, and their numeric ids must not be reused.
     pub fn set_generation(&mut self, generation: SessionGeneration) -> usize {
         if generation == self.generation {
             return 0;

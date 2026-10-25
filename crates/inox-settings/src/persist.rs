@@ -1,6 +1,6 @@
 //! Saving a configuration file so that a failure leaves the old one in place.
 //!
-//! ADR 0014 fixes the failure atomicity of every write to the Inox
+//! the settings save semantics fixes the failure atomicity of every write to the Inox
 //! configuration: a temporary file **inside the target directory**, with
 //! restrictive permissions, written in full, flushed, renamed over the target,
 //! and the directory synced afterwards. The file in use is never truncated, so
@@ -13,7 +13,7 @@
 //! - **An external edit is not overwritten.** [`save`] takes the [`Guard`]
 //!   captured when the file was read and refuses to write when the file no
 //!   longer has it, reporting [`SaveOutcome::Conflicted`] with the digest it
-//!   found. This is ADR 0014's "检测外部编辑冲突并提示重读，不无条件覆盖手工修改".
+//!   found. This is the settings save semantics's "检测外部编辑冲突并提示重读，不无条件覆盖手工修改".
 //! - **`let _ =` on cleanup has a reason.** When a step fails, the temporary
 //!   file is removed on a best-effort basis: the failure being reported is the
 //!   one that matters, and a cleanup that fails as well must not replace it.
@@ -22,7 +22,7 @@
 //! is a *change detector*, not a cryptographic hash, and deliberately so: it
 //! answers "is this the same file this window read?", a question an accidental
 //! edit or another tool answers, and it makes no claim against someone who can
-//! already write the configuration directory — ADR 0014 states that same
+//! already write the configuration directory — the settings save semantics states that same
 //! boundary ("不宣称能隔离已经控制同一用户账号或配置目录的攻击者").
 
 use std::fmt;

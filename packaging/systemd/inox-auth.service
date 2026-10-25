@@ -1,7 +1,7 @@
 [Unit]
 Description=Inox authentication boundary
-Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
-# The single authentication boundary (ADR 0029, ADR 0037 §决策 1). Nothing else
+Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/book/src/usage/login.md
+# The single authentication boundary. Nothing else
 # on this machine verifies a password or starts a session as somebody else.
 #
 # Ordering is on the socket side, not on a dependency: the greeter only needs
@@ -9,7 +9,7 @@ Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greet
 # opens a window) when it is not. Wants= lives in inox-greeter@.service so a trial
 # run on a spare VT brings the boundary up with it.
 #
-# Before= names the template, as ADR 0037 §决策 6 asks. Be aware of what systemd
+# Before= names the template, as the ADR asks. Be aware of what systemd
 # does with that: a dependency on a template unit name is not expanded to its
 # instances, so the effective ordering is the greeter unit's own After= line. This
 # one stays because it is the documented intent and because it is correct for the
@@ -28,7 +28,7 @@ User=root
 # file.
 RuntimeDirectory=inox
 RuntimeDirectoryMode=0755
-# --exit-after-session: ADR 0037 §决策 5 moved pam_open_session into a one-shot
+# --exit-after-session: the ADR moved pam_open_session into a one-shot
 # session leader, so this switch is no longer the mitigation for PAM writing into a
 # long-lived helper's environment; it is kept on in the deployment as a state reset
 # (a fresh boundary process after every session).
@@ -43,7 +43,7 @@ RuntimeDirectoryMode=0755
 # leader opens the user's session through, from packaging/pam.d/inox-auth-session.
 # It is deliberately not --service: the leader holds no credential, so its auth line
 # has to permit, and a permit line on the password stack would be a passwordless
-# login for every account (ADR 0037 §决策 5). Same reasoning as above for naming it
+# login for every account. Same reasoning as above for naming it
 # although it matches server::DEFAULT_SESSION_SERVICE — symmetry with --service, and
 # a packaging mistake then shows up here instead of inside PAM.
 #
@@ -60,7 +60,7 @@ Restart=always
 RestartSec=1
 # No capability or sandbox hardening here on purpose: this process must be able to
 # use PAM, fork/exec as other users and set their groups, and ask logind to activate
-# a session. Tightening it is a separate ADR (ADR 0037 §决策 6), not a copy-paste of
+# a session. Tightening it is a separate ADR, not a copy-paste of
 # a hardening block nobody verified against the login path.
 
 [Install]

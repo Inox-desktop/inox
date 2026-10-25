@@ -102,7 +102,7 @@ mod tests {
                 &[("socket", "/run/inox/auth.sock".into())],
             );
 
-            // ADR 0037 §决策 3.1 requires the refusal to sit on both facts: what is
+            // the boot login chain
             // missing, and which process provides it. An operator reading the journal
             // has to know both without guessing, in their own language.
             assert!(message.contains(boundary), "{}: {message}", locale.tag());

@@ -6,7 +6,7 @@
 //! integration. The Smithay layer in [`crate::state`] owns one [`Workspace`] and
 //! maps its [`WindowId`]s to real `desktop::Window`s.
 //!
-//! Every window belongs to exactly one output, which is what makes ADR 0019's
+//! Every window belongs to exactly one output, which is what makes the multi-output topology's
 //! migration rule expressible: when an output goes away its windows are handed to
 //! a surviving one rather than left in a coordinate space nothing covers. A
 //! window's output is `None` only while no output is left at all; the window stays

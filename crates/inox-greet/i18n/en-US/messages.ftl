@@ -46,7 +46,7 @@ greet-blocked = The system authentication boundary is not available, so no login
 
 # The states under the form. Deliberately free of counts, remaining attempts and
 # remaining time: a rate limit that reports its own internal timing tells
-# whoever is guessing at it how much budget is left (ADR 0015, and the same rule
+# whoever is guessing at it how much budget is left (the session-lock boundary, and the same rule
 # the lock screen's limiter follows).
 greet-unavailable = Log in cannot run
 greet-checking = Checking your account…

@@ -10,7 +10,7 @@
 //!
 //! It has no window of its own. The real surface is the `zwlr_layer_shell_v1`
 //! one this crate creates ([`layer`]), and the QML tree is rendered *offscreen*
-//! into that surface's `wl_shm` frames (ADR 0038): there is no Qt window, no
+//! into that surface's `wl_shm` frames: there is no Qt window, no
 //! `xdg_toplevel`, and no Qt Wayland client anywhere in the process.
 //!
 //! Those three things are presented on one of three surfaces, chosen by
@@ -173,7 +173,7 @@ OPTIONS:
                                        `[panel] surface` names. A session that
                                        wants a menu bar and a dock runs two
                                        processes, one per surface.
-    -h, --help                         Print this help and exit
+    -h, --help Print this help and exit
 ";
 
 /// The exit status for a run that could not draw a placed panel.
@@ -201,7 +201,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // ADR 0018 asks a component not to hand control to a third-party crate and
+    // the L3 component architecture asks a component not to hand control to a third-party crate and
     // harvest an internal panic. Without a display there is nothing to connect
     // to, so the failure is reported here, in this process's own words, with a
     // non-zero exit.

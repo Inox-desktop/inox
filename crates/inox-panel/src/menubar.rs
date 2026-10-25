@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! ┌ highlight ────────────────────────────────────────────────────────────┐
-//! │ app name   notice + retry      (flexible gap)      tray items   clock │
+//! │ app name notice + retry      (flexible gap)      tray items clock │
 //! └───────────────────────────────────────────────────────────────────────┘
 //! ```
 //!

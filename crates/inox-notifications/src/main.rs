@@ -8,11 +8,11 @@
 //! - **The D-Bus service is real and it starts first.** `notify-send hello`
 //!   reaches this daemon; a session that already has a notification daemon makes
 //!   this one exit non-zero with a readable reason rather than share the name
-//!   (ADR 0022 decision 5).
+//!   .
 //! - **The surface is an ordinary window.** The popup stack is meant to be a
 //!   `wlr-layer-shell` surface; the Inox compositor does not advertise that
 //!   protocol, so the placement computed by [`crate::placement`] is data a future
-//!   host consumes rather than something applied. ADR 0018 records the decision
+//!   host consumes rather than something applied. The L3 component architecture records the decision
 //!   and this binary names it in exactly one warning.
 //!
 //! # The threading boundary
@@ -144,7 +144,7 @@ fn run(arguments: impl Iterator<Item = String>) -> Result<()> {
     let Some(options) = parse_arguments(arguments)? else {
         info!(
             "usage: inox-notifications [--self-check]\n\
-             \x20 --self-check   load the QML surface, confirm its tree, and exit"
+             \x20 --self-check load the QML surface, confirm its tree, and exit"
         );
 
         return Ok(());
@@ -156,7 +156,7 @@ fn run(arguments: impl Iterator<Item = String>) -> Result<()> {
     let localizer =
         Rc::new(i18n::load(&config.locale).context("loading the notification message catalogs")?);
 
-    // ADR 0018 asks a component not to hand control to a third-party crate and
+    // the L3 component architecture asks a component not to hand control to a third-party crate and
     // harvest an internal panic. Without a display this check turns the failure
     // into a message a user can act on and a non-zero exit; the self-check is the
     // one mode that runs without one, because it is how the surface is verified
@@ -241,7 +241,7 @@ fn warn_about_placement(display: &inox_config::DisplayConfig, geometry: &StackGe
         keyboard = ?placement.keyboard_interactivity,
         window_width = width,
         window_height = height,
-        "ADR 0018: no wlr-layer-shell host is available, so the popup stack runs as \
+        "the L3 component architecture: no wlr-layer-shell host is available, so the popup stack runs as \
          an ordinary window and its computed placement is not applied"
     );
 }

@@ -1,6 +1,6 @@
 //! Login transitions. Only a current reply from the reviewed boundary may start a session.
 //!
-//! ADR 0029 turned this crate's boundary from a shape into a real one, and two
+//! the authentication boundary turned this crate's boundary from a shape into a real one, and two
 //! things about the model are worth reading before changing anything here:
 //!
 //! - **The credential lives in the model for exactly as long as the person is

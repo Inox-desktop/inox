@@ -1,5 +1,5 @@
 //! The panel application: state, messages and the Elm update loop.
-//! The shape is iced's and ADR 0003 makes it mandatory: a [`State`], a
+//! The shape is iced's and the technology stack makes it mandatory: a [`State`], a
 //! The shape is Elm's, and keep it while the toolkit moves:
 //! a [`State`], a [`Message`] per thing that can happen, one [`update`] that is
 //! the only place state changes, and a projection ([`crate::view::scene`]) that
@@ -7,7 +7,7 @@
 //! and hands it to the transport that will carry it, which is
 //! [`OutgoingCommand`]. The widgets are QML now, which changes
 //! who *draws* the state and nothing about who *owns* it.
-//! milestone (ADR 0018 records the scope: domain models, service contract and
+//! milestone (the L3 component architecture records the scope: domain models, service contract and
 //! **The transport does not exist yet.** The window service the panel subscribes
 //! to is reached over `inox-ipc`/D-Bus, neither of which is implemented in this
 //! milestone. So the panel starts in
@@ -301,7 +301,7 @@ impl State {
 
     /// Adopts a snapshot, unless it describes a session the panel has left.
     ///
-    /// ADR 0013 decision 1: a client's view only ever moves forward. A snapshot
+    /// the interaction contract, rule 1: a client's view only ever moves forward. A snapshot
     /// that arrives late — from a connection that has since been replaced, say —
     /// must not roll the panel back onto a session it has already dropped, or the
     /// panel would show a dead session's windows, and send activation requests

@@ -1,7 +1,7 @@
 # inox-settings
 
 Inox 的系统设置应用，属于 **L3**，也是唯一写入 Inox 配置的组件。
-普通 `xdg-shell` 窗口：**QML + Qt Quick**（经 cxx-qt 绑定）渲染，状态、草稿、持久化与文案都在 Rust，颜色与尺寸只来自 `inox_config::Theme` 令牌（ADR 0033、0035）。
+普通 `xdg-shell` 窗口：**QML + Qt Quick**（经 cxx-qt 绑定）渲染，状态、草稿、持久化与文案都在 Rust，颜色与尺寸只来自 `inox_config::Theme` 令牌。
 
 ## 设置范围
 
@@ -20,7 +20,7 @@ Inox 的系统设置应用，属于 **L3**，也是唯一写入 Inox 配置的�
 
 壁纸支持 PNG/JPEG，图片由壁纸组件读取。这里直接挑选 Inox 内置的壁纸（清单来自 L1 的
 `inox_config::wallpapers`，可选「默认」与「主题背景」），也可以保留外部配置里手写的自定义路径并逐字写回；
-设置应用不安装或下载图片（[ADR 0030](../../docs/adr/0030-bundled-wallpapers-and-the-default-background.md)）。
+设置应用不安装或下载图片。
 输入法示例：第一项 `/usr/bin/fcitx5`，之后每项一个参数；不经 shell 解释。
 物理合成器会读取保存的 `input.input_method`，显式 `--input-method` 优先；
 确定性 headless 后端仍只使用显式启动参数。词库、语言方案和切换快捷键由引擎自己的配置工具管理。
@@ -78,9 +78,8 @@ headless 后端的输出来自 `--output`，该路径仍拒绝运行时改动。
 手改配置后运行 `inoxctl reload`，或向具体消费方发送 `SIGHUP`。
 `inoxctl` 会报告每个运行中组件的结果，任何拒绝或未确认均非零退出。
 合成器现有的 Wayland `reload_config` 也接入相同的准备与应用入口。
-接口、生命周期及限制见 [ADR 0026](../../docs/adr/0026-live-configuration-reload.md)；
-显示试用与回退见 [ADR 0028](../../docs/adr/0028-display-trial-confirm-and-rollback.md)
-与 [`configuration-v2.md`](../inox-protocols/protocol/configuration-v2.md)。
+接口、生命周期及限制见 [`configuration-v1.md`](../inox-protocols/protocol/configuration-v1.md)；
+显示试用与回退见 [`configuration-v2.md`](../inox-protocols/protocol/configuration-v2.md)。
 自定义合成器快捷键仍缺少 schema 与消费者，本次不创建无效配置。
 网络、蓝牙、音频、账户管理不属于当前 Inox 配置模型。
 
@@ -108,11 +107,7 @@ cargo fmt    -p inox-settings
 验收以 GitHub Actions 为准，不在本地把构建或测试结果当作验收。离屏加载是 E1 证据：它证明模块能载入、树读到了投影，
 **不等于**真实会话里的像素、鼠标交互或屏幕阅读器验收——这些仍是缺口，记录在 `AGENTS.md` 的「已知缺口」里。
 
-架构依据：[ADR 0014](../../docs/adr/0014-configuration-apply-and-migration.md)、
-[ADR 0018](../../docs/adr/0018-l3-component-architecture.md)、
-[ADR 0024](../../docs/adr/0024-settings-coverage-and-input-method-preferences.md)、
-[ADR 0033](../../docs/adr/0033-qml-qt-quick-shell-evaluation.md)、
-[ADR 0035](../../docs/adr/0035-cxx-qt-binding.md)。
+架构依据：配置应用与迁移、L3 组件架构、设置覆盖与输入法偏好、QML + Qt Quick 的 Shell 选型、cxx-qt 绑定。
 开发遵循根级与本 crate 的 `AGENTS.md`，提交 scope 为 `settings`。
 
 LGPL-3.0，见仓库根的 `LICENSE`。

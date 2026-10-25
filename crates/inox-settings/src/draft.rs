@@ -1,6 +1,6 @@
 //! The draft: the settings a user is editing, laid over the ones on disk.
 //!
-//! ADR 0014 asks the settings application to keep two things apart — what has
+//! the settings save semantics asks the settings application to keep two things apart — what has
 //! been **saved** and what is **in effect** — and this module is the first half
 //! of that: a [`Draft`] holds the values the window is showing, the values the
 //! file was read with, and the set of fields the user actually changed. A save

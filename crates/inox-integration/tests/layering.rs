@@ -1,7 +1,7 @@
-//! Acceptance B04 (ADR 0016): the mechanical counterpart to the repository
-//! boundaries that ADR 0001 relied on.
+//! Acceptance B04: the mechanical counterpart to the repository
+//! boundaries that the multi-repository strategy relied on.
 //!
-//! ADR 0001 claimed that one repository per component made ADR 0002's
+//! the multi-repository strategy claimed that one repository per component made the layering rules'
 //! dependency-direction rules enforceable at the repository boundary. Nothing
 //! ever checked them: each repository only saw its own dependency subgraph.
 //! Inside a single workspace the whole graph is available at once, so this test
@@ -23,10 +23,10 @@ use std::{collections::BTreeMap, path::Path, process::Command};
 
 use serde_json::Value;
 
-/// The layer ranks ADR 0002 orders dependencies along: `L4 → L3 → L2 → L1`.
+/// The layer ranks the layering rules orders dependencies along: `L4 → L3 → L2 → L1`.
 const RANKS: [(&str, u8); 4] = [("l1", 1), ("l2", 2), ("l3", 3), ("l4", 4)];
 
-/// The layer whose members are exempt from the direction rules (ADR 0002
+/// The layer whose members are exempt from the direction rules (the layering rules
 /// rule 7: `inox-integration` aggregates the system, so it may depend on
 /// anything). Nothing may depend on it in turn.
 const TEST_LAYER: &str = "test";
@@ -174,7 +174,7 @@ mod rules {
                     continue;
                 }
                 violations.push(format!(
-                    "rule 6 (single point): {} depends on {}, but ADR 0002 rule 6 limits L3 \
+                    "rule 6 (single point): {} depends on {}, but layering rule 6 limits L3 \
                      access to the compositor to the crates listed in \
                      `[workspace.metadata.inox.rules] l3_dependencies_on_compositor`. Widen it \
                      with an ADR, or move the capability down to `inox-protocols`. {}",
@@ -196,8 +196,8 @@ mod rules {
                     continue;
                 }
                 violations.push(format!(
-                    "rule 1 (same layer): {} depends on {}; ADR 0002 rule 1 forbids same-layer \
-                     dependencies. The ADR index records this as an unresolved ambiguity in rule \
+                    "rule 1 (same layer): {} depends on {}; layering rule 1 forbids same-layer \
+                     dependencies. The decision index records this as an unresolved ambiguity in rule \
                      1 and the PRD repository table, so resolving it needs an ADR and an entry in \
                      `[workspace.metadata.inox.rules] same_layer_exceptions`, not a silent \
                      exception. {}",
@@ -334,7 +334,7 @@ fn load_graph() -> (rules::Graph, rules::Exceptions, Vec<String>) {
                 .as_str()
                 .expect("dependency name must be a string");
             // Only Inox crates are ours to order; third-party crates are out of
-            // scope for ADR 0002's layering.
+            // scope for the layering rules' layering.
             if !dep_name.starts_with("inox-") {
                 continue;
             }
@@ -459,7 +459,7 @@ fn dependency_direction_follows_adr_0002() {
     let violations = rules::check(&graph, &exceptions, "inox-compositor");
     assert!(
         violations.is_empty(),
-        "ADR 0002 dependency-direction violations:\n\n{}\n",
+        "the layering rules dependency-direction violations:\n\n{}\n",
         violations.join("\n\n")
     );
 }
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn same_layer_edge_fails() {
         // The PRD lists this edge for the shell family, and rule 1 forbids it;
-        // the ADR index carries the ambiguity, and the check refuses to guess.
+        // the decision index carries the ambiguity, and the check refuses to guess.
         let violations = check(&[("inox-panel", "inox-shell")]);
         assert_eq!(violations.len(), 1);
         assert!(

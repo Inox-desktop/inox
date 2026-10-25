@@ -10,7 +10,7 @@
 //! root: the `#[cxx_qt::bridge]` macro in `cxxqt_object` generates the required
 //! `unsafe extern "C++"` / `unsafe fn` FFI glue with no `#[allow]` wrapper, and
 //! a crate-level `forbid`/`deny` makes that generated code fail to compile. We
-//! therefore inherit `unsafe_code = "allow"` from `Cargo.toml` (ADR 0035
+//! therefore inherit `unsafe_code = "allow"` from `Cargo.toml` (the cxx-qt binding
 //! exception). The `unsafe` lives only in the generated bridge; Inox-authored
 //! code elsewhere in this crate stays unsafe-free.
 

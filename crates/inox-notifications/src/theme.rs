@@ -6,7 +6,7 @@
 //! size of its own. What this file implements is `docs/quality/ui-guidelines.md`
 //! §1 (token discipline), §2 (the four type roles), §4 (card geometry), §5 (the
 //! five states of a control) and §6 (a status is a sentence first and a colour
-//! second). ADR 0018 explains why this small mapping is duplicated in each L3
+//! second). The L3 component architecture explains why this small mapping is duplicated in each L3
 //! component instead of being shared — a shared UI crate would be a new
 //! same-layer dependency, which needs a decision of its own.
 //!

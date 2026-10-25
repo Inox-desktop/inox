@@ -66,7 +66,7 @@ settings-disabled-in-flight = A save is in progress
 settings-disabled-invalid = Some fields need fixing first
 settings-disabled-no-changes = Nothing has been changed yet
 
-# How far a change has got (acceptance D04, ADR 0014).
+# How far a change has got.
 settings-status-unchanged = The files are unchanged
 settings-status-modified = Changed here, not written yet
 settings-status-saving = Writing the files

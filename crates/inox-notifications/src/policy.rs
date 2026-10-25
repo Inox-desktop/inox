@@ -12,7 +12,7 @@
 //!   with [`crate::placement::KeyboardInteractivity::None`] whatever this policy
 //!   says, which is asserted where the placement is derived.
 //! - **A locked session hides the sensitive parts of a notification**
-//!   (ADR 0015, acceptance D06). [`Policy::content`] is the only way to get a
+//!   . [`Policy::content`] is the only way to get a
 //!   popup's content, and while the session is locked it returns
 //!   [`PopupContent::Withheld`], which **has no field** for the body, the
 //!   application name or the icon. That is the point of modelling it as a
@@ -26,7 +26,7 @@ use crate::queue::Notification;
 
 /// Whether the session is locked.
 ///
-/// The compositor owns this (ADR 0015: the lock state is not a UI client's to
+/// The compositor owns this (the session-lock boundary: the lock state is not a UI client's to
 /// keep), and the daemon is told; it decides nothing about locking itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {

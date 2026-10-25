@@ -24,7 +24,7 @@ inputs:
   qt:
     description: >-
       Also install the Qt 6 development packages the QML/Qt Quick host needs
-      (ADR 0033 / ADR 0035). cxx-qt builds rust-side QObject bridges and its
+      . cxx-qt builds rust-side QObject bridges and its
       build script resolves Qt through `qmake`/`pkg-config` (Qt6Core/Qt6Gui/
       Qt6Qml/Qt6Quick/Qt6QmlModels), so every job that runs a build script that
       touches a QML crate needs the dev packages — even when a job only
@@ -53,7 +53,7 @@ runs:
     # xkb-data: the rules files the compositor compiles its deterministic
     # evdev/us keymap from; without it the seat keyboard cannot be created.
     # libseat-dev / libdrm-dev / libgbm-dev / libinput-dev / libudev-dev: the
-    # M2.5 real backend (ADR 0010) links these through Smithay's `backend_*`
+    # M2.5 real backend links these through Smithay's `backend_*`
     # features. The runner has no DRM master and no input-device permissions, so
     # that code path is compile-checked only and never exercised here.
     - shell: bash
@@ -61,13 +61,13 @@ runs:
         sudo apt-get update
         # libpam0g-dev: `pam-sys`'s build script links -lpam and -lpam_misc, so
         # every job that runs a build script needs the dev symlink even when it
-        # does not link a final binary (clippy and doc included). ADR 0029.
+        # does not link a final binary (clippy and doc included).
         # libclang-dev: `pam-sys` (pulled in by `pam`, which `inox-auth`'s
         # `server` feature needs) generates its bindings with `bindgen` at build
         # time, and bindgen dlopen()s libclang. Without it the build script
         # panics ("couldn't find any valid shared libraries matching
         # ['libclang.so']") before it ever reaches the -lpam link that
-        # libpam0g-dev provides. ADR 0029.
+        # libpam0g-dev provides.
         sudo apt-get install -y --no-install-recommends \
           libxkbcommon-dev xkb-data libpam0g-dev libclang-dev \
           libseat-dev libdrm-dev libgbm-dev libinput-dev libudev-dev
@@ -82,7 +82,7 @@ runs:
           sudo apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri
         fi
         if [ "${{ inputs.qt }}" = "true" ]; then
-          # Qt 6 development + QML host for the Qt Quick migration (ADR 0035).
+          # Qt 6 development + QML host for the Qt Quick migration.
           # qt6-base-dev / qt6-declarative-dev provide Qt6Core/Gui/Qml/Quick
           # .pc files and headers (cxx-qt resolves them via pkg-config).
           # The QML modules are runtime data, not link inputs: a `main.qml`
@@ -96,7 +96,7 @@ runs:
           # libqt6waylandclient6 + qt6-wayland-dev are the Wayland client the
           # L3 layer surfaces attach through. No GPL-only Qt module (Qt Wayland
           # Compositor etc.) is pulled here — see the license-audit job which
-          # asserts exactly that (ADR 0033/0034).
+          # asserts exactly that.
           #
           # `lld`: `qt-build-utils` picks a linker for the Qt crates' link step
           # (`qt_build_utils::QtPlatformLinker::init`, called from

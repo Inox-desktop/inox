@@ -10,7 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-# This is an evidence crate for the LGPL/QML migration (ADR 0033/0035): it shows
+# This is an evidence crate for the LGPL/QML migration: it shows
 # the cxx-qt 0.10 binding surface we rely on. It is deliberately self-contained
 # — no Inox workspace *crate* dependency — so it compiles and runs standalone.
 [dependencies]
@@ -26,7 +26,7 @@ cxx-qt-build.workspace = true
 # The workspace favours `unsafe_code = "forbid"`, but the `#[cxx_qt::bridge]`
 # macro (see `src/cxxqt_object.rs`) emits `unsafe extern "C++"` / `unsafe fn`
 # blocks without an `#[allow]` wrapper, so the generated FFI glue cannot compile
-# under `forbid`. Override it to `allow` at crate level (ADR 0035 exception,
+# under `forbid`. Override it to `allow` at crate level (the cxx-qt binding exception,
 # documented in this crate's `AGENTS.md`); Inox-authored code stays unsafe-free.
 [lints.rust]
 unsafe_code = "allow"

@@ -1,9 +1,9 @@
 # Inox UI 设计规范
 
 - 状态：本规范只**收紧**既有约束，不放宽根 `AGENTS.md` 的任何硬性规则。
-- 适用范围：所有绘制 QML 界面的组件（迁移前为 Iced，ADR 0039） —— `inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-greet`。
-- 依据：[PRD](../../PRD.md) §9.2、[ADR 0009](../adr/0009-configuration-model-and-reload.md)、[ADR 0018](../adr/0018-l3-component-architecture.md)、[主题与设计令牌](../book/src/configuration/theme.md)、[验收规范](./acceptance.md) 的 Q01–Q03。
-- 设计原则的来源：Apple《Designing Fluid Interfaces》与 Emil Kowalski 的界面工程经验 —— 即时反馈、清晰层次、状态可见、克制动画、看不见的细节累积成手感。这些原则在此被翻译成 **QML + Qt Quick + 设计令牌** 的可执行规则（迁移前是 Iced，见 ADR 0039），而不是网页 CSS 的写法。
+- 适用范围：所有绘制 QML 界面的组件 —— `inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-greet`。
+- 依据：[PRD](../../PRD.md) §9.2、、、[主题与设计令牌](../book/src/configuration/theme.md)、[验收规范](./acceptance.md) 的 Q01–Q03。
+- 设计原则的来源：Apple《Designing Fluid Interfaces》与 Emil Kowalski 的界面工程经验 —— 即时反馈、清晰层次、状态可见、克制动画、看不见的细节累积成手感。这些原则在此被翻译成 **QML + Qt Quick + 设计令牌** 的可执行规则，而不是网页 CSS 的写法。
 
 本页回答的是「令牌已经有了，界面该怎么用它」。令牌本身的取值与 schema 以 [主题与设计令牌](../book/src/configuration/theme.md) 为准，本页不定义新令牌。
 
@@ -138,8 +138,8 @@
 
 ## 11. 明确不做
 
-- **不新增设计令牌**：令牌 schema 的变更属 ADR 0009 / 0014 的范围，本规范只使用现有令牌与 §1 的派生。
-- **不新增依赖、不新增 crate、不引入 layer-shell 宿主**（ADR 0018 的边界不变）。
+- **不新增设计令牌**：令牌 schema 的变更属配置模型 / 0014 的范围，本规范只使用现有令牌与 §1 的派生。
+- **不新增依赖、不新增 crate、不引入 layer-shell 宿主**。
 - **不改变领域契约与状态机语义**：界面重做不改变任何 `Message`/`update` 的既有事实与跨进程契约；既有验收断言随实际行为一并更新，不放宽。
 - **不为「更好看」牺牲既有的键盘、缩放、文案与状态断言。**
 
@@ -147,11 +147,11 @@
 
 玻璃（磨砂）材质只用于**悬浮的界面外壳**：面板的菜单栏与 dock、浮动菜单、通知栈。它不得铺在承载正文的大面积内容上 —— 玻璃降低了背景与文字的可读对比，正文按 §7 仍必须清晰可读。
 
-> 说明：`tokens.glass` 是由 [ADR 0031](../adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md) 记录、加在 `inox-config` 上的材质令牌组；§11 的「不新增设计令牌」约束的是那一次界面重做的范围，不阻止这个已经有 ADR 的令牌组。
+> 说明：`tokens.glass` 是由记录、加在 `inox-config` 上的材质令牌组；§11 的「不新增设计令牌」约束的是那一次界面重做的范围，不阻止这个已经有 ADR 的令牌组。
 
 - **材质只有一处来源**：`tokens.glass`（`tint` / `tint_strong` / `highlight` / `shade` / `blur`，见[主题与设计令牌](../book/src/configuration/theme.md)）。组件**不得**自己写死 tint 或自造一个「更透明一点的 `surface`」。一块玻璃 = 铺在透明表面上的半透明 `tint` + 顶边一道 `highlight` 发丝线 + 底边一道 `shade`；除 §4 允许的那一层低对比阴影外不再叠加阴影。按下/强调态的加深用 `tint_strong`，不新增颜色。
 - **背景模糊由合成器完成，组件只提出请求**：组件经 `inox-glass-v1`（`get_glass` + `set_region` + `set_radius`）请求模糊该表面背后的区域，半径取 `tokens.glass.blur`；`capabilities` 报告合成器接受的**最大**半径（`set_radius` 超限会被钳制，不是错误）。半径与区域是表面局部逻辑坐标，区域越界会被裁剪，非正尺寸表示「停止磨砂」。
-- **拿不到就降级，不谎报**：`capabilities = 0`、绑定不到 `inox_glass_manager_v1`、或表面没有 layer 角色时，组件必须画**纯半透明**（`tint` / `highlight` / `shade` 照旧，只是没有背景软化），并可以按 `glass.blur = 0` 的语义显式关闭模糊。**不得**把没有拿到的模糊画成「看起来像模糊」的假象，也不得因拿不到能力而反复重建对象（只有表面**后来获得**了 layer 角色才允许销毁重问，见 [ADR 0031](../adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)）。
+- **拿不到就降级，不谎报**：`capabilities = 0`、绑定不到 `inox_glass_manager_v1`、或表面没有 layer 角色时，组件必须画**纯半透明**（`tint` / `highlight` / `shade` 照旧，只是没有背景软化），并可以按 `glass.blur = 0` 的语义显式关闭模糊。**不得**把没有拿到的模糊画成「看起来像模糊」的假象，也不得因拿不到能力而反复重建对象（只有表面**后来获得**了 layer 角色才允许销毁重问，见 ）。
 - **成本与范围**：每个表面至多一个 glass 对象；模糊只作用于该表面自己的区域，普通窗口（非 layer 表面）不会被磨砂，也不会去磨砂它。锁定会话不施加任何磨砂 —— 锁定时普通层根本不参与合成。不做动画、放大或「液态玻璃」类的动态半径。
 - **键盘与状态不受影响**：玻璃是纯视觉层，不得改变焦点、命中区域、可读状态或键盘顺序（§5、§7）。文字与图标压在半透明材质上时，仍须满足 §7 的对比要求；做不到就加深 `tint` 而不是牺牲文字。
-- **面板的菜单栏与 dock 是这一材质的第一个消费者**：`inox-panel` 的 `theme.rs` 是唯一把 `tokens.glass` 变成窗格填充的地方 —— 一块窗格是「半透明 `tint` + 顶边 `highlight` + 底边 `shade`」的竖直渐变（两道发丝边由窗格自身的填充画出，不额外占一行控件：那一行会被撑满整个表面，而 dock 只应有图块那么宽），键盘导航聚焦时用 `tint_strong`。面板**不自己画模糊**：`glass.blur` 只是向合成器提出的半径，合成器侧的磨砂由 ADR 0031 的 leg 落地；在那之前面板画的是纯半透明，`tests/render.rs` 用合成在选定背景上的像素证明它确实是半透明，而不是不透明的 `surface`。
+- **面板的菜单栏与 dock 是这一材质的第一个消费者**：`inox-panel` 的 `theme.rs` 是唯一把 `tokens.glass` 变成窗格填充的地方 —— 一块窗格是「半透明 `tint` + 顶边 `highlight` + 底边 `shade`」的竖直渐变（两道发丝边由窗格自身的填充画出，不额外占一行控件：那一行会被撑满整个表面，而 dock 只应有图块那么宽），键盘导航聚焦时用 `tint_strong`。面板**不自己画模糊**：`glass.blur` 只是向合成器提出的半径，合成器侧的磨砂由玻璃协议的 leg 落地；在那之前面板画的是纯半透明，`tests/render.rs` 用合成在选定背景上的像素证明它确实是半透明，而不是不透明的 `surface`。

@@ -7,7 +7,7 @@
 //! what [`crate::view`] projected from these functions
 //! (`docs/quality/ui-guidelines.md` §1).
 //!
-//! ADR 0018 accepts one small copy of this mapping per L3 component instead of a
+//! the L3 component architecture accepts one small copy of this mapping per L3 component instead of a
 //! shared UI crate, because a shared crate would be a new same-layer dependency
 //! and therefore an ADR. The cost is that this file is the place a token change
 //! has to be applied seven times; the decision's review condition says to revisit

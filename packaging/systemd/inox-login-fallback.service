@@ -1,6 +1,6 @@
 [Unit]
 Description=Fall back to greetd when the Inox login screen cannot start
-Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
+Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/book/src/usage/login.md
 
 # Triggered by `OnFailure=inox-login-fallback.service` in inox-greeter@.service.
 # That unit retries the login screen twenty times over sixty seconds

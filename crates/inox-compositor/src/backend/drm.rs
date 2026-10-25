@@ -3,7 +3,7 @@
 //! One [`GpuBackend`] wraps one DRM device: its own libseat claim, DRM node, GBM
 //! device and EGL/GLES renderer, plus one scanout per connector it drives.
 //! The compositor opens every enumerated GPU that can drive a display and lets
-//! each one drive its own connectors (ADR 0019), so a machine with an integrated
+//! each one drive its own connectors, so a machine with an integrated
 //! and a discrete GPU uses both without sharing a renderer between them — which
 //! is what GBM allocation and the damage tracker require anyway.
 //!
@@ -11,7 +11,7 @@
 //! compositor hands out, because it advertises `wl_shm` only and shared memory is
 //! importable by any GPU. It is the reason `linux-dmabuf` must not be advertised
 //! before a copy path exists: a client buffer living on a GPU that cannot import
-//! it would simply not appear (ADR 0019, decision 3).
+//! it would simply not appear.
 
 use std::{
     collections::HashSet,
@@ -219,7 +219,7 @@ impl GpuBackend {
     /// The identity of one scanout: its card paired with its connector.
     ///
     /// A connector name alone is not unique across a machine's GPUs — two cards
-    /// can each have a `DP-1` — so the card is part of the key (ADR 0019). The
+    /// can each have a `DP-1` — so the card is part of the key. The
     /// name the clients see stays the plain connector name.
     fn key_of(&self, scanout: &Scanout) -> String {
         format!("{}:{}", self.card.display(), scanout.output.name())
@@ -375,7 +375,7 @@ impl GpuBackend {
         Ok(changed)
     }
 
-    /// Whether this device actually drives what `preferences` ask of it (ADR 0028).
+    /// Whether this device actually drives what `preferences` ask of it.
     ///
     /// [`GpuBackend::rescan`] keeps a connector's current scanout when the requested
     /// mode is unavailable, so a successful rescan is not evidence that the request
@@ -758,7 +758,7 @@ fn apply_scale_and_position(scanout: &mut Scanout, preference: Option<&OutputCon
     changed
 }
 
-/// The Smithay scale a configuration asks for (ADR 0020).
+/// The Smithay scale a configuration asks for.
 ///
 /// Integer-only clients are told the ceiling; `wp_fractional_scale_v1` carries
 /// the exact factor. Without a preference the output runs at 1:1.

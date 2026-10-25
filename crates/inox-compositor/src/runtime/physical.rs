@@ -2,7 +2,7 @@
 //!
 //! Every enumerated GPU that can drive a display gets its own [`GpuBackend`], and
 //! every output it drives gets its own frame state and its own pair of timers
-//! (ADR 0019). One display failing to present, being unplugged or being paused
+//! . One display failing to present, being unplugged or being paused
 //! therefore never stops the others from making progress, which is what O04's
 //! "each output keeps its own progress" asks for.
 //!
@@ -162,7 +162,7 @@ pub(super) fn prepare() -> Result<Prepared, RunError> {
 ///
 /// The primary GPU is tried first so the display the firmware brought up keeps
 /// driving it; a device that yields no usable output is reported and skipped
-/// rather than being fatal, because another one may still work (ADR 0019).
+/// rather than being fatal, because another one may still work.
 fn open_gpus(
     session: &mut LibSeatSession,
     devices: &BTreeMap<Dev, PathBuf>,
@@ -413,7 +413,7 @@ impl PhysicalState {
     /// The output preferences in force right now.
     ///
     /// The trial state machine records these before a display change so that a
-    /// rollback or the deadline can put exactly them back (ADR 0028).
+    /// rollback or the deadline can put exactly them back.
     pub(super) fn preferences(&self) -> &[OutputConfig] {
         &self.preferences
     }
@@ -717,7 +717,7 @@ fn refresh_topology(handle: &Handle, data: &mut CalloopData, physical: &mut Phys
 
 /// Apply output preferences to every device and refresh the topology.
 ///
-/// This is the only entry point a display trial uses (ADR 0028). It records the
+/// This is the only entry point a display trial uses. It records the
 /// preferences, rescans every GPU and refreshes the topology through
 /// [`refresh_topology`], so passing the preferences that were in force before a
 /// trial puts the previous modes, scales and positions back.
@@ -772,7 +772,7 @@ pub(super) fn apply_output_preferences(
 ///
 /// The exception is the first frame: a compositor that was asked for a physical
 /// output and never managed to present one has failed, and must say so rather
-/// than sit with no display and no error (ADR 0012).
+/// than sit with no display and no error.
 fn fail_output(
     handle: &Handle,
     data: &mut CalloopData,
@@ -896,7 +896,7 @@ fn rescan(handle: &Handle, data: &mut CalloopData, physical: &mut PhysicalState)
 /// Before the first frame has been presented a failure is fatal, because the
 /// compositor was asked to produce a physical output and could not. Afterwards
 /// the session survives with whatever other displays are left, and the device is
-/// picked up again by the next udev event (ADR 0012).
+/// picked up again by the next udev event.
 fn fail_device(
     handle: &Handle,
     data: &mut CalloopData,

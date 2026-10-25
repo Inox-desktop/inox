@@ -2,7 +2,7 @@
 //!
 //! These tests start the real [`inox_auth::server`] on a real Unix socket and drive
 //! it with the real `auth-v1` framing. Two things are not real, and they are the
-//! two system boundaries ADR 0037 draws:
+//! two system boundaries the boot login chain draws:
 //!
 //! - the authenticator itself — [`ScriptedBoundary`] answers with a script instead
 //!   of calling PAM;

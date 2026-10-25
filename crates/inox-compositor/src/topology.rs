@@ -2,8 +2,8 @@
 //!
 //! The module is pure geometry: it holds no Smithay state and performs no I/O,
 //! so the placement rules are unit testable and property testable on their own —
-//! the same shape `crate::layout` and `crate::layers` have. ADR 0019 fixes
-//! the rules this module implements:
+//! the same shape `crate::layout` and `crate::layers` have. The multi-output topology fixes
+//! The rules this module implements:
 //!
 //! - an output with an explicit position keeps it, including negative
 //!   coordinates;
@@ -25,7 +25,7 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 ///
 /// Minted by the compositor and valid only for the current process: the identity
 /// a display keeps across sessions is its connector name in the configuration,
-/// not this value (ADR 0012 separates runtime identity from saved preference).
+/// not this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(u64);
 

@@ -2,11 +2,11 @@
 //!
 //! This is the E3 leg of acceptance S02: a real `inox-session`, on a real
 //! `inox-compositor`, starting the real `inox-lock --take-lock`, with the token the
-//! session generated and delivered (ADR 0022 decisions 2, 3 and 6). What it proves
+//! session generated and delivered. What it proves
 //! is the chain, not any one component: the session hands out a capability, the
 //! lock client claims the trusted role with it over `inox-ipc`, the compositor
 //! covers every output and confirms, and a logout still completes inside the
-//! budget ADR 0021 fixes.
+//! budget the L4 session services fixes.
 //!
 //! It is enabled by `INOX_SESSION_E2E_BIN_DIR`, like `tests/headless.rs`, and runs
 //! in the same CI job: a component that is not built next to the others cannot be
@@ -29,7 +29,7 @@ fn run_locked_session(binaries: &Path, root: &Path) -> (std::process::ExitStatus
         .arg(binaries)
         // The one switch that makes the session start the trusted lock client:
         // `--take-lock` has no way to release the lock, so a session never starts
-        // it unless it was asked to (ADR 0022 decision 6).
+        // it unless it was asked to.
         .env("INOX_SESSION_TAKE_LOCK", "1")
         .env("XDG_RUNTIME_DIR", root)
         .env("XDG_CONFIG_HOME", root.join("config"))

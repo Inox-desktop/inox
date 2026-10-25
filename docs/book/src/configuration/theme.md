@@ -1,6 +1,6 @@
 # 主题与设计令牌
 
-> **状态：模型与消费方都已落地，决策仍是提案。** 本页的令牌集合与取值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）。`inox-config` 已实现令牌类型、内置浅/深主题、主题文件解析与缺失主题的报错；L3 的六个界面组件与 `inox-greet`**只消费令牌**（ADR 0018 记录了每个组件各自持有一小段令牌 → 样式的映射，以及为什么它没有被抽成共享 crate；迁移后这段映射的目标从 Iced 主题变成 QML 投影，取舍不变）。
+> **状态：模型与消费方都已落地，决策仍是提案。** 本页的令牌集合与取值来自 （状态 `proposed`）。`inox-config` 已实现令牌类型、内置浅/深主题、主题文件解析与缺失主题的报错；L3 的六个界面组件与 `inox-greet`**只消费令牌**。
 
 主题由一个 `theme.toml` 定义，内容是**设计令牌**（design tokens）：颜色、排版、间距、圆角、动效时长与玻璃材质。PRD §9.2 与根级 `AGENTS.md` §4 要求组件只消费令牌，**禁止在组件中硬编码颜色与尺寸**。
 
@@ -145,7 +145,7 @@ blur = 128
 | `shade` | `#00000059` | `#0000001f` | 窗格底边压暗 |
 | `blur` | `128` | `128` | 向合成器请求的背景模糊半径（逻辑像素） |
 
-`blur` 是一个**请求**：模糊本身由合成器经私有协议 `inox-glass-v1` 绘制，组件拿到的半径上限由合成器的 `capabilities` 回答，超限会被钳制。`blur = 0` 或 `capabilities = 0`（没有渲染支持、表面不是 layer 角色、会话已锁定）时，组件必须退化为**纯半透明**：`tint`/`highlight`/`shade` 照旧，只是没有背景软化，不得假装画出了模糊。决策与安全边界见 [ADR 0031](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0031-compositor-backdrop-blur-and-the-glass-protocol.md)（`proposed`）；合成器只在 **headless** 路径绘制模糊，物理（DRM）路径报 0 并保持场景锐利，因此真机上目前仍走纯半透明路径。
+`blur` 是一个**请求**：模糊本身由合成器经私有协议 `inox-glass-v1` 绘制，组件拿到的半径上限由合成器的 `capabilities` 回答，超限会被钳制。`blur = 0` 或 `capabilities = 0`（没有渲染支持、表面不是 layer 角色、会话已锁定）时，组件必须退化为**纯半透明**：`tint`/`highlight`/`shade` 照旧，只是没有背景软化，不得假装画出了模糊。决策与安全边界见 （`proposed`）；合成器只在 **headless** 路径绘制模糊，物理（DRM）路径报 0 并保持场景锐利，因此真机上目前仍走纯半透明路径。
 
 ## 自定义主题与缺失字段
 
@@ -156,7 +156,7 @@ blur = 128
 ## 当前实现状态
 
 - `inox-config` 已实现令牌类型、内置浅/深主题、`theme.toml` 解析，以及缺失主题与未知字段的报错。
-- 真实消费方是 L3/L4 的 QML 界面：`inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-greet`。每个组件在自己的 `theme.rs` 里把令牌映射成投影中的颜色与尺寸——颜色是 Qt 的 `#AARRGGBB` 字符串（`qml_color(Rgba)` 纯函数，有单测），尺寸/圆角/间距由令牌与 `typography.scale` 推导——QML 只绑定这些值，不得出现颜色或像素字面量。逐组件形态见[组件清单](../architecture/components.md)；[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md) 记录了这个「每个组件各有一份映射」的重复取舍。
+- 真实消费方是 L3/L4 的 QML 界面：`inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-greet`。每个组件在自己的 `theme.rs` 里把令牌映射成投影中的颜色与尺寸——颜色是 Qt 的 `#AARRGGBB` 字符串（`qml_color(Rgba)` 纯函数，有单测），尺寸/圆角/间距由令牌与 `typography.scale` 推导——QML 只绑定这些值，不得出现颜色或像素字面量。逐组件形态见[组件清单](../architecture/components.md)；记录了这个「每个组件各有一份映射」的重复取舍。
 - 组件**如何**消费令牌 —— 类型层次、间距节奏、控件几何、五状态可见性、无障碍与缩放要求 —— 见 [Inox UI 设计规范](https://github.com/Inox-desktop/inox/blob/main/docs/quality/ui-guidelines.md)。
 - 仍缺：高对比主题与 RTL 伪本地化（[验收规范](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md) Q02 的已知缺口）。
 - 合成器边框等非 Shell 的消费方计划使用同一套令牌，因此令牌类型刻意不依赖任何图形栈（迁移到 Qt 也没有把 Qt 类型带进 `inox-config`）。

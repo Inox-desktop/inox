@@ -35,7 +35,7 @@ use crate::view_model::{AccountView, Action, Credential, Face, FocusTarget, Gree
 use inox_config::Theme as Tokens;
 
 /// Width of the login window, in logical pixels.
-/// (the credential is a mask, ADR 0015), so the ring is the projection's answer to
+/// , so the ring is the projection's answer to
 /// Window geometry is a layout decision of this component rather than a theme
 /// token, so it lives in Rust and QML binds to it. 1280×720 is the size
 /// acceptance Q02 fixes for the component's evidence.

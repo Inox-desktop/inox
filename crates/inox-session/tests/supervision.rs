@@ -302,7 +302,7 @@ fn unresponsive_service_is_killed_within_the_logout_budget() {
 
 /// A Wayland peer that also records the arguments it was started with.
 ///
-/// The lock token is delivered to the compositor on its command line (ADR 0022
+/// The lock token is delivered to the compositor on its command line (the session-lock and notification bus work
 /// decision 3), so the compositor's own record of its argv is where the test reads
 /// the session's token from — the session process never prints it, and must not.
 const PEER_RECORDS_ARGV: &str = r#"

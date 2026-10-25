@@ -1,10 +1,10 @@
 # AGENTS.md — inox-integration
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
-端到端集成测试与**分层方向检查**（验收项 B04）。所属层级：**测试**，按 ADR 0002 规则 7 不受依赖方向限制（但反过来：任何 crate 都不得依赖本 crate，该规则也由本 crate 的检查断言）。
+端到端集成测试与**分层方向检查**（验收项 B04）。所属层级：**测试**，按分层规则 7 不受依赖方向限制（但反过来：任何 crate 都不得依赖本 crate，该规则也由本 crate 的检查断言）。
 
 ## crate 特有约束
 
@@ -39,11 +39,11 @@
 ## 测试要求
 
 - 测试代码不受“禁止 unwrap/expect/panic”约束。
-- **`tests/layering.rs`（当前的主体）**：读取 `cargo metadata --no-deps` 与根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`，逐条断言 ADR 0002 的规则，并断言层级表恰好覆盖全部工作区成员。
+- **`tests/layering.rs`（当前的主体）**：读取 `cargo metadata --no-deps` 与根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`，逐条断言分层规则的规则，并断言层级表恰好覆盖全部工作区成员。
   - 规则逻辑在 `rules::check` / `rules::check_coverage` 中，接受普通值参数，因此**可以对合成图做单元测试**：`tests` 模块用 15 个反例与正例固定每条规则的行为（反向边、同层边、合成器/Shell 双向互依、未登记的 L3→合成器边、依赖本 crate、叶子被依赖、幽灵成员、重复层级）。**新增规则必须同时新增正例与反例**，否则该规则按「未验证」处理。
   - 失败信息必须给出具体的边与被违反的规则条目，不能只报「检查失败」。
   - 检查不得依赖任何 Inox crate，否则某个 crate 编译失败就会连带让检查失去意义。
-- **M3 端到端（E3）用例**（验收 X01–X03，ADR 0017 第 8 条）位于 `tests/m3_*.rs`。它们**不以 Cargo 依赖**方式链接任何 Inox crate：从测试可执行文件自身路径定位同一 `target/<profile>/` 下的 `inox-compositor`（须以 `--features inox-compositor/test-input` 构建）与 `inox-xwayland`，作为子进程驱动，进程之间只用 Wayland / X11 协议通信。因此本 crate 的依赖面与层级表不变，`layering.rs` 仍然有效。
+- **M3 端到端（E3）用例**位于 `tests/m3_*.rs`。它们**不以 Cargo 依赖**方式链接任何 Inox crate：从测试可执行文件自身路径定位同一 `target/<profile>/` 下的 `inox-compositor`（须以 `--features inox-compositor/test-input` 构建）与 `inox-xwayland`，作为子进程驱动，进程之间只用 Wayland / X11 协议通信。因此本 crate 的依赖面与层级表不变，`layering.rs` 仍然有效。
   - 开关：`INOX_M3_E2E=1`；未设置时每个用例打印一行 `skipping` 并直接返回，常规分片保持绿色。缺少必需系统工具（`INOX_M3_E2E_REAL_APPS=1` 时的 `xeyes`/`xwininfo`）或缺少二进制时**失败**，不静默跳过。
   - 命令：先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features`。
   - 共享装置在 `tests/support/`：`mod.rs`（私有 runtime 目录、空闲显示号、子进程与进程组回收、注入套接字客户端、帧转储解码、布局期望值）、`wayland_client.rs`（真实 `wayland-client` 客户端）、`x11_client.rs`（基于 `x11rb` 的真实 X11 客户端）。

@@ -68,7 +68,7 @@
       wayland-protocols. It is unstable until Inox 1.0: the interface may
       change in a backwards-incompatible way, and consumers must negotiate
       through the version event and the capabilities event instead of assuming
-      a fixed revision (ADR 0006, ADR 0031).
+      a fixed revision.
 
       Warning! The protocol described in this file is currently in the testing
       phase. Backward compatible changes may be added together with the

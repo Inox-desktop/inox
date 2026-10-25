@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Give the boot chain back to greetd (ADR 0037 §决策 6, §兼容、迁移与回退).
+# Give the boot chain back to greetd.
 #
 # Order is the whole point, and it is the order this script enforces:
 #

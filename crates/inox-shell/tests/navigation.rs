@@ -2,7 +2,7 @@
 //!
 //! The state machine is unit-tested next to its implementation; this file is
 //! the acceptance scenario written the way the criterion reads, so that the
-//! behaviour a reviewer checks against ADR 0013 is visible in one place.
+//! behaviour a reviewer checks against the interaction contract is visible in one place.
 
 use inox_shell::navigation::{
     Entry, EntryFocus, EntryId, FallbackReason, NavigationOutcome, NavigationStack, ReturnTarget,
@@ -116,7 +116,7 @@ fn a_keyboard_shortcut_navigates_into_an_entry_that_is_already_displayed() {
     assert_eq!(stack.focus(), None);
 }
 
-/// ADR 0013: a window that died while its layer was open is never focused again.
+/// the interaction contract: a window that died while its layer was open is never focused again.
 #[test]
 fn a_destroyed_window_is_never_focused_again() {
     let mut stack = NavigationStack::new(GENERATION);
@@ -135,7 +135,7 @@ fn a_destroyed_window_is_never_focused_again() {
     );
 }
 
-/// ADR 0013 decision 1: a session that was rebuilt invalidates the windows the
+/// the interaction contract, rule 1: a session that was rebuilt invalidates the windows the
 /// layers recorded, even though their ids may be reused.
 #[test]
 fn a_target_from_a_previous_session_is_not_reused() {

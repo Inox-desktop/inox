@@ -1,4 +1,4 @@
-# cargo-deny policy for the whole workspace (ADR 0016).
+# cargo-deny policy for the whole workspace.
 #
 # This replaces the up-to-18 per-repository `deny.toml` copies, which each saw
 # only their own dependency subgraph. Licence, advisory and duplicate-version
@@ -15,12 +15,12 @@ yanked = "warn"
 # repository has on its own; the alternative would be to drop the toolkit.
 #
 # `cgmath` (RUSTSEC-2026-0196) is an unavoidable transitive dependency of
-# Smithay v0.7.0 (ADR 0003). Revisit when Smithay drops it.
+# Smithay v0.7.0. Revisit when Smithay drops it.
 #
 # `ttf-parser` (RUSTSEC-2026-0192) used to be here and has been dropped from
 # this list: it left the graph with Iced. The QML shell components lay text out
 # in Qt Quick, not cosmic-text, so `iced_graphics -> cosmic-text -> fontdb` no
-# longer exists (ADR 0036).
+# longer exists.
 #
 # The three `users` entries are **not** that shape: two of them are real defects
 # in the crate, and they are ignored because no code in this workspace reaches
@@ -40,7 +40,7 @@ yanked = "warn"
 #     (`inox_auth::session::session_groups`, with tests).
 #
 # Removing these entries means removing the crate: track `pam`'s dependency on
-# it (ADR 0029 §3 records the same reasoning, and the removal plan).
+# it.
 ignore = [
     "RUSTSEC-2026-0196",
     "RUSTSEC-2023-0040",
@@ -49,11 +49,11 @@ ignore = [
 ]
 
 [licenses]
-# Relicensed to LGPL-3.0 (ADR 0034) for the Qt-quick route (ADR 0033): the
+# Relicensed to LGPL-3.0 for the Qt-quick route: the
 # project aligns with Qt's LGPL and the allow-list now accepts LGPL/GPL
 # libraries while keeping the aggressive copyleft out where we must. GPL-only
 # Qt modules (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler) are
-# still forbidden by policy, not by this list — see ADR 0033 §"Qt 许可".
+# still forbidden by policy, not by this list — see the QML evaluation
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

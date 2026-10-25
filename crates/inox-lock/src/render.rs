@@ -1,13 +1,13 @@
 //! The lock screen's frames: QML, drawn offscreen into a lock surface's buffer.
 //!
-//! [ADR 0015] puts the lock state in the compositor and makes this crate the
+//! the session-lock boundary puts the lock state in the compositor and makes this crate the
 //! trusted client of `ext-session-lock-v1`. [`crate::session`] is the client half
 //! of that; this module is what puts an *interface* on the frames it commits.
 //!
 //! # Why there is no Qt window here
 //!
 //! A lock surface is not a window. Qt has no `ext-session-lock-v1` client, and
-//! `LayerShellQt` is not an option for exactly the reason ADR 0015 gives: a Qt
+//! `LayerShellQt` is not an option for exactly the reason the session-lock boundary gives: a Qt
 //! window would be a *second* surface, not a lock surface — the layer-shell-shaped
 //! mistake the ADR refuses. So the crate keeps the protocol leg and makes QML a
 //! pure renderer: [`crate::cxxqt_object`] holds a C++ `QGuiApplication` on the
@@ -27,8 +27,6 @@
 //! monitor gets two different frames, and neither has to be scaled to the other.
 //! The process-wide `QGuiApplication` is created once, on the first `Interface`;
 //! that is the only piece of Qt state the surfaces share.
-//!
-//! [ADR 0015]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0015-session-lock-and-failure-boundaries.md
 //!
 //! The consequence worth stating: this module draws, and does nothing else. It
 //! does not read the keyboard, it does not decide anything, and it hands no

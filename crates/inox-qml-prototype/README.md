@@ -1,6 +1,6 @@
 # inox-qml-prototype
 
-自 Iced 迁移到 QML/Qt Quick（[ADR 0033](../../docs/adr/))过程中，**cxx-qt 0.10 绑定链路**的验证原型 crate。
+自 Iced 迁移到 QML/Qt Quick（)过程中，**cxx-qt 0.10 绑定链路**的验证原型 crate。
 
 本 crate 以最小可运行的方式证明：**一个用 Rust 编写的 `QObject`（`MyObject`），暴露 `Q_PROPERTY` 与 `qinvokable`，能被 QML 实例化并双向驱动** —— 这是 Inox 迁移策略是否可行的关键证据。
 
@@ -64,7 +64,7 @@ cargo doc -p inox-qml-prototype --no-deps --all-features
 
 ## 设计说明与取舍
 
-- **`unsafe`**：cxx-qt bridge 宏生成的 FFI 胶水不含 `#[allow]`，在根级 `unsafe_code = "forbid"` 下编译失败。本 crate 因此按 [ADR 0035] 在 `Cargo.toml` 单独放行 `unsafe_code = "allow"`；**Inox 手写代码不含任何 `unsafe`**。详见 `AGENTS.md`。
+- **`unsafe`**：cxx-qt bridge 宏生成的 FFI 胶水不含 `#[allow]`，在根级 `unsafe_code = "forbid"` 下编译失败。本 crate 因此按 [cxx-qt 绑定] 在 `Cargo.toml` 单独放行 `unsafe_code = "allow"`；**Inox 手写代码不含任何 `unsafe`**。详见 `AGENTS.md`。
 - **bridge 内文档注释**：cxx 解析器不接受 bridge 块（`unsafe extern "C++"` / `extern "RustQt"`）内的 `///` 注释，文档注释放在宏外的 Rust 类型 / `impl` 块上。
 - **QML 模块 uri**：`com.inox.prototype.qml`。main.qml 同最 import 该 uri，qrc 路径把 `.` 换成目录段。
 - **Accessible / AT-SPI**：`qml/main.qml` 为窗口、数字文本与按钮设置了 `Accessible.role` / `Accessible.name`，验证 Qt Quick 无障碍树可暴露给 AT-SPI（根级 §7.4）。
@@ -72,4 +72,4 @@ cargo doc -p inox-qml-prototype --no-deps --all-features
 
 ## License
 
-LGPL-3.0（仓库根 `LICENSE`，ADR 0034）。
+LGPL-3.0。

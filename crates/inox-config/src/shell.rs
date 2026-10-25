@@ -16,7 +16,7 @@
 //! agree with: they are the user-facing defaults the L3 components start from,
 //! and what backs them is the schema itself. Each range is enforced while the
 //! file is parsed, so a value outside it is a parse error naming the field
-//! rather than a silent clamp (ADR 0009, decision 4).
+//! rather than a silent clamp.
 //!
 //! `panel.clock_format` and `menubar.clock_format` are the one fields with a
 //! grammar of their own: the format is the explicitly supported subset in

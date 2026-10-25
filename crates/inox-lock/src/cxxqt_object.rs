@@ -1,6 +1,6 @@
 //! The cxx-qt bridge: one JSON projection into QML, and the offscreen host.
 //!
-//! ADR 0038 decides how this component carries QML: the lock surface stays a
+//! the offscreen QML decision decides how this component carries QML: the lock surface stays a
 //! real `ext_session_lock_v1` surface created by [`crate::session`], and QML is a
 //! pure renderer whose frames are grabbed offscreen and written into the same
 //! `wl_shm` buffer the crate's own renderer used to fill. This module is the

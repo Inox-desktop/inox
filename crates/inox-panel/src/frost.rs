@@ -4,7 +4,7 @@
 //! behind its own surface — those live in the compositor's framebuffer — so the
 //! material the panel draws is a *translucent tint*, and the softening of
 //! whatever is behind it is asked of the compositor over `inox-glass-v1`
-//! (`docs/quality/ui-guidelines.md` §12, ADR 0031).
+//! .
 //!
 //! This module holds the decisions that follow from that, with no Wayland type
 //! in sight, so every one of them is unit-tested without a display:

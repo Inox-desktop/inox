@@ -28,7 +28,7 @@
 
 ## L3 组件的 GUI 测试：投影、QML 加载与离屏帧
 
-界面从 Iced 迁到 QML + Qt Quick 后，测试装置也换了一套（[ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md) §决策 5）：Iced 的 `UserInterface` / `tiny_skia` 像素装置删除，换成下面四类。共同前提是**不需要合成器**：CI 里没有支持 `wlr-layer-shell-unstable-v1` 的宿主，Qt 用 `offscreen` 平台。
+界面从 Iced 迁到 QML + Qt Quick 后，测试装置也换了一套（ §决策 5）：Iced 的 `UserInterface` / `tiny_skia` 像素装置删除，换成下面四类。共同前提是**不需要合成器**：CI 里没有支持 `wlr-layer-shell-unstable-v1` 的宿主，Qt 用 `offscreen` 平台。
 
 1. **纯逻辑单测**：`app.rs` / `view_model.rs` / 状态机的原有测试全部保留，不因为换 UI 栈而放宽。
 2. **投影断言**：`view.rs` 把「状态 + 令牌 + 文案」投影成 JSON，测试直接断言这个值 —— 颜色等于令牌的转换结果（`theme::qml_color(Rgba)`），字号与间距等于令牌推导值，文案来自 Fluent（`en-US` 与 `zh-CN` 各断言一次），可达条目数与会话一致。
@@ -47,7 +47,7 @@ CI 的 `test` 分片对每个 crate 跑的就是 `cargo test -p <crate> --all-fe
 
 ### 三条边界，不能当作已通过的证据
 
-1. 它证明控制树、投影、QML 模块加载与像素输出正确，**不**证明组件在真实合成器中的表面、焦点与放置正确 —— 那需要 waydriver 在真实宿主上启动、截图、断言，而该 job **尚未接线**（[ADR 0036](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0036-component-migration-plan.md) 的 M02、[ADR 0039](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0039-qml-migration-completion-and-private-abi.md) 的 M10；这条证据缺口最早记录在 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)）。
+1. 它证明控制树、投影、QML 模块加载与像素输出正确，**不**证明组件在真实合成器中的表面、焦点与放置正确 —— 那需要 waydriver 在真实宿主上启动、截图、断言，而该 job **尚未接线**（ 的 M02、的 M10；这条证据缺口最早记录在 ）。
 2. 离屏的面板与锁屏**没有 QPA 无障碍桥**，AT-SPI 语义导出与真实屏幕阅读器（Q01 的人工部分）都没有覆盖；五个窗口组件走标准 QPA 路径，真实屏幕阅读器验收同样未取得。
 3. 运行测试的机器必须装有至少一种字体：文本由 Qt 在出帧时布局，没有字体时标签渲染为空，像素断言会变成在断言一张空帧（CI 的 QML 分片为此安装 `fonts-dejavu-core` 与 `fonts-noto-cjk`）。
 

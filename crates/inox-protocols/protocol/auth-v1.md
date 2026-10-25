@@ -1,7 +1,7 @@
 # `auth-v1` — the private authentication contract
 
 - 状态：**normative**（规范文本）。实现见 `crates/inox-auth/src/wire.rs`；决策见
-  [ADR 0029](../../../docs/adr/0029-inox-authentication-boundary.md)。
+  。
 - 传输：Unix 域套接字，默认 `/run/inox/auth.sock`（可用 `INOX_AUTH_SOCKET` 覆盖）。
 - 对端：服务端为 `inox-auth`（特权 helper），客户端为 `inox-greet`（登录界面）。锁屏
   （`inox-lock`）将来的解锁路径复用同一契约。
@@ -11,7 +11,7 @@
 
 `inox-ipc` 走 Wayland 连接，而认证边界必须**早于任何合成器**存在：登录界面本身还没有
 合成器可连，helper 也不持有 Wayland 连接。因此这是一条单纯的 Unix 套接字私有协议，
-按 ADR 0026 对配置契约的同一做法记录在 `inox-protocols/protocol/` 下：**契约文档在这里，
+按热重载对配置契约的同一做法记录在 `inox-protocols/protocol/` 下：**契约文档在这里，
 类型与实现留在说它的 crate 里**，不新增层级边，也不把 helper 拉进 L2 依赖图。
 
 ## 2. 帧格式

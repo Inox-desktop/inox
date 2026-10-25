@@ -4,11 +4,11 @@
 //! conversation answers, a return code comes back and is mapped. What they cannot
 //! show is that any particular PAM stack authenticates anybody — that needs
 //! `/etc/pam.d/inox-auth`, a real account and a real password, which is an E4 step
-//! for a person at a keyboard (ADR 0029 §验收). On a runner without that file,
+//! for a person at a keyboard. On a runner without that file,
 //! Linux-PAM falls back to `other`, which denies, so what is asserted here is the
 //! property that matters in CI: **a wrong password is a verdict, not a panic**, and
 //! **a session PAM will not open is an error, not a panic** — including the session
-//! leader's session-only stack, which is the half ADR 0037 §决策 5 added.
+//! leader's session-only stack, which is the half the boot login chain
 
 #![cfg(feature = "server")]
 
@@ -63,7 +63,7 @@ fn a_refused_attempt_leaves_the_boundary_usable_for_the_next_one() {
 fn the_credential_is_not_needed_after_the_authentication() {
     // The conversation clears its copy the moment `pam_authenticate` returns, and
     // nothing else in the boundary holds one: the session is opened in a different
-    // process (ADR 0037 §决策 5), by a boundary that never sees a credential.
+    // process, by a boundary that never sees a credential.
     let mut boundary = PamBoundary::new("inox-auth");
     let credential = Secret::from_bytes(b"hunter2");
 

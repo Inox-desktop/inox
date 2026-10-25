@@ -2,13 +2,12 @@
 
 > **状态：字段模型已实现，消费方为部分实现。** `shell.toml` 的模型位于 `inox-config` 的 `src/shell.rs`，
 > 默认值、范围校验与错误定位都有单元测试（本地 `cargo test -p inox-config` 全绿；CI 为唯一验收途径）。
-> 消费它的 L3 组件按 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)
-> （状态 `proposed`）交付到 **E0/E1**（编译、lint、文档、单元与属性测试）；需要 layer-shell 宿主的
-> **E2/E3** 证据尚未取得，理由见该 ADR 与[里程碑与路线图](../roadmap.md)。
+> 消费它的 L3 组件按 L3 组件架构的决策（状态 `proposed`）交付到 **E0/E1**（编译、lint、文档、单元与属性测试）；
+> 需要 layer-shell 宿主的 **E2/E3** 证据尚未取得，理由见[里程碑与路线图](../roadmap.md)。
 
 `shell.toml` 由 L3 的面板、启动器与壁纸读取，文件名在 `config.toml` 的 `[components] shell` 中给出
 （见[配置目录布局](./layout.md)）。文件缺席时所有字段取默认值；**未知字段与越界值在解析期报错**，
-错误信息包含文件、行号与点分字段路径（ADR 0009 决策 4）。
+错误信息包含文件、行号与点分字段路径。
 
 ```toml
 [panel]
@@ -72,7 +71,7 @@ mode = "fill"              # fill | fit | stretch | center | tile
 
 | 键 | 类型 | 默认值 | 范围 | 说明 |
 |----|------|--------|------|------|
-| `max_results` | 整数 | `8` | 1..=64 | 搜索结果上限（有界结果集，见 ADR 0013 决策 4） |
+| `max_results` | 整数 | `8` | 1..=64 | 搜索结果上限 |
 | `icon_size` | 整数 | `48` | 8..=256 | 结果行图标尺寸 |
 | `terminal` | 字符串数组 | `[]` | — | 以 **argv** 形式给出的终端前缀，用于 `Terminal=true` 的桌面条目 |
 | `include_hidden` | 布尔 | `false` | — | 是否包含 `Hidden` / `NoDisplay` 的条目 |
@@ -104,7 +103,7 @@ mode = "fill"              # fill | fit | stretch | center | tile
 
 内置壁纸随发行版安装到 `$XDG_DATA_DIRS/inox/wallpapers/`；`INOX_WALLPAPER_DIR`（绝对路径）可以覆盖该目录，
 便于在源码检出或非常规布局下运行。**设置**应用（`inox-settings`）可以直接挑选这些壁纸，
-不需要手写路径。当前随附（ADR 0030）：
+不需要手写路径。当前随附：
 
 | 名称 | 图片 | 作者 | 来源 |
 |------|------|------|------|
@@ -123,7 +122,7 @@ mode = "fill"              # fill | fit | stretch | center | tile
 行为与以前完全一致。
 
 `image` 指定的文件不存在或无法解码时，壁纸回退到**主题的背景令牌**并给出可诊断的日志，而不是黑屏或
-崩溃：显式选择却读不到的资源必须被报告（ADR 0014）。省略 `image` 时显示的**是**内置默认壁纸；
+崩溃：显式选择却读不到的资源必须被报告。省略 `image` 时显示的**是**内置默认壁纸；
 只有显式写成 `none`（或把 `image` 设成空字符串）时才是主题背景。
 
 ## 相关页面

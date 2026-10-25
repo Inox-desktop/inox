@@ -1,5 +1,5 @@
 //! The D-Bus service: `org.freedesktop.Notifications` on the session bus.
-//! This is the transport ADR 0022 decision 5 asks for, migrated by ADR 0027.
+//! This is the transport the session-lock and notification bus work, rule 5 asks for, migrated by the zbus 6 migration.
 //! This is the transport decision 5 asks for, migrated by//! It is a translation layer and nothing else: a method call becomes a [`Request`] the application
 //! answers, the answer becomes a D-Bus reply or error, and a [`Signal`] becomes
 //! `NotificationClosed` or `ActionInvoked`. Every decision about what a

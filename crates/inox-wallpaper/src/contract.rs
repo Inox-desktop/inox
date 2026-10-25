@@ -1,4 +1,4 @@
-//! The state contract of ADR 0013, as data.
+//! The state contract of the interaction contract, as data.
 //!
 //! The contract asks every L3 component to model the same four things, so that a
 //! component that is restarted, replaced or reconnected behaves like one that is

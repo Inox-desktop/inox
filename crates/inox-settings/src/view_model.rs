@@ -130,7 +130,7 @@ pub enum StatusKind {
     Rejected,
     /// The change is in effect but a display trial has not been answered yet.
     ///
-    /// Kept apart from [`StatusKind::Applied`] because ADR 0028 refuses to call a
+    /// Kept apart from [`StatusKind::Applied`] because the display trial refuses to call a
     /// mode change settled before the user confirms it: it is drawn in the
     /// warning colour, next to the dialog that can still take it back.
     Provisional,

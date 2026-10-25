@@ -6,7 +6,7 @@
 //! # Current milestone
 //!
 //! The M2.5 hardware path uses libseat, Smithay DRM/GBM scanout, libinput
-//! and explicit frame lifetimes (accepted ADR 0012). Headless remains an explicit
+//! and explicit frame lifetimes. Headless remains an explicit
 //! software-rendered CI backend. `auto` requires a usable physical output;
 //! device acquisition failure never reports a headless session as ready.
 //! Hardware support is limited to one active connector on one GPU, scale 1.
@@ -14,7 +14,7 @@
 //!
 //! # Layout
 //!
-//! - [`backend`] — DRM/GBM, libinput and shared frame lifecycle (ADR 0012).
+//! - [`backend`] — DRM/GBM, libinput and shared frame lifecycle.
 //! - [`config`] — command line parsing into plain configuration data.
 //! - [`glass`] — the pure half of the private `inox-glass-v1` frosted-glass
 //!   protocol: parameters, capability decisions and the pane list the renderer
@@ -27,10 +27,10 @@
 //!   builds with the `test-input` feature (off by default).
 //! - [`runtime`] — the calloop event loop: Wayland, device sources, frame scheduling and signals.
 //! - [`session_lock`] — the pure half of the session lock: who may lock, and
-//!   when every output has been covered (ADR 0015, ADR 0022).
+//!   when every output has been covered.
 //! - [`state`] — Smithay compositor state and its protocol handlers.
 //! - [`trial`] — the pure display trial state machine: generation, deadline and
-//!   rollback decisions (ADR 0028).
+//!   rollback decisions.
 
 pub mod backend;
 pub mod config;

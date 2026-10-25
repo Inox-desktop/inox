@@ -14,7 +14,7 @@
 //! * every child runs in its own process group and is reaped, group and all, so
 //!   a failing assertion cannot leave a stray Xwayland behind (items R03/X01);
 //! * the components under test are the workspace's own binaries, located next to
-//!   the test executable. This crate depends on no Inox crate (ADR 0017
+//!   the test executable. This crate depends on no Inox crate (the XWayland clipboard and DnD work
 //!   decision 8), so `tests/layering.rs` keeps its meaning.
 //!
 //! The tests are opt-in through `INOX_M3_E2E=1`: the default per-crate CI shard

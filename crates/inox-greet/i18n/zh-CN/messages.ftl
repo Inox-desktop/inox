@@ -35,7 +35,7 @@ greet-banner-live = 登录后将启动 Inox 会话。
 greet-blocked = 系统认证边界不可用，无法校验登录。
 
 # 表单下方的状态。刻意不含次数、剩余尝试与剩余时间：限流信息自己泄露内部计时，
-# 等于告诉猜它的人还剩多少预算（ADR 0015，与锁屏限流器同一条规则）。
+# 等于告诉猜它的人还剩多少预算。
 greet-unavailable = 无法登录
 greet-checking = 正在验证账户…
 greet-starting = 正在启动会话…

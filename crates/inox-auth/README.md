@@ -5,8 +5,8 @@ Inox 的**认证边界**：唯一允许校验口令、唯一允许启动别人�
 - 层级：**L2**（见根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`）
 - 二进制：`inox-auth`（特权 helper，服务系统套接字时需要 root）
 - 契约：`crates/inox-protocols/protocol/auth-v1.md`（规范文本）
-- 决策：[ADR 0029](../../docs/adr/0029-inox-authentication-boundary.md)（认证边界）、
-  [ADR 0037](../../docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)（VT/seat 交接与会话负责人）
+- 决策：（认证边界）、
+  （VT/seat 交接与会话负责人）
 
 ## 它做什么
 
@@ -76,7 +76,7 @@ inox-auth --socket /tmp/inox-auth.sock --allow-uid "$(id -u)" --session-program 
 | `--session-vt-min N` / `--session-vt-max N` | `2` / `6` | 用户会话可用的 VT 范围 |
 | `--seat NAME` | `seat0` | logind seat |
 | `--attempts N` / `--window-seconds N` | `3` / `60` | 滚动限额 |
-| `--exit-after-session` | 关闭 | 会话结束后退出整个 helper（部署状态复位；ADR 0037 之后不再是环境泄漏的必要缓解） |
+| `--exit-after-session` | 关闭 | 会话结束后退出整个 helper |
 
 内部模式（**不是给人用的**，只由 helper 自己以 root 启动）：
 
@@ -103,7 +103,7 @@ inox-auth --session-leader --user <name> --vt <n> \
 
 此外还需要：一个把 `inox-auth` 以 root 拉起的单元（`packaging/systemd/inox-auth.service`，显式传 `--service inox-auth --session-service inox-auth-session --session-program /usr/bin/inox-session`，与本 crate 的默认值一致），以及 `inox-host` 拉起的登录界面（`INOX_AUTH_SOCKET`）。
 
-真机登录验收的步骤见 ADR 0037 §验收；真机 PAM/VT 行为属 E4，**必须由人完成**。
+真机登录验收的步骤见登录链；真机 PAM/VT 行为属 E4，**必须由人完成**。
 
 ## 已知限制
 
@@ -113,6 +113,6 @@ inox-auth --session-leader --user <name> --vt <n> \
 - 启动自愈只在 seat 上没有活动会话、且能按 greeter uid 唯一识别出 greeter 会话时生效。
 - 会话没有 `setsid`；libpam 内部会构造一份不受本 crate 控制的 `CString`；`Secret` 未 `mlock`。
 - 负责人的确认行在 `pam_open_session` 之后、`exec` 之前发出；`exec` 若在此之后失败，界面先看到 `started:true`，随后会话立即结束并交回显示。
-- 多用户同时登录、会话选择菜单、挂起/恢复矩阵未实现（ADR 0037 §未决项）。
+- 多用户同时登录、会话选择菜单、挂起/恢复矩阵未实现。
 
-逐条记录在 ADR 0029 与 ADR 0037。
+逐条记录在认证边界与登录链。

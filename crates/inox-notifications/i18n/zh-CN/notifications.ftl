@@ -4,14 +4,14 @@
 # `inox_common::i18n::compare_catalogs` 断言（验收 Q03）。应用名、通知标题、
 # 正文与动作标签是随通知到达的**数据**，不在这里翻译。
 
-# 守护进程自身窗口的标题（ADR 0018：目前是普通窗口，而非 layer 表面）。
+# 守护进程自身窗口的标题。
 notifications-window-title = Inox 通知
 
 # 守护进程自身的状态：弹窗位置为空时说明原因，而不是留一块空白。
 notifications-empty = 没有通知
 notifications-suppressed = 勿扰模式已开启，通知已静音
 
-# 锁定会话时替代摘要、应用名与图标（ADR 0015，验收 D06）：敏感内容根本不存在于视图模型里。
+# 锁定会话时替代摘要、应用名与图标：敏感内容根本不存在于视图模型里。
 notifications-generic-summary = 收到一条通知
 
 # 单条通知的关闭按钮。

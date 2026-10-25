@@ -55,11 +55,11 @@ lock-protocol-missing-global = the compositor does not offer the session lock pr
 lock-protocol-registry-unavailable = the compositor's registry could not be read
 lock-boundary-disconnected = the authentication service is not reachable
 lock-boundary-timeout = the authentication service did not answer in time
-lock-boundary-not-provided = this build ships no authentication boundary at all: ADR 0015 requires a human security review of one before the lock screen may authenticate anyone, so nothing is checked here and the session is released by logging out
+lock-boundary-not-provided = this build ships no authentication boundary at all: the session-lock boundary requires a human security review of one before the lock screen may authenticate anyone, so nothing is checked here and the session is released by logging out
 
 # What the binary reports before exiting non-zero.
 lock-start-blocked = The session lock cannot start in this build: { $reason }
-lock-start-blocked-reason = ADR 0015 requires a human security review of the authentication boundary before this screen may authenticate anyone, and this build has none; pass --take-lock to exercise the session-lock protocol alone (that mode covers every output and cannot release the lock again)
+lock-start-blocked-reason = the session-lock boundary requires a human security review of the authentication boundary before this screen may authenticate anyone, and this build has none; pass --take-lock to exercise the session-lock protocol alone (that mode covers every output and cannot release the lock again)
 
 # The protocol leg. This mode takes the real session lock
 # and has no way to release it, because there is no reviewed authentication

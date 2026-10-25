@@ -4,7 +4,7 @@ Inox 采用 **AI-first** 工作流：AI 编写绝大部分代码、测试与文�
 
 ## 硬性规则
 
-根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) §3 是对所有 crate 生效的硬性规则，crate 级 `AGENTS.md` 只能收紧、不得放宽。其中最影响日常改动节奏的几条：
+根仓库的[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查) 是对所有 crate 生效的硬性规则，crate 级 `AGENTS.md` 只能收紧、不得放宽。其中最影响日常改动节奏的几条：
 
 - **不在本地编译/测试来当验收依据** —— 验收一律以 CI 为准（见[持续集成](./ci.md)）。
 - 默认禁止 `unsafe`；只有 `inox-compositor` 与 `inox-xwayland` 的最小 FFI 胶水代码可例外，并必须附 `// SAFETY:` 理由。

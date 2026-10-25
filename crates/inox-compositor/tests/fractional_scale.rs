@@ -1,4 +1,4 @@
-//! Acceptance test for fractional scaling (O03, ADR 0020).
+//! Acceptance test for fractional scaling.
 //!
 //! One headless output runs at 1.5x with a 960x540 mode, so its logical size is
 //! 640x360 and clients that only understand integer scales are told 2. A real

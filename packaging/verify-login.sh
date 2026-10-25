@@ -20,14 +20,14 @@
 #
 # Related: packaging/preflight.sh (root, read-only, before the trial),
 # packaging/rehearse-headless.sh (no root, before everything). Decision:
-# docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md.
+# docs/book/src/usage/login.md.
 
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
-# ADR 0037 §决策 2: user sessions are placed in 2..=6, never on the greeter's VT.
+# the boot login chain, never on the greeter's VT.
 readonly LOGIN_FIRST_VT=2
 readonly LOGIN_LAST_VT=6
 readonly SEAT="seat0"
@@ -55,10 +55,10 @@ usage() {
     cat <<EOF
 usage: $SELF [--user NAME] [--greeter-vt N] [--after-logout]
 
-  --user NAME       whose session to verify (default: ${user:-your user})
-  --greeter-vt N    the VT the login screen is on: 4 for a trial (default),
+  --user NAME whose session to verify (default: ${user:-your user})
+  --greeter-vt N the VT the login screen is on: 4 for a trial (default),
                     1 for the boot chain
-  --after-logout    verify the state AFTER logging out instead of during the
+  --after-logout verify the state AFTER logging out instead of during the
                     session: the session is gone and the screen was handed back
 
 No root needed. Exit code: 0 if no FAIL, 1 if any FAIL, 2 on a usage error.
@@ -222,7 +222,7 @@ else
         session_id=""
     else
         fail "$user has $session_count sessions: $(printf '%s ' $user_sessions)"
-        note "v1 只允许一个用户会话（ADR 0037 §决策 2）；多余的是上一次没被结束的会话"
+        note "v1 只允许一个用户会话；多余的是上一次没被结束的会话"
         session_id="$(printf '%s\n' "$user_sessions" | head -n1)"
     fi
 

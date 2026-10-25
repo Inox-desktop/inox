@@ -1,9 +1,9 @@
 //! The session lock state, as the compositor reports it.
 //!
 //! Acceptance D06 asks that a locked session hide the sensitive parts of a
-//! notification. The lock itself is the compositor's (ADR 0015: the lock state
+//! notification. The lock itself is the compositor's (the session-lock boundary: the lock state
 //! is not a UI client's to keep), and the compositor publishes it over the
-//! private `inox-ipc` protocol as the `session_lock_state` event (ADR 0022 §4).
+//! private `inox-ipc` protocol as the `session_lock_state` event.
 //! This module is the reader of that event and nothing else:
 //! ```text
 //! compositor ──inox-ipc: session_lock_state──► this watcher ──Message──► app::State
@@ -36,7 +36,7 @@
 //! on.
 //!
 //! **What is not here:** reconnecting. If the compositor goes away the watcher
-//! logs it and stops; a compositor that dies ends the session (ADR 0022,
+//! logs it and stops; a compositor that dies ends the session (the session-lock and notification bus work,
 //! failure semantics), and a daemon that reconnected to a *new* compositor
 //! would be guessing about a session it knows nothing about.
 
@@ -62,7 +62,7 @@ const THREAD: &str = "inox-notifications lock state";
 const IPC_INTERFACE: &str = "inox_ipc";
 
 /// The version of `inox-ipc` that carries `session_lock_state`.
-/// Version 2 is where ADR 0022 §4 put the event. A compositor that only offers
+/// Version 2 is where the session-lock and notification bus work
 /// Version 2 is where put the event. A compositor that only offers
 /// version 1 has no lock state to report, which is a reason to be disabled and
 /// not a reason to assume the session is unlocked.

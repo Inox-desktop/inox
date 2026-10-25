@@ -1,6 +1,6 @@
 //! The Elm loop: state, messages, and `update`.
 //!
-//! ADR 0003 fixes this shape for every shell component and ADR 0013 repeats it
+//! the technology stack fixes this shape for every shell component and the interaction contract repeats it
 //! for interactions: a message goes in, the state changes, and anything slow
 //! comes back as a task. Nothing here draws, and nothing blocks — the two things
 //! a lock screen asks of other processes (lock the session, check a credential)
@@ -58,7 +58,7 @@ const TICK: Duration = Duration::from_secs(1);
 ///
 /// The transports are not implemented in this milestone: the
 /// compositor does not advertise `ext-session-lock-v1`, and the authentication
-/// boundary is the review item ADR 0015 names. This queue is the interface those
+/// boundary is the review item the session-lock boundary names. This queue is the interface those
 /// two will drain, and it is the only place the credential ever leaves [`State`].
 #[derive(Debug)]
 pub enum OutgoingCommand {
@@ -281,7 +281,7 @@ impl State {
 
     /// Lets a suspend proceed, if the lock has just become fully covered.
     ///
-    /// This is the ordering of ADR 0015 in one place: the suspend is allowed only
+    /// This is the ordering of the session-lock boundary in one place: the suspend is allowed only
     /// when the machine reports every existing output covered, and only for the
     /// request currently being prepared.
     fn confirm_lock(&mut self) {
@@ -496,7 +496,7 @@ fn handle(state: &mut State, message: Message) {
             state.confirm_lock();
         }
         Message::UiExited => {
-            // The field is gone with the UI that drew it. ADR 0015 clears
+            // The field is gone with the UI that drew it. The session-lock boundary clears
             // sensitive input when the UI hides, and a UI that died is hidden
             // whether it meant to be or not.
             state.forget_credential("the trusted lock screen UI exited");
@@ -958,7 +958,7 @@ mod tests {
         assert_eq!(
             state.machine().phase(),
             crate::state::Phase::Locked,
-            "a generation that was never sent is not an answer to the attempt in              hand, however successful it is"
+            "a generation that was never sent is not an answer to the attempt in hand, however successful it is"
         );
         assert_eq!(
             state.boundary(),
@@ -1241,7 +1241,7 @@ mod tests {
                     SuspendRefusal::NoLockProtocol
                 )]
             ),
-            "ADR 0015: never suspend first and hope to lock on resume: {commands:?}"
+            "the session-lock boundary: never suspend first and hope to lock on resume: {commands:?}"
         );
     }
 
@@ -1304,7 +1304,7 @@ mod tests {
         assert_eq!(
             state.machine().phase(),
             crate::state::Phase::Locked,
-            "ADR 0015: the lock state does not reset on resume"
+            "the session-lock boundary: the lock state does not reset on resume"
         );
         assert!(state.machine().reports_locked());
         assert_eq!(state.suspend().phase(), SuspendPhase::Idle);
@@ -1334,7 +1334,7 @@ mod tests {
         assert_eq!(
             state.credential_len(),
             0,
-            "ADR 0015: sensitive input does not survive a suspend"
+            "the session-lock boundary: sensitive input does not survive a suspend"
         );
         assert!(state.model().mask.is_empty());
     }
@@ -1354,7 +1354,7 @@ mod tests {
         assert_eq!(
             state.credential_len(),
             0,
-            "a refused suspend still takes the session away from the screen, and              the credential is not kept for the resume"
+            "a refused suspend still takes the session away from the screen, and the credential is not kept for the resume"
         );
     }
 
@@ -1370,7 +1370,7 @@ mod tests {
         type_text(&mut state, "typed while the lock is confirmed");
         assert!(
             state.credential_len() > 0,
-            "the window this test is about does not exist: the field is disabled              while the lock is confirmed"
+            "the window this test is about does not exist: the field is disabled while the lock is confirmed"
         );
         let _ = state.take_outgoing();
 
@@ -1387,7 +1387,7 @@ mod tests {
         assert_eq!(
             state.credential_len(),
             0,
-            "ADR 0015: nothing typed survives the session it was typed into              walking away"
+            "the session-lock boundary: nothing typed survives the session it was typed into walking away"
         );
     }
 
@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(
             state.credential_len(),
             0,
-            "ADR 0015: a hidden UI takes the credential with it, and a UI that              died is hidden whatever it intended"
+            "the session-lock boundary: a hidden UI takes the credential with it, and a UI that died is hidden whatever it intended"
         );
         assert!(state.model().mask.is_empty());
     }

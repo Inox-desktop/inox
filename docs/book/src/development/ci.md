@@ -4,7 +4,7 @@
 
 ## 单一工作流
 
-`.github/workflows/ci.yml` 是唯一的 Rust 工作流，取代了 ADR 0016 之前每个组件仓库各自一份的 17 份副本（迁移时其中 3 份已经分叉，意味着「同一份模板复制 17 次」并不保证一致性）。
+`.github/workflows/ci.yml` 是唯一的 Rust 工作流，取代了单仓工作区之前每个组件仓库各自一份的 17 份副本（迁移时其中 3 份已经分叉，意味着「同一份模板复制 17 次」并不保证一致性）。
 
 | job | 命令 | 作用 |
 |-----|------|------|
@@ -16,10 +16,10 @@
 | `plan` | 由层级表推导测试矩阵 | 覆盖不全或矩阵为空即失败 |
 | `test` | `cargo test -p <crate> --all-features`，**每 crate 一个分片**；作业级 `QT_QPA_PLATFORM=offscreen` | 失败可归因、可局部复现；QML 分片另装 Qt 6 与字体 |
 | `xwayland-e2e` | `INOX_XWAYLAND_E2E=1 cargo test -p inox-xwayland --test headless_x11_mapping` | X11 映射端到端（宿主为第三方 headless 合成器，仅 E2 等级） |
-| `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见 [ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)） |
+| `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见 ） |
 | `book` | `mdbook build docs/book` | 本站点构建 |
 
-触发条件：`push` 到 `main`、`pull_request`。**任一 job 失败即阻止合并**（分支保护的检查名需按新的 job 集合维护 —— 见 ADR 0016 实施记录中「尚未完成、需要人类动作」）。
+触发条件：`push` 到 `main`、`pull_request`。**任一 job 失败即阻止合并**。
 
 ## 测试分片由层级表推导
 
@@ -47,7 +47,7 @@
 
 ## 分层方向检查
 
-`test (inox-integration)` 分片中的 `layering.rs` 是可执行的分层规则（验收项 B04）：读取真实依赖图，断言 ADR 0002 的依赖方向、`inox-common` 的叶子性、合成器与 Shell 的无依赖边界、L3 访问合成器的单点限制等。它同时带有一组对合成图的**单元测试**，确保规则本身不会在无人察觉时失效。
+`test (inox-integration)` 分片中的 `layering.rs` 是可执行的分层规则（验收项 B04）：读取真实依赖图，断言分层规则的依赖方向、`inox-common` 的叶子性、合成器与 Shell 的无依赖边界、L3 访问合成器的单点限制等。它同时带有一组对合成图的**单元测试**，确保规则本身不会在无人察觉时失效。
 
 ## 本站点的门禁
 

@@ -7,7 +7,7 @@
 //! - `wl_compositor` (6) and `wl_subcompositor` (1) — [`CompositorState`], which
 //!   creates both in one call. Version 6 is what carries
 //!   `preferred_buffer_scale`: without it a client cannot be told how large a
-//!   buffer to render for a scaled output (ADR 0020).
+//!   buffer to render for a scaled output.
 //! - `wl_shm` (2) — [`ShmState`], the only buffer transport besides client-provided
 //!   dmabufs, which are not advertised yet.
 //! - `wl_seat` (9) — [`SeatState`], carrying the keyboard and pointer capabilities.
@@ -16,22 +16,22 @@
 //! - `xdg_wm_base` (6) — [`XdgShellState`], the surface role managed windows use.
 //! - `zwlr_layer_shell_v1` (4) — [`WlrLayerShellState`], ordinary desktop layers.
 //! - `wp_viewporter` (1) — [`ViewporterState`]. Required by XWayland clients that
-//!   scale themselves (ADR 0007); without it `xwayland-satellite` cannot run here.
+//!   scale themselves; without it `xwayland-satellite` cannot run here.
 //! - `wp_fractional_scale_manager_v1` (1) — [`FractionalScaleManagerState`], the
 //!   exact scale a surface should render at on an output whose factor is not a
-//!   whole number (ADR 0020).
+//!   whole number.
 //! - `wl_data_device_manager` (3) — [`DataDeviceState`], the clipboard and
 //!   drag-and-drop channel.
 //! - `zwp_primary_selection_device_manager_v1` (1) — [`PrimarySelectionState`], the
 //!   X11-style primary selection (middle-click paste).
 //! - `ext_session_lock_manager_v1` (1) — [`SessionLockManagerState`], the secure
-//!   session lock (ADR 0015, ADR 0022). Only a client that has claimed the trusted
+//!   session lock. Only a client that has claimed the trusted
 //!   lock role over `inox_ipc` may take the lock; while a lock is held every output
 //!   is composited from the locked scene alone and ordinary clients receive no
 //!   input.
-//! - `zwp_text_input_manager_v3` (1) — application text transactions (ADR 0023).
+//! - `zwp_text_input_manager_v3` (1) — application text transactions.
 //! - `zwp_input_method_manager_v2` (1) and `zwp_virtual_keyboard_manager_v1` (1) —
-//!   visible only to the compositor-launched input method connection (ADR 0023).
+//!   visible only to the compositor-launched input method connection.
 //! - `inox_ipc` — the private control protocol from `inox-protocols`, at the version
 //!   its own interface declares.
 //! - `inox_glass_manager_v1` (1) — [`InoxGlassManagerV1`], the private frosted-glass
@@ -47,12 +47,12 @@
 //!
 //! # Outputs, scaling and the global coordinate space
 //!
-//! The compositor advertises one or more outputs (ADR 0019). Every output has a
+//! The compositor advertises one or more outputs. Every output has a
 //! position in a single global logical coordinate space, so a window, a popup and
 //! the pointer all live in the same coordinates and a display to the left of the
 //! origin simply has negative ones. Each output carries its own scale factor;
 //! rendering, the cursor and layer placement convert to that output's physical
-//! pixels, while hit testing, tiling and the work areas stay logical (ADR 0020).
+//! pixels, while hit testing, tiling and the work areas stay logical.
 //!
 //! [`InoxState::apply_outputs`] is the single place the topology changes. An
 //! output that survives keeps its `wl_output` global, its layer surfaces and its
@@ -90,14 +90,14 @@
 //!
 //! A lock client that dies keeps the session locked, and this compositor does not
 //! let another client take the lock over. That is the fail-closed direction the
-//! protocol allows and ADR 0015 requires; the recovery gap it leaves is recorded
-//! in ADR 0022 rather than papered over.
+//! protocol allows and the session-lock boundary requires; the recovery gap it leaves is recorded
+//! in the session-lock and notification bus work rather than papered over.
 //!
 //! Input handling is split in two: Smithay's seat owns the keymap, modifier
 //! tracking and focus delivery, while [`crate::input::action_for_key`] turns a
 //! key press into a compositor [`Action`]. [`InoxState::inject_key`] and the
 //! pointer injection methods feed that path, so keyboard and pointer events can
-//! be exercised without a libinput backend (see ADR 0008 for M2, and ADR 0010
+//! be exercised without a libinput backend (see input and window management for M2, and the real backend
 //! for the M3b libinput path that will call through the same Smithay seat).
 //!
 //! The Wayland bindings come from `inox-protocols`: the curated core `wl_*` types
@@ -251,7 +251,7 @@ pub enum StateError {
     Keyboard(#[from] smithay::input::keyboard::Error),
 }
 
-/// Everything the compositor holds for the session lock (ADR 0015, ADR 0022).
+/// Everything the compositor holds for the session lock.
 ///
 /// `client` is set the moment a lock request is honoured — which is *before* the
 /// protocol's `locked` event goes out — because from that instant ordinary
@@ -338,7 +338,7 @@ pub struct InoxState {
     /// loop, and this handle is cheap to clone.
     display_handle: DisplayHandle,
 
-    /// The advertised outputs, primary first (ADR 0019).
+    /// The advertised outputs, primary first.
     ///
     /// Empty only while no display is available: the session and its clients stay
     /// alive then, and the windows keep their identity until an output returns.
@@ -346,7 +346,7 @@ pub struct InoxState {
     /// Mints [`OutputId`]s, so an output that comes back is a new runtime
     /// instance even when it reuses a connector name.
     next_output_id: u64,
-    /// Owns the `wp_fractional_scale_manager_v1` global (ADR 0020).
+    /// Owns the `wp_fractional_scale_manager_v1` global.
     ///
     /// Like [`InoxState::output_manager_state`], Smithay's dispatch is generic
     /// over the compositor state, so the value is never read: keeping it is what
@@ -354,12 +354,12 @@ pub struct InoxState {
     #[allow(dead_code)]
     fractional_scale_state: FractionalScaleManagerState,
 
-    /// Owns the `ext_session_lock_manager_v1` global (ADR 0015, ADR 0022).
+    /// Owns the `ext_session_lock_manager_v1` global.
     session_lock_state: SessionLockManagerState,
     /// The token a client must present to be allowed to lock, or `None`.
     ///
     /// `None` means this run cannot be locked at all: a compositor with no token
-    /// refuses every claim (ADR 0022 decision 3).
+    /// refuses every claim.
     lock_token: Option<String>,
     /// The connections that presented this session's token.
     lock_authorized: HashSet<ClientId>,
@@ -434,7 +434,7 @@ pub struct InoxState {
     loop_signal: LoopSignal,
 }
 
-/// One output the compositor should advertise (ADR 0019).
+/// One output the compositor should advertise.
 ///
 /// The backends describe *what* they found; the compositor decides *where* it
 /// goes, which keeps placement and identity in one place instead of once per
@@ -624,11 +624,11 @@ impl InoxState {
             StateError::InputConfig("keyboard repeat rate exceeds i32::MAX".to_owned())
         })?;
         // `wl_compositor` v6 carries `preferred_buffer_scale`, which is how a
-        // client is told how large a buffer to render for its output (ADR 0020).
+        // client is told how large a buffer to render for its output.
         let compositor_state = CompositorState::new_v6::<Self>(display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display_handle);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(display_handle);
-        // The secure session lock (ADR 0015, ADR 0022). The global is advertised
+        // The secure session lock. The global is advertised
         // to every client on purpose: whether a client may *take* the lock is a
         // decision about a request, not about the global's existence, and the
         // protocol has a first-class way to refuse one (`finished`). Hiding the
@@ -651,7 +651,7 @@ impl InoxState {
         // hiding the global would only make clients guess.
 
         // XWayland clients scale their buffers through `wp_viewporter`, so a satellite
-        // never gets far without it (ADR 0007).
+        // never gets far without it.
         // The private frosted-glass protocol. Advertised to everyone like
         // `inox_ipc`: whether a surface may be frosted is a decision about a
         // *request* — the surface's role, and the state of the session — and the
@@ -746,7 +746,7 @@ impl InoxState {
         Ok(state)
     }
 
-    /// Reconcile the advertised outputs with `desired` (ADR 0019).
+    /// Reconcile the advertised outputs with `desired`.
     ///
     /// This is the single place the output topology changes. An output the
     /// caller keeps — matched by connector name and by the very same [`Output`]
@@ -890,7 +890,7 @@ impl InoxState {
         // An output that arrived while the session is locked must be covered
         // before the lock client is told the screen is its own; one that left
         // must stop blocking that confirmation. Both happen here because this is
-        // the only place the topology changes (ADR 0019).
+        // the only place the topology changes.
         self.sync_lock_coverage();
         self.note_lock_owner_loss();
         self.sync_focus();
@@ -899,7 +899,7 @@ impl InoxState {
         Ok(())
     }
 
-    /// Replace the whole topology with at most one output (ADR 0019).
+    /// Replace the whole topology with at most one output.
     ///
     /// The single-output entry point kept for callers that only ever deal with
     /// one display; it is exactly [`InoxState::apply_outputs`] with an empty list
@@ -938,7 +938,7 @@ impl InoxState {
     ///
     /// Clients recreate their surfaces on an output that still exists; the
     /// protocol has no way to migrate one, so `close` is the only correct answer
-    /// (ADR 0019). The surface is told to leave first — which is why `leaving` is
+    /// . The surface is told to leave first — which is why `leaving` is
     /// passed in rather than looked up: by the time this runs the output is no
     /// longer in the table, and the client still needs to hear about the output it
     /// is losing.
@@ -1015,7 +1015,7 @@ impl InoxState {
         None
     }
 
-    /// Tell a surface the scale it should render at on its output (ADR 0020).
+    /// Tell a surface the scale it should render at on its output.
     ///
     /// Both halves are needed: `preferred_buffer_scale` tells a client that only
     /// understands integer scales how large a buffer to produce, and
@@ -1117,7 +1117,7 @@ impl InoxState {
     /// its own top-left corner, which is what `OutputDamageTracker` and the
     /// headless target both expect. The scale is the output's, so a window on a
     /// 150 % display is composited from logical geometry into a 1.5x larger
-    /// buffer instead of being stretched afterwards (ADR 0020).
+    /// buffer instead of being stretched afterwards.
     ///
     /// The panes come from [`crate::glass::collect_panes`]: one per mapped,
     /// committed layer surface on this output whose client asked for a radius and
@@ -1442,7 +1442,7 @@ impl InoxState {
     ///
     /// The compositor owns the lock, so it is the authority observers such as the
     /// idle daemon and the notification daemon read; the event grants them
-    /// nothing, which is why it can be a broadcast (ADR 0022 decision 4).
+    /// nothing, which is why it can be a broadcast.
     fn broadcast_lock_state(&mut self) {
         let state = self.lock_state_for_ipc();
         self.ipc_clients.retain(InoxIpc::is_alive);
@@ -1453,7 +1453,7 @@ impl InoxState {
 
     /// Report once that the connection owning the lock is gone.
     ///
-    /// The session stays locked (protocol and ADR 0015), so this is the only
+    /// The session stays locked, so this is the only
     /// signal that something needs a human: nothing can unlock it again.
     fn note_lock_owner_loss(&mut self) {
         if !self.lock.accepted() || self.lock.owner_lost {
@@ -1470,7 +1470,7 @@ impl InoxState {
         self.lock.owner_lost = true;
         error!(
             "the lock client is gone while the session is locked: the session stays locked and \
-             this compositor does not hand the lock to another client (ADR 0022)"
+             this compositor does not hand the lock to another client "
         );
     }
 
@@ -1749,7 +1749,7 @@ impl InoxState {
     ///
     /// Unplugging the display the pointer was on leaves it outside every output,
     /// so the position is pulled back onto the closest one instead of being
-    /// dropped somewhere nothing can be clicked (ADR 0019).
+    /// dropped somewhere nothing can be clicked.
     pub(crate) fn clamp_pointer(&self, location: Point<f64, Logical>) -> Point<f64, Logical> {
         let areas: Vec<Rectangle<i32, Logical>> =
             self.outputs.iter().map(|entry| entry.area).collect();
@@ -2012,7 +2012,7 @@ impl InoxState {
     ///
     /// Every output tiles its own windows inside its own work area, in the global
     /// coordinate space, so a window on the second display is placed next to the
-    /// first display's area rather than on top of it (ADR 0019).
+    /// first display's area rather than on top of it.
     fn arrange_windows(&mut self) {
         self.repaint = true;
         let work_areas: Vec<(OutputId, Rectangle<i32, Logical>)> = self
@@ -2258,7 +2258,7 @@ impl InoxState {
     /// Place every committed layer surface and recompute each output's work area.
     ///
     /// Each output has its own area and its own reservation chain, so a panel on
-    /// one display never shrinks the work area of another (ADR 0019). The pure
+    /// one display never shrinks the work area of another. The pure
     /// placement and reservation rules in [`crate::layers`] are unchanged; only
     /// the area they are applied to differs per output.
     fn arrange_layers(&mut self) {
@@ -2447,7 +2447,7 @@ fn keyboard_config(input: &inox_config::InputConfig) -> XkbConfig<'_> {
     }
 }
 
-/// Create the headless outputs the configuration asks for (ADR 0019).
+/// Create the headless outputs the configuration asks for.
 ///
 /// Without `--output` this is the single 1280x720 output every earlier milestone
 /// had, so the headless path is unchanged unless more displays are requested.
@@ -2489,7 +2489,7 @@ fn create_headless_outputs(config: &CompositorConfig) -> Vec<OutputDescriptor> {
         .collect()
 }
 
-/// The Smithay scale a configured factor becomes (ADR 0020).
+/// The Smithay scale a configured factor becomes.
 ///
 /// Clients that only understand integer scales are told the ceiling, so they
 /// render at least as many pixels as the display has and the compositor
@@ -2615,7 +2615,7 @@ impl WlrLayerShellHandler for InoxState {
     ) {
         // A surface that named no output takes the primary one; one that named an
         // output this compositor does not advertise is closed, because there is no
-        // display it could be shown on (ADR 0019).
+        // display it could be shown on.
         let target = match &output {
             Some(resource) => Output::from_resource(resource)
                 .and_then(|named| self.find_output(&named).map(|entry| entry.id)),
@@ -2848,7 +2848,7 @@ impl Dispatch<InoxIpc, ()> for InoxState {
                 }
             }
             // The first privileged request the compositor accepts (acceptance S04,
-            // ADR 0015's privilege table). The token is a capability the session
+            // the session-lock boundary's privilege table). The token is a capability the session
             // delivered; what the client says about itself is not consulted, and a
             // compositor with no token refuses everyone.
             InoxIpcRequest::ClaimLockRole { token } => {
@@ -3038,7 +3038,7 @@ impl Dispatch<InoxGlassV1, WlSurface> for InoxState {
     }
 }
 
-/// The `ext-session-lock-v1` server side (ADR 0015, ADR 0022).
+/// The `ext-session-lock-v1` server side.
 ///
 /// Smithay implements the protocol — the lock object, the surfaces, the
 /// configure/ack handshake and the protocol errors. What is here is the policy
@@ -3050,7 +3050,7 @@ impl Dispatch<InoxGlassV1, WlSurface> for InoxState {
 ///   protocol error or a disconnected client.
 /// - **One lock at a time, and no takeover.** A session that is already locked
 ///   refuses a second lock, including one from a restarted lock UI. The protocol
-///   allows a compositor to hand a held lock over, and ADR 0022 records why this
+///   allows a compositor to hand a held lock over, and the session-lock and notification bus work records why this
 ///   one does not: Smithay's per-output lock bookkeeping has no public reset, so a
 ///   second client's surfaces for those outputs would be rejected as duplicates.
 ///   The result is the fail-closed direction the protocol also allows — a lock UI
@@ -3073,7 +3073,7 @@ impl SessionLockHandler for InoxState {
         if self.lock.accepted() {
             self.lock_refusals = self.lock_refusals.saturating_add(1);
             warn!(
-                "refused a session lock request: the session is already locked (ADR 0022 does \
+                "refused a session lock request: the session is already locked (the session-lock and notification bus work does \
                  not hand a held lock to another client)"
             );
 
@@ -3268,7 +3268,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData> for InoxState {
         );
     }
 }
-/// Fractional scaling (ADR 0020).
+/// Fractional scaling.
 ///
 /// Creating the object is the whole protocol interaction: the surface is told its
 /// scale through its own surface update, and a client that never

@@ -20,7 +20,7 @@
 #
 # Related: packaging/rehearse-headless.sh (E2, no root: does the host stage run?),
 # packaging/verify-login.sh (no root: did the login that just happened really
-# happen?). Decision: docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md.
+# happen?). Decision: docs/book/src/usage/login.md.
 
 set -euo pipefail
 
@@ -72,16 +72,16 @@ usage: sudo $SELF
 Read-only pre-flight for the login chain. Prints one ok / WARN / FAIL line per
 check and exits non-zero if anything FAILed.
 
-  ok    the packaging and the environment are what the chain expects
-  WARN  the chain can still work, but this is not what the packaging expects
-  FAIL  this attempt cannot succeed; the line below says what to do
+  ok the packaging and the environment are what the chain expects
+  WARN the chain can still work, but this is not what the packaging expects
+  FAIL this attempt cannot succeed; the line below says what to do
 
 It starts, stops, enables and disables nothing and writes nothing outside a
 temporary directory.
 
 Related:
-  packaging/rehearse-headless.sh   E2, no root: does the host stage run at all?
-  packaging/verify-login.sh        no root: did the login that just happened work?
+  packaging/rehearse-headless.sh E2, no root: does the host stage run at all?
+  packaging/verify-login.sh no root: did the login that just happened work?
 EOF
 }
 

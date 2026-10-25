@@ -10,7 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-# ADR 0002: `inox-launcher` is L3. It depends on L1 only — the index, the search
+# the layering rules: `inox-launcher` is L3. It depends on L1 only — the index, the search
 # and the activation state machine are this crate's own, and no other L3
 # component or the compositor is linked in. The layer table
 # in the root `Cargo.toml` is enforced by

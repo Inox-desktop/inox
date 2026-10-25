@@ -17,7 +17,7 @@
 //!   account (the one this project's packaging creates) the shipped defaults work
 //!   with no arguments at all, and `--allow-uid`/`--socket-group` override them.
 //! - **`--session-leader` is an internal mode, not a second program.** The service
-//!   starts itself with it for one login (ADR 0037 §决策 5); it is never typed by a
+//!   starts itself with it for one login; it is never typed by a
 //!   person and it is only accepted from root, which is what makes "the arguments
 //!   came from the root parent, not from the wire" true by construction.
 use std::ffi::OsString;
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
                 )?));
             }
             Some("--exit-after-session") => config.exit_after_session = true,
-            // The internal mode the service starts itself with (ADR 0037
+            // The internal mode the service starts itself with (the boot login chain
             // §决策 5). Its arguments are validated in `leader::run`.
             Some("--session-leader") => leader_requested = true,
             Some("--user") => leader_user = Some(utf8("--user", &value()?)?),
@@ -235,7 +235,7 @@ fn admit_the_greeter_account(config: &mut Config) {
         // greeter a uid of its own.
     }
     // The start-up hand-back recognises the greeter's own logind session by this
-    // uid (ADR 0037 §失败、恢复与安全).
+    // uid.
     config.greeter_uid = Some(account.uid);
 
     info!(

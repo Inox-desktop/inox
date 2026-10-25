@@ -3,7 +3,7 @@
 //! Every colour, distance, radius and text size the launcher draws with is
 //! derived here from [`inox_config::Theme`] (root AGENTS.md §4, PRD §9.2): no
 //! projection and no QML file in this crate contains a colour or a pixel size of
-//! its own. ADR 0018 explains why this small mapping is duplicated in each L3
+//! its own. The L3 component architecture explains why this small mapping is duplicated in each L3
 //! component instead of being shared — a shared UI crate would be a new
 //! same-layer dependency, which needs a decision of its own.
 //!

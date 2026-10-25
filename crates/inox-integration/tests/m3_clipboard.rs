@@ -19,7 +19,7 @@
 //! * **focus is the access-control boundary.** Only the client that holds the
 //!   keyboard focus is offered the selection, so a client that never held it has
 //!   nothing to read from — Inox's M3 answer to "an unauthorised client must not
-//!   read the clipboard" (ADR 0017 decision 2), and the reason `wlr-data-control`
+//!   read the clipboard", and the reason `wlr-data-control`
 //!   is deliberately absent.
 //! * **an owner that goes away fails cleanly**: a later read ends without
 //!   hanging and without returning stale bytes, and the session is still usable
@@ -455,7 +455,7 @@ fn a_wayland_selection_reaches_the_x11_client() {
     // The client that lost the focus before the selection existed was never
     // offered it: only the focused client is handed the selection, so an
     // unauthorised client has nothing to read from. This is Inox's M3 answer to
-    // "an unauthorised client must not read the clipboard" (ADR 0017 decision 2),
+    // "an unauthorised client must not read the clipboard",
     // and the reason `wlr-data-control` is deliberately absent.
     drain_wayland(&mut unfocused, DRAIN);
     assert!(

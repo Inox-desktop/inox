@@ -1,10 +1,10 @@
 # inox-greet
 
-L4 可选显示管理器。属于 Inox 桌面环境的 **L4** 层（[ADR 0021](../../docs/adr/0021-l4-session-services.md)）。认证本身不在本 crate：它经 `auth-v1` 私有契约（[ADR 0029](../../docs/adr/0029-inox-authentication-boundary.md)）交给 L2 的 [`inox-auth`](../inox-auth/README.md)。
+L4 可选显示管理器。属于 Inox 桌面环境的 **L4** 层。认证本身不在本 crate：它经 `auth-v1` 私有契约交给 L2 的 [`inox-auth`](../inox-auth/README.md)。
 
-界面是 **QML + Qt Quick**，经 cxx-qt 绑定到 Rust（[ADR 0033](../../docs/adr/0033-qml-qt-quick-shell-evaluation.md)、[ADR 0035](../../docs/adr/0035-cxx-qt-binding.md)）。状态机、焦点、文案与令牌留在 Rust：界面拿到的是一份 JSON 投影，QML 只负责画，并把按键与点击原样报回来。
+界面是 **QML + Qt Quick**，经 cxx-qt 绑定到 Rust。状态机、焦点、文案与令牌留在 Rust：界面拿到的是一份 JSON 投影，QML 只负责画，并把按键与点击原样报回来。
 
-**不带参数是真实登录路径。** 它要求认证边界套接字存在（`INOX_AUTH_SOCKET`，默认 `/run/inox/auth.sock`），否则在开窗之前以非零状态码退出并说明缺的是什么；找到边界后界面才可用。认证成功后由边界以该账号身份启动会话。**界面不随会话启动而关闭**：它停在启动态，3 秒后回到登录画面——账户保留、口令清空、焦点回到首个可操作控件（[ADR 0037](../../docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) §决策 4）。用户会话在另一个 VT 上（该 ADR §决策 2），VT 被暂停期间这一幅没人看得见，注销回来时屏幕上必须已经是登录画面，而不是一个需要宿主重新拉起的空位。
+**不带参数是真实登录路径。** 它要求认证边界套接字存在（`INOX_AUTH_SOCKET`，默认 `/run/inox/auth.sock`），否则在开窗之前以非零状态码退出并说明缺的是什么；找到边界后界面才可用。认证成功后由边界以该账号身份启动会话。**界面不随会话启动而关闭**：它停在启动态，3 秒后回到登录画面——账户保留、口令清空、焦点回到首个可操作控件。用户会话在另一个 VT 上，VT 被暂停期间这一幅没人看得见，注销回来时屏幕上必须已经是登录画面，而不是一个需要宿主重新拉起的空位。
 
 **`--preview` 打开的是「本构建没有边界」那一幅。** 界面为 `state::Greeter` 的六个生命周期阶段各有一幅画面（不可用、就绪、验证中、会话启动中、失败、已启动）；预览显示的只有*不可用*那一幅：口令字段不可输入、登录按钮禁用、键盘只剩 Escape，横幅明确写着「仅供预览，不收集凭据」。`--self-check` 只是 `--preview` 那一幅的离屏诊断（真的会加载 QML 模块并要求树回报与投影一致的标题与语义项数），**不是**第三条登录路径，也不能在真实路径上使用。没有任何开关能让运行的二进制假装自己有认证边界，真实构建也不会显示预览横幅。
 
@@ -43,7 +43,7 @@ crates/inox-greet/
 
 ## 账户
 
-**身份是选出来的，不是打出来的**（[ADR 0032](../../docs/adr/0032-greeter-account-selection-and-login-interface.md)）。界面不提供手工输入账户名的路径：`src/accounts.rs` 读系统账户库（`getent passwd`，失败或答空时回落 `/etc/passwd`），提供 `uid ∈ [1000, 65534)` 且 shell 不以 `nologin`/`false` 结尾的账户并额外把 `root` 排在最后；默认选中本组件记录的上次使用账户，没有记录时选第一个普通账户。
+**身份是选出来的，不是打出来的**。界面不提供手工输入账户名的路径：`src/accounts.rs` 读系统账户库（`getent passwd`，失败或答空时回落 `/etc/passwd`），提供 `uid ∈ [1000, 65534)` 且 shell 不以 `nologin`/`false` 结尾的账户并额外把 `root` 排在最后；默认选中本组件记录的上次使用账户，没有记录时选第一个普通账户。
 
 `last-user` 记录的位置是 `$XDG_STATE_HOME/inox/greet/last-user`（`$XDG_STATE_HOME` 缺席时回落 `$HOME/.local/state/...`）。写入失败只记 `warn`：下一次登录退回第一个账户，而不是让登录失败。它**每个会话写一次**——在会话真正启动时写，3 秒后的复位不写。**它记录的是本 greeter 发起过的登录，不是系统的登录历史**（不解析 `wtmp`/`lastlog`）。
 
@@ -53,7 +53,7 @@ crates/inox-greet/
 
 | 模块 | 内容 | 验收 |
 |------|------|------|
-| `accounts` | 系统账户库的读取与过滤（uid 区间、`nologin`/`false`、`root` 置末、同名去重、坏行跳过、GECOS 全名与首字母）、默认选中的四种情形、`last-user` 记录的读写；纯解析部分与系统读取分开，前者可单测 | ADR 0032 |
+| `accounts` | 系统账户库的读取与过滤（uid 区间、`nologin`/`false`、`root` 置末、同名去重、坏行跳过、GECOS 全名与首字母）、默认选中的四种情形、`last-user` 记录的读写；纯解析部分与系统读取分开，前者可单测 | 登录界面账户选择 |
 | `state` | 登录生命周期：六个阶段、代次关联（旧代次、重复、从未发出的答复一律拒绝）、30 秒答复期限、滚动 60 秒最多 3 次尝试、取消清理（口令清空而账户保留）、启动回执；账户选择、账户名边界（`MAX_IDENTITY_BYTES`、与契约同一份账户名规则）；**启动态驻留 `SESSION_STARTED_DWELL`（3 秒）后复位到 `Ready`**；口令以 `Secret` 存在，提交时**移出**模型，超长口令拒绝而非截断 | D05、Q01 |
 | `view_model` | 状态到画面的纯投影：六个 `Phase` 各一个 `Face`，账户视图，账户列表只在有得选时打开，禁用原因按用户遇到的顺序给出，`focus_order` 只含可操作的控件 | D05、Q01 |
 | `boundary` | `auth-v1` 客户端：一条连接一条请求，答复映射为 `Report`（`Accepted`/`Rejected`/`Unavailable`/`Unreachable`/`SessionStarted`）；不链接 `libpam` | D05 |
@@ -66,9 +66,9 @@ crates/inox-greet/
 **未实现 / 被阻塞**（不声称上表之外的任何等级）：
 
 - **认证在别处。** 本 crate 没有 PAM、没有特权进程、不能启动会话、也无法凭空产生一个成功答复：一切都经 `auth-v1` 交给 `inox-auth`。
-- **不是安全登录表面（本 crate 自己不是）。** 界面（含真实路径）仍是一个普通 xdg-shell 窗口，可以截图、可以被别的窗口遮挡，也不提供任何输入隔离；把它放到裸 VT 上、由 logind/libseat 仲裁设备与 VT 归属，是宿主侧的事（[ADR 0037](../../docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) §决策 1–§决策 2）。
-- **宿主不在本 crate。** 谁在裸 VT 上拉起登录界面、合成器与界面崩溃如何重启、会话启动后 VT 如何交接、注销后如何回到登录画面，都由 ADR 0037 定义的 L4 宿主编排。本 crate 因此不再在会话启动时关闭窗口，也不重启自己；**真机登录（E4）尚未取得证据**，不得读作已完成。
-- **无障碍只到「语义树存在」这一步。** QML 的每个可见控件都带 `Accessible.role` / `Accessible.name`，树在 `reportReady` 里回报自己数出来的项数，Rust 与投影比对后才接受；但 CI 里没有 AT-SPI 走查，也没有对真实辅助技术的证据（ADR 0021 的未验证项仍然未验证）。
+- **不是安全登录表面（本 crate 自己不是）。** 界面（含真实路径）仍是一个普通 xdg-shell 窗口，可以截图、可以被别的窗口遮挡，也不提供任何输入隔离；把它放到裸 VT 上、由 logind/libseat 仲裁设备与 VT 归属，是宿主侧的事。
+- **宿主不在本 crate。** 谁在裸 VT 上拉起登录界面、合成器与界面崩溃如何重启、会话启动后 VT 如何交接、注销后如何回到登录画面，都由登录链定义的 L4 宿主编排。本 crate 因此不再在会话启动时关闭窗口，也不重启自己；**真机登录（E4）尚未取得证据**，不得读作已完成。
+- **无障碍只到「语义树存在」这一步。** QML 的每个可见控件都带 `Accessible.role` / `Accessible.name`，树在 `reportReady` 里回报自己数出来的项数，Rust 与投影比对后才接受；但 CI 里没有 AT-SPI 走查，也没有对真实辅助技术的证据。
 - **没有像素截图证据。** 迁移前那套 1280×720 的真实控件树像素断言随控件树一起删除，现在由投影断言 + QML 离屏加载覆盖；截图证据要等 waydriver 工作（验收 Q02 的这一半未完成）。
 
 ## 测试
@@ -87,7 +87,7 @@ QT_QPA_PLATFORM=offscreen cargo test -p inox-greet --all-features
 
 ## 开发约定
 
-- 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径。**
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)，scope 用 `greet`。
 

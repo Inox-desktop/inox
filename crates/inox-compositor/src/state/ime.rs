@@ -1,4 +1,4 @@
-//! Text transactions and privileged input methods (ADR 0023).
+//! Text transactions and privileged input methods.
 
 use super::*;
 use inox_protocols::standard::wp::{

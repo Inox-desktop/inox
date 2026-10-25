@@ -1,6 +1,6 @@
 //! The daemon's application: state, messages, and the Elm update loop.
 //!
-//! The shape is the one ADR 0003 fixes for every shell component: a [`State`], a
+//! The shape is the one the technology stack fixes for every shell component: a [`State`], a
 //! [`Message`] per thing that can happen, one [`update`] that is the only place
 //! state changes, and a projection ([`crate::view`]) that only reads. Nothing in
 //! `update` performs I/O — the daemon decides, and hands what it decided to the
@@ -98,7 +98,7 @@ pub enum Message {
     DoNotDisturbSet(bool),
     /// The panel flipped do not disturb.
     DoNotDisturbToggled,
-    /// The session was locked or unlocked (ADR 0015: the compositor owns this).
+    /// The session was locked or unlocked.
     SessionLockChanged(SessionState),
 }
 
@@ -360,7 +360,7 @@ impl State {
 
     /// How many calls arrived with an identity that has already been answered.
     ///
-    /// The deduplication ADR 0013 decision 3 asks for, counted so that a caller
+    /// The deduplication the interaction contract, rule 3 asks for, counted so that a caller
     /// can see it happened rather than infer it.
     pub fn repeated_calls(&self) -> u64 {
         self.repeated_calls

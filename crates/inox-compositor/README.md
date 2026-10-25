@@ -4,20 +4,20 @@
 
 ## 状态
 
-M1：headless 合成器已实现——创建 `wl_output`、以 EGL surfaceless（`EGL_MESA_platform_surfaceless`）+ GLES 渲染纯色帧、收到终止信号或渲染完指定帧数后干净退出（退出码 0）。渲染路径与 `unsafe` 策略见 [ADR 0005](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0005-headless-compositor-runtime.md)。
+M1：headless 合成器已实现——创建 `wl_output`、以 EGL surfaceless（`EGL_MESA_platform_surfaceless`）+ GLES 渲染纯色帧、收到终止信号或渲染完指定帧数后干净退出（退出码 0）。渲染路径与 `unsafe` 策略见 [`AGENTS.md`](./AGENTS.md) 的 `unsafe` 例外一节。
 
-M2（PRD §13）：在 M1 的 headless 路径上扩展——通过 `wl_seat` 处理键盘/指针事件（确定性 keymap、修饰键跟踪、焦点投递），以 `xdg-shell` 客户端 toplevel 作为窗口并经 Smithay `desktop::Space` 管理 **≥2 个窗口**，按 master/stack 平铺布局（`proptest` 验证块不重叠、不越界、覆盖率完整）。键位绑定为纯逻辑（`Alt+Tab`/`Alt+Shift+Tab` 切换焦点、`Super+Q` 干净退出）；输入事件通过进程内注入 API 驱动，集成测试用**真实 Wayland 客户端**断言窗口数与平铺落点。M2 沿用 headless 路径（**不启用** libinput/udev/DRM 后端），决策见 [ADR 0008](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0008-m2-input-windows-tiling.md)。
+M2（PRD §13）：在 M1 的 headless 路径上扩展——通过 `wl_seat` 处理键盘/指针事件（确定性 keymap、修饰键跟踪、焦点投递），以 `xdg-shell` 客户端 toplevel 作为窗口并经 Smithay `desktop::Space` 管理 **≥2 个窗口**，按 master/stack 平铺布局（`proptest` 验证块不重叠、不越界、覆盖率完整）。键位绑定为纯逻辑（`Alt+Tab`/`Alt+Shift+Tab` 切换焦点、`Super+Q` 干净退出）；输入事件通过进程内注入 API 驱动，集成测试用**真实 Wayland 客户端**断言窗口数与平铺落点。M2 沿用 headless 路径（**不启用** libinput/udev/DRM 后端）。
 
 合成器同时广告私有 `inox_ipc` 全局（来自 [`inox-protocols`](../../crates/inox-protocols)）：`get_version` 返回协议版本，`reload_config` 现阶段以 `unsupported` 应答，配置热重载在后续里程碑接入。
 
-M3（PRD §13，[ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)，承接 [ADR 0007](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0007-xwayland-satellite-integration.md) 的进程边界）：合成器侧补齐 XWayland 互操作所需的协议面。
+M3（PRD §13，承接 XWayland 外部进程的边界）：合成器侧补齐 XWayland 互操作所需的协议面。
 
 - 新增三个全局：`wp_viewporter`（v1，`xwayland-satellite` 缩放 X11 窗口的前提，缺了它合成器根本无法充当宿主）、`wl_data_device_manager`（v3，剪贴板与拖放）与 `zwp_primary_selection_device_manager_v1`（v1，中键粘贴用的主选区）。完整全局清单见 `src/state.rs` 的模块文档。
 - **选择可见性跟随键盘焦点**：只有获得焦点的客户端会被投递选择（也只有它能设置选择）。`sync_focus` 是合成器唯一改动键盘焦点的地方，因此也是唯一交接选择焦点的地方——这正是 X11 ↔ Wayland 剪贴板桥能工作的原因：`xwayland-satellite` 只是一个普通 Wayland 客户端，它拿到焦点才拿得到 X11 的选择。
 - **每帧渲染后发送 `wl_surface.frame` 回调**：此前从不发送，真实客户端（XWayland 顶层、GTK 应用）会因此永远等不到重绘时机。回调由事件循环在每帧渲染后 flush 出去，焦点变更排入的选择事件同样如此。
 - 拖放不需要额外合成器逻辑：客户端调用 `start_drag` 后 Smithay 的 `DnDGrab` 接管指针并转发 enter/motion/drop/action。
 
-真实后端已按获批的 [ADR 0012](../../docs/adr/0012-output-input-and-frame-lifecycle.md)
+真实后端已按获批的帧生命周期决策
 接入 libseat、DRM/GBM、udev 与 libinput。代码完成不代表 O01/O04 真机验收通过，支持边界见下节。
 
 L2 的 layer-shell 宿主现已接入 Smithay `WlrLayerShellState`，广告
@@ -26,10 +26,10 @@ L2 的 layer-shell 宿主现已接入 Smithay `WlrLayerShellState`，广告
 普通窗口平铺在剩余工作区，背景与渲染目标仍使用完整输出尺寸。`None` 不接收键盘焦点，
 top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应用或 Alt+Tab 离开；
 选择焦点继续跟随实际键盘焦点。layer-shell 只用于普通桌面，不能替代安全锁屏。
-安全锁屏走 `ext_session_lock_manager_v1` v1（ADR 0015、ADR 0022）：只有先在 `inox_ipc` 上以会话令牌认领角色的连接才能取锁，锁定期间只合成锁表面（无锁表面时为不透明底色）、键盘与选区焦点清空、指针只命中锁表面、快捷键不再拦截，`locked` 只在每个输出都渲染过一帧锁定帧之后发送；客户端死亡不解除锁定。见 `tests/session_lock.rs`。
+安全锁屏走 `ext_session_lock_manager_v1` v1：只有先在 `inox_ipc` 上以会话令牌认领角色的连接才能取锁，锁定期间只合成锁表面（无锁表面时为不透明底色）、键盘与选区焦点清空、指针只命中锁表面、快捷键不再拦截，`locked` 只在每个输出都渲染过一帧锁定帧之后发送；客户端死亡不解除锁定。见 `tests/session_lock.rs`。
 
 `tests/layer_shell.rs` 用真实客户端与 shm 缓冲断言像素、指针、焦点、frame callback、
-独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 L3 客户端宿主（Iced 已由 QML + Qt Quick 取代，ADR 0039；合成器侧不参与该迁移），
+独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 L3 客户端宿主（Iced 已由 QML + Qt Quick 取代；合成器侧不参与该迁移），
 L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完整 M4 已验收。
 
 ### 毛玻璃（私有 `inox-glass-v1`）
@@ -58,7 +58,7 @@ L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完�
 过渡至少 `radius/2` 列，而未创建 glass 对象的同场景对照渲染为 0 列，且 pane 区域与对照渲染有
 明显差异；删掉模糊该测试必然失败。真机（DRM）路径的行为未由此推断。
 
-### 多输出、多 GPU 与缩放（ADR 0019 / ADR 0020）
+### 多输出、多 GPU 与缩放
 
 `--backend auto`（默认）枚举当前 libseat seat 上的**全部** DRM 设备，主 GPU 优先，
 每块能驱动至少一个 connector 的设备都会打开**自己的** libseat 租约、`DrmDevice`、
@@ -106,8 +106,7 @@ GPU 都能导入），但**广告 `linux-dmabuf` 之前必须先补上复制路�
   `Trial`/`Confirm`/`Rollback` 让输出模式、缩放与位置**试用**：应用成功后 30 秒内没有
   `Confirm`，合成器自己恢复试用前的偏好。成功回执只在设备状态被逐 connector 读回核对
   之后才发出，因此「不支持的 mode」不会被报成成功。试用只存在于物理后端：headless 的
-  输出来自 `--output`，该路径继续拒绝输出改动。见
-  [ADR 0028](../../docs/adr/0028-display-trial-confirm-and-rollback.md)。
+  输出来自 `--output`，该路径继续拒绝输出改动。
 
 本地只执行 fmt/check/clippy。CI 负责纯状态机、属性测试、真实 Wayland 客户端、软件光标像素
 及进程生命周期回归。DRM 翻页、VT、真实输入与热插拔须按
@@ -166,12 +165,11 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime cargo run --features test-input -- \
 输入法经独立的受信 Wayland 连接接入，普通应用只看到文本输入全局。
 支持 v3 文本事务、v2 输入法、虚拟键盘透传与候选窗，锁屏期间暂停输入法权限。
 输入法退出有界重启，会话退出回收子进程；不默认启动或安装引擎。
-详见[使用说明](../../docs/book/src/usage/input-methods.md)与
-[ADR 0023](../../docs/adr/0023-input-method-support.md)。新增用例仍待 CI 验收。
+详见[使用说明](../../docs/book/src/usage/input-methods.md)。新增用例仍待 CI 验收。
 
 ## 开发约定
 
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - `--test-input` 只服务于测试；改动它时请同步维护 `src/test_input.rs` 的模块文档与 [`AGENTS.md`](./AGENTS.md) 的测试要求。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**，不在本地进行编译验证。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。

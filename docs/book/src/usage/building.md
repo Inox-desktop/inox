@@ -1,6 +1,6 @@
 # 构建与运行
 
-> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；七个 L3 组件的界面已从 Iced 迁到 **QML + Qt Quick**（经 cxx-qt 绑定），面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染），其余五个是普通 Qt 窗口；完整服务 ready 与真实宿主截图证据（waydriver）尚未接线。锁屏的协议腿与界面已经落地（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）。**认证边界与开机登录链**已按 [ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) 接线（`inox-host` + `packaging/`），但**真机登录尚未取得证据**；挂起仍未接线。本页说明可运行路径及其限制，登录链的安装、试运行与回退另见[登录与开机链](login.md)。
+> **这还不是一份可用于日常桌面的安装指南。** `inox-session` 已能通过真实 Wayland 往返等待合成器并监督 L3 子进程；七个 L3 组件的界面已从 Iced 迁到 **QML + Qt Quick**（经 cxx-qt 绑定），面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染），其余五个是普通 Qt 窗口；完整服务 ready 与真实宿主截图证据（waydriver）尚未接线。锁屏的协议腿与界面已经落地。**认证边界与开机登录链**已接线（`inox-host` + `packaging/`），但**真机登录尚未取得证据**；挂起仍未接线。本页说明可运行路径及其限制，登录链的安装、试运行与回退另见[登录与开机链](login.md)。
 
 ## 今天能跑到什么程度
 
@@ -12,7 +12,7 @@
 | 构建并启动 L3 组件（面板、启动器、设置、通知、锁屏、壁纸、Shell 框架） | **可以，但看不到桌面层**：七个组件的界面是 QML + Qt Quick。面板与锁屏**不是普通窗口**——它们自己创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，QML 只做离屏渲染，所以需要支持对应协议的合成器，缺协议时以可读错误与非零码退出；启动器、设置、通知与壁纸是普通 Qt 窗口，放置策略只被建模与测试、未被应用；`inox-lock` 默认以可读错误非零退出（认证边界未评审），`--take-lock` 则真实取锁并把界面画到每个输出上 |
 | 启动与监督会话 | **部分可以**：`inox-session` 能启动合成器及桌面组件，提供有限重启、故障隔离和注销；尚无完整服务 ready，也未接入 XWayland 的 DISPLAY 发布 |
 | 真实登录、自动锁定与挂起 | **未验证**：登录链（`inox-host` 起合成器与登录界面，`inox-auth` 认证并建立用户会话）与部署面 `packaging/` 已接线，但**没有任何真机登录证据**；`inox-greet` 不带 `--preview` 时要求认证边界，`inox-idle` 有协议客户端与策略，而 Inox 宿主尚无 idle notifier，可信锁/挂起通道未接线。步骤见[登录与开机链](login.md) |
-| 锁定会话、收发通知 | **部分可以**：`inox-lock --take-lock` 会话内真的会锁住屏幕并画出界面（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)），`inox-notifications` 提供 `org.freedesktop.Notifications`；但锁屏**不能认证任何人**（ADR 0015 要求人类安全审查），因此它会如实显示「本构建没有认证边界」，释放会话只能靠注销 |
+| 锁定会话、收发通知 | **部分可以**：`inox-lock --take-lock` 会话内真的会锁住屏幕并画出界面，`inox-notifications` 提供 `org.freedesktop.Notifications`；但锁屏**不能认证任何人**，因此它会如实显示「本构建没有认证边界」，释放会话只能靠注销 |
 | 运行 X11 应用 | **可以，但看不到画面**：合成器已广告 satellite 所需的宿主协议（含 `wp_viewporter`），`inox-xwayland` 可在会话中启动并监督它；运行时需自备 `xwayland-satellite`（≥ v0.8.3）与 `Xwayland` |
 | 剪贴板与拖放 | **可以（仅限 headless 内）**：剪贴板读取权跟随键盘焦点；Wayland↔Wayland 拖放与 X11 内部拖放可用；跨 X11/Wayland 边界的拖放**不可用**（上游 satellite 未实现 XDND） |
 | 构建本站点 | **可以**：`mdbook build` |
@@ -37,9 +37,9 @@ INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headles
 
 也可以单独运行 `inox-lock --take-lock`，但它需要 `inox-session` 投递的 `INOX_LOCK_TOKEN`，手工会话拿不到。
 
-**这条模式没有解锁路径，误用会把会话留在锁定状态。** 它经 `inox_ipc` 用一次性令牌认领可信角色、请求锁、给每个输出一块锁表面，并把锁屏界面画上去（[ADR 0025](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0025-lock-screen-surface-ui-and-login-interface.md)）；它**不**读键盘、**不**校验任何凭据，收到 `SIGTERM`/`SIGINT` 时退出而**不**发 `unlock_and_destroy`，所以合成器保持锁定，恢复只能靠注销。
+**这条模式没有解锁路径，误用会把会话留在锁定状态。** 它经 `inox_ipc` 用一次性令牌认领可信角色、请求锁、给每个输出一块锁表面，并把锁屏界面画上去；它**不**读键盘、**不**校验任何凭据，收到 `SIGTERM`/`SIGINT` 时退出而**不**发 `unlock_and_destroy`，所以合成器保持锁定，恢复只能靠注销。
 
-屏幕上是**不可用**画面而不是密码提示，这是刻意的：本构建没有经过评审的认证边界，状态里的事实是「没有边界」，界面因此说它没法校验任何东西。这是 ADR 0015 要求的人类安全评审项，不是本页的安装步骤能绕过的。
+屏幕上是**不可用**画面而不是密码提示，这是刻意的：本构建没有经过评审的认证边界，状态里的事实是「没有边界」，界面因此说它没法校验任何东西。这是会话锁边界要求的人类安全评审项，不是本页的安装步骤能绕过的。
 
 在不带 `--take-lock` 的默认路径下，`inox-lock` 会打印原因并以非零状态码退出——会话脚本据此就能看出「这一次并没有锁上」。
 
@@ -49,11 +49,11 @@ INOX_SESSION_TAKE_LOCK=1 dbus-run-session -- /path/to/bin/inox-session --headles
 
 界面在设计上覆盖不可用、就绪、验证中、会话启动中、失败与已启动六个阶段，键盘（Tab/Shift+Tab/Enter/Escape）与每个禁用控件的原因都已建模，并由测试逐阶段覆盖。但 `--preview` 把认证传输的可用性固定为「没有」——这正是本构建的事实——所以它显示的是**不可用**那一幅：口令字段不可输入，登录按钮禁用，键盘只剩 Escape（清空）。它**不采集密码、不认证、不启动用户会话**，界面上也写着这一点。
 
-身份不靠键入（[ADR 0032](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0032-greeter-account-selection-and-login-interface.md)）：界面读系统账户库（`getent passwd`，回落 `/etc/passwd`）列出可登录的账户，默认选中本 greeter 上次登录成功过的那个（记录在 `$XDG_STATE_HOME/inox/greet/last-user`），账户多于一个时可以「切换用户」。账户库读不到时界面仍然打开，并说明是读不到列表还是列表里没有可登录的账户。
+身份不靠键入：界面读系统账户库（`getent passwd`，回落 `/etc/passwd`）列出可登录的账户，默认选中本 greeter 上次登录成功过的那个（记录在 `$XDG_STATE_HOME/inox/greet/last-user`），账户多于一个时可以「切换用户」。账户库读不到时界面仍然打开，并说明是读不到列表还是列表里没有可登录的账户。
 
 换句话说：预览展示的是诚实的状态，不是一次演示。其余阶段只出现在**真实路径**上——由 `inox-host` 在裸 VT 上拉起、边界套接字可连时（见[登录与开机链](login.md)）——以及测试与截图工件里；没有运行的二进制会因为一个开关就假装自己有认证边界。
 
-安全接线与证据边界见 [ADR 0021](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0021-l4-session-services.md)。
+安全接线与证据边界见 L4 会话服务的决策。
 
 ### 开机登录链（安装面）
 
@@ -128,7 +128,7 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
 
 尺寸上限为 16384 像素，刷新率上限为 1000 Hz，越界的取值会被拒绝。
 
-`test-input` 不是默认 feature：默认构建中不包含该代码，`--all-features` 构建会把它编译进来但默认不启用。该套接字**不是 Wayland 全局**，除「能写入该套接字」外不授予任何权限，只为测试存在（[ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）。
+`test-input` 不是默认 feature：默认构建中不包含该代码，`--all-features` 构建会把它编译进来但默认不启用。该套接字**不是 Wayland 全局**，除「能写入该套接字」外不授予任何权限，只为测试存在。
 
 终止信号 `SIGINT` / `SIGTERM` 会被转换为事件循环退出，**退出码 0**；日志走 `tracing`，默认级别 `info`，可用 `RUST_LOG` 调整。
 
@@ -146,10 +146,10 @@ cargo run -p inox-notifications  # 通知的弹窗层：普通 Qt 窗口
 cargo run -p inox-lock           # 锁屏：打印原因并以非零状态退出（认证边界未评审；--take-lock 见下文）
 ```
 
-两种形态要分开看（[ADR 0038](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)）：
+两种形态要分开看：
 
 - **面板与锁屏不是普通窗口。** 它们在自己的 `calloop` 循环里创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，QML 只负责把界面渲染成帧写进 `wl_shm`。缺 `wl_compositor`、`wl_shm`、`zwlr_layer_shell_v1` 中的任何一个，面板都会以可读错误与非零码退出——它不会退回成一个浮窗来假装自己摆了位。
-- **启动器、设置、通知与壁纸是普通 Qt 窗口**，由 Qt 事件循环驱动，QML 同时负责渲染与交互。`placement.rs` 里的锚点、独占区与边距仍是**已经测试但尚未应用**的数据（[ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md) 记录了当时的取舍与缺口，ADR 0038 保留了普通窗口这一形态）。
+- **启动器、设置、通知与壁纸是普通 Qt 窗口**，由 Qt 事件循环驱动，QML 同时负责渲染与交互。`placement.rs` 里的锚点、独占区与边距仍是**已经测试但尚未应用**的数据。
 
 界面本身是 QML + Qt Quick（Rust 投影 JSON，QML 只绑定），所以它们的测试不需要合成器也不需要 GPU：在 `QT_QPA_PLATFORM=offscreen` 下断言投影、加载 QML，面板与锁屏还会读回自己提交的离屏帧。命令与 CI 逐字一致：
 
@@ -185,7 +185,7 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime WAYLAND_DISPLAY=wayland-1 weston-simple-shm
 
 ## 运行 X11 应用（XWayland）
 
-X11 支持由**外部 `xwayland-satellite` 进程**提供：`inox-xwayland` 只负责在会话中拉起、监督与终止它，不链接它的 crate（决策见 [ADR 0007](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0007-xwayland-satellite-integration.md)）。satellite 与它自行 spawn 的 `Xwayland` 都是**运行期系统依赖**，请按你的发行版或上游源码安装。
+X11 支持由**外部 `xwayland-satellite` 进程**提供：`inox-xwayland` 只负责在会话中拉起、监督与终止它，不链接它的 crate（决策已记录）。satellite 与它自行 spawn 的 `Xwayland` 都是**运行期系统依赖**，请按你的发行版或上游源码安装。
 
 ```bash
 # 终端 1：合成器（它广告的协议面包含 satellite 的宿主前提 xdg-shell 与 wp_viewporter）
@@ -204,7 +204,7 @@ DISPLAY=:1 xeyes
 
 X11 窗口会像 Wayland 窗口一样进入 master/stack 平铺，但同样只在离屏缓冲中渲染 —— 屏幕上依旧不会出现任何东西。
 
-**剪贴板与拖放**（[ADR 0017](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0017-m3-xwayland-host-clipboard-and-dnd.md)）：
+**剪贴板与拖放**：
 
 - 剪贴板的读取权**跟随键盘焦点**：只有焦点客户端能读取或设置选区。X11↔Wayland 的粘贴因此要走正常的焦点交接 —— 先把焦点切到目标窗口（`Alt+Tab`；没有真实输入后端时按键只能经测试注入路径送达，见上一节），再粘贴；焦点不在对端时它不会收到任何选区事件。
 - 拖放：Wayland↔Wayland 与 X11 内部（X 客户端之间）可用；**跨 X11/Wayland 边界的拖放不可用**，因为 `xwayland-satellite` v0.8.3 未实现 XDND。
@@ -212,7 +212,7 @@ X11 窗口会像 Wayland 窗口一样进入 master/stack 平铺，但同样只�
 
 ## 配置
 
-合成器**目前只读取命令行参数**，不读取任何 TOML 文件。`~/.config/inox/` 下的配置文件布局与字段是 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md) 的提案，尚未在任何组件中实现 —— 详见[配置目录布局](../configuration/layout.md)与[合成器配置](../configuration/compositor.md)。
+合成器**目前只读取命令行参数**，不读取任何 TOML 文件。`~/.config/inox/` 下的配置文件布局与字段仍处于提案状态，尚未在任何组件中实现 —— 详见[配置目录布局](../configuration/layout.md)与[合成器配置](../configuration/compositor.md)。
 
 ## 构建文档站点
 

@@ -1,6 +1,6 @@
 # 配置目录布局
 
-> **状态：`inox-config` 已实现，消费方接入中。** 本页与[合成器配置](./compositor.md)、[面板、启动器与壁纸配置](./shell.md)、[通知配置](./notifications.md)、[主题与设计令牌](./theme.md)描述的字段与默认值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）与 [ADR 0014](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0014-configuration-apply-and-migration.md)（状态 `proposed`）。`inox-config` 的模型、解析、错误定位与热重载语义均已实现并有测试；L3 组件通过 `InoxConfig` 读取配置。`inox-compositor` 的物理后端启动时读取 TOML，运行中应用范围见本页热重载部分；各组件的行为验收等级见 [ADR 0018](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0018-l3-component-architecture.md)。
+> **状态：`inox-config` 已实现，消费方接入中。** 本页与[合成器配置](./compositor.md)、[面板、启动器与壁纸配置](./shell.md)、[通知配置](./notifications.md)、[主题与设计令牌](./theme.md)描述的字段与默认值来自配置模型与配置应用两份决策（状态均为 `proposed`）。`inox-config` 的模型、解析、错误定位与热重载语义均已实现并有测试；L3 组件通过 `InoxConfig` 读取配置。`inox-compositor` 的物理后端启动时读取 TOML，运行中应用范围见本页热重载部分；各组件的行为验收等级见[验收规范](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md)。
 
 目录布局本身由 PRD §9.1 规定：
 
@@ -71,7 +71,7 @@ language = "zh-CN"                 # 省略则跟随环境（LC_ALL / LC_MESSAGE
 
 ## 缺失文件与未知字段
 
-ADR 0009 对四种情况给出了明确不同的行为，取舍是「首次运行不报错，写错配置必须报错」：
+配置模型对四种情况给出了明确不同的行为，取舍是「首次运行不报错，写错配置必须报错」：
 
 | 情况 | 行为 |
 |------|------|
@@ -100,8 +100,7 @@ headless 后端的输出来自 `--output`，该路径仍拒绝运行时改动。
 配置 schema 与快照在 L1 的 `inox-config`；D-Bus、SIGHUP 和资源提交在消费方二进制。
 协议契约位于 `inox-protocols/protocol/configuration-v1.md` 与
 `configuration-v2.md`（显示试用的 `Trial`/`Confirm`/`Rollback`），不新增 Cargo 层级边。
-详见 [ADR 0026](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0026-live-configuration-reload.md)
-与 [ADR 0028](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0028-display-trial-confirm-and-rollback.md)。
+详见本页的热重载与显示试用部分。
 
 ## 当前实现状态
 

@@ -26,10 +26,10 @@
 //! | [`OutgoingCommand::RollbackDisplay`] | ask the compositor to put the previous display settings back | [`Message::DisplayReverted`] |
 //!
 //! Nothing in this milestone can carry an [`OutgoingCommand::Apply`]: there is
-//! no transport between the settings application and the components (ADR 0018),
+//! no transport between the settings application and the components,
 //! so the runtime answers [`Message::ComponentUnreachable`] and the window
 //! reports that the change is saved but not in effect — which is exactly the
-//! distinction ADR 0014 asks it to show.
+//! distinction the settings save semantics asks it to show.
 //!
 //! **A display change is a question**. Mode, scale and position are
 //! applied live but only for as long as the user does not answer: the compositor
@@ -70,7 +70,7 @@ use crate::view_model::{
 pub const DISPLAY_TRIAL_SECONDS: u32 = 30;
 
 /// How often the countdown above is decremented, as a duration.
-/// applies provisionally and reverts unless it is confirmed (ADR 0028).
+/// applies provisionally and reverts unless it is confirmed.
 /// One [`Message::TrialTick`] a second: the runtime owns the clock
 /// (`crate::runtime::UiRuntime::pump`), the state machine owns what a second
 /// means.
@@ -189,7 +189,7 @@ impl DisplayTrial {
 }
 
 /// Everything the settings window knows.
-/// same validator every other save uses (ADR 0014: 只写用户改过的键).
+/// same validator every other save uses.
 /// The localizer is shared rather than owned because it is re-loaded when a
 /// consumer reports a new locale, and a catalog cannot be cloned: it is parsed
 /// once and read for the life of the process. A plain [`Rc`] is enough — the
@@ -278,7 +278,7 @@ impl State {
     }
 
     /// Whether a display change is on trial.
-    /// The compositor has a display change in effect provisionally (ADR 0028).
+    /// The compositor has a display change in effect provisionally.
     /// The runtime counts the seconds down only while this is true, so an idle
     /// window wakes up for nothing.
     pub fn trial_open(&self) -> bool {

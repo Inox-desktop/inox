@@ -1,9 +1,9 @@
 # Inox desktop — cargo workspace root.
 #
-# ADR 0016 replaced the multi-repository strategy (ADR 0001) with this single
+# the single-repository workspace replaced the multi-repository strategy with this single
 # workspace. Every component is a member under `crates/`; the layer table in
 # `[workspace.metadata.inox]` is the single source of truth for the L1–L4
-# layering of ADR 0002, and `crates/inox-integration/tests/layering.rs` asserts
+# layering of the layering rules, and `crates/inox-integration/tests/layering.rs` asserts
 # the dependency-direction rules against it on every CI run.
 #
 # `inox-docs` (the mdBook in `docs/book/`) is deliberately not a member: it has
@@ -21,14 +21,14 @@ resolver = "3"
 # `0.1.1` and not `0.2.0`: `inox-common`'s live release line is `v0.1.1`, and
 # main's `compat.toml` records that `v0.2.0` was re-cut to it and the old tag is
 # retired (the `paths` addition is a compatible change, which is a patch under
-# 0.x per ADR 0010 版本号语义与发布流程, still `proposed`). Taking 0.2.0 would
+# 0.x per the real backend 版本号语义与发布流程, still `proposed`). Taking 0.2.0 would
 # reuse a retired number. If that ADR is rejected or changes the MSRV rule
 # (this migration raises MSRV to 1.86 for eleven crates), this is the one line
 # to revisit.
 version = "0.1.1"
 edition = "2024"
 # zbus 6 folds the retired zvariant/zbus_names crates into its maintained API
-# and requires Rust 1.89 (ADR 0027). Members inherit this single workspace floor.
+# and requires Rust 1.89. Members inherit this single workspace floor.
 rust-version = "1.89"
 license = "LGPL-3.0"
 repository = "https://github.com/Inox-desktop/inox"
@@ -43,7 +43,7 @@ categories = ["desktop"]
 inox-common = { path = "crates/inox-common", version = "0.1" }
 inox-config = { path = "crates/inox-config", version = "0.1" }
 inox-protocols = { path = "crates/inox-protocols", version = "0.1" }
-# ADR 0029. `default-features = false` is the point, not a detail: it is how the
+# the authentication boundary. `default-features = false` is the point, not a detail: it is how the
 # login *screen* gets the `auth-v1` contract without linking `libpam` or carrying
 # the code that can start a session. The privileged half is enabled by this
 # crate's own `default = ["server"]` when the helper is built, and a consumer that
@@ -58,12 +58,12 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# --- the authentication boundary (ADR 0029) -------------------------------
+# --- the authentication boundary  -------------------------------
 # `pam` is the safe wrapper around libpam; 0.8 is the first version that exposes
 # the PAM return code, which is what lets a broken authenticator be told apart
 # from a wrong password (`crates/inox-auth/src/pam.rs`). Its licence is
 # MIT OR Apache-2.0, and its `pam-sys` dependency is pinned at 1.0.0-alpha5 by
-# Cargo.lock; both are recorded in ADR 0029.
+# Cargo.lock; both are recorded in the authentication boundary.
 pam = "0.8"
 # Account lookup for the uid, gid and home a session is started with.
 #
@@ -71,7 +71,7 @@ pam = "0.8"
 # RUSTSEC advisories against it are ignored in `deny.toml` with that reasoning:
 # the calls this workspace makes (`get_user_by_name`) are not the affected ones,
 # and the group listing it *is* affected in is not used at all — `nix` below
-# replaces it for that job. See ADR 0029 §3 and `deny.toml`.
+# replaces it for that job. See the authentication boundary
 users = "0.10"
 # Supplementary groups for the session: `getgrouplist` with correct buffer
 # sizing (it respects the count the kernel returns, which is exactly what
@@ -95,7 +95,7 @@ smithay = { version = "0.7.0", default-features = false, features = [
     "desktop",
     "renderer_gl",
     "wayland_frontend",
-    # Real backend (ADR 0010): session ownership via libseat, DRM/KMS output,
+    # Real backend: session ownership via libseat, DRM/KMS output,
     # GBM render target, udev-enumerated libinput devices.
     "backend_drm",
     "backend_gbm",
@@ -105,24 +105,24 @@ smithay = { version = "0.7.0", default-features = false, features = [
     "backend_session_libseat",
 ] }
 
-# --- L3 shell stack: QML + Qt Quick (ADR 0033 / ADR 0035 / ADR 0036) -------
+# --- L3 shell stack: QML + Qt Quick  -------
 # The L3 shell components are QML + Qt Quick bound into Rust through cxx-qt;
 # the Iced entries (iced, iced_layershell, iced_core, iced_runtime,
 # iced_tiny_skia) are gone from the graph as of the completed migration
-# (ADR 0036 §决策 5, contract §5). The Qt side is declared below.
+# . The Qt side is declared below.
 
 # Credential buffers that zero themselves on drop (M5 lock screen work, but the
 # buffer type belongs with the state machine that owns it). MIT/Apache-2.0.
 zeroize = "1"
 
-# --- QML + Qt Quick binding (ADR 0033 / ADR 0035) -------------------------
-# The L3 shell was migrated from Iced to QML + Qt Quick (completed, ADR 0039),
+# --- QML + Qt Quick binding  -------------------------
+# The L3 shell was migrated from Iced to QML + Qt Quick,
 # bound into Rust through cxx-qt (KDAB, MIT OR Apache-2.0). cxx-qt is the Rust→QML bridge selected in
-# ADR 0035: a `#[cxx_qt::bridge]` module defines a Rust QObject exposed to QML
+# the cxx-qt binding: a `#[cxx_qt::bridge]` module defines a Rust QObject exposed to QML
 # as a normal QObject, with cxx-qt generating the C++ glue. The workspace keeps
 # the LGPL route clean: only LGPL/permissive modules are pulled (never GPL-only
 # Qt Wayland Compositor / Virtual Keyboard / QML Compiler — enforced by the
-# `license-audit` CI job, ADR 0033/0034).
+# `license-audit` CI job, the QML evaluation/0034).
 #
 # `cxx` is the underlying FFI layer cxx-qt builds on, `cxx-qt-lib` wraps the Qt
 # core value types (QString, QColor, …) and owns the `full` feature that pulls
@@ -137,11 +137,11 @@ cxx-qt-build = "0.10.0"
 # so it needs a real D-Bus client and server (M5, acceptance D06). zbus is the
 # pure-Rust implementation: no `libdbus` system library, no FFI, no `unsafe` of
 # ours. Transport threads drive its async API through `zbus::block_on`; Iced
-# state remains on the application thread (ADR 0022 §5, amended by ADR 0027).
+# state remains on the application thread.
 #
 # zbus 6 has an async API driven by `block_on` on the transport threads.
 # Keep the default runtime, proxies, services and tracing explicit; p2p is used
-# by the real socket-pair tests without requiring a session bus (ADR 0027).
+# by the real socket-pair tests without requiring a session bus.
 zbus = { version = "6.0", default-features = false, features = [
     "default-rt",
     "proxy",
@@ -150,7 +150,7 @@ zbus = { version = "6.0", default-features = false, features = [
     "tracing",
 ] }
 
-# Project Fluent (ADR 0003, PRD §11.2): every user-visible string is a message
+# Project Fluent: every user-visible string is a message
 # in a catalog, so the loader lives in `inox-common::i18n`.
 fluent-bundle = "0.16"
 fluent-syntax = "0.12"
@@ -182,7 +182,7 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = "warn"
 
-# Layer membership for ADR 0002. `crates/inox-integration/tests/layering.rs`
+# Layer membership for the layering rules. `crates/inox-integration/tests/layering.rs`
 # reads this table, checks that it covers exactly the workspace members, and
 # then enforces the dependency-direction rules. Adding a crate without giving
 # it a layer here fails CI rather than escaping the rules.
@@ -197,7 +197,7 @@ l3 = [
     "inox-settings",
     "inox-lock",
     "inox-wallpaper",
-    # ADR 0033/0035: the QML + Qt Quick migration prototype. Zero internal
+    # the QML evaluation/0035: the QML + Qt Quick migration prototype. Zero internal
     # dependency (its only deps are cxx-qt/cxx-qt-lib and the L1 trivia), placed
     # at L3 where the future QML host components sit so the layering test and
     # the CI matrix cover it like any other shard.
@@ -207,18 +207,18 @@ l4 = ["inox-session", "inox-idle", "inox-greet", "inox-host"]
 test = ["inox-integration"]
 
 [workspace.metadata.inox.rules]
-# ADR 0002 rule 3: no Rust dependency may cross this boundary in either
+# layering rule 3: no Rust dependency may cross this boundary in either
 # direction — the compositor and the shell talk over Wayland / inox-ipc / D-Bus.
 decoupled = [["inox-compositor", "inox-shell"]]
 
-# ADR 0002 rule 6: the only L3 crate permitted to depend on `inox-compositor`.
-# ADR 0013 proposes removing this exception; delete the entry when it is
+# layering rule 6: the only L3 crate permitted to depend on `inox-compositor`.
+# the interaction contract proposes removing this exception; delete the entry when it is
 # accepted, and the check starts enforcing the stricter rule.
 l3_dependencies_on_compositor = ["inox-wallpaper"]
 
-# ADR 0002 rule 1 forbids same-layer edges, but `inox-config` depends on
+# layering rule 1 forbids same-layer edges, but `inox-config` depends on
 # `inox-common` by design (PRD §3.1): L1 has an internal order that a four-rank
-# layer model cannot express. The ADR index already tracks this ambiguity, and
+# layer model cannot express. The decision index already tracks this ambiguity, and
 # the check enforces rule 1 as written, so the dependency is recorded here as a
 # machine-visible exception instead of being left implicit. Resolving it — by
 # amending rule 1 for intra-layer ordering, or by restating the leaf rule —

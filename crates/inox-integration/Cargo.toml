@@ -21,7 +21,7 @@ serde_json.workspace = true
 
 # --- M3 end-to-end tests (acceptance X01-X03) ------------------------------
 # These drive the workspace binaries as child processes, so this crate still
-# depends on no Inox crate (ADR 0017 decision 8, enforced by `tests/layering.rs`).
+# depends on no Inox crate.
 # `tempfile` gives every session its private 0700 `XDG_RUNTIME_DIR`.
 tempfile.workspace = true
 # Child supervision and the bounded waits: `rustix` signals process groups, and

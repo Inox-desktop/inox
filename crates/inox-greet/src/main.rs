@@ -1,7 +1,7 @@
 //! The login screen, and the two things it refuses to pretend about.
 //!
 //! `inox-greet` draws the login interface in QML and speaks `auth-v1` to the
-//! authentication boundary (ADR 0029). It does not authenticate anybody itself, so
+//! authentication boundary. It does not authenticate anybody itself, so
 //! it has exactly two ways to start:
 //!
 //! - **No arguments: the real path.** The boundary socket has to be there. If it is

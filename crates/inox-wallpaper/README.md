@@ -1,13 +1,13 @@
 # inox-wallpaper
 
 壁纸加载与显示。属于 Inox 桌面环境的 **L3** 层，是 `wlr-layer-shell-unstable-v1` 的客户端
-（PRD §3.1、[ADR 0013](../../docs/adr/0013-shell-service-and-interaction-contracts.md)）。
+（PRD §3.1）。
 
-界面是 **QML + Qt Quick**，经 cxx-qt 绑定到 Rust（[ADR 0033](../../docs/adr/0033-qml-qt-quick-shell-evaluation.md)、[ADR 0035](../../docs/adr/0035-cxx-qt-binding.md)）。领域模型、令牌与文案留在 Rust：状态机是纯的，界面拿到的是一份 JSON 投影，QML 只负责画。
+界面是 **QML + Qt Quick**，经 cxx-qt 绑定到 Rust。领域模型、令牌与文案留在 Rust：状态机是纯的，界面拿到的是一份 JSON 投影，QML 只负责画。
 
 ## 表面：普通窗口（现在是，暂时也只能是）
 
-`QGuiApplication` + `QQmlApplicationEngine` 打开一个 `Window`（`qml/Main.qml`），`--self-check` 时改用离屏平台做一次自检。**这不是 layer 表面**：`inox-compositor` 尚未广告 `wlr-layer-shell-unstable-v1`，因此 layer 表面根本创建不出来（[ADR 0018](../../docs/adr/0018-l3-component-architecture.md)），二进制启动时用一条 `warn!` 说明，窗口里放一条横幅。
+`QGuiApplication` + `QQmlApplicationEngine` 打开一个 `Window`（`qml/Main.qml`），`--self-check` 时改用离屏平台做一次自检。**这不是 layer 表面**：`inox-compositor` 尚未广告 `wlr-layer-shell-unstable-v1`，因此 layer 表面根本创建不出来，二进制启动时用一条 `warn!` 说明，窗口里放一条横幅。
 
 `src/placement.rs` 的四锚点 / `exclusive_zone = 0` / 无键盘交互策略**只被计算与测试，不被应用**。本 crate 不声称壁纸已经作为背景层生效。
 
@@ -19,13 +19,13 @@
 
 | 模块 | 职责 |
 |------|------|
-| `src/model.rs` | `[wallpaper]` → 每个输出的选择：具名输出 → `*` → 共享 `image` → 内置默认壁纸（取值语义见下，[ADR 0030](../../docs/adr/0030-bundled-wallpapers-and-the-default-background.md)） |
+| `src/model.rs` | `[wallpaper]` → 每个输出的选择：具名输出 → `*` → 共享 `image` → 内置默认壁纸（取值语义见下） |
 | `src/source.rs` | 选择 → 文件系统：存在、是文件、可打开；失败即降级并携带原因 |
 | `src/decode.rs` | PNG/JPEG → RGBA8，带像素上限（`MAX_PIXELS`）与逐类错误；`FrameHandle` 另带一份 `data:` URL 供 QML 的 `Image` 使用 |
 | `src/scaling.rs` | `fill` / `fit` / `stretch` / `center` / `tile` 的目标矩形，含平铺上限 |
 | `src/apply.rs` | 原子应用：先解码、定位，再整体替换；逐输出独立成败 |
 | `src/placement.rs` | 背景层 surface 纯数据策略（四锚点、`exclusive_zone = 0`、无键盘交互），**未被应用** |
-| `src/contract.rs` | ADR 0013 的状态契约：代次、逐输出结果、服务状态、快照 |
+| `src/contract.rs` | 状态契约：代次、逐输出结果、服务状态、快照 |
 | `src/app.rs` | Elm 状态与消息；`update` 不做 I/O，解码经 `Task::perform` 离开交互循环 |
 | `src/view_model.rs` | 纯投影：文案（Fluent）、启用/禁用与可读原因、焦点顺序、语义树计数 |
 | `src/view.rs` | 状态 + 令牌 → **一份 JSON 文档**：每行的文字、颜色（`#AARRGGBB`）、字号、字重、阶段名，以及壁纸矩形 |
@@ -38,7 +38,7 @@
 
 **未交付（被上游阻塞）**：
 
-- **真实背景层 surface**：合成器不广告 `wlr-layer-shell-unstable-v1`（ADR 0018），因此二进制以普通窗口运行——那是供人查看的**预览**。`src/placement.rs` 的策略不被应用。
+- **真实背景层 surface**：合成器不广告 `wlr-layer-shell-unstable-v1`，因此二进制以普通窗口运行——那是供人查看的**预览**。`src/placement.rs` 的策略不被应用。
 - E2 级别的 GUI 证据（waydriver / 真实宿主截图）与 AT-SPI 实际桥接验证：需要支持 layer-shell 的宿主。
 
 ## QML↔Rust 边界
@@ -76,14 +76,14 @@ per_output = { "HDMI-A-1" = "lake", "*" = "backgrounds/wall.png" }
 
 ## 失败即降级，且可诊断
 
-ADR 0014 划的线在这里被逐条实现：**用户显式选择却读不到的资源必须报告**，而**默认值与「没有选择」不是错误**。
+设置保存语义划的线在这里被逐条实现：**用户显式选择却读不到的资源必须报告**，而**默认值与「没有选择」不是错误**。
 
 - 文件缺失、是目录、读不了、解码失败、像素超限、几何退化、平铺份数超限 → 输出退到主题背景，
   屏幕**永不**变成黑屏，进程**永不**崩溃；原因以「输出名 + 路径 + 原因」呈现，文案来自 Fluent 目录。
 - **从未选择**的默认壁纸缺失（例如打包时没有安装 `data/wallpapers/`）只记一条 `warn!` 并退到主题背景，
-  不进入错误态；**显式**选择的内置壁纸不可用才按上面的路径报告（ADR 0030）。
+  不进入错误态；**显式**选择的内置壁纸不可用才按上面的路径报告。
 - 已经显示中的壁纸不会因为一次重载失败而被清空：新帧**完整**之后才替换旧帧，失败时保留旧帧。
-- 一个输出失败不影响其它输出，结果逐输出分别报告（ADR 0013 的快照/应用契约）。
+- 一个输出失败不影响其它输出，结果逐输出分别报告。
 
 对应的验收场景：**D05**（loading/empty/error/disabled/retry，禁用原因可读）、**Q03**（`en-US` 与 `zh-CN` 目录 id 与占位符一致）；**Q02**（浅色/深色/空态/错误态、1280×720）在迁移后由「投影断言 + QML 离屏加载」覆盖，像素截图证据属于尚未完成的 waydriver 工作。
 
@@ -110,7 +110,7 @@ QT_QPA_PLATFORM=offscreen cargo run -p inox-wallpaper -- --self-check
 
 ## 开发约定
 
-- 本组件遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的
+- 本组件遵循根仓库的硬性规则与本 crate 的
   [`AGENTS.md`](./AGENTS.md)。
 - 用户可见文案一律走 Project Fluent；颜色/尺寸/间距/圆角一律来自 `inox_config::Theme` 令牌。
 - 新增依赖前先确认依赖方向合法（根级 §2）。

@@ -1,6 +1,6 @@
 //! The rolling allowance that bounds how often the boundary will try.
 //!
-//! The login screen already counts its own attempts (ADR 0021's model refuses a
+//! The login screen already counts its own attempts (the L4 session services's model refuses a
 //! fourth submission in a minute), and this is the same rule enforced on the side
 //! that actually has the privilege. It matters because the two are not the same
 //! trust domain: the client's counter is a courtesy to the person typing, and
@@ -14,7 +14,7 @@
 //!
 //! The window is a parameter rather than a constant because the *policy* belongs
 //! to the ADR and the *mechanism* to this type; the shipped binary passes the
-//! values ADR 0029 fixes.
+//! values the authentication boundary fixes.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -29,7 +29,7 @@ pub struct RatePolicy {
 }
 
 impl Default for RatePolicy {
-    /// Three attempts a minute: ADR 0015's lock-screen rule, reused so that the
+    /// Three attempts a minute: the session-lock boundary's lock-screen rule, reused so that the
     /// two components cannot drift apart in what they consider too many.
     fn default() -> Self {
         Self {

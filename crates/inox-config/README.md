@@ -12,7 +12,7 @@
 - 内置 `inox-light` / `inox-dark` 主题与用户主题加载；
 - `ConfigStore` 热重载：加载成功才替换，失败保留旧配置并 `warn!`。
 
-行为要点（与 ADR 0009 一致）：
+行为要点：
 
 - 未知字段、类型错误、颜色字面量错误、**平铺参数越界**（`master_ratio` 不在 10..=90、
   `master_count` < 1、`gap` < 0）与**输出参数越界**（尺寸不在 1..=16384、刷新率不在 1..=1000、
@@ -41,7 +41,7 @@
 
 - `config.toml` 与三个组件配置文件（`compositor.toml`、`shell.toml`、`notifications.toml`）
   缺失不是错误：回退到默认值。文件存在却无法读取或解析则是错误。
-- **主题文件缺失是错误**：`themes/<name>/theme.toml` 不存在返回 `ThemeNotFound`（ADR 0009 决策 6）——
+- **主题文件缺失是错误**：`themes/<name>/theme.toml` 不存在返回 `ThemeNotFound`——
   显式选了一个主题却读不到，不能悄悄换成深色。
 - `shell.toml`（`src/shell.rs`）与 `notifications.toml`（`src/notifications.rs`）的字段模型随各自的消费者
   落地：面板、启动器、壁纸与通知守护进程。`[locale]` 是会话唯一的语言解析点，消费方从
@@ -66,7 +66,7 @@
 
 ## 开发约定
 
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**，不在本地进行编译验证。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 

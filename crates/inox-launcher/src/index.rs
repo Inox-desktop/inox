@@ -1,6 +1,6 @@
 //! The application index: the XDG data directories, their precedence, and the
 //! diagnostics of the files that could not be used.
-//! The index is the launcher's authoritative state (ADR 0013: one authority per
+//! The index is the launcher's authoritative state (the interaction contract: one authority per
 //! The index is the launcher's authoritative state (one authority per
 //! kind of state). It is built by walking, in order,
 //!

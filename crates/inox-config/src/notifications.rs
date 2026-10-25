@@ -12,10 +12,10 @@
 //! starts in — the panel toggles it at runtime and the daemon owns it from
 //! there on — and `[policy] hide_body_when_locked` is a failure boundary rather
 //! than a preference: a locked session must not show notification bodies
-//! (ADR 0015), so its default is `true`.
+//! , so its default is `true`.
 //!
 //! Every range is enforced while the file is parsed, so a value outside it is a
-//! parse error naming the field rather than a silent clamp (ADR 0009,
+//! parse error naming the field rather than a silent clamp (the configuration model,
 //! decision 4): a popup width of zero, a queue that can hold nothing or a
 //! timeout beyond ten minutes are all rejected by [`crate::store::InoxConfig::load`].
 
@@ -224,7 +224,7 @@ pub struct PolicyConfig {
     pub do_not_disturb: bool,
     /// Whether notifications offering actions show them.
     pub show_actions: bool,
-    /// Whether a locked session hides notification bodies (ADR 0015).
+    /// Whether a locked session hides notification bodies.
     pub hide_body_when_locked: bool,
 }
 

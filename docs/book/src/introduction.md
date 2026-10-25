@@ -11,7 +11,7 @@ Inox 是一个用 Rust（stable，2024 edition）编写、基于 Smithay 与 QML
 - 记录开发流程、CI 门禁、测试策略与依赖管理约定；
 - 提供里程碑状态与术语表。
 
-本站点**不复制**产品需求与架构决策的原文，只做索引与解释：需求与决策的正文始终留在仓库根的 `PRD.md` 与 `docs/adr/`。
+本站点**不复制**产品需求与架构决策的原文，只做索引与解释：需求与决策的正文始终留在仓库内，本站点只复述它们的结论与现状。
 
 ## 权威来源
 
@@ -19,9 +19,9 @@ Inox 是一个用 Rust（stable，2024 edition）编写、基于 Smithay 与 QML
 
 | 内容 | 权威来源 |
 |------|----------|
-| 产品需求与验收标准 | [PRD.md](https://github.com/Inox-desktop/inox/blob/main/PRD.md) |
-| 架构决策 | [docs/adr/](https://github.com/Inox-desktop/inox/tree/main/docs/adr) |
-| AI 代理与贡献者的硬性规则 | [根级 AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) |
+| 产品需求与验收标准 | [验收规范](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md) |
+| 架构决策 | [架构决策记录](./architecture/decisions.md) |
+| AI 代理与贡献者的硬性规则 | [硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查) |
 | 里程碑的当前状态 | [README 第 4 节](https://github.com/Inox-desktop/inox/blob/main/README.md) |
 | 组件版本与兼容性记录 | [Cargo.toml](https://github.com/Inox-desktop/inox/blob/main/Cargo.toml) 的 `[workspace.package]` 与 [Cargo.lock](https://github.com/Inox-desktop/inox/blob/main/Cargo.lock) |
 | 单个组件的实现现状 | `crates/<name>/` 的代码、`README.md` 与 `AGENTS.md` |

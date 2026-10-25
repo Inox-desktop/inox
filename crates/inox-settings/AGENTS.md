@@ -1,36 +1,36 @@
 # AGENTS.md — inox-settings
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-Desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
 系统设置应用：Inox 中**唯一写入配置的组件**。所属层级：**L3**。
 
-它编辑 `config.toml`、`compositor.toml`、`shell.toml` 与 `notifications.toml` 中用户可改的字段，按 ADR 0014 区分「已保存」与「已生效」，按 ADR 0013 用快照/代次/命令结果建模与各组件的契约。它不持有 schema、默认值或校验规则的权威——那些都在 L1 的 `inox-config`。
+它编辑 `config.toml`、`compositor.toml`、`shell.toml` 与 `notifications.toml` 中用户可改的字段，按设置保存语义区分「已保存」与「已生效」，按交互契约用快照/代次/命令结果建模与各组件的契约。它不持有 schema、默认值或校验规则的权威——那些都在 L1 的 `inox-config`。
 
-界面是 **QML + Qt Quick**（ADR 0033、0035，经 cxx-qt 绑定）。领域模型、草稿、持久化、焦点顺序、校验与全部 Fluent 文案留在 Rust；QML 只声明式渲染 Rust 投影出来的 JSON。本 crate 是**普通窗口**（`QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window`），不使用 Qt Wayland Compositor（GPL-only），没有 webview，也不做离屏渲染（那是 `inox-panel` / `inox-lock` 的形态，ADR 0038）。
+界面是 **QML + Qt Quick**。领域模型、草稿、持久化、焦点顺序、校验与全部 Fluent 文案留在 Rust；QML 只声明式渲染 Rust 投影出来的 JSON。本 crate 是**普通窗口**（`QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window`），不使用 Qt Wayland Compositor（GPL-only），没有 webview，也不做离屏渲染。
 
 ## crate 特有约束
 
 ### Rust 侧
 
-- `unsafe`：crate 根 `Cargo.toml` 的 `[lints.rust] unsafe_code = "allow"` 是 ADR 0035 的**唯一例外**，只为 `#[cxx_qt::bridge]` 生成的 FFI 胶水服务；Inox 手写的 Rust 仍然一行 `unsafe` 都不写。`missing_docs = "warn"` 同在该处。
+- `unsafe`：crate 根 `Cargo.toml` 的 `[lints.rust] unsafe_code = "allow"` 是 cxx-qt 绑定的**唯一例外**，只为 `#[cxx_qt::bridge]` 生成的 FFI 胶水服务；Inox 手写的 Rust 仍然一行 `unsafe` 都不写。`missing_docs = "warn"` 同在该处。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - crate 根有 `#![allow(dead_code)]`：本 crate 是 bin-only（见下），测试在同一二进制内，`#[cfg(test)]` 里的读取不算非测试编译的「使用」，状态机访问器与消息变体会被报成死代码。`inox-launcher`、`inox-lock`、`inox-notifications` 迁移后同样如此。新增真正无用的代码仍然要删，不要靠这条豁免。
 - **`app::update` 不做 I/O。** 一切副作用都作为 `app::OutgoingCommand` 离开更新循环（写文件、请求组件应用、重读配置），由 `runtime::UiRuntime` 执行并把结果作为 `Message` 送回来。这条是状态机可测的原因，也是它与二进制不会各有一份实现的原因；新增副作用时必须走同一条路。
-- **唯一动文件的地方是 `persist::save`。** 它必须保持 ADR 0014 要求的失败原子性（目标目录内临时文件、整份写入、`sync_all`、原子 `rename`、目录同步），并且必须保留「外部编辑检测」：写入携带读取时的 `Guard`，摘要不符时返回 `Conflicted` 而不是覆盖。任何新增写入路径都必须同样经过它。
+- **唯一动文件的地方是 `persist::save`。** 它必须保持设置保存语义要求的失败原子性（目标目录内临时文件、整份写入、`sync_all`、原子 `rename`、目录同步），并且必须保留「外部编辑检测」：写入携带读取时的 `Guard`，摘要不符时返回 `Conflicted` 而不是覆盖。任何新增写入路径都必须同样经过它。
 - **只写用户改过的键。** `document::patch` 只重写被编辑键所在的行，其余行逐字节保留；「取消」不排队任何命令。改动 `draft`/`document` 时不得引入整文件重写，也不得缩小 `patch` 认识键的范围（见下方对外契约）。
 - **界面不得声称未确认的成功。** 只有 `apply::ApplyState::Applied`（每个消费方的回读都带当前代次）才能显示「已生效」；无法请求的消费方必须是 `SavedOnly`。
-- **显示改动是唯一会追问的改动（ADR 0028）**：只有携带 `Field::Outputs` 的请求以 `Configuration2.Trial` 发出（`live::apply` 的 `trial` 参数），且只有合成器回执之后才开始倒计时（`app::State::arm_display_trial`，由 `Message::DisplayTrialArmed` 触发，不是写盘触发）。四条不可放宽的规则：倒计时是 `DISPLAY_TRIAL_SECONDS`（30）秒、一秒一条 `Message::TrialTick`，归零即请求回退；回答只有「确认」与「恢复原设置」两种，试用期间页面控件与其它动作一律禁用并写明 `settings-display-trial-active`，`Esc` 不回答试用；**回退必须恢复文件**——`outputs` 被改回改动前的值，经 `document::patch` + `validate::document` 只重写这一个键，并**作为独立的 `OutgoingCommand::Restore`** 写入（不是一次新的 `Apply`），因为它回答的是试用而不是发出新请求，且不能因为别的消费方还在应答就被阻塞；合成器不可达时仍要恢复文件并如实报告（`settings-display-trial-notice-unreachable` / `-failed`）。`pending_trial` 是「本次请求是试用」的意图，重试（`Application::retry_apply`）沿用同一意图。headless 或合成器不可达时不弹框、只显示 `SavedOnly`。
+- **显示改动是唯一会追问的改动**：只有携带 `Field::Outputs` 的请求以 `Configuration2.Trial` 发出（`live::apply` 的 `trial` 参数），且只有合成器回执之后才开始倒计时（`app::State::arm_display_trial`，由 `Message::DisplayTrialArmed` 触发，不是写盘触发）。四条不可放宽的规则：倒计时是 `DISPLAY_TRIAL_SECONDS`（30）秒、一秒一条 `Message::TrialTick`，归零即请求回退；回答只有「确认」与「恢复原设置」两种，试用期间页面控件与其它动作一律禁用并写明 `settings-display-trial-active`，`Esc` 不回答试用；**回退必须恢复文件**——`outputs` 被改回改动前的值，经 `document::patch` + `validate::document` 只重写这一个键，并**作为独立的 `OutgoingCommand::Restore`** 写入（不是一次新的 `Apply`），因为它回答的是试用而不是发出新请求，且不能因为别的消费方还在应答就被阻塞；合成器不可达时仍要恢复文件并如实报告（`settings-display-trial-notice-unreachable` / `-failed`）。`pending_trial` 是「本次请求是试用」的意图，重试（`Application::retry_apply`）沿用同一意图。headless 或合成器不可达时不弹框、只显示 `SavedOnly`。
 - **界面不得提供做不到的动作。** 禁用控件必须写明原因（`disabled_reason`），并且不是键盘可达项；写盘在途时 `Cancel` 属于此类。
 - **用户可见文案全部走 Fluent**（en-US 与 zh-CN 同步，`src/headless_tests/catalog.rs` 用 `inox_common::i18n::compare_catalogs` 与 `headless_tests::code_message_ids()` 断言齐备）；颜色、尺寸、圆角只能来自 `inox_config::Theme` 令牌。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）：在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明一次，本 crate 用 `{ workspace = true }` 引用。**新增依赖前先确认依赖方向合法**（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
 - **对外契约（不可轻改）**：`Field` 的 `path()` 必须始终是 `inox-config` 解析错误里用的点号路径；`validate` 的规则必须镜像 `inox-config` 而不是自行发明（`src/headless_tests/workflow.rs` 用真实解析器逐条核对边界）；`apply` 的陈旧回执必须被丢弃。
-- **壁纸选项来自 L1 清单，不是本 crate 的发明**：`Field::WallpaperImage` 的选择表（`WALLPAPER_CHOICES`）必须与 `inox_config::wallpapers::BUNDLED` 及 `BACKGROUND_ID` 一致，由单元测试强制；「默认」选项在写盘时**删除 `wallpaper.image` 键**（`toml_value` 返回 `None`），而不是写空字符串；配置里手写的自定义路径不在选项表内，投影时按原值追加并逐字写回（ADR 0030）。
+- **壁纸选项来自 L1 清单，不是本 crate 的发明**：`Field::WallpaperImage` 的选择表（`WALLPAPER_CHOICES`）必须与 `inox_config::wallpapers::BUNDLED` 及 `BACKGROUND_ID` 一致，由单元测试强制；「默认」选项在写盘时**删除 `wallpaper.image` 键**（`toml_value` 返回 `None`），而不是写空字符串；配置里手写的自定义路径不在选项表内，投影时按原值追加并逐字写回。
 - **`document::patch` 必须认出 TOML 允许的每一种键写法**：裸键、引号键、点号键、内联表成员、引号表头（含 `[[表]]` 形式的表头，按表读以免再造一个同名表）。漏认一种，同一个键就会被写第二遍——那份配置 `inox-config` 读不回来，而窗口还会说它保存成功。删掉任何一种识别路径都必须同时删掉对应的 `document.rs` 单元测试与 `src/headless_tests/workflow.rs` 的回读用例。
 - **键盘只能落在窗口画为可用的控件上**：`view_model::focus_order` 只收 `enabled` 的控件（禁用控件不画焦点，落上去等于键盘落在空处），`app::State::activate` 对已离开该序列的目标不执行任何事。写盘在途时不存在能撤销它的动作：`Cancel` 不可用（写明原因），`app::State::cancel` 也拒绝在途请求——取消不能阻止一次已经在写的保存。
-- 本 crate 是**普通 `xdg-shell` 窗口**，不是 layer-shell 客户端，因此不需要放置策略。配置应用传输由二进制 `live.rs` 通过会话 D-Bus 执行，只有当前代次与语义快照都匹配才确认；窗口服务与 layer-shell 的限制仍按 ADR 0018 报告。
+- 本 crate 是**普通 `xdg-shell` 窗口**，不是 layer-shell 客户端，因此不需要放置策略。配置应用传输由二进制 `live.rs` 通过会话 D-Bus 执行，只有当前代次与语义快照都匹配才确认；窗口服务与 layer-shell 的限制仍按 L3 组件架构报告。
 
 ### QML / cxx-qt 边界（契约 §3、§4）
 
@@ -50,7 +50,7 @@
 
 ## 主要依赖
 
-- 同工作区：`inox-common`（Fluent 目录加载）、`inox-config`（配置模型与主题令牌）。**没有**同层依赖，也**没有**到 `inox-compositor` 的依赖（ADR 0013、0018）。
+- 同工作区：`inox-common`（Fluent 目录加载）、`inox-config`（配置模型与主题令牌）。**没有**同层依赖，也**没有**到 `inox-compositor` 的依赖。
 - 第三方：`cxx` / `cxx-qt` / `cxx-qt-lib`（QML↔Rust 边界）、`serde` + `serde_json`（投影）、`zbus`（会话 D-Bus 回执）、`toml` / `toml_edit`（只改被编辑键）、`thiserror`、`anyhow`（二进制入口）、`tracing`、`tracing-subscriber`。
 - build：`cxx-qt-build`（`build.rs` 里的 `CxxQtBuilder::new_qml_module`）。
 - dev：`proptest`（T06 的属性测试）、`tempfile`（真实配置目录）。**没有** `iced` / `iced_*` / `image`，也不再有任何离屏渲染依赖。
@@ -100,7 +100,7 @@
 
 ```
 crates/inox-settings/
-  Cargo.toml        cxx / cxx-qt / cxx-qt-lib 依赖；[lints.rust] unsafe_code = "allow"（ADR 0035 例外）
+  Cargo.toml        cxx / cxx-qt / cxx-qt-lib 依赖；[lints.rust] unsafe_code = "allow"
   build.rs          CxxQtBuilder::new_qml_module("com.inox.settings.qml")：11 个 QML 文件逐个登记 + bridge 源文件
   src/
     main.rs         入口：日志、配置、目录 → boot() → QGuiApplication + QQmlApplicationEngine（自检模式自带）
@@ -118,7 +118,7 @@ crates/inox-settings/
     pages/          十个页面：description + 卡片分组
     view_model.rs   状态 → 界面所画内容（含 focus_order）
     view.rs         投影：model + 令牌 → 可序列化 JSON；UiAction 闭合集合与 parse_action
-    theme.rs        令牌 → 颜色（#AARRGGBB）与几何，纯函数（ADR 0018 允许的每组件一份）
+    theme.rs        令牌 → 颜色（#AARRGGBB）与几何，纯函数
     i18n.rs         Fluent 目录装配（inoxctl 也编译它）
     live.rs         受影响消费方选择、保存后冲突检测、D-Bus 回读与试用接口
     bin/inoxctl.rs  手工配置重载入口（用 #[path] 编译 bridge 以满足链接，见上）

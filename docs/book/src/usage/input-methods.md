@@ -3,7 +3,7 @@
 Inox 提前接入 `text-input-v3`、`input-method-v2` 和 `virtual-keyboard-v1`，
 提供预编辑、提交文本、删除周边文本、光标定位候选窗，以及焦点和锁屏隔离。
 协议管理器当前广告接口版本 1；不广告旧的 `text-input-v1/v2`。
-实现与验收边界见 [ADR 0023](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0023-input-method-support.md)。
+实现与验收边界见输入法支持的决策。
 
 ## 启动 Fcitx5
 

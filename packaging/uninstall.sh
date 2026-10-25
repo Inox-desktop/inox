@@ -3,7 +3,7 @@
 # Remove what packaging/install.sh installed: the three PAM stacks and the three
 # systemd units. The greeter account and /var/lib/inox-greeter are left alone (the
 # account may predate Inox — greetd creates one with the same name), and so is
-# getty@tty3.service: the rescue console stays enabled no matter what (ADR 0037
+# getty@tty3.service: the rescue console stays enabled no matter what (the boot login chain
 # §决策 2).
 #
 # It refuses to run while display-manager.service still points at Inox: removing a

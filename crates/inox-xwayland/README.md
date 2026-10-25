@@ -53,7 +53,7 @@ WAYLAND_DISPLAY=wayland-1 inox-xwayland --display :1 --ready-file /tmp/inox-xway
 
 ## 开发约定
 
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**，本地命令仅作快速自检。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 - MSRV：Rust **1.86**（edition 2024）。

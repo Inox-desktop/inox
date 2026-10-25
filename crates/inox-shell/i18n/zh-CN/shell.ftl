@@ -16,7 +16,7 @@ shell-argument-unknown = `{ $argument }` 不是 inox-shell 认识的参数。
 ### 启动
 
 shell-starting = Inox Shell { $version } 正在启动，语言 { $locale }。
-shell-warn-no-layer-shell = Inox 合成器尚未广告 wlr-layer-shell，因此本会话的入口暂时无法成为桌面表面，其放置策略也不会生效（ADR 0018）。inox-shell 自身不绘制任何内容，也不创建表面。
+shell-warn-no-layer-shell = Inox 合成器尚未广告 wlr-layer-shell，因此本会话的入口暂时无法成为桌面表面，其放置策略也不会生效。inox-shell 自身不绘制任何内容，也不创建表面。
 shell-error-config = 无法加载 Inox 配置：{ $reason }
 shell-error-catalog = 无法加载 Inox Shell 的文案目录：{ $reason }
 

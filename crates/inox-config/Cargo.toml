@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-# Workspace-internal, so a path dependency rather than a git tag (ADR 0016).
+# Workspace-internal, so a path dependency rather than a git tag.
 inox-common.workspace = true
 serde.workspace = true
 # Field paths in parse errors (`input.keyboard_repeat_rate_hz`) come from here;

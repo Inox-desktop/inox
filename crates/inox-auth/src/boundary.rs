@@ -9,7 +9,7 @@
 //! D-Bus, and a system authenticator), and replacement happens at the factory, not
 //! inside the state machine the tests are about.
 //!
-//! Since ADR 0037 the seam is narrower than it used to be: a boundary only
+//! Since the boot login chain the seam is narrower than it used to be: a boundary only
 //! *authenticates*. Opening the PAM session is the session leader's job
 //! (`crate::pam::open_session`), because the session has to be registered for the
 //! process that becomes the login, and that process is not this one. So a boundary
@@ -43,7 +43,7 @@ pub trait Boundary {
     ///
     /// Must not keep `credential` after it returns: the server drops its own copy
     /// the moment the verdict arrives, and a boundary that kept a third copy would
-    /// silently extend the credential's life past the attempt (ADR 0015).
+    /// silently extend the credential's life past the attempt.
     fn authenticate(&mut self, username: &str, credential: &Secret) -> Verdict;
 }
 

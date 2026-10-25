@@ -1,6 +1,6 @@
 # AGENTS.md — inox-common
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
@@ -12,8 +12,8 @@
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - 本 crate **被工作区内的其他 crate 消费**：`inox-compositor`、`inox-config`、`inox-xwayland` 都依赖它。依赖是工作区内的 path 依赖（根级 §8），因此破坏性变更会在**同一次 CI** 中暴露给全部下游，不存在「下游仍锁在旧版本」的漂移窗口——这也意味着改动本 crate 的公开 API 时必须同时修好全部消费者。
-- 新增模块只在**出现真实消费者**时引入（依赖排期见 [ADR 0004](../../docs/adr/0004-m0-skeleton-and-dependency-policy.md)）：不接受为「以后可能要用」而提前声明抽象或依赖。
-- **`secret::Secret` 是全工作区唯一的凭据缓冲实现**（ADR 0029 §1.4）。它的三条不变量（清零、不可打印、唯一出口）是安全属性：**不得**给它加 `Clone` / `PartialEq` / `Deref` / `AsRef`，**不得**在 `Debug`/`Display` 里输出值或长度。`inox-greet`（登录）与 `inox-auth`（边界）已经消费它；`inox-lock` 目前仍有自己的一份（解锁路径未接），两份必须保持同一组规则，**解锁路径落地时把锁屏那份换成这里这一份**。
+- 新增模块只在**出现真实消费者**时引入（依赖排期见[依赖管理](../../docs/book/src/development/dependencies.md)）：不接受为「以后可能要用」而提前声明抽象或依赖。
+- **`secret::Secret` 是全工作区唯一的凭据缓冲实现**。它的三条不变量（清零、不可打印、唯一出口）是安全属性：**不得**给它加 `Clone` / `PartialEq` / `Deref` / `AsRef`，**不得**在 `Debug`/`Display` 里输出值或长度。`inox-greet`（登录）与 `inox-auth`（边界）已经消费它；`inox-lock` 目前仍有自己的一份（解锁路径未接），两份必须保持同一组规则，**解锁路径落地时把锁屏那份换成这里这一份**。
 
 ## 主要依赖
 
@@ -22,7 +22,7 @@
 `i18n` 模块另外依赖 `fluent-bundle`、`fluent-syntax` 与 `unic-langid`（Apache-2.0 OR MIT / MIT OR
 Apache-2.0）：`fluent-syntax` 直接使用是为了让目录一致性检查（id 与占位符）走解析后的 AST，
 而不是靠正则扫描源文件。三者都是纯数据依赖，不引入 UI 工具包、事件循环或设备 API —— 这是本模块
-能留在 L1 的前提（见 ADR 0018 与 ADR 0014 对 `inox-config` 的同类约束）。
+能留在 L1 的前提。
 
 ## 命令
 

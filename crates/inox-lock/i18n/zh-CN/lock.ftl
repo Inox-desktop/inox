@@ -14,7 +14,7 @@ lock-hint = 按回车解锁
 lock-submit = 解锁
 
 # 提示下方的状态。刻意不含次数、剩余尝试与剩余时间：限流信息自己泄露内部计时，
-# 等于告诉攻击者还剩多少预算（ADR 0015）。
+# 等于告诉攻击者还剩多少预算。
 lock-verifying = 正在验证密码…
 lock-attempts-waiting = 尝试次数过多，请稍候再试。
 lock-failed = 密码未被接受
@@ -27,7 +27,7 @@ lock-failure-cancelled = 该次尝试在得到答复前已被放弃
 
 # 无法输入时的可读原因（验收 D05）。
 lock-disabled-boundary = 认证服务不可用
-# 同一问题的另一半：不是服务不应答，而是本次构建根本没有这个服务（ADR 0015 的评审项）。
+# 同一问题的另一半：不是服务不应答，而是本次构建根本没有这个服务。
 lock-disabled-boundary-missing = 本次构建没有认证服务
 lock-disabled-waiting = 当前尝试次数过多
 lock-disabled-verifying = 已有一次尝试正在验证
@@ -35,7 +35,7 @@ lock-disabled-unlocked = 会话未处于锁定状态
 lock-disabled-protocol = 会话锁定协议不可用
 lock-disabled-no-ui = 锁屏界面未在运行
 
-# 已锁定但无可信界面：会话保持锁定，直到界面重启（ADR 0015）。
+# 已锁定但无可信界面：会话保持锁定，直到界面重启。
 lock-held-title = 会话已锁定
 lock-held-detail = 锁屏界面正在重启，会话保持锁定。
 
@@ -51,13 +51,13 @@ lock-protocol-missing-global = 合成器未提供会话锁定协议（ext-sessio
 lock-protocol-registry-unavailable = 无法读取合成器注册表
 lock-boundary-disconnected = 认证服务不可达
 lock-boundary-timeout = 认证服务未在时限内应答
-lock-boundary-not-provided = 本次构建完全没有认证边界：ADR 0015 要求先对它完成人类安全审查，锁屏才能认证任何人；因此这里不校验任何东西，释放会话只能靠注销
+lock-boundary-not-provided = 本次构建完全没有认证边界：the session-lock boundary 要求先对它完成人类安全审查，锁屏才能认证任何人；因此这里不校验任何东西，释放会话只能靠注销
 
-# 二进制在非零退出前报告的内容（ADR 0015、ADR 0018）。
+# 二进制在非零退出前报告的内容。
 lock-start-blocked = 本次构建无法启动会话锁定：{ $reason }
-lock-start-blocked-reason = ADR 0015 要求先对认证边界完成人类安全审查，而本次构建尚无认证边界；如只需验证会话锁协议本身，请加 --take-lock（该模式会遮蔽所有输出，且无法再次解锁）
+lock-start-blocked-reason = the session-lock boundary 要求先对认证边界完成人类安全审查，而本次构建尚无认证边界；如只需验证会话锁协议本身，请加 --take-lock（该模式会遮蔽所有输出，且无法再次解锁）
 
-# 协议腿（ADR 0022 决策 6）。该模式会真实取锁，且没有任何释放路径，
+# 协议腿。该模式会真实取锁，且没有任何释放路径，
 # 因为尚不存在经过审查的认证边界可供释放。
 lock-taking = 作为可信客户端取会话锁
 lock-taken = 会话已锁定，所有输出均已遮蔽

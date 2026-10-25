@@ -2,13 +2,13 @@
 //! boundary, and what the boundary says back.
 //!
 //! The normative contract is `crates/inox-protocols/protocol/auth-v1.md`; this
-//! module is its implementation, in the same shape ADR 0026 used for the
+//! module is its implementation, in the same shape live configuration reload used for the
 //! configuration contract (a contract document in `inox-protocols`, the types in
 //! the crate that speaks it). It is a hand-written binary format rather than
 //! `serde` + JSON for one reason that decides the whole design: **a credential
 //! must never be parsed into a `String`**. A JSON parser allocates the password
 //! as a growable, reallocating, `Debug`-printable `String` that no Inox type can
-//! zeroize, which is exactly what ADR 0015 forbids. Here the credential bytes go
+//! zeroize, which is exactly what the session-lock boundary forbids. Here the credential bytes go
 //! from a scratch buffer that is zeroed on every path into
 //! [`Secret::from_bytes`], and the only thing that can print them is
 //! [`Secret::expose`], whose one caller is the PAM conversation.
@@ -23,7 +23,7 @@
 //!   malformed frame the connection is closed by the server, and the client's
 //!   only valid move is to try again.
 //! - **The credential is bounded too.** [`MAX_CREDENTIAL_BYTES`] is a floor
-//!   rather than a policy (ADR 0015's threat model is not "a password can be
+//!   rather than a policy (the session-lock boundary's threat model is not "a password can be
 //!   long"); it bounds what one connection can make the helper hold and hand to
 //!   `libpam`.
 //!
@@ -141,14 +141,14 @@ impl WireError {
 ///
 /// Chosen by the client, echoed by the server. It is not a capability: the model
 /// on the client side only accepts an answer for the attempt it has in flight, so
-/// an identifier guessed by someone else buys nothing (ADR 0015's rule that a
+/// an identifier guessed by someone else buys nothing (the session-lock boundary's rule that a
 /// forged success is refused is a property of the model, not of this number).
 pub type Attempt = u64;
 
 /// What the login screen asks the boundary to do.
 ///
 /// Not `PartialEq`: one variant holds a credential, and [`Secret`] is
-/// deliberately not comparable (ADR 0015 rules out an equality oracle over
+/// deliberately not comparable (the session-lock boundary rules out an equality oracle over
 /// credential bytes). A test that wants to compare two requests compares the
 /// fields it means to compare.
 #[derive(Debug)]

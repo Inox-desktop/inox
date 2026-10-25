@@ -1,6 +1,6 @@
 //! The difference between what is saved and what is in effect.
 //!
-//! ADR 0014 refuses to promise that changing the configuration changes what the
+//! the settings save semantics refuses to promise that changing the configuration changes what the
 //! session is doing: the file is written by the settings application, and each
 //! consumer applies the new values to its own devices on its own time. The
 //! decision's fourth point states the consequence for the interface —
@@ -30,7 +30,7 @@
 //!   sees can only ever come from the request that is current.
 //!
 //! Per-component results live beside the overall state
-//! ([`Application::results`]) because ADR 0014 is explicit that there is no
+//! ([`Application::results`]) because the settings save semantics is explicit that there is no
 //! global atomicity across components: the window has to be able to say "the
 //! panel took it and the notification daemon refused it" rather than collapsing
 //! both into one verdict.
@@ -569,7 +569,7 @@ impl Application {
     ///
     /// The file is still written, so the request does not become a rejection:
     /// it becomes [`ApplyState::SavedOnly`], which is exactly the difference
-    /// ADR 0014 asks the window to show.
+    /// the settings save semantics asks the window to show.
     pub fn component_unreachable(
         &mut self,
         component: Component,

@@ -11,7 +11,7 @@
   **输出模式、缩放与位置不属于 `Reload` 的能力**：它们会让屏幕可能变得不可操作，
   需要确认与回退，因此由同一对象路径上的
   [`org.inox.Configuration2`](./configuration-v2.md) 的 `Trial`/`Confirm`/`Rollback`
-  承担（ADR 0028）。`Reload` 携带不同的 `outputs` 必须拒绝，并指向该接口——
+  承担。`Reload` 携带不同的 `outputs` 必须拒绝，并指向该接口——
   SIGHUP 与 `inoxctl` 没有确认通道。
 - 失败返回 `org.freedesktop.DBus.Error.Failed`，原因含字段或资源；
   忙碌、队列满、退出、过期调用均不得回复成功。请求截止为 5 秒，

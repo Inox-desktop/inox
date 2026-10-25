@@ -3,7 +3,7 @@
 //! `wlr-layer-shell-unstable-v1` is the protocol that lets a client put a
 //! surface on the *background* layer, below the panel and below every window,
 //! covering an output without being a window. The wallpaper is one of its
-//! clients (PRD §3.1, ADR 0013).
+//! clients.
 //!
 //! **Nothing in this module is applied.** The compositor does not advertise the
 //! protocol yet, so no layer surface can be created at all; the binary runs as an

@@ -2,7 +2,7 @@
 //!
 //! The Inox compositor does not advertise `zwlr_layer_shell_v1` yet, so this
 //! policy cannot be *applied* by anything today — see `crate::main`, the crate
-//! README and [ADR 0018]. It is written and tested anyway, because the policy is
+//! README and [the L3 component architecture]. It is written and tested anyway, because the policy is
 //! the part with decisions in it (overlay layer, centred, exclusive keyboard
 //! interactivity, a size that comes from configuration and tokens), and because
 //! the day a layer-shell host exists it should consume this structure

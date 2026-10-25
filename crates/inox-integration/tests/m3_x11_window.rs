@@ -12,7 +12,7 @@
 //!
 //! * **readiness is a real X11 round trip.** `Session::start_service` only
 //!   proceeds once `inox-xwayland` has written its readiness file, and that
-//!   happens after a complete connection-setup exchange (ADR 0017 decision 9).
+//!   happens after a complete connection-setup exchange.
 //!   The negative case below goes further and binds a socket that accepts
 //!   connections and then stays silent, which is exactly the state X01 says must
 //!   not count as ready.
@@ -537,7 +537,7 @@ fn assert_host_prerequisites(session: &Session) {
         assert!(
             probe.bound_version(interface).is_some(),
             "the compositor does not advertise {interface}; the M3 session cannot work without it \
-             (ADR 0017 decision 1). Globals: {:#?}",
+             . Globals: {:#?}",
             probe.state.globals
         );
     }

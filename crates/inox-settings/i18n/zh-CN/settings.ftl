@@ -65,7 +65,7 @@ settings-status-component-rejected = { $component } 拒绝了该改动
 settings-status-reload-failed = 无法重新读取文件
 settings-status-unreachable = 无法请求{ $component }应用该改动
 
-# 显示设置的试用与确认（ADR 0028）。模式、缩放或位置会立即生效，因此窗口必须先问一句：
+# 显示设置的试用与确认。模式、缩放或位置会立即生效，因此窗口必须先问一句：
 # 只有确认过，合成器才保留这次改动；倒计时结束就恢复原来的显示设置。仅显示页如此。
 settings-status-display-trial = 显示设置已应用，等待确认
 settings-display-trial-title = 保留这些显示设置吗？

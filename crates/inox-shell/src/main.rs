@@ -4,7 +4,7 @@
 //! configuration, builds the catalog for the session's locale, resolves the
 //! entry registry and reports what it found. It deliberately creates no
 //! surface of its own — the entries are separate processes that draw
-//! themselves, and `inox-shell` is not a window (ADR 0013, ADR 0018).
+//! themselves, and `inox-shell` is not a window.
 //!
 //! The coordinator is also where the two facts of this milestone that are not
 //! finished have to be visible rather than implied, so the startup log says
@@ -12,7 +12,7 @@
 //!
 //! - the Inox compositor does not advertise `wlr-layer-shell` yet, so the
 //!   entries cannot become desktop surfaces and the placement policy in
-//!   [`inox_shell`] is data waiting for a host (ADR 0018);
+//!   [`inox_shell`] is data waiting for a host;
 //! - the session's components are started by `inox-session`, which is a later
 //!   milestone, so this process reports the registry it resolved instead of
 //!   launching anything.
@@ -184,7 +184,7 @@ fn main() -> Result<()> {
     }
 
     // The one thing about this milestone a user of the session would otherwise
-    // have to guess at, so it is said rather than implied (ADR 0018).
+    // have to guess at, so it is said rather than implied.
     warn!(adr = "0018", "{}", localizer.message(id::NO_LAYER_SHELL));
 
     Ok(())

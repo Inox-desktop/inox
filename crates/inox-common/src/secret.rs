@@ -1,7 +1,7 @@
 //! The credential buffer every Inox component hands to the authentication
-//! boundary (ADR 0015, ADR 0029).
+//! boundary.
 //!
-//! ADR 0015 makes three demands of the thing that holds what a user typed, and
+//! the session-lock boundary makes three demands of the thing that holds what a user typed, and
 //! they are the whole of this module:
 //!
 //! 1. **It does not linger.** The bytes are overwritten with zeros as soon as
@@ -23,11 +23,11 @@
 //! What it cannot do is also worth stating: the buffer is not `mlock`ed, so it
 //! can still reach a swap file, and a reallocation can leave a copy in memory
 //! this type has stopped tracking. Both are properties of the process, not of
-//! this type. ADR 0029 records them as reviewed limitations of the boundary
+//! this type. The authentication boundary records them as reviewed limitations of the boundary
 //! rather than as claims made here.
 //!
 //! This type lives in L1 rather than in the component that first needed it
-//! because ADR 0029 makes it the single reviewed implementation of those three
+//! because the authentication boundary makes it the single reviewed implementation of those three
 //! rules: the display manager, the wire contract that carries a credential to the
 //! boundary, and the lock screen all hold the same bytes under the same
 //! invariants, and two copies of a security invariant are two chances to drift.
@@ -124,7 +124,7 @@ impl Secret {
     /// Overwrites the credential with zeros and forgets it.
     ///
     /// Called when the screen hides, when the user cancels, and when the session
-    /// suspends — none of which wait for an animation to finish (ADR 0015).
+    /// suspends — none of which wait for an animation to finish.
     pub fn clear(&mut self) {
         self.buffer.as_mut_slice().zeroize();
         self.length = 0;

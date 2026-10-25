@@ -193,7 +193,7 @@ pub struct GlassPane {
 /// area. `output_loc` is the output's top-left corner in the global logical
 /// space, `bounds` its physical area (so a pane can never name a region outside
 /// the target it will be drawn into), and `scale` the output's scale factor
-/// (ADR 0020: the region is mapped from surface-local logical coordinates into
+/// (fractional scaling: the region is mapped from surface-local logical coordinates into
 /// physical pixels with the same factor the scene itself is drawn at).
 ///
 /// `locked` short-circuits to an empty list: while a session lock is held, no

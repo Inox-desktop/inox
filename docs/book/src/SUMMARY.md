@@ -9,7 +9,7 @@
 - [总体架构](./architecture/overview.md)
 - [组件清单](./architecture/components.md)
 - [Wayland 协议](./architecture/protocols.md)
-- [架构决策记录（ADR）](./architecture/decisions.md)
+- [架构决策记录](./architecture/decisions.md)
 
 # 配置
 

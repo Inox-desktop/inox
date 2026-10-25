@@ -1,6 +1,6 @@
 # 合成器配置
 
-> **状态：模型已实现，合成器尚未接入。** 本页的字段与默认值来自 [ADR 0009](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0009-configuration-model-and-reload.md)（状态 `proposed`）。`inox-config` 已实现 `compositor.toml` 的模型、范围校验与错误定位并有测试；`inox-compositor` **仍只解析命令行参数、不读取 TOML**，合成器接入 `compositor.toml` 尚未实现。L3 组件已通过 `InoxConfig` 读取各自的配置文件。
+> **状态：模型已实现，合成器尚未接入。** 本页的字段与默认值来自配置模型的决策（状态 `proposed`）。`inox-config` 已实现 `compositor.toml` 的模型、范围校验与错误定位并有测试；`inox-compositor` **仍只解析命令行参数、不读取 TOML**，合成器接入 `compositor.toml` 尚未实现。L3 组件已通过 `InoxConfig` 读取各自的配置文件。
 
 涉及两个文件：顶层 `config.toml` 给出环境变量、组件文件位置与主题选择；`compositor.toml` 给出输出、输入与平铺参数。目录位置与通用规则见[配置目录布局](./layout.md)。
 
@@ -66,7 +66,7 @@ gap = 8
 | `width` | 整数 | `1280` | 输出宽度（物理像素），1..=16384 |
 | `height` | 整数 | `720` | 输出高度（物理像素），1..=16384 |
 | `refresh_hz` | 整数 | `60` | 刷新率（Hz），1..=1000 |
-| `scale` | 浮点 | `1.0` | 缩放因子，`0.25..=8.0`，允许非整数（[ADR 0020](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0020-fractional-scaling.md)） |
+| `scale` | 浮点 | `1.0` | 缩放因子，`0.25..=8.0`，允许非整数 |
 | `position` | 表 | 省略（自动放置） | `{ x = …, y = … }`，全局逻辑坐标，允许负数；每个分量在 ±4194304 内 |
 
 越界的 `width` / `height` / `refresh_hz` / `scale` / `position` 都在**解析期报错**并指出字段路径。

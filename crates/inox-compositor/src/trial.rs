@@ -1,4 +1,4 @@
-//! The display-trial state machine (ADR 0028).
+//! The display-trial state machine.
 //!
 //! A change to an output's mode, scale or position is applied live and kept only
 //! if the consumer confirms it before [`TRIAL_DEADLINE`]. This module holds the
@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use inox_config::OutputConfig;
 
-/// How long a display trial stays armed without a confirmation (ADR 0028).
+/// How long a display trial stays armed without a confirmation.
 pub const TRIAL_DEADLINE: Duration = Duration::from_secs(30);
 
 /// One display trial that has been applied and is waiting for a decision.

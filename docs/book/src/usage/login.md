@@ -4,10 +4,10 @@
 > 安装链的表现、VT 交接、注销回登录画面、回退与救援 console 的实际结果，必须由人在登记的机器上
 > 逐条跑一遍并留证（验收 S06–S11，见[验收规范 §8](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md)）。
 > 在拿到那些记录之前，任何文档、PR 或发布说明都不得声称「Inox 能真机登录」。
-> 决策依据：[ADR 0037](https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md)。
+> 决策依据：。
 
 Inox 不使用 greetd、SDDM 或 GDM：登录界面、认证边界和会话启动都由本项目自己提供，
-口令只在一个地方校验（`inox-auth`，ADR 0029）。本页说明那套东西怎么装、怎么在不碰开机链的前提下
+口令只在一个地方校验。本页说明那套东西怎么装、怎么在不碰开机链的前提下
 先试一遍、怎么切换、怎么退回 greetd，以及出问题时从哪个 VT 进去修。
 
 ## 组成

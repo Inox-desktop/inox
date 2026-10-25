@@ -21,7 +21,7 @@
 //! reviewer should be able to read a number here and see where it came from;
 //! finding one in a QML file instead is the defect the guidelines name.
 //!
-//! ADR 0018 explains why there is a copy of this file in every GUI component
+//! the L3 component architecture explains why there is a copy of this file in every GUI component
 //! instead of one shared crate: the duplication is the price of not adding a
 //! same-layer Cargo dependency that would need its own ADR.
 
@@ -598,7 +598,7 @@ pub fn input_colors(tokens: &Tokens) -> InputColors {
 /// but not confirmed is drawn in the warning colour, and one that is in effect
 /// in the success colour, so the two are distinguishable at a glance as well as
 /// in the sentence. A display trial is in effect but not settled, so it takes
-/// the warning colour too (ADR 0028).
+/// the warning colour too.
 pub fn status_border(tokens: &Tokens, kind: StatusKind) -> String {
     let palette = Palette::of(tokens);
 

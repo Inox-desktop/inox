@@ -1,13 +1,13 @@
 # inox-host
 
-greeter 宿主：把登录链放到 greeter 的 VT 上。属于 Inox 桌面环境的 **L4** 层，由 [ADR 0037](../../docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) §决策 1/§决策 3 定义，`inox-greeter@.service`（`User=greeter`、`PAMName=inox-greeter`、`TTYPath=/dev/tty%i`）就是跑它。
+greeter 宿主：把登录链放到 greeter 的 VT 上。属于 Inox 桌面环境的 **L4** 层，由  §决策 1/§决策 3 定义，`inox-greeter@.service`（`User=greeter`、`PAMName=inox-greeter`、`TTYPath=/dev/tty%i`）就是跑它。
 
 它只做**编排**，一共四件事：
 
-1. **先确认边界可连。** `connect(2)` 通 `auth-v1` 套接字（`--auth-socket`，默认 `$INOX_AUTH_SOCKET`，否则 `/run/inox/auth.sock`）；连不上就在**起合成器之前**以非零码退出（ADR 0037 §决策 3.1）。失败文案同时出现 `authentication boundary` 与 `inox-auth`，并带上试过的套接字路径——屏幕上不能出现一个骗人的登录框。
+1. **先确认边界可连。** `connect(2)` 通 `auth-v1` 套接字（`--auth-socket`，默认 `$INOX_AUTH_SOCKET`，否则 `/run/inox/auth.sock`）；连不上就在**起合成器之前**以非零码退出。失败文案同时出现 `authentication boundary` 与 `inox-auth`，并带上试过的套接字路径——屏幕上不能出现一个骗人的登录框。
 2. **起合成器。** `<bin-dir>/inox-compositor --socket wayland-inox-greet [--compositor-arg …]`，然后等 `$XDG_RUNTIME_DIR/wayland-inox-greet` **成为套接字**（`file_type().is_socket()`——同名的普通文件、目录或写了一半的产物都不算就绪，否则宿主会在合成器还接不了客户端时就起登录界面）**且**合成器仍存活，上限 **10 秒**；超时就停掉合成器并以非零码退出（§决策 3.2）。残留的**真 socket** 仍会通过探测：区分它与活着的监听需要建连，宿主故意不建，代价由「合成器是本宿主的活子进程」与「登录界面的重启预算」承担。
 3. **起登录界面。** `<bin-dir>/inox-greet`，注入 `WAYLAND_DISPLAY=wayland-inox-greet` 与 `INOX_AUTH_SOCKET=<路径>`，其余环境继承，**stdin 为 null**（§决策 3.3）。
-4. **监督。** 登录界面退出且合成器存活 → 按 ADR 0015 的有界预算重启（**60 秒内最多 3 次**，250/500/1000 ms 有界退避），超限整体退出让 systemd 记一次失败重启；合成器退出 → 宿主整体退出；`SIGTERM`/`SIGINT` → **逆序**停子进程（先登录界面，它走了之后再停合成器，宽限期 4 s / 5 s / 8 s 与 `inox-session` 的清理口径一致）。
+4. **监督。** 登录界面退出且合成器存活 → 按会话锁边界的有界预算重启（**60 秒内最多 3 次**，250/500/1000 ms 有界退避），超限整体退出让 systemd 记一次失败重启；合成器退出 → 宿主整体退出；`SIGTERM`/`SIGINT` → **逆序**停子进程（先登录界面，它走了之后再停合成器，宽限期 4 s / 5 s / 8 s 与 `inox-session` 的清理口径一致）。
 
 它**不**判断「登录成功」：用户会话在别的 VT 上、由 `inox-auth` 的会话负责人启动（§决策 5）。宿主在自己的 VT 被暂停与恢复之间什么也看不到，也不需要看到——VT 恢复时屏幕上已经是登录画面（§决策 4）。
 
@@ -56,7 +56,7 @@ inox-host [--bin-dir DIR] [--socket NAME] [--auth-socket PATH] [--compositor-arg
 
 **已实现**（证据等级 E1+E2；纯逻辑单测 + 真实子进程集成测试）：
 
-| 模块 | 内容 | 验收（ADR 0037 §验收 第 1、2 行） |
+| 模块 | 内容 | 验收 |
 |------|------|------|
 | `supervisor` | 编排规则作为纯状态机：`Preflight → CompositorSpawning → WaitingForSocket → Supervising → Stopping → Done`；边界拒绝、合成器超时/早退、登录界面有界重启、`SIGTERM` 逆序清理、宽限期升级为 `SIGKILL`。`Instant` 由调用方注入，无 I/O、无时钟 | 宿主编排（E1） |
 | `process` | 薄适配层：每个子进程一个进程组、`--exec-child` 复位信号屏蔽字、非阻塞 reap、按组发信号、`Drop` 兜底 kill | 宿主编排（E2） |
@@ -66,10 +66,10 @@ inox-host [--bin-dir DIR] [--socket NAME] [--auth-socket PATH] [--compositor-arg
 
 **未实现 / 未验证**（不声称上表之外的任何等级）：
 
-- **真机登录（E4）未验证。** 裸 VT 上的 libseat/DRM 路径、`inox-greeter@.service` 的 `PAMName`/`TTYPath`、切换 VT 后的暂停与恢复，都要人在真机上按 ADR 0037 §验收 走一遍。本 crate 的测试用假合成器与假界面脚本，**不**证明真机能登录。
-- **packaging 不在本 crate。** PAM 栈、systemd 单元、安装/回退/试运行脚本属于 `packaging/`（ADR 0037 §决策 6），本 crate 只管被那个单元拉起来之后的行为。
-- **多用户、会话选择菜单、Suspend/VT 恢复矩阵**：ADR 0037 §未决项，v1 明确不做。
-- **`inox-host` 是否最终并入 `inox-session`**：ADR 0037 未决项；两者编排规则目前各自独立。
+- **真机登录（E4）未验证。** 裸 VT 上的 libseat/DRM 路径、`inox-greeter@.service` 的 `PAMName`/`TTYPath`、切换 VT 后的暂停与恢复，都要人在真机上按登录链。本 crate 的测试用假合成器与假界面脚本，**不**证明真机能登录。
+- **packaging 不在本 crate。** PAM 栈、systemd 单元、安装/回退/试运行脚本属于 `packaging/`，本 crate 只管被那个单元拉起来之后的行为。
+- **多用户、会话选择菜单、Suspend/VT 恢复矩阵**：登录链，v1 明确不做。
+- **`inox-host` 是否最终并入 `inox-session`**：登录链未决项；两者编排规则目前各自独立。
 
 ## 目录结构
 
@@ -100,7 +100,7 @@ cargo test -p inox-host --all-features
 
 ## 开发约定
 
-- 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径。**
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)，scope 用 `host`。
 

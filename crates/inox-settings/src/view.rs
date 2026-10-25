@@ -24,7 +24,7 @@
 //!   status line that is always there and never claims more than
 //!   [`crate::apply`] knows.
 //! - **A control that cannot be used says why, and a status line that says
-//!   "saved" never claims "in effect"** — the distinction ADR 0014, decision 4
+//!   "saved" never claims "in effect"** — the distinction the settings save semantics, decision 4
 //!   makes visible in the window.
 //!
 //! The reverse direction is [`UiAction`]: a closed set of actions QML can send,

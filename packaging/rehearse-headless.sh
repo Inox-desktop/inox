@@ -13,9 +13,9 @@
 # Usage:
 #   packaging/rehearse-headless.sh [--bin-dir DIR] [--seconds N]
 #
-#   --bin-dir DIR   where inox-host/inox-compositor/inox-greet live
+#   --bin-dir DIR where inox-host/inox-compositor/inox-greet live
 #                   (default: <repo>/target/debug)
-#   --seconds N     how long the chain must stay healthy before the verdict
+#   --seconds N how long the chain must stay healthy before the verdict
 #                   (default: 12)
 #
 # Exits 0 only when every assertion passed AND nothing was left running.

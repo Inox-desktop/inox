@@ -2,7 +2,7 @@
 //!
 //! Two of these tests are about a refusal that has to happen before this stage owns
 //! anything at all: a host that started a compositor and only then discovered there was
-//! no authentication boundary would be a login screen that lies (ADR 0037 §决策 3.1).
+//! no authentication boundary would be a login screen that lies.
 //! The rest are the ordinary CLI contract — `--help`, `--version`, an argument that is
 //! not one of the options, a value that is missing or empty.
 //!
@@ -133,7 +133,7 @@ fn the_real_path_refuses_without_an_authentication_boundary() {
     assert!(!output.status.success(), "{}", said(&output));
 
     let text = said(&output);
-    // ADR 0037 §决策 3.1: the refusal names what is missing *and* what provides it.
+    // the boot login chain
     assert!(
         text.contains("authentication boundary"),
         "the refusal has to name what is missing: {text}"

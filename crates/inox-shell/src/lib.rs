@@ -1,7 +1,7 @@
 //! The Inox shell: the coordinator, and the contracts the L3 entries share.
 //!
 //! `inox-shell` is the L3 entry that draws nothing. PRD §3.1 gives it the
-//! shell's main framework and its plugin system, and ADR 0013 sharpens that
+//! shell's main framework and its plugin system, and the interaction contract sharpens that
 //! into the two things that can actually be shared between processes: **the
 //! desktop's interaction rules** — which entry takes the keyboard, what `Esc`
 //! closes, where focus goes back to — and **the state contract** every entry

@@ -19,7 +19,7 @@ shell-argument-unknown = `{ $argument }` is not an argument inox-shell knows.
 ### Startup
 
 shell-starting = Inox shell { $version } starting in { $locale }.
-shell-warn-no-layer-shell = The Inox compositor does not advertise wlr-layer-shell yet, so the entries of this session cannot become desktop surfaces and their placement policy is not applied (ADR 0018). inox-shell itself draws nothing and creates no surface.
+shell-warn-no-layer-shell = The Inox compositor does not advertise wlr-layer-shell yet, so the entries of this session cannot become desktop surfaces and their placement policy is not applied . inox-shell itself draws nothing and creates no surface.
 shell-error-config = The Inox configuration could not be loaded: { $reason }
 shell-error-catalog = The Inox shell message catalogs could not be loaded: { $reason }
 

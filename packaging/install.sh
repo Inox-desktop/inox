@@ -2,23 +2,23 @@
 #
 # Install the login chain's files — and only its files:
 #
-#   /etc/pam.d/inox-auth              the PAM stack a login is authenticated through
-#   /etc/pam.d/inox-auth-session      the PAM stack the session leader opens the session through
-#   /etc/pam.d/inox-greeter           the PAM stack the greeter's own session uses
+#   /etc/pam.d/inox-auth the PAM stack a login is authenticated through
+#   /etc/pam.d/inox-auth-session the PAM stack the session leader opens the session through
+#   /etc/pam.d/inox-greeter the PAM stack the greeter's own session uses
 #   /etc/systemd/system/inox-auth.service
 #   /etc/systemd/system/inox-greeter@.service
 #   /etc/systemd/system/inox-login-fallback.service
-#   the `greeter` system account      only if it does not exist yet
-#   getty@tty3.service                enabled and started as the rescue console
+#   the `greeter` system account only if it does not exist yet
+#   getty@tty3.service enabled and started as the rescue console
 #
 # Three stacks, not one: the password is checked on inox-auth, the session is opened
 # on inox-auth-session (the leader holds no credential, so its auth line permits),
 # and inox-greeter is only the greeter's own logind session. Missing any one of them
-# makes a login fail in a way that looks like a rejected password (ADR 0037 §决策 5).
+# makes a login fail in a way that looks like a rejected password.
 #
 # The boot chain is NOT touched by default: display-manager.service keeps pointing
 # wherever it pointed before, so a machine that boots greetd keeps booting greetd
-# (ADR 0037 §决策 6). Only --enable hands display-manager.service to
+# . Only --enable hands display-manager.service to
 # inox-greeter@1.service and disables greetd.
 #
 # Nothing here starts a login screen. Run packaging/try-inox-greeter.sh for that:
@@ -29,7 +29,7 @@
 # once (/etc/pam.d/inox-auth.bak-<timestamp>) before it is replaced, because that
 # file has opinions about who may log in.
 #
-# ADR: docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
+# Boot/login chain: docs/book/src/usage/login.md
 
 set -euo pipefail
 
@@ -77,9 +77,9 @@ usage: sudo $SELF [--enable]
 
   (no option)   install the PAM stacks, the systemd units, the greeter account
                 and the VT3 rescue console. The boot chain is not touched.
-  --enable      do the above, then point display-manager.service at
+  --enable do the above, then point display-manager.service at
                 $GREETER_UNIT and disable greetd.service.
-  -h, --help    print this text.
+  -h, --help print this text.
 
 Nothing is started: use packaging/try-inox-greeter.sh for a trial on VT${TRIAL_VT},
 packaging/rollback-to-greetd.sh to give the boot chain back to greetd, and
@@ -191,7 +191,7 @@ log "ran systemctl daemon-reload"
 
 # --- rescue console --------------------------------------------------------
 # VT3 stays a getty forever: every failure in this chain is fixable from there
-# (ADR 0037 §决策 2). rollback-to-greetd.sh and uninstall.sh do not remove it.
+# . rollback-to-greetd.sh and uninstall.sh do not remove it.
 
 systemctl enable --now "$RESCUE_UNIT"
 log "$RESCUE_UNIT is enabled and running (Ctrl+Alt+F3 is the rescue console)"

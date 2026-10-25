@@ -1,6 +1,6 @@
 //! The protocol leg: taking the compositor's session lock, as its client.
 //!
-//! [ADR 0015] puts the lock state in the compositor and makes this crate the
+//! the session-lock boundary puts the lock state in the compositor and makes this crate the
 //! trusted client of `ext-session-lock-v1`. This module is that client — the half
 //! of the component that talks to the wire, kept separate from the state machine
 //! in [`crate::state`] because the two answer different questions: the state
@@ -27,7 +27,7 @@
 //! # What it deliberately does not do
 //!
 //! It does **not** authenticate anyone, and it has no unlock path at all. That is
-//! not an omission: ADR 0015 makes PAM (or whichever mechanism), the helper's
+//! not an omission: the session-lock boundary makes PAM (or whichever mechanism), the helper's
 //! privileges and the handling of the credential a human security review item, and
 //! a test stub does not count as authentication. This build therefore tells the
 //! state the truth — [`ServiceFailure::NotProvided`] — and the projection draws
@@ -37,7 +37,7 @@
 //!
 //! It reads no keyboard either. With no boundary there is
 //! nothing on the screen to operate, so a keyboard path would be code that can
-//! never run; the next step, recorded in [ADR 0025] and in this crate's README, is
+//! never run; the next step, recorded in [the lock-screen surface] and in this crate's README, is
 //! the input path and the reviewed boundary together.
 //!
 //! The mode `main` starts it in cannot release the lock: it never sends

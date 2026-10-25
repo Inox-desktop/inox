@@ -1,6 +1,6 @@
 //! logind: which VT a session goes on, and which session gets the display back.
 //!
-//! ADR 0037 §决策 2 gives VT arbitration to logind rather than to this project.
+//! the boot login chain
 //! The session leader's `pam_open_session` creates the logind session (through
 //! `pam_systemd`), and `Manager.ActivateSession` is what puts it — and the display
 //! — on a VT. Nothing here performs a VT ioctl, takes a DRM fd or owns a seat: the
@@ -14,7 +14,7 @@
 //!   that "skip the active session", "skip an occupied VT" and "the range can be
 //!   exhausted" are unit tests.
 //! - **What the display falls back to.** [`hand_back_at_startup`] is the self-heal
-//!   ADR 0037 §失败、恢复与安全 asks for: a helper that died between "the session
+//!   the boot login chain
 //!   ended" and "the display was handed back" leaves a seat with no active
 //!   session, and the greeter's own session is then put back.
 //!
@@ -53,7 +53,7 @@ pub const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 /// somewhere.
 pub const DEFAULT_SEAT: &str = "seat0";
 
-/// The lowest VT a user session is placed on by default (ADR 0037 §决策 2).
+/// The lowest VT a user session is placed on by default.
 ///
 /// VT 1 belongs to the greeter, and the rescue getty lives on VT 3.
 pub const DEFAULT_VT_MIN: u32 = 2;
@@ -161,7 +161,7 @@ pub struct VtRange {
 }
 
 impl Default for VtRange {
-    /// `2..=6`: ADR 0037 §决策 2's default.
+    /// `2..=6`: the boot login chain
     fn default() -> Self {
         Self {
             min: DEFAULT_VT_MIN,
@@ -260,7 +260,7 @@ pub fn first_free_vt(
 
 /// The VT to use when logind cannot answer, or `None` when `range` is all skipped.
 ///
-/// This is the degradation ADR 0037's operator-facing rule needs: a machine
+/// This is the degradation the boot login chain's operator-facing rule needs: a machine
 /// without logind (CI, a development instance) has no VT arbitration to lose, and
 /// refusing to start the session would be a worse answer than starting it on the
 /// first VT in the configured range.
@@ -288,7 +288,7 @@ pub enum StartupHandBack {
 
 /// Hands the display back to the greeter after a helper restart.
 ///
-/// The failure this repairs is ADR 0037 §失败、恢复与安全's "注销后回不来": the
+/// The failure this repairs is the boot login chain
 /// helper died while a user session ran, the session ended, and because nobody was
 /// left to call `ActivateSession` the seat has no active session. A freshly
 /// restarted helper cannot know which session id it started, so it asks a question

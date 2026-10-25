@@ -2,7 +2,7 @@
 
 安装面（deployment surface），不属于任何 crate，不参与依赖图、`cargo deny` 或分层检查。它做的只有三件事：
 把三个 PAM 栈与三个 systemd 单元放到系统里，让它们能按需启动，以及在需要时**完整地**退回 greetd。
-决策见 [ADR 0037](../docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md) §决策 5/§决策 6。
+决策见  §决策 5/§决策 6。
 
 ## 文件
 
@@ -58,7 +58,7 @@
 - `inox-auth.service` 显式传 `--service inox-auth`、`--session-service inox-auth-session` 与
   `--session-program /usr/bin/inox-session`：前两个让「装进来的 PAM 栈」与「被加载的 PAM 栈」是同一个名字
   （两者都与 `server::DEFAULT_*_SERVICE` 相同，写出来是为了让脚本安装的文件与单元加载的文件不能悄悄分叉，
-  ADR 0037 §决策 5），最后一个是绝对路径——程序默认值是相对名字，而系统单元的 CWD 是 `/`。
+  登录链），最后一个是绝对路径——程序默认值是相对名字，而系统单元的 CWD 是 `/`。
 
 ## 自检
 

@@ -13,17 +13,16 @@
 
 会话 D-Bus 上的配置应用接口没有 XML：它们以 `protocol/configuration-v1.md`
 （`org.inox.Configuration1.Reload`）与 `protocol/configuration-v2.md`
-（`org.inox.Configuration2` 的 `Trial`/`Confirm`/`Rollback`，显示试用见
-[ADR 0028](../../docs/adr/0028-display-trial-confirm-and-rollback.md)）为规范，
+（`org.inox.Configuration2` 的 `Trial`/`Confirm`/`Rollback`）为规范，
 由各消费方二进制内用 `zbus` 声明。
 
 输入法绑定通过 `standard::wp::{text_input, input_method, virtual_keyboard}` 提供。
 应用端 v3 与输入法端 v2 的管理器在合成器中均广告接口 v1；输入法与虚拟键盘
-只对专用受信连接可见，生命周期与权限规则见 [ADR 0023](../../docs/adr/0023-input-method-support.md)。
+只对专用受信连接可见，生命周期与权限规则见[输入法使用说明](../../docs/book/src/usage/input-methods.md)。
 
 ### 版本策略
 
-`inox-ipc` 是 Inox 私有协议，且在 **1.0 之前为 unstable**：接口允许破坏性变更。消费者必须通过 `version` 事件协商能力，不得假定固定版本。破坏性变更需先在 `docs/adr/` 写 ADR（根级 AGENTS.md §4 / §7.2），并在 PRD 协议矩阵中同步更新。
+`inox-ipc` 是 Inox 私有协议，且在 **1.0 之前为 unstable**：接口允许破坏性变更。消费者必须通过 `version` 事件协商能力，不得假定固定版本。破坏性变更需先写 ADR（根级 AGENTS.md §4 / §7.2），并在 PRD 协议矩阵中同步更新。
 
 ### MSRV
 
@@ -44,7 +43,7 @@ cargo deny check
 
 ## 开发约定
 
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**，不在本地进行编译验证。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 

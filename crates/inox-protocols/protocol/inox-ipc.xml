@@ -37,8 +37,8 @@
       uses it to ask the compositor to perform session-wide control actions.
 
       Version 2 adds the trusted session-lock role: a client claims it with
-      claim_lock_role before the compositor will accept a session lock from it
-      (ADR 0015, ADR 0022), and the compositor reports whether the session is
+      claim_lock_role before the compositor will accept a session lock from it,
+      and the compositor reports whether the session is
       currently locked through the session_lock_state event so that observers
       such as the idle daemon and the notification daemon do not have to infer
       it. The event is a notification from the authority, never a capability:

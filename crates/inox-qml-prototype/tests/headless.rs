@@ -1,5 +1,5 @@
 //! Headless integration tests proving the cxx-qt 0.10 bridge compiles, links
-//! and runs entirely without a Wayland compositor (ADR 0033/0035 evidence).
+//! and runs entirely without a Wayland compositor.
 //!
 //! Qt runs on the offscreen platform, so no display or compositor is needed.
 //! Two concerns are covered:

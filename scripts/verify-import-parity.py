@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that nothing in the component repositories is missing from this workspace.
 
-Migration tooling for ADR 0016, not a product or CI check. Run it before
+Migration tooling for the single-repository workspace, not a product or CI check. Run it before
 archiving the component repositories. Once they are archived this file has no
 purpose and should be deleted with them.
 
@@ -15,14 +15,14 @@ For every source file it compares the workspace copy against two things:
 
 and classifies exactly:
 
-  MISSING            A has it, the workspace does not     -> real loss, stop
-  UNCOMMITTED HERE   differs from A and is not in B       -> at risk: only this
+  MISSING A has it, the workspace does not     -> real loss, stop
+  UNCOMMITTED HERE differs from A and is not in B       -> at risk: only this
                                                              disk holds it
-  SUPERSEDED HERE    differs from A but is committed in B -> fine; the file was
+  SUPERSEDED HERE differs from A but is committed in B -> fine; the file was
                                                              changed on purpose
                                                              (imported uncommitted
                                                              work, or a rewrite)
-  matches A          committed work preserved
+  matches A committed work preserved
 
 Pass `--committed-ref origin/main` to prove the workspace copies are pushed, not
 merely committed locally: "committed on this disk" and "on GitHub" are different
@@ -34,7 +34,7 @@ clone's working tree", which is not the property that matters. `repos/` is
 optional here; when present its uncommitted state is reported as a diagnostic.
 
 Not compared, and listed as dropped so the omissions stay visible: `LICENSE`,
-`.gitignore`, `deny.toml`, `rust-toolchain.toml`, `Cargo.lock` (ADR 0016 kept one
+`.gitignore`, `deny.toml`, `rust-toolchain.toml`, `Cargo.lock` (the single-repository workspace kept one
 workspace copy each), `Cargo.toml` / `AGENTS.md` / `README.md` / `CLAUDE.md`
 (rewritten for workspace inheritance), `.github/`.
 

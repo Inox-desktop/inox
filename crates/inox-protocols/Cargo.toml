@@ -10,7 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-# ADR 0002 rule 4: this crate is the single exit point for protocols. It has no
+# layering rule 4: this crate is the single exit point for protocols. It has no
 # Inox dependency of its own — it sits on `wayland-rs` alone.
 [dependencies]
 wayland-backend.workspace = true

@@ -1,7 +1,7 @@
 [Unit]
 Description=Inox login screen on /dev/tty%i
-Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/adr/0037-greeter-host-vt-handoff-and-the-boot-login-chain.md
-# The instance is the VT number (ADR 0037 §决策 2): inox-greeter@1 is the boot
+Documentation=https://github.com/Inox-desktop/inox/blob/main/docs/book/src/usage/login.md
+# The instance is the VT number: inox-greeter@1 is the boot
 # chain's login screen, inox-greeter@4 is the trial one. TTYPath below therefore
 # reads /dev/tty1 or /dev/tty4 — never /dev/ttytty1.
 #
@@ -42,7 +42,7 @@ User=greeter
 # Gives the unit a logind session (XDG_SESSION_ID, /run/user/<uid>, a cgroup and
 # the VT), which is what libseat's logind backend needs to hand the compositor the DRM
 # device and the input devices. Without PAMName there is no session, no seat and no
-# display in Inox (ADR 0037 §决策 1).
+# display in Inox.
 PAMName=inox-greeter
 TTYPath=/dev/tty%i
 StandardInput=tty

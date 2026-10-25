@@ -1,6 +1,6 @@
 //! The greeter stage, driven as a real process tree.
 //!
-//! ADR 0037 §验收 asks for the four refusal paths to be shown with fake children —
+//! the boot login chain
 //! "集成测试用假合成器/假界面脚本（不 mock 宿主自己的规则）" — so this file runs the real
 //! `inox-host` binary against shell-script fixtures that behave the way the two real
 //! programs can behave: one reports that it is up (and the harness binds the Wayland
@@ -29,7 +29,7 @@ use rustix::process::{Pid, Signal, kill_process, test_kill_process};
 /// How long a well-behaved host gets before a test calls the run a hang.
 const LIMIT: Duration = Duration::from_secs(15);
 
-/// The socket wait is ten seconds (ADR 0037 §决策 3.2), so that scenario needs longer.
+/// The socket wait is ten seconds, so that scenario needs longer.
 const SOCKET_TIMEOUT_LIMIT: Duration = Duration::from_secs(25);
 
 /// A greeter stage in a temporary directory: a runtime directory, a binary directory
@@ -472,7 +472,7 @@ fn a_compositor_that_never_creates_its_socket_is_stopped_and_the_stage_fails() {
 
     let outcome = stage.run(&[], SOCKET_TIMEOUT_LIMIT);
 
-    // ADR 0037 §决策 3.2: ten seconds, then the compositor is stopped and the host exits
+    // the boot login chain, then the compositor is stopped and the host exits
     // non-zero. The exit code is the supervisor's, so a stale socket on the next start
     // is distinguishable from this failure in `systemctl status`.
     outcome.assert_exit_code(5);
@@ -575,7 +575,7 @@ fn a_login_screen_that_exits_cleanly_is_restarted_too() {
     let stage = Stage::new();
     ready_compositor(&stage);
     let state = stage.state_dir().display().to_string();
-    // The first start exits successfully and the second one stays: ADR 0037 §决策 4 makes
+    // The first start exits successfully and the second one stays: the boot login chain
     // the login screen resident after a session starts, so a successful exit is still an
     // exit and still has to come back.
     stage.script(

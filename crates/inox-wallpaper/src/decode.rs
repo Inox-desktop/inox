@@ -403,7 +403,7 @@ impl From<DecodeError> for Unusable {
 /// The format is taken from the file's own content, not from its extension: a
 /// JPEG named `.png` is a file the user can see and expects to work, and the
 /// extension of a wallpaper is not a security boundary. Only PNG and JPEG are
-/// accepted, because those are the two decoders ADR 0018 enables.
+/// accepted, because those are the two decoders the L3 component architecture enables.
 ///
 /// # Errors
 ///

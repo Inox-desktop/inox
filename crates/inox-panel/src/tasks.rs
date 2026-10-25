@@ -1,6 +1,6 @@
 //! The task model: the windows the compositor reports, grouped for the panel.
 //!
-//! ADR 0013 decision 1 is the rule this module exists to keep: a window is
+//! The interaction contract's rule 1 is the rule this module exists to keep: a window is
 //! identified by the **server-assigned** handle the compositor gave it, together
 //! with the **session generation** the handle belongs to — never by PID, by
 //! title, or by its position in somebody's list. An X11 client via XWayland, a
@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// The compositor's handle for one window.
-/// Server-assigned: the panel never invents one (ADR 0013 decision 1). Opaque
+/// Server-assigned: the panel never invents one. Opaque
 /// Server-assigned: the panel never invents one. Opaque
 /// outside the window service, which is why this is a newtype and not a `u64`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -349,7 +349,7 @@ impl TaskList {
             return Applied::Stale;
         }
 
-        // ADR 0013 decision 1: focus has exactly one owner. The service says
+        // the interaction contract, rule 1: focus has exactly one owner. The service says
         // which window is focused, and the panel keeps that true even if a
         // service sends two focused windows in a row without an unfocus.
         if state.focused {

@@ -82,7 +82,7 @@ fn main() -> Result<()> {
 
     // One capability per session, delivered to exactly two processes: the
     // compositor, which decides whether a claim is honoured, and the trusted lock
-    // client, which claims the role with it (ADR 0022 decision 3). It is never
+    // client, which claims the role with it. It is never
     // logged, never written to disk, and never given to any other component — the
     // shell would otherwise hold the right to take the session lock.
     let lock_token = inox_session::policy::session_lock_token()?;
@@ -143,7 +143,7 @@ fn main() -> Result<()> {
     // `inox-lock --take-lock` takes the real session lock and has no way to
     // release it again, so starting it unconditionally would lock a session that
     // nobody asked to lock; the switch is how an operator or an end-to-end test
-    // asks. Manual and idle-triggered locking are still open (ADR 0022 未决项).
+    // asks. Manual and idle-triggered locking are still open.
     if std::env::var_os(LOCK_ON_START).is_some_and(|value| value == "1") {
         let mut lock = CommandSpec::new(bin_dir.join("inox-lock"));
         lock.arguments = vec![OsString::from("--take-lock")];

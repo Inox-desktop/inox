@@ -1,6 +1,6 @@
 #%PAM-1.0
 #
-# PAM stack the *session leader* opens the session through — ADR 0037 §决策 5,
+# PAM stack the *session leader* opens the session through,
 # installed by packaging/install.sh as /etc/pam.d/inox-auth-session.
 #
 # Who loads it: `inox-auth --session-leader --user <name> --vt <n>`, one process per

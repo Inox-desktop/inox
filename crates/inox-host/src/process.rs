@@ -39,7 +39,7 @@ use crate::supervisor::{Plan, Target};
 pub const WAYLAND_DISPLAY_ENV: &str = "WAYLAND_DISPLAY";
 
 /// The environment variable the login screen reads the boundary socket from
-/// (ADR 0029, and the same variable `inox-greet` and `inox-auth` use).
+/// .
 pub const AUTH_SOCKET_ENV: &str = "INOX_AUTH_SOCKET";
 
 /// The internal first argument that makes this binary reset signal masks and
@@ -114,7 +114,7 @@ impl Children {
             // The host was started by systemd with `StandardInput=tty`, which is the
             // greeter's terminal. Children must not read it: the login screen has no
             // use for it, and the compositor must not consume keystrokes meant for
-            // whatever is in front of the VT (ADR 0037 §决策 3.3).
+            // whatever is in front of the VT.
             .stdin(Stdio::null())
             // One process group per child, so a signal reaches its descendants too.
             .process_group(0);

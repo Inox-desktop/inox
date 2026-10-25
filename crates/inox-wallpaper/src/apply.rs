@@ -16,7 +16,7 @@
 //! Both halves are per output. One output failing leaves the others exactly as
 //! they were — the same pixels, not an equal copy — and a failing output keeps
 //! *its own* previous frame, with the diagnosis recorded beside it
-//! ([`OutputStatus`]) rather than in place of it. That is the model of ADR 0013's
+//! ([`OutputStatus`]) rather than in place of it. That is the model of the interaction contract's
 //! snapshot/apply contract, and it is what acceptance D05 asks for when it says
 //! a degraded resource must remain operable.
 

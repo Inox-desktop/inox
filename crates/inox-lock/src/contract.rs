@@ -1,9 +1,9 @@
 //! The two boundaries this component talks across.
-//! The two boundaries this component talks across (ADR 0013, ADR 0015).
+//! The two boundaries this component talks across.
 //! A lock screen has no state of its own that matters: the compositor owns the
 //! lock, and a privileged authentication boundary owns the answer to "is this
 //! the user?". What is left for `inox-lock` is to be an honest client of both,
-//! and ADR 0013 fixes the vocabulary for that honesty — a state, a generation,
+//! and the interaction contract fixes the vocabulary for that honesty — a state, a generation,
 //! and a request whose fate is distinguishable rather than assumed:
 //!
 //! ```text
@@ -16,7 +16,7 @@
 //!
 //! - **No `Success` value that anything can make up cheaply.** [`AuthOutcome`]
 //!   is what the boundary reports; in the real system that report arrives over
-//!   the reviewed boundary ADR 0015 requires, and the only thing this crate does
+//!   the reviewed boundary the session-lock boundary requires, and the only thing this crate does
 //!   with it is hand it to [`crate::state::LockMachine::unlock`].
 //! - **No protocol detail.** [`LockProtocol`] records whether the compositor
 //!   offers `ext-session-lock-v1` at all, because that is the difference between
@@ -30,7 +30,7 @@ use crate::credential::Secret;
 
 /// A counter that tells a current answer from a stale one.
 ///
-/// ADR 0013 decision 2 asks a component not to let a late result overwrite a
+/// the interaction contract, rule 2 asks a component not to let a late result overwrite a
 /// newer request. An attempt that was abandoned (a suspend, a cancel) can still
 /// be answered afterwards; [`BoundaryState::is_current`] is what refuses that
 /// answer instead of acting on it, and [`BoundaryState::is_stale`] names the
@@ -72,7 +72,7 @@ impl fmt::Display for Generation {
 /// Whether the compositor offers the protocol this client needs.
 ///
 /// The state today is [`LockProtocol::NotAdvertised`]: `inox-compositor` does not
-/// advertise `ext-session-lock-v1`, and ADR 0015 requires a human security review
+/// advertise `ext-session-lock-v1`, and the session-lock boundary requires a human security review
 /// of the authentication boundary before the screen that would use it may land.
 /// Modelling the absence as a value rather than an error is what lets the
 /// interface say which of the two is missing, with a reason a user can act on
@@ -142,7 +142,7 @@ pub enum ServiceFailure {
     Timeout,
     /// This build ships no authentication boundary at all.
     ///
-    /// Not a fault in a service but the absence of one: ADR 0015 makes the
+    /// Not a fault in a service but the absence of one: the session-lock boundary makes the
     /// authentication boundary — PAM or whatever else, the helper's privileges,
     /// the handling of the credential — a human security review item, and this
     /// build has not had that review. There is nothing to reach, and nothing a
@@ -393,7 +393,7 @@ impl AuthAttempt {
     /// The credential bytes, for the authentication boundary and nothing else.
     ///
     /// There is no other accessor in this crate that reaches the plaintext, and
-    /// the boundary itself does not exist yet: ADR 0015 makes it a review item.
+    /// the boundary itself does not exist yet: the session-lock boundary makes it a review item.
     pub fn expose(&self) -> &[u8] {
         self.credential.expose()
     }

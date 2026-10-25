@@ -62,7 +62,7 @@ pub struct ServiceSpec {
     /// This exists for capabilities that must not be handed to every child: the
     /// session lock token authorizes taking the session lock, so putting it in the
     /// session's environment would hand it to the shell and every component it
-    /// starts (ADR 0022 decision 3). Only the trusted lock client gets it.
+    /// starts. Only the trusted lock client gets it.
     pub environment: BTreeMap<String, String>,
 }
 

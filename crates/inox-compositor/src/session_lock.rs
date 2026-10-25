@@ -4,8 +4,8 @@
 //! protocol mechanics — the lock object's lifecycle, lock surfaces, the
 //! configure/ack handshake and the protocol errors — are Smithay's
 //! (`smithay::wayland::session_lock`, `SessionLockHandler`), and the compositor's
-//! `state` module owns them. What is left here are the two decisions ADR 0015 and
-//! ADR 0022 make the compositor responsible for, because getting them wrong is a
+//! `state` module owns them. What is left here are the two decisions the session-lock boundary and
+//! the session-lock and notification bus work make the compositor responsible for, because getting them wrong is a
 //! security failure rather than a protocol failure:
 //!
 //! - [`claim`]: may this connection take the trusted lock role? The answer is a

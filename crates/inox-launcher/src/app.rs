@@ -1,6 +1,6 @@
 //! The state machine: state, messages, and `update`.
 //!
-//! The shape is the one ADR 0003 fixes for every shell component and ADR 0013
+//! The shape is the one the technology stack fixes for every shell component and the interaction contract
 //! repeats for interactions: a message goes in, the state changes, and the
 //! interesting work comes back as a task. Nothing here draws, and nothing here
 //! blocks: the two slow things a launcher does — reading the desktop files and
@@ -217,7 +217,7 @@ impl State {
     }
 
     /// Whether the launcher has been asked to close, for the caller that owns
-    /// the cross-entry unwinding (ADR 0013: Esc closes one level at a time, and
+    /// the cross-entry unwinding (the interaction contract: Esc closes one level at a time, and
     /// what is behind the launcher is `inox-shell`'s to restore).
     pub fn close_requested(&self) -> bool {
         self.close_requested
@@ -408,7 +408,7 @@ fn handle(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::IndexRetried => retry_index(state),
         Message::IndexLoaded(generation, index) => {
-            // ADR 0013 decision 4: a result that is not from the newest request
+            // the interaction contract, rule 4: a result that is not from the newest request
             // does not overwrite the view.
             if generation != state.scan_generation {
                 debug!(

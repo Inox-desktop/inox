@@ -1,6 +1,6 @@
 name: CI
 
-# One workspace, one pipeline (ADR 0016). The former 17 per-repository `ci.yml`
+# One workspace, one pipeline. The former 17 per-repository `ci.yml`
 # copies — three of which had already diverged — collapse into this file.
 #
 # The `plan` job derives the per-crate test matrix from the same layer table
@@ -158,12 +158,12 @@ jobs:
                       # pkg-config and its headless tests load QML modules at runtime.
                       # It needs the Qt packages and fonts (`qt`/`fonts` inputs of the
                       # system-deps action) — the shard also uploads the screenshot
-                      # artifacts its tests write (ADR 0033/0035/0036).
+                      # artifacts its tests write.
                       "ui": any(d["name"] == "cxx-qt" for d in deps),
                       # A crate that declares `cxx-qt` builds and links Qt through
                       # pkg-config, so its build-script (and any bridge test) needs
                       # the Qt 6 development packages — the `qt` input of the
-                      # system-deps action (ADR 0033/0035). Only registers `qt`
+                      # system-deps action. Only registers `qt`
                       # when the crate actually names cxx-qt, so non-Qt crates
                       # stay off the extra system surface.
                       "qt": any(d["name"] == "cxx-qt" for d in deps),
@@ -209,7 +209,7 @@ jobs:
       # EGL/GLES render tests), and the QML + Qt Quick shell components that
       # declare `cxx-qt` (`ui`/`qt`: their build script resolves Qt through
       # pkg-config, so they need the Qt 6 development packages, and their
-      # headless tests load real QML modules — ADR 0033/0035/0036). The QML
+      # headless tests load real QML modules — the QML evaluation/0035/0036). The QML
       # shards also install fonts, because Qt lays the projection's text out at
       # render time and an empty font set would make the pixel assertions test
       # an empty frame. Every other shard stays cheap. The package lists live in
@@ -231,8 +231,8 @@ jobs:
       # working directory, so a relative path would scatter files per crate.
       # `QT_QPA_PLATFORM=offscreen`: the QML shell tests create a `QQuickWindow`
       # and grab frames without a display. The panel/lock hosts force this
-      # platform themselves before their single `QGuiApplication` exists (ADR
-      # 0038); the window components read it from the environment, and their
+      # platform themselves before their single `QGuiApplication` exists; the
+      # window components read it from the environment, and their
       # QML-load tests spawn a child binary with it (contract §7 item 3).
       - run: cargo test -p ${{ matrix.crate }} --all-features
         env:
@@ -292,7 +292,7 @@ jobs:
             clang libxcb1 libxcb-cursor0 libxcb-cursor-dev pkg-config
       # Same tag as the weston job: clipboard support needs >= v0.4, the
       # UTF8_STRING alias and X11->Wayland INCR >= v0.5.1, primary selection
-      # >= v0.7 and Wayland->X11 INCR >= v0.8 (see ADR 0017).
+      # >= v0.7 and Wayland->X11 INCR >= v0.8.
       - name: Install xwayland-satellite
         run: cargo install --locked --git https://github.com/Supreeeme/xwayland-satellite --tag v0.8.3 xwayland-satellite
       # A default-feature build must *reject* the test-only option rather than
@@ -314,7 +314,7 @@ jobs:
       # The tests drive the compositor and the XWayland service as processes and
       # find them next to their own executable, so both binaries must be built
       # first. `test-input` is the non-default, test-only input injection source
-      # the M3 tests need (ADR 0017 decision 7); it is inert without the flag.
+      # the M3 tests need; it is inert without the flag.
       - name: Build the binaries under test
         run: |
           cargo build --workspace --features inox-compositor/test-input
@@ -342,7 +342,7 @@ jobs:
           qt: "true"
       - name: Build the real session components
         run: cargo build -p inox-compositor -p inox-session -p inox-shell -p inox-panel -p inox-wallpaper -p inox-notifications -p inox-idle -p inox-lock
-      # `--test headless` is the ADR 0021 shutdown budget; `--test session_lock` is
+      # `--test headless` is the L4 session services shutdown budget; `--test session_lock` is
       # the E3 half of acceptance S02 — the same session, with the session's own
       # token delivered to a real trusted lock client, taking the real session lock
       # on the real compositor and still logging out inside that budget.
@@ -371,11 +371,11 @@ jobs:
         run: dbus-run-session -- cargo test -p inox-compositor --all-features --test input_method -- --nocapture
 
   license-audit:
-    # ADR 0034 / ADR 0033: cargo-deny only sees the Cargo dependency graph and
+    # the LGPL relicensing / the QML evaluation: cargo-deny only sees the Cargo dependency graph and
     # cannot audit the system Qt `.so` the runtime links. After the Qt-quick
     # migration the project is LGPLv3 and must never pull GPL-only Qt modules
     # (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler — see
-    # ADR 0033 §"Qt 许可的客观事实"). This job installs the exact system
+    # the QML evaluation). This job installs the exact system
     # packages the shell links, then asserts (a) the apt-provided Qt modules are
     # present for the build and (b) at runtime `ldd` resolves only the declared
     # Qt modules and none of the forbidden GPL-only ones.
@@ -383,7 +383,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install system Qt (LGPL route, ADR 0033)
+      - name: Install system Qt 
         run: |
           sudo apt-get update
           # Same QML module names as `.github/actions/system-deps`: Ubuntu
@@ -427,7 +427,7 @@ jobs:
           # `QQmlApplicationEngine` program pulls in — the core four plus the
           # transitively-linked Qml runtime, network, D-Bus and OpenGL helpers.
           # `Qt6QmlCompiler` is deliberately absent: Qt's QML compiler is
-          # GPL-only (ADR 0033 §Qt 许可的客观事实), so linking it must fail here.
+          # GPL-only, so linking it must fail here.
           #
           # `sed` strips the `.so` suffix so the case labels below are module
           # names; keeping the suffix in one place is what let the previous

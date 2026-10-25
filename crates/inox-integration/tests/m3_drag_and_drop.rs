@@ -22,7 +22,7 @@
 //! back — is blocked upstream, not by Inox: `xwayland-satellite` v0.8.3
 //! implements no XDND at all (no `XdndEnter`, `XdndDrop` or `XdndAware`
 //! handling), so the host bridge has nothing to carry a cross-protocol drag.
-//! That is recorded as ADR 0017 decision 5, and X03 is therefore a *partial*
+//! That is recorded as the XWayland clipboard and DnD work, rule 5, and X03 is therefore a *partial*
 //! delivery of M3 that must not be read as X03 passing whole. X11-to-X11 drag
 //! and drop keeps working natively inside Xwayland and needs nothing from Inox.
 //!
@@ -58,11 +58,11 @@ const DRAG_TIMEOUT: Duration = Duration::from_secs(20);
 /// Announce, once per test, that the X11/Wayland drag boundary is not covered.
 ///
 /// See the module documentation: this is an upstream limitation recorded in
-/// ADR 0017 decision 5, not a test that gave up.
+/// the XWayland clipboard and DnD work, rule 5, not a test that gave up.
 fn announce_limitation() {
     println!(
         "X03 covers Wayland<->Wayland drag and drop only: the X11<->Wayland leg needs XDND, which \
-         xwayland-satellite v0.8.3 does not implement (ADR 0017 decision 5); X03 is a partial \
+         xwayland-satellite v0.8.3 does not implement; X03 is a partial \
          delivery of M3"
     );
 }

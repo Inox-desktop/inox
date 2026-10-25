@@ -1,5 +1,5 @@
 //! What the popup stack draws, derived from what the daemon knows.
-//! The view is not allowed to make decisions (ADR 0013, and the same rule the
+//! The view is not allowed to make decisions (the interaction contract, and the same rule the
 //! The view is not allowed to make decisions. Every choice a user could notice — which
 //! notifications are drawn, in what order, what each one says, which actions are
 //! offered and **why one of them is disabled**, whether there are more waiting

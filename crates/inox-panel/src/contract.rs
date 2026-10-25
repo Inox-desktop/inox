@@ -1,7 +1,7 @@
 //! The panel's side of the window-service contract.
-//! The panel's side of the window-service contract (ADR 0013).
+//! The panel's side of the window-service contract.
 //! The panel does not guess window state, and it does not treat a click as an
-//! accomplished action. ADR 0013 decision 1 gives it a snapshot plus events, and
+//! accomplished action. The interaction contract's rule 1 gives it a snapshot plus events, and
 //! decision 2 asks it to distinguish what happened to a request it sent:
 //!
 //! ```text
@@ -27,7 +27,7 @@
 //! Two of those states exist because of what the panel must *not* do. A service
 //! that is down is a readable message and a retry, never a spinner that never
 //! ends (D05). And an action the user already asked for is not asked for twice:
-//! [`PendingRequests`] is the deduplication ADR 0013 decision 4 requires, keyed by
+//! [`PendingRequests`] is the deduplication the interaction contract, rule 4 requires, keyed by
 //! the window the request is about, so a second click while the first is in
 //! flight produces no second request.
 //!
@@ -170,7 +170,7 @@ pub enum RejectionReason {
 
 /// The requests the panel has sent and not yet had settled.
 ///
-/// One request per window at a time. That is the whole of ADR 0013 decision 4's
+/// One request per window at a time. That is the whole of the interaction contract, rule 4's
 /// "同一动作无重复请求" as far as the panel is concerned: an impatient second
 /// click on a task button is dropped instead of becoming a second activation.
 #[derive(Debug, Default)]

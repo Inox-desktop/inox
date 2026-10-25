@@ -9,7 +9,7 @@
 //! asserts on the compositor's observable state and on read-back pixels rather
 //! than on logs.
 //!
-//! The first scenario is the compositor half of ADR 0031's acceptance table: a
+//! The first scenario is the compositor half of the glass protocol's acceptance table: a
 //! background layer with a sharp black/white edge and a translucent top-layer
 //! "pane" whose client holds a real `inox_glass_v1` object has its backdrop
 //! frosted, the session is then locked, and the frame is read back. The frost is
@@ -67,7 +67,7 @@ const HEIGHT: i32 = 240;
 const WINDOW: [u8; 4] = [220, 30, 20, 255];
 /// The colour the lock client paints its lock surface with.
 const LOCK_FRAME: [u8; 4] = [20, 210, 30, 255];
-/// What the compositor clears to when nobody draws: the locked blank (ADR 0022).
+/// What the compositor clears to when nobody draws: the locked blank.
 const BLANK: [u8; 4] = [17, 34, 51, 255];
 
 /// The token `inox-session` would have generated and delivered to this compositor.
@@ -852,12 +852,12 @@ fn the_session_lock_covers_the_screen_refuses_strangers_and_survives_its_client(
         },
     );
     // The global is advertised to every client; the decision about who may *use*
-    // it happens on the request (ADR 0022 decision 3).
+    // it happens on the request.
     assert_eq!(app.state.globals["ext_session_lock_manager_v1"].1, 1);
 
     // --- frosting is live before a lock, and cannot survive one --------------
     //
-    // ADR 0031's acceptance table left exactly this case open: the "a locked
+    // the glass protocol's acceptance table left exactly this case open: the "a locked
     // session contributes no panes" rule was pinned only by the pure
     // `glass::collect_panes(locked = true, ..)` unit test and the early return in
     // `scene_elements`. This is the end-to-end half, with the same scene
@@ -1455,7 +1455,7 @@ fn the_session_lock_covers_the_screen_refuses_strangers_and_survives_its_client(
     );
 
     // The lock UI dies. The session must stay locked, and this compositor does not
-    // hand a held lock to another client (ADR 0022 decision 2).
+    // hand a held lock to another client.
     drop(keeper);
     for _ in 0..5 {
         step(&mut display, &mut state, &mut [&mut app, &mut stranger]);

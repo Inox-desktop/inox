@@ -244,7 +244,7 @@ pub enum EntryProblem {
 
 /// A desktop action (`[Desktop Action <id>]`).
 ///
-/// Parsed because the launcher owns the application index (ADR 0013) and an
+/// Parsed because the launcher owns the application index and an
 /// action is part of what an entry defines; the interactive launcher currently
 /// launches only the entry's own `Exec`.
 #[derive(Debug, Clone, PartialEq, Eq)]

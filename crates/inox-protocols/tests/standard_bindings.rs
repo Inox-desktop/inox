@@ -125,7 +125,7 @@ fn ext_idle_notify_is_reexported() {
 ///
 /// The manager and both child interfaces are pinned at version 1: the compositor
 /// advertises `ext_session_lock_manager_v1` v1 and a client may only ask for the
-/// lock through it (ADR 0015, ADR 0022). This is the compile-time half of the
+/// lock through it. This is the compile-time half of the
 /// evidence; the behaviour lives in `inox-compositor` and `inox-lock`.
 #[test]
 fn ext_session_lock_is_reexported_at_version_one() {
@@ -174,7 +174,7 @@ fn ext_session_lock_is_reexported_at_version_one() {
     }
 }
 
-/// The lock manager's request set is the one ADR 0015's lifecycle assumes.
+/// The lock manager's request set is the one the session-lock boundary's lifecycle assumes.
 #[test]
 fn the_session_lock_manager_requests_are_stable() {
     use ext::session_lock::client;

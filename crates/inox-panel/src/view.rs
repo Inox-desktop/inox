@@ -1,5 +1,5 @@
 //! The panel's surface, projected as the Qt-free JSON the QML renderer draws.
-//!   that could hold on to focus (ADR 0013, [`crate::placement`]).
+//!   that could hold on to focus.
 //! Everything here is layout and drawing data, and nothing here is Qt: the
 //! projection is a `serde_json::Value` of rectangles and text on absolute
 //! coordinates, handed to the offscreen QML renderer one frame at a time

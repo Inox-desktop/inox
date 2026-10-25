@@ -1,6 +1,6 @@
 # QML 迁移执行契约（feat/qml-all-components）
 
-本文件是 Iced → QML + Qt Quick 全量迁移期间，各 crate 工作的**唯一实施契约**。根级 `AGENTS.md`、crate 级 `AGENTS.md` 与 ADR 0033/0035/0036/0038 仍然有效；本文件只把「怎么做」写清楚，方便多个代理并行且不互相踩。
+本文件是 Iced → QML + Qt Quick 全量迁移期间，各 crate 工作的**唯一实施契约**。根级 `AGENTS.md`、crate 级 `AGENTS.md` 与 QML 评估/0035/0036/0038 仍然有效；本文件只把「怎么做」写清楚，方便多个代理并行且不互相踩。
 
 ## 0. 分支与边界
 
@@ -25,7 +25,7 @@
 | `inox-panel` | 真实 `zwlr_layer_surface_v1`（`src/layer.rs`） | **离屏** Qt Quick：QML 渲染成 RGBA 帧，写进现有 `wl_shm` |
 | `inox-lock` | 真实 `ext_session_lock_v1`（`src/session.rs`） | 同上 |
 
-panel/lock 的输入、放置、安全边界、`calloop` 循环**不动**；QML 只负责画。详见 ADR 0038。
+panel/lock 的输入、放置、安全边界、`calloop` 循环**不动**；QML 只负责画。详见离屏 QML。
 
 ## 2. crate 结构（统一形态）
 
@@ -50,7 +50,7 @@ cxx-qt 0.10 把 bridge 生成的 `cxx_qt_init_*` 定义嵌入「声明 bridge �
 - 删除 `src/lib.rs`，所有模块挂到 `main.rs`（`mod app; mod ...;`）。
 - 把 `tests/*.rs` 的内容迁到 bin 内的 `#[cfg(test)]` 模块；需要驱动二进制的测试在测试里 `std::env::current_exe()` 自 spawn（参考 `feat/greet-qml` 的 `src/headless_tests.rs`）。
 - 同一 package 里若还有第二个 bin（`inox-settings` 的 `inoxctl`），也必须处理链接：让它 `mod` 引入 bridge 并至少引用一次（或把 bridge 的 `cxx_qt_init` 符号显式引用），否则该 target 链接失败。优先方案：把 `inoxctl` 的入口保持为独立 `[[bin]]`，并在其中 `#[allow(unused_imports)] use crate::cxxqt_object as _;` 只能解决同 crate 引用——实际以 `cargo build -p inox-settings --bins` 通过为准。
-- Cargo.toml 的 `[lints.rust]` 必须 `unsafe_code = "allow"` + `missing_docs = "warn"`（ADR 0035 例外）；Inox 手写 Rust 仍然不写 `unsafe`。
+- Cargo.toml 的 `[lints.rust]` 必须 `unsafe_code = "allow"` + `missing_docs = "warn"`；Inox 手写 Rust 仍然不写 `unsafe`。
 
 ### 2.2 build.rs（窗口组件）
 
@@ -110,7 +110,7 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
 ## 6. 安全边界（lock / greet 必须遵守）
 
 - 凭据只存在于 Rust 的 `Secret`（`zeroize`）中；QML 只拿到掩码（长度/掩码串），**不得**把明文密码放进任何 `#[qproperty]`、`model_json`、QML 变量、`TextField`。
-- 焦点/键盘：QML 只上报按键与 Tab/Esc 语义，焦点顺序仍在 Rust 的 view model；QML 用 `Accessible.role/name` 暴露语义树（窗口组件走 Qt QPA 的 AT-SPI；panel/lock 的 offscreen 无此桥，按 ADR 0038 记录为缺口，不声称已解决）。
+- 焦点/键盘：QML 只上报按键与 Tab/Esc 语义，焦点顺序仍在 Rust 的 view model；QML 用 `Accessible.role/name` 暴露语义树。
 - 锁表面：`inox-lock` 仍必须由 `src/session.rs` 创建 `ext_session_lock_v1` 表面；QML 只渲染。面板同理保留 `src/layer.rs`。
 
 ## 7. 测试要求（每个 crate）
@@ -130,14 +130,14 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
 ## 9. 完成定义（DoD）
 
 - `cargo check/clippy/test` 三条本地命令（§0）通过；`cargo fmt` 干净。
-- `rg -n "iced" crates/inox-<component>` 只剩历史注释或零命中（注释里的 ADR 说明可以保留，但不得有 `use iced`）。
+- `rg -n "iced" crates/inox-<component>` 只剩历史注释或零命中。
 - QML 里 `rg -n '#[0-9a-fA-F]{3,8}|[0-9]+px' qml/` 无颜色/尺寸字面量（除 `0`/`1` 这类结构性数值）。
 - `git status` 只包含本 crate 的文件（外加 Lead 同意共享的文件）。
 - 在回报里写清：改了什么、哪些测试从渲染改成投影、已知缺口、本地命令结果。
 
 ## 10. 参考实现
 
-- `git show feat/greet-qml:crates/inox-greet/src/{main.rs,cxxqt_object.rs,view.rs,headless_tests.rs}` 与 `.../qml/main.qml`：窗口 + cxx-qt + JSON/属性投影 + headless 自检的完整样本（注意它是 origin/main 线的「预览版」greet，不含登录链的 auth；当前分支的 greet 必须保留 `inox-auth` 与 ADR 0029 边界）。
+- `git show feat/greet-qml:crates/inox-greet/src/{main.rs,cxxqt_object.rs,view.rs,headless_tests.rs}` 与 `.../qml/main.qml`：窗口 + cxx-qt + JSON/属性投影 + headless 自检的完整样本。
 - `crates/inox-qml-prototype`：最小 bridge/QML 模块/headless 测试。
 - panel/lock 的离屏 C++ 宿主参考 `.probe-qtbridge/`（探针，不提交）：`src/offscreen.h` / `src/offscreen.cpp` 的形态可复制到 crate 内，改成 QML 模块 URL 与尺寸参数。
 
@@ -146,10 +146,10 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
 迁移已进入收尾：七个组件全部改为 QML + Qt Quick（cxx-qt 绑定），根 `Cargo.toml` 不再声明
 `iced` / `iced_layershell` / `iced_core` / `iced_runtime` / `iced_tiny_skia`，`Cargo.lock` 中不再有
 `iced*` 包。收尾的判据、私有 ABI 与私有协议的授权边界、以及每条验收 ID 记录在
-[ADR 0039](../adr/0039-qml-migration-completion-and-private-abi.md)。
+。
 
 - §1–§10 仍是本迁移的实施契约；收尾不改变任何一条实现约束。
-- 新增授权（ADR 0039）：允许在**局部**使用 Qt 私有 ABI 与 Inox 私有合成器协议，前提是产物保持原生
+- 新增授权：允许在**局部**使用 Qt 私有 ABI 与 Inox 私有合成器协议，前提是产物保持原生
   Qt Quick、私有 ABI 的范围在 crate 级 `AGENTS.md` 记录、GPL-only Qt 模块仍然禁止。
 - 已知缺口（不得在文档里声称已解决）：panel/lock 的离屏表面没有 AT-SPI 语义桥；真实合成器宿主上的
-  waydriver 截图断言（ADR 0039 的 M10）仍未接线；QML 侧每次状态变化整体重发 JSON 投影。
+  waydriver 截图断言仍未接线；QML 侧每次状态变化整体重发 JSON 投影。

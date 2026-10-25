@@ -1,6 +1,6 @@
 # inox-session
 
-L4 会话监督器：通过真实 Wayland 往返等待合成器，再启动独立桌面子进程；提供有界重启、失败隔离、进程组退出与私有运行时目录清理。设计与限制见 [ADR 0021](../../docs/adr/0021-l4-session-services.md)。
+L4 会话监督器：通过真实 Wayland 往返等待合成器，再启动独立桌面子进程；提供有界重启、失败隔离、进程组退出与私有运行时目录清理。设计与限制见下文。
 
 安装同一 CI 组合的二进制后运行 `inox-session`；软件渲染会话可显式使用 `inox-session --headless`。`--bin-dir PATH` 选择二进制目录，`--exit-after-seconds N` 在指定时长后正常注销。`XDG_RUNTIME_DIR` 必须由当前用户拥有且禁止其他用户访问。`config.toml` 的环境配置传给子进程，会话拥有的显示变量优先。
 

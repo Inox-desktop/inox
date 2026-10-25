@@ -13,8 +13,8 @@ categories.workspace = true
 [dependencies]
 anyhow.workspace = true
 # The protocol leg: the compositor's `ext-session-lock-v1` server, spoken as a
-# client. ADR 0022 decision 6 records why the bindings come from `inox-protocols`
-# (the single source of truth for protocols, ADR 0006) and why this is a legal
+# client. The session-lock and notification bus work, rule 6 records why the bindings come from `inox-protocols`
+#  and why this is a legal
 # L3 -> L2 edge.
 inox-protocols.workspace = true
 # The request loop and its signal handling: the same `calloop` the rest of the

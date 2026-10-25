@@ -2,7 +2,7 @@
 #
 # Start the Inox login screen on a spare VT and switch to it — WITHOUT touching the
 # boot chain. display-manager.service is not modified, greetd keeps running, and
-# the whole trial is undone by packaging/try-rollback.sh (ADR 0037 §决策 6).
+# the whole trial is undone by packaging/try-rollback.sh.
 #
 # The trial VT is 4 by default: VT1 belongs to the boot chain's display manager and
 # VT3 is the rescue getty, so neither is a candidate. Override with

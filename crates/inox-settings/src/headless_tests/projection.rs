@@ -74,7 +74,7 @@ fn populated(tokens: Tokens) -> Window {
 
 /// A window with a display change the compositor has taken on trial.
 ///
-/// The trial is the state ADR 0028 exists for: the values are in effect and the
+/// The trial is the state the display trial exists for: the values are in effect and the
 /// window is asking whether to keep them.
 fn on_trial(tokens: Tokens) -> Window {
     let mut window = Window::with_locale(&[], Locale::default_locale(), tokens).with_compositor();

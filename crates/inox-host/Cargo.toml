@@ -15,7 +15,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 # The event loop: one timer for the supervision tick and one signal source for
-# SIGTERM/SIGINT (ADR 0037 §决策 3.4).
+# SIGTERM/SIGINT.
 calloop.workspace = true
 # Waiting for, and signalling, the two children the host owns.
 rustix.workspace = true

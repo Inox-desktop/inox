@@ -1,11 +1,11 @@
 #%PAM-1.0
 #
-# PAM stack for logging a person in — ADR 0037 §决策 6, installed by
+# PAM stack for logging a person in, installed by
 # packaging/install.sh as /etc/pam.d/inox-auth.
 #
 # Who loads it: inox-auth starts this stack twice per login, both times as root.
 #   1. Authenticate: pam_authenticate for the account the login screen named.
-#   2. The session leader (`inox-auth --session-leader`, ADR 0037 §决策 5): this is
+#   2. The session leader (`inox-auth --session-leader`): this is
 #      the process that calls pam_open_session, so this is the process pam_systemd
 #      writes XDG_SESSION_ID / XDG_RUNTIME_DIR into, and the process that then
 #      execs the session program as the user.
@@ -20,7 +20,7 @@
 # screen is not on a tty (it is on a Wayland socket under inox-host), so the check
 # would either never fire or fire on the wrong terminal. Dropping it does not drop
 # root protection: inox-auth refuses root and every system account before PAM is
-# reached (ADR 0029), and pam_unix still enforces the password.
+# reached, and pam_unix still enforces the password.
 #
 # Why `session` must reach pam_systemd: pam_systemd is what creates the logind
 # session, and the logind session is what gives the session program a seat,

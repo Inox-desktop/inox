@@ -1,6 +1,6 @@
 //! The socket service the login screen talks to.
 //!
-//! The service is small on purpose, and every rule in it is one ADR 0015 asked
+//! The service is small on purpose, and every rule in it is one the session-lock boundary asked
 //! for:
 //!
 //! - **The peer is checked before anything else happens.** `SO_PEERCRED` — the
@@ -18,7 +18,7 @@
 //!   account database; the only things the wire carries are an account name, a
 //!   credential and an identifier to correlate the answer with.
 //!
-//! Since ADR 0037 this service also owns the *placement* of a session, which is
+//! Since the boot login chain this service also owns the *placement* of a session, which is
 //! what the rest of this file is about when it is not about a socket:
 //!
 //! - `StartSession` records which logind session is active on the seat, asks logind
@@ -81,7 +81,7 @@ pub use crate::wire::DEFAULT_SOCKET;
 
 /// The PAM service the shipped binary authenticates through.
 ///
-/// It is the name of `packaging/pam.d/inox-auth`, which ADR 0037 §决策 6 installs
+/// It is the name of `packaging/pam.d/inox-auth`, which the boot login chain
 /// as `/etc/pam.d/inox-auth` and whose `auth`/`account` lines walk `system-login`.
 /// The deployment unit passes `--service` for the same value; the default and the
 /// file that ships are one decision, not two.
@@ -90,7 +90,7 @@ pub const DEFAULT_PAM_SERVICE: &str = "inox-auth";
 /// The PAM service the session leader opens its session through.
 ///
 /// **A different stack from [`DEFAULT_PAM_SERVICE`], deliberately.** The leader
-/// holds no credential (ADR 0037 §失败、恢复与安全), and the safe `pam` wrapper only
+/// holds no credential, and the safe `pam` wrapper only
 /// opens a session on a client that has authenticated, so the leader's transaction
 /// authenticates against a stack whose `auth` line permits unconditionally
 /// (`auth required pam_permit.so`) while its `account`/`session` lines are the real
@@ -120,7 +120,7 @@ pub const DEFAULT_HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
 /// How long a client has to finish an attempt, and how long the authenticator has
 /// to answer one.
 ///
-/// The same 30 s the login screen's model holds an attempt for (ADR 0021), so a
+/// The same 30 s the login screen's model holds an attempt for, so a
 /// client that gives up and this service that gives up do so at the same moment
 /// rather than disagreeing about which attempt is in flight.
 pub const DEFAULT_ATTEMPT_DEADLINE: Duration = Duration::from_secs(30);
@@ -155,7 +155,7 @@ pub struct Config {
     pub session_program: PathBuf,
     /// Its literal arguments.
     pub session_arguments: Vec<OsString>,
-    /// The VTs a user session may be placed on (ADR 0037 §决策 2).
+    /// The VTs a user session may be placed on.
     pub session_vt: VtRange,
     /// The logind seat a session is activated on.
     pub seat: String,
@@ -174,18 +174,18 @@ pub struct Config {
     pub rate: RatePolicy,
     /// Whether the service exits once the session it started has ended.
     ///
-    /// Before ADR 0037 this was the mitigation for PAM's process-global
+    /// Before the boot login chain this was the mitigation for PAM's process-global
     /// environment: `pam_open_session` wrote into the long-lived helper's
     /// environment, so a service that survived several logins carried a previous
     /// account's session variables into the next one. That is no longer the case —
-    /// the session is opened in a one-shot session leader (ADR 0037 §决策 5) — so
+    /// the session is opened in a one-shot session leader  — so
     /// the switch is kept as a state reset for the deployment (a fresh boundary
     /// process after every session), not as a correctness requirement.
     pub exit_after_session: bool,
 }
 
 impl Config {
-    /// The ADR 0029 defaults, for one socket and one session program.
+    /// The the authentication boundary defaults, for one socket and one session program.
     pub fn new(socket: impl Into<PathBuf>, session_program: impl Into<PathBuf>) -> Self {
         Self {
             socket: socket.into(),
@@ -806,7 +806,7 @@ fn authenticate_loop<F: BoundaryFactory>(
                 let mut fresh = factory.create();
                 let verdict = fresh.authenticate(&account.username, &credential);
                 // The job's copy goes out of scope here; `Secret` zeroes it. The
-                // boundary is dropped too: since ADR 0037 its PAM transaction ends
+                // boundary is dropped too: since the boot login chain its PAM transaction ends
                 // with the verdict, and the session is opened by the leader.
                 drop(credential);
                 drop(fresh);
@@ -834,7 +834,7 @@ fn authenticate_loop<F: BoundaryFactory>(
 
 /// Runs one login from "place the session" to "hand the display back".
 ///
-/// The sequence is ADR 0037 §决策 2 and §决策 5 in order: remember which session is
+/// The sequence is the boot login chain
 /// active *before* anything switches away from it, pick a VT, start a leader for
 /// that account on that VT, answer the client once the leader has confirmed
 /// `pam_open_session`, wait for the session to end, and put the recorded session

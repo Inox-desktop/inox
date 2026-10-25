@@ -23,7 +23,7 @@ pub const MAX_REFRESH_HZ: i32 = 1_000;
 
 /// Largest accepted magnitude of an output position coordinate, in logical pixels.
 ///
-/// The same limit `inox-config` applies to `compositor.toml` (ADR 0019).
+/// The same limit `inox-config` applies to `compositor.toml`.
 pub const MAX_COORDINATE: i32 = 4_194_304;
 
 /// The keys `--output` accepts, for the error message and the help text.
@@ -34,7 +34,7 @@ pub const DEFAULT_OUTPUT_NAME: &str = "headless-1";
 
 /// Smallest accepted scale factor of a headless output.
 ///
-/// The same range `inox-config` enforces for `compositor.toml` (ADR 0020).
+/// The same range `inox-config` enforces for `compositor.toml`.
 pub const SCALE_MIN: f64 = 0.25;
 
 /// Largest accepted scale factor of a headless output.
@@ -45,7 +45,7 @@ pub const SCALE_MAX: f64 = 8.0;
 /// The physical backend takes its outputs from the DRM connectors it enumerates
 /// and `compositor.toml`; this type describes the synthetic outputs CI drives,
 /// which is what lets the multi-output and fractional-scaling behaviour be
-/// exercised without a display (ADR 0019).
+/// exercised without a display.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeadlessOutput {
     /// Name advertised on `wl_output`, unique within one compositor run.
@@ -90,11 +90,11 @@ impl HeadlessOutput {
 
 /// Which compositor backend to run.
 ///
-/// The variants map onto the layers described in ADR 0010:
+/// The variants map onto the layers described in the real backend:
 ///
 /// - [`BackendKind::Auto`] selects an enumerated libseat DRM device and fails if no
-///   physical output can be driven. Headless must be explicitly requested (ADR 0012).
-/// - [`BackendKind::Headless`] keeps the M1/M2 surfaceless EGL path (ADR 0005)
+///   physical output can be driven. Headless must be explicitly requested.
+/// - [`BackendKind::Headless`] keeps the M1/M2 surfaceless EGL path 
 ///   as a fixed choice; it is what CI exercises.
 /// - [`BackendKind::Drm`] requires the real backend and never falls back, so a
 ///   session or present failure surfaces to the operator instead of quietly
@@ -131,7 +131,7 @@ USAGE:
 
 OPTIONS:
     --backend <KIND>           Backend to run: auto, headless, drm [default: auto]
-    --headless                 Alias for --backend=headless
+    --headless Alias for --backend=headless
     --output-size <WxH>        Size in pixels of the default headless output [default: 1280x720]
     --refresh-rate <HZ>        Refresh rate of the default headless output [default: 60]
     --output <SPEC>            Add a headless output; the first use replaces the default one.
@@ -141,17 +141,17 @@ OPTIONS:
     --socket <NAME>            Wayland socket name [default: auto-selected]
     --input-method <EXEC>      Launch a trusted input method (for example fcitx5)
     --input-method-arg <ARG>   Append one argument to the input method command
-    --lock-token <TOKEN>       One-shot token that authorizes the session lock (ADR 0022)
+    --lock-token <TOKEN>       One-shot token that authorizes the session lock 
     --exit-after-frames <N>    Exit with status 0 after rendering N frames
     --test-input <PATH>        Serve test commands on a unix socket (test-input builds only)
-    -h, --help                 Print this help and exit
-    -V, --version              Print the version and exit
+    -h, --help Print this help and exit
+    -V, --version Print the version and exit
 ";
 
 /// Validated compositor configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompositorConfig {
-    /// Backend selection (ADR 0010).
+    /// Backend selection.
     pub backend: BackendKind,
     /// Headless outputs to create, in the order they are advertised.
     ///
@@ -166,7 +166,7 @@ pub struct CompositorConfig {
     /// the session, or `None` when locking is unavailable in this run.
     ///
     /// `inox-session` generates it per session and hands the same value to the
-    /// trusted lock client; ADR 0022 records why the authority is a capability
+    /// trusted lock client; the session-lock and notification bus work records why the authority is a capability
     /// rather than a client-supplied name, and why a compositor started without
     /// one refuses every lock request instead of accepting an unidentified one.
     pub lock_token: Option<String>,
@@ -330,7 +330,7 @@ where
             "-h" | "--help" => return Ok(Invocation::Help),
             "-V" | "--version" => return Ok(Invocation::Version),
             // `--headless` predates the backend selector and stays as an alias so
-            // existing CI invocations keep working (ADR 0010 §6).
+            // existing CI invocations keep working.
             "--headless" => {
                 reject_inline_value(&option, inline)?;
                 config.backend = BackendKind::Headless;
@@ -431,7 +431,7 @@ where
 /// Reject two outputs that would advertise the same `wl_output` name.
 ///
 /// The compositor keys the output topology on the name, so a duplicate would make
-/// one output silently unreachable (ADR 0019).
+/// one output silently unreachable.
 fn reject_duplicate_output_names(config: &CompositorConfig) -> Result<(), ConfigError> {
     let mut seen = Vec::with_capacity(config.outputs.len());
     for output in &config.outputs {

@@ -1,6 +1,6 @@
 # AGENTS.md — inox-config
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
@@ -14,7 +14,7 @@
 - 工作区内依赖（`inox-common`）是**path 依赖**：在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用（根级 §8）。path 依赖必须带显式 `version`，否则会被 `deny.toml` 的 `[bans] wildcards = "deny"` 判为通配符依赖。注意 L1 内部存在 `inox-config → inox-common` 的同层顺序，该边登记在 `[workspace.metadata.inox.rules] same_layer_exceptions` 中。
 - 所有配置结构体必须带 `#[serde(deny_unknown_fields)]`：拼写错误不得被静默忽略（根级 §13）。
 - **`wallpapers::BUNDLED` 是目录清单，不是文件列表**：它只回答「有哪些内置壁纸、叫什么标识、装成什么文件名、
-  署名给谁」，**不含路径**——文件装在哪里是运行时事实，由 `inox_common::paths` 解析（ADR 0030）。
+  署名给谁」，**不含路径**——文件装在哪里是运行时事实，由 `inox_common::paths` 解析。
   标识一经发布不得更改（用户会写进配置）；`BACKGROUND_ID` 是「主题背景」的保留取值，不得与任何标识相同，
   `DEFAULT_ID` 必须在清单中（均由单元测试强制）。
 - `config.toml` 与组件配置文件缺失一律回退默认值；文件存在但读取或解析失败必须报错，不得吞掉。
@@ -39,20 +39,20 @@
   再 `Locale::negotiate`，任何语言都落到 Inox 实际提供的目录上；标签不合法在解析期报错，
   不得静默回退（`resolve` 只对**未经解析**的手工构造值兜底）。POSIX 的 `C` / `POSIX` 在配置文件里
   同样报错并提示「省略 `[locale]` 以跟随环境」：它们是「没有语言」的标记，不是语言名。
-- 越界值必须在**解析期报错**，不得静默 clamp（ADR 0009 决策 4）：平铺参数由 `LayoutConfig`
+- 越界值必须在**解析期报错**，不得静默 clamp：平铺参数由 `LayoutConfig`
   校验，输出参数（尺寸 1..=16384、刷新率 1..=1000、`scale` 为 0.25..=8.0 的有限数、
   `position` 的每个坐标分量在 ±4194304 内）由 `OutputConfig` 校验，范围与 `inox-compositor`
   的 `MAX_DIMENSION` / `MAX_REFRESH_HZ` / `MAX_COORDINATE` 一致；
   `LayoutConfig::sanitised()` 只作消费方对非配置来源的防御兜底。
-  `scale` 的下界来自 ADR 0020（逻辑尺寸是物理尺寸除以缩放，过小的比例会让坐标不可表示），
+  `scale` 的下界来自分数缩放（逻辑尺寸是物理尺寸除以缩放，过小的比例会让坐标不可表示），
   上界远高于任何真实显示器；把 `scale` 从「任意正有限数」收窄到该区间是一次**破坏性配置变更**，
   依据是「越界必须在解析期报错」，需在 PR 描述与文档中声明。
   `[[outputs]]` 的 `position` 是可选的内联表 `{ x = …, y = … }`：缺席表示由合成器自动放置，
-  显式坐标（含负数）必须被保留（ADR 0019）。
+  显式坐标（含负数）必须被保留。
 - `[input]` 的键盘 repeat delay/rate 必须在解析期校验为 0..=i32::MAX（Wayland seat 的有符号字段）；rate 为 0 关闭 repeat。tap/scroll 是否被设备支持由真实后端检查。
 - `ConfigError::InvalidComponentPath` 的校验必须在 `InoxConfig::load` 内对 `[components]`
   的**三个**路径都执行，且在任何组件文件被读取之前完成：路径逃逸要在 Inox 启动期失败，
-  而不是等某个组件启动才失败；空值、绝对路径与逃逸路径一律拒绝（ADR 0009 决策 11）。
+  而不是等某个组件启动才失败；空值、绝对路径与逃逸路径一律拒绝。
 - 主题文件的 `appearance` 只接受 `light` / `dark`（`ThemeAppearance`）；`system` 只属于
   `config.toml` 的选择层，`Appearance::System` 仅在选择层出现。
 

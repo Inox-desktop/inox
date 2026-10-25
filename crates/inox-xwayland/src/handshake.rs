@@ -17,25 +17,25 @@
 //! authorization data (it relies on the socket's own permissions):
 //!
 //! ```text
-//! offset  size  field
-//! 0       1     byte-order byte, 0x6c = 'l' (least significant byte first)
-//! 1       1     unused
-//! 2       2     protocol major version (11), little endian
-//! 4       2     protocol minor version (0), little endian
-//! 6       2     length of the authorization protocol name (0)
-//! 8       2     length of the authorization protocol data (0)
-//! 10      2     unused
+//! offset size field
+//! 0 1 byte-order byte, 0x6c = 'l' (least significant byte first)
+//! 1 1 unused
+//! 2 2 protocol major version (11), little endian
+//! 4 2 protocol minor version (0), little endian
+//! 6 2 length of the authorization protocol name (0)
+//! 8 2 length of the authorization protocol data (0)
+//! 10 2 unused
 //! ```
 //!
 //! The server's reply header, 8 bytes, in the byte order the request declared:
 //!
 //! ```text
-//! offset  size  field
-//! 0       1     status: 0 failed, 1 success, 2 authenticate
-//! 1       1     length of the failure reason (status 0); unused otherwise
-//! 2       2     protocol major version (status 0 and 1 only), little endian
-//! 4       2     protocol minor version (status 0 and 1 only), little endian
-//! 6       2     length of the data that follows, in 4-byte units
+//! offset size field
+//! 0 1 status: 0 failed, 1 success, 2 authenticate
+//! 1 1 length of the failure reason (status 0); unused otherwise
+//! 2 2 protocol major version (status 0 and 1 only), little endian
+//! 4 2 protocol minor version (status 0 and 1 only), little endian
+//! 6 2 length of the data that follows, in 4-byte units
 //! ```
 //!
 //! For a successful setup the following data is the *setup body*: the first 32
@@ -43,23 +43,23 @@
 //! followed by the pixmap formats and the screens.
 //!
 //! ```text
-//! offset  size  field
-//! 0       4     release number
-//! 4       4     resource-id-base
-//! 8       4     resource-id-mask
-//! 12      4     motion-buffer-size
-//! 16      2     length of the vendor string (0..=65535)
-//! 18      2     maximum-request-length
-//! 20      1     number of SCREENs
-//! 21      1     number of pixmap FORMATs
-//! 22      1     image byte order
-//! 23      1     bitmap format bit order
-//! 24      1     bitmap scanline unit
-//! 25      1     bitmap scanline pad
-//! 26      1     minimum keycode
-//! 27      1     maximum keycode
-//! 28      4     unused
-//! 32      v     vendor string, padded to a multiple of 4 bytes
+//! offset size field
+//! 0 4 release number
+//! 4 4 resource-id-base
+//! 8 4 resource-id-mask
+//! 12 4 motion-buffer-size
+//! 16 2 length of the vendor string (0..=65535)
+//! 18 2 maximum-request-length
+//! 20 1 number of SCREENs
+//! 21 1 number of pixmap FORMATs
+//! 22 1 image byte order
+//! 23 1 bitmap format bit order
+//! 24 1 bitmap scanline unit
+//! 25 1 bitmap scanline pad
+//! 26 1 minimum keycode
+//! 27 1 maximum keycode
+//! 28 4 unused
+//! 32 v vendor string, padded to a multiple of 4 bytes
 //! ```
 //!
 //! For status 0 the following data is the failure reason; for status 2 it is

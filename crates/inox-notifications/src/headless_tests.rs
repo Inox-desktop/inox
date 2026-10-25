@@ -295,7 +295,7 @@ fn help_succeeds_without_a_display() {
 
 #[test]
 fn starting_without_a_display_is_refused_with_a_readable_message() {
-    // The daemon is started by the session, so no arguments means "run". ADR 0018
+    // The daemon is started by the session, so no arguments means "run". The L3 component architecture
     // requires that case to fail with a message a user can act on rather than
     // reaching Qt and dying there.
     let start = run_as_process(&[]);

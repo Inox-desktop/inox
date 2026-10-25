@@ -57,7 +57,7 @@ const EXPECTED_GLOBALS: &[&str] = &[
     "zwlr_layer_shell_v1",
     "zxdg_output_manager_v1",
     "inox_ipc",
-    // M4, ADR 0020: the exact scale a surface should render at.
+    // M4, fractional scaling: the exact scale a surface should render at.
     "wp_fractional_scale_manager_v1",
     "zwp_text_input_manager_v3",
 ];
@@ -202,7 +202,7 @@ fn talk_to_compositor(socket_path: &Path) -> anyhow::Result<ClientOutcome> {
     });
 
     // v6 is what carries `preferred_buffer_scale`; a client that binds lower
-    // cannot be told how large a buffer to render for a scaled output (ADR 0020).
+    // cannot be told how large a buffer to render for a scaled output.
     let _compositor: WlCompositor = globals.bind(&queue_handle, 6..=6, ())?;
     let _fractional: WpFractionalScaleManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
     let _viewporter: WpViewporter = globals.bind(&queue_handle, 1..=1, ())?;

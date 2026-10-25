@@ -1,7 +1,7 @@
 //! Headless rendering: a surfaceless EGL display, a GLES renderer and one
 //! offscreen render target per output.
 //!
-//! Smithay 0.7 has no headless backend (see ADR 0005), so Inox builds this path
+//! Smithay 0.7 has no headless backend, so Inox builds this path
 //! from Smithay's EGL and GLES abstractions: a surfaceless `EGLDisplay`
 //! (`EGL_MESA_platform_surfaceless`), a configless `EGLContext`, a `GlesRenderer`
 //! and a texture sized to the output mode.
@@ -114,7 +114,7 @@ const KERNEL_STEP_DIVISOR: f32 = 4.0;
 /// Constraints, all of them load-bearing (see the module documentation and
 /// Smithay's `compile_custom_texture_shader`, which injects nothing):
 ///
-/// - `#version 100` first: the EGL context is GLES2 (ADR 0005).
+/// - `#version 100` first: the EGL context is GLES2.
 /// - the literal `//_DEFINES_` marker: Smithay replaces it to build the plain,
 ///   `NO_ALPHA` and `EXTERNAL` variants plus a debug copy, so the source has to
 ///   compile under all of them. That is also why the sampler declaration and the
@@ -409,7 +409,7 @@ impl HeadlessRenderer {
     /// mode changes. `scale` is that output's scale factor: a render element
     /// carries its position in physical pixels but derives its extent from the
     /// logical size times this scale, so drawing an output at the wrong scale
-    /// would place correctly and size incorrectly (ADR 0020).
+    /// would place correctly and size incorrectly.
     ///
     /// `panes` comes from [`crate::glass::collect_panes`] and must already be
     /// expressed in this output's physical pixels, back-most first. With an empty

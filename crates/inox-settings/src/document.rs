@@ -252,7 +252,7 @@ impl Document {
     /// Reads a configuration file.
     ///
     /// A file that is not there is not an error — every Inox configuration file
-    /// is optional and falls back to its defaults (ADR 0009, decision 8) — so
+    /// is optional and falls back to its defaults  — so
     /// it is held as an empty document whose digest is [`Digest::Absent`], and
     /// the first save of a changed key creates it.
     ///

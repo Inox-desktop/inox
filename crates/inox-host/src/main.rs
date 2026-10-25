@@ -1,10 +1,10 @@
 //! `inox-host` — the greeter stage: the compositor, the login screen, and who watches them.
 //!
-//! This binary is what `inox-greeter@.service` runs (ADR 0037 §决策 1). It does four
+//! This binary is what `inox-greeter@.service` runs. It does four
 //! things, in this order and no more:
 //!
 //! 1. If the authentication boundary cannot be connected to, it says so and exits
-//!    non-zero **before** a compositor or a window exists (ADR 0037 §决策 3.1). The
+//!    non-zero **before** a compositor or a window exists. The
 //!    sentence names both the boundary and `inox-auth`, because the person reading it
 //!    needs to know what is missing and what provides it.
 //! 2. It starts `inox-compositor --socket wayland-inox-greet`, then waits up to ten
@@ -18,7 +18,7 @@
 //!
 //! What it never does is decide whether a login succeeded. The user's session is on
 //! another VT, started by `inox-auth`; this VT is paused while that one is active, and
-//! by the time it is resumed the login screen is simply on screen again (ADR 0037
+//! by the time it is resumed the login screen is simply on screen again (the boot login chain
 //! §决策 4). A host that tried to observe the login would be a second opinion about an
 //! authentication decision it is not allowed to have.
 //!
@@ -41,7 +41,7 @@ use inox_host::runtime;
 use inox_host::supervisor::Plan;
 use tracing::{error, info};
 
-/// The boundary socket `inox-auth` listens on by default (ADR 0029).
+/// The boundary socket `inox-auth` listens on by default.
 const DEFAULT_AUTH_SOCKET: &str = "/run/inox/auth.sock";
 
 /// The exit code for a command line that cannot be used.
@@ -158,7 +158,7 @@ fn plan(options: Options) -> Result<Plan> {
         auth_socket: options.auth_socket,
         compositor,
         // The login screen takes no arguments: its display and its boundary arrive in
-        // the environment this host sets when it starts it (ADR 0037 §决策 3.3).
+        // the environment this host sets when it starts it.
         greeter: CommandSpec::new(options.bin_dir.join("inox-greet")),
     })
 }

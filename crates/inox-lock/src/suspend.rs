@@ -1,6 +1,6 @@
 //! Prepare-to-suspend ordering.
-//! Prepare-to-suspend ordering (ADR 0015).
-//! ADR 0015 states the order as a rule and gives no room to hope:
+//! Prepare-to-suspend ordering.
+//! the session-lock boundary states the order as a rule and gives no room to hope:
 //!
 //! > 触发顺序为准备锁定→收到锁完成确认→允许挂起；锁定失败按明确策略阻止/取消挂起，
 //! > 不能先休眠再寄望恢复时补锁
@@ -26,7 +26,7 @@
 //!
 //! There is no clock here on purpose. The bound on the confirmation is data
 //! ([`SuspendPolicy::confirmation_timeout`]) that the session — which owns the
-//! timers, and is the component ADR 0015 gives the supervision to — uses to send
+//! timers, and is the component the session-lock boundary gives the supervision to — uses to send
 //! [`SuspendEvent::TimedOut`]. Keeping the timeout as an *event* rather than a
 //! deadline in two places is what keeps the ordering testable without sleeping
 //! and without a second source of truth about when the wait is over.
@@ -37,7 +37,7 @@ use crate::contract::Generation;
 
 /// What to do when the lock cannot be confirmed before a suspend.
 ///
-/// Both answers are in ADR 0015's "refused or cancelled"; which one is used is a
+/// Both answers are in the session-lock boundary's "refused or cancelled"; which one is used is a
 /// decision a session makes once, not a fallback chosen at runtime.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LockFailure {

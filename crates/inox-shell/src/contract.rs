@@ -1,8 +1,8 @@
-//! The cross-process state contract of ADR 0013.
+//! The cross-process state contract of the interaction contract.
 //!
 //! The entries are separate processes and the state they show belongs to a
 //! service elsewhere: the compositor owns windows, focus and outputs, and each
-//! daemon owns what it is authoritative for. Four rules from ADR 0013's
+//! daemon owns what it is authoritative for. Four rules from the interaction contract's
 //! "跨进程状态契约" section are what the components are written against, and
 //! they are small enough to live as types rather than as prose:
 //!
@@ -82,7 +82,7 @@ impl<T> Snapshot<T> {
 
 /// The client side of the snapshot contract: the newest view it has been given.
 ///
-/// The rules of ADR 0013 decision 1 are enforced here rather than left to each
+/// The rules of the interaction contract, rule 1 are enforced here rather than left to each
 /// caller: the view only ever moves forward, so an answer that arrives late —
 /// from a query sent before a reconnect, say — cannot roll the display back.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -125,7 +125,7 @@ impl<T> SnapshotView<T> {
     }
 }
 
-/// What became of a command the shell sent to a service (ADR 0013, decision 2).
+/// What became of a command the shell sent to a service.
 ///
 /// The variants are ordered by how much is known: a command that was only
 /// [`CommandResult::Sent`] may still be refused, one that was
@@ -186,7 +186,7 @@ impl CommandResult {
     }
 }
 
-/// The generation of one asynchronous request (ADR 0013, decision 4).
+/// The generation of one asynchronous request.
 ///
 /// A caller — a search box, a settings form, a task view refresh — issues
 /// requests at its own pace and receives the answers out of order. It keeps the

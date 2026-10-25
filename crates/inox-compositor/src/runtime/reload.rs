@@ -3,7 +3,7 @@
 //! Two D-Bus interfaces live here. `org.inox.Configuration1` applies a candidate
 //! immediately and refuses live display changes: `SIGHUP` and `inoxctl` have no
 //! confirmation channel, so they may not switch a mode nobody can confirm.
-//! `org.inox.Configuration2` (ADR 0028) adds the trial interface: `Trial` applies
+//! `org.inox.Configuration2`  adds the trial interface: `Trial` applies
 //! a candidate with provisional output preferences, `Confirm` keeps it and
 //! `Rollback` puts the previous preferences back. The compositor owns the 30
 //! second deadline, so a settings window that disappears still gets its display
@@ -552,7 +552,7 @@ fn apply(data: &mut CalloopData, config: &InoxConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Apply a candidate whose output preferences are provisional (ADR 0028).
+/// Apply a candidate whose output preferences are provisional.
 ///
 /// Returns the applied snapshot. The trial is only armed once everything
 /// succeeded; any failure — an output that could not be driven, an invalid
@@ -650,7 +650,7 @@ fn arm_expiry(handle: &Handle, deadline: Instant) -> Result<calloop::Registratio
 /// make the active configuration describe them again.
 ///
 /// Theme, language, input devices and layout keep the values the trial applied:
-/// only display preferences are provisional (ADR 0028), and nothing is written to
+/// only display preferences are provisional, and nothing is written to
 /// disk here — the settings application owns persistence.
 fn revert_outputs(
     handle: &Handle,

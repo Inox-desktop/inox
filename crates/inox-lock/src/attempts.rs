@@ -1,6 +1,6 @@
 //! Rate limiting failed authentication.
-//! Rate limiting failed authentication (ADR 0015).
-//! ADR 0015 asks for "limited and readable feedback" on failure, and acceptance
+//! Rate limiting failed authentication.
+//! the session-lock boundary asks for "limited and readable feedback" on failure, and acceptance
 //! S03 asks that the credential never reach a log, a clipboard or a screenshot.
 //! What a rate limiter must *not* become is a way to keep the legitimate user out:
 //! a lock screen that escalates without a ceiling is a denial of service a

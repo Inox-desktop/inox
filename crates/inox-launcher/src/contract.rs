@@ -1,6 +1,6 @@
 //! The vocabulary of the launcher's service contract.
-//! The vocabulary of the launcher's service contract (ADR 0013).
-//! ADR 0013 asks every L3 component to distinguish four things that a launcher
+//! The vocabulary of the launcher's service contract.
+//! the interaction contract asks every L3 component to distinguish four things that a launcher
 //! is unusually prone to blurring:
 //!
 //! - **sent / accepted / applied / rejected / timeout** — a command's state at
@@ -19,7 +19,7 @@
 //! data the state machine moves between, which is what makes the transitions
 //! testable without a compositor.
 
-/// Where a command has reached, per ADR 0013 decision 2.
+/// Where a command has reached, per the interaction contract, rule 2.
 ///
 /// The distinction that matters is between [`CommandState::Sent`] and
 /// [`CommandState::Applied`]: the launcher knows it handed a request to the
@@ -42,7 +42,7 @@ pub enum CommandState {
 
 /// The application index's own state, as the component sees it.
 ///
-/// This is the service half of ADR 0013's snapshot/event contract: the index is
+/// This is the service half of the interaction contract's snapshot/event contract: the index is
 /// the authoritative list of applications, and a UI that cannot read it says so
 /// with a reason and a retry rather than spinning.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -74,7 +74,7 @@ pub enum TokenError {
 
 /// Mint the token that authorizes one session's lock client.
 ///
-/// The token is the capability ADR 0022 decision 3 describes: the compositor hands
+/// The token is the capability the session-lock and notification bus work, rule 3 describes: the compositor hands
 /// it to nobody, the session delivers it to the trusted lock client, and a claim
 /// without it is refused. Generating it here rather than in the compositor is what
 /// keeps the compositor's policy — "a claim must match the token I was started

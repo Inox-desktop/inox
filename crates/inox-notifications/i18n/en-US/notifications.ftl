@@ -11,7 +11,7 @@
 
 # Title of the daemon's own window: the popup stack is a layer surface on a real
 # session and an ordinary window only while no layer-shell host exists
-# (ADR 0018).
+# .
 notifications-window-title = Inox Notifications
 
 # The daemon's own state, shown where the popups would be so that an empty
@@ -20,7 +20,7 @@ notifications-empty = No notifications
 notifications-suppressed = Notifications are muted while do not disturb is on
 
 # Shown in place of the summary, the application name and the icon while the
-# session is locked (ADR 0015, acceptance D06): the sensitive parts are not in
+# session is locked: the sensitive parts are not in
 # the view model at all.
 notifications-generic-summary = A notification arrived
 

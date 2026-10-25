@@ -19,18 +19,16 @@
 //!
 //! ## What "ready" can mean here
 //!
-//! ADR 0013 asks for readiness to be established from the observed evidence —
+//! the interaction contract asks for readiness to be established from the observed evidence —
 //! for a launcher, normally a window appearing or a D-Bus name being acquired.
 //! Neither is available to this component today: the compositor exports no
-//! window-list interface ([ADR 0013] leaves that to `inox-ipc`, which does not
+//! window-list interface (the interaction contract leaves that to `inox-ipc`, which does not
 //! carry it yet), and most applications own no D-Bus name. The evidence used
 //! instead is the process still being alive after a grace period, which rules
 //! out the failure that actually happens in practice — an `Exec` that names a
 //! program that starts and immediately dies. That is a weaker claim than
-//! ADR 0013's specification, and it is reported as such rather than dressed up:
+//! the interaction contract's specification, and it is reported as such rather than dressed up:
 //! see the crate README's "not implemented" list.
-//!
-//! [ADR 0013]: https://github.com/Inox-desktop/inox/blob/main/docs/adr/0013-shell-service-and-interaction-contracts.md
 
 use std::collections::VecDeque;
 use std::process::{Command, Stdio};
@@ -99,7 +97,7 @@ pub enum Readiness {
 
 /// The result of an activation.
 ///
-/// ADR 0013: the sent / applied / rejected distinction is [`LaunchOutcome::state`]'s
+/// the interaction contract: the sent / applied / rejected distinction is [`LaunchOutcome::state`]'s
 /// mapping: what the user is told is never stronger than what was observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchOutcome {

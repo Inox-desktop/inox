@@ -106,7 +106,7 @@ pub enum RunError {
 struct CalloopData {
     reload: Option<reload::Controller>,
     active_configuration: Option<inox_config::InoxConfig>,
-    /// The armed display trial and its deadline source (ADR 0028).
+    /// The armed display trial and its deadline source.
     trial: reload::TrialState,
     input_method: Option<input_method::InputMethodProcess>,
     state: InoxState,
@@ -114,7 +114,7 @@ struct CalloopData {
     /// The physical backend, when one is running.
     ///
     /// Its per-output frame schedules and timers live inside it, so one display
-    /// cannot hold up another (ADR 0019).
+    /// cannot hold up another.
     physical: Option<physical::PhysicalState>,
     /// The headless frame schedule; unused while a physical backend runs.
     frames: FrameSchedule,

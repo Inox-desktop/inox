@@ -1,24 +1,24 @@
 # AGENTS.md — inox-wallpaper
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
-壁纸资源加载与显示：解析 `[wallpaper]` 配置、解码图像、计算几何、把帧画到表面上。所属层级：**L3**（背景层客户端，[ADR 0013](../../docs/adr/0013-shell-service-and-interaction-contracts.md)；当前实际表面见下）。
+壁纸资源加载与显示：解析 `[wallpaper]` 配置、解码图像、计算几何、把帧画到表面上。所属层级：**L3**（背景层客户端；当前实际表面见下）。
 
 ## 表面模式（迁移后仍然是「普通窗口」）
 
-`QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window`（`qml/Main.qml`）。这不是临时状态，而是**当前唯一能成立的形态**：`inox-compositor` 不广告 `wlr-layer-shell-unstable-v1`，因此根本创建不出 layer 表面（[ADR 0018](../../docs/adr/0018-l3-component-architecture.md)）。二进制启动时记录一条 `warn!` 说明这点，`placement` 的策略被计算、被测试，但**不被应用**。**不得**在文档或 PR 中把它说成「壁纸已作为背景层生效」；将来接入真实 layer 表面时，`src/placement.rs` 的数据形状是给宿主的输入，不是装饰。
+`QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window`（`qml/Main.qml`）。这不是临时状态，而是**当前唯一能成立的形态**：`inox-compositor` 不广告 `wlr-layer-shell-unstable-v1`，因此根本创建不出 layer 表面。二进制启动时记录一条 `warn!` 说明这点，`placement` 的策略被计算、被测试，但**不被应用**。**不得**在文档或 PR 中把它说成「壁纸已作为背景层生效」；将来接入真实 layer 表面时，`src/placement.rs` 的数据形状是给宿主的输入，不是装饰。
 
-离屏渲染（`ext_session_lock` / `zwlr_layer_surface_v1` 的那种宿主）属于 [ADR 0038](../../docs/adr/0038-offscreen-qml-for-layer-and-lock-surfaces.md)，与本 crate 无关：本 crate 没有、也不应该有离屏 C++ 宿主。
+离屏渲染（`ext_session_lock` / `zwlr_layer_surface_v1` 的那种宿主）属于 panel 与 lock 的离屏 QML 方案，与本 crate 无关：本 crate 没有、也不应该有离屏 C++ 宿主。
 
 ## crate 特有约束
 
-- **`unsafe`**：继承根 `Cargo.toml` 的 `[workspace.lints]`（`unsafe_code = "forbid"`）。本 crate 的 `Cargo.toml` 把该 lint 覆盖为 `allow`，唯一原因是 `#[cxx_qt::bridge]` 宏自己会生成 `unsafe extern "C++"` 块；**手写 Rust 里不得出现 `unsafe`**。cxx-qt 的私有 ABI 使用范围由根级 §4 与 [ADR 0035](../../docs/adr/0035-cxx-qt-binding.md) 授权。
+- **`unsafe`**：继承根 `Cargo.toml` 的 `[workspace.lints]`（`unsafe_code = "forbid"`）。本 crate 的 `Cargo.toml` 把该 lint 覆盖为 `allow`，唯一原因是 `#[cxx_qt::bridge]` 宏自己会生成 `unsafe extern "C++"` 块；**手写 Rust 里不得出现 `unsafe`**。cxx-qt 的私有 ABI 使用范围由根级 §4 与 cxx-qt 绑定决策授权。
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
-- **不建立到 `inox-compositor` 或任何 L3 crate 的 Cargo 依赖**（[ADR 0002](../../docs/adr/0002-layering-and-dependency-direction.md) 规则 1、3、6；ADR 0013 提议取消 wallpaper 直连合成器的例外——本 crate 没有使用该例外）。与合成器只通过 `wlr-layer-shell`、`xdg-shell` 与 `inox-ipc` 协作。新增依赖前先确认方向合法（根级 §2）。
-- **`update` 不做 I/O**：解码与文件读取是 `Task::perform`，由 `runtime::Runtime` 在自己的线程上执行，结果作为消息回到 `update`（ADR 0013：图像解码不得阻塞交互循环）。
+- **不建立到 `inox-compositor` 或任何 L3 crate 的 Cargo 依赖**。与合成器只通过 `wlr-layer-shell`、`xdg-shell` 与 `inox-ipc` 协作。新增依赖前先确认方向合法（根级 §2）。
+- **`update` 不做 I/O**：解码与文件读取是 `Task::perform`，由 `runtime::Runtime` 在自己的线程上执行，结果作为消息回到 `update`。
 - **QML↔Rust 只有一个边界**：`src/cxxqt_object.rs` 的 `#[cxx_qt::bridge]`。契约 §3 的形状是规则——**一份 JSON 模型 + 窄动作通道**：
   - 只读属性 `model_json` 是 `src/view.rs` 的整份投影，每次状态变化**整体重发**；
   - `dispatch(action)` 收一行 JSON 动作（目前只有 `{"type":"reload"}`），由 `view::parse_action` 解析，未知动作 `warn!` 后丢弃；
@@ -29,13 +29,13 @@
 - **文案**：所有用户可见字符串必须同时存在于 `i18n/en-US/wallpaper.ftl` 与 `i18n/zh-CN/wallpaper.ftl`，并登记在 `src/i18n.rs` 的 `MESSAGES`。目录与代码**双向**一致由 `headless_tests` 断言（`the_two_catalogs_define_the_same_messages_with_the_same_placeholders`、`the_list_the_code_formats_from_is_exactly_what_the_catalogs_define`）。
 - **解码有上限**：不得移除 `decode::MAX_PIXELS` / `MAX_DIMENSION` 或 `scaling::MAX_TILES`。无上限的解码与无上限的平铺都是用户可用一个 70 字节文件触发的拒绝服务。
 - **降级不得变成黑屏或崩溃**：任何「用户显式选择却用不了」的资源都必须退到主题背景，并携带可读原因（`model::Unusable`）。已有帧不因新请求失败而被清空。
-- **内置壁纸的清单在 L1**：标识、文件名、作者与许可只在 `inox_config::wallpapers`；本 crate 不回答「有哪些壁纸」，只把标识解析为搜索目录下的路径（`inox_common::paths::inox_wallpaper_dirs`，`INOX_WALLPAPER_DIR` 可覆盖）。`wallpaper.image` 的取值规则（键省略＝默认壁纸、`none`＝主题背景、标识＝内置壁纸、其余＝路径）见 [ADR 0030](../../docs/adr/0030-bundled-wallpapers-and-the-default-background.md)，必须与本 crate 的 `model::Selection` 保持一致。
+- **内置壁纸的清单在 L1**：标识、文件名、作者与许可只在 `inox_config::wallpapers`；本 crate 不回答「有哪些壁纸」，只把标识解析为搜索目录下的路径（`inox_common::paths::inox_wallpaper_dirs`，`INOX_WALLPAPER_DIR` 可覆盖）。`wallpaper.image` 的取值规则（键省略＝默认壁纸、`none`＝主题背景、标识＝内置壁纸、其余＝路径）必须与本 crate 的 `model::Selection` 保持一致。
 - **语义树是算出来的，不是声称的**：`qml/Main.qml` 里每个带 `Accessible.role` 的节点都要计入 `view_model::WallpaperViewModel::accessible_items`。树在 `reportReady` 里回报自己走出来的数量，Rust 把它和投影比对，不一致就**不是**证据。新增/删除一个可见节点必须同时改这两处。
 
 ## 当前已验证 / 被阻塞
 
 - **已验证（E0/E1）**：配置解析顺序（含 `*` 通配）、解码失败各路径、五种模式的几何属性、逐输出原子应用、放置策略、状态契约、JSON 投影（双主题 / 双语言 / 200% 字号）、QML 模块在 `QT_QPA_PLATFORM=offscreen` 下加载并回报与投影一致的语义树、命令行退出码。
-- **被阻塞（E2/E3）**：合成器不广告 `wlr-layer-shell-unstable-v1`，因此只能以普通窗口预览，`placement` 不被应用（ADR 0018）。**不得**把这一状态说成「壁纸已作为背景层生效」。
+- **被阻塞（E2/E3）**：合成器不广告 `wlr-layer-shell-unstable-v1`，因此只能以普通窗口预览，`placement` 不被应用。**不得**把这一状态说成「壁纸已作为背景层生效」。
 - 配置热重载（`SIGHUP` 与 `org.inox.Wallpaper` 的 D-Bus，`inoxctl reload`）由 `src/reload.rs` 接入：在信号/总线线程上**准备**（读配置 + 解码），准备成功后请求才投给窗口线程，应用失败保留旧帧。
 - **未做**：E2 级 GUI 证据（waydriver 在虚拟合成器里截图）、AT-SPI 实际桥接验证、layer 表面本身。
 

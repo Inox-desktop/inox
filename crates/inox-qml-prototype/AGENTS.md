@@ -1,16 +1,16 @@
 # AGENTS.md — inox-qml-prototype
 
-本 crate 遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 的**全部硬性规则**，本文件只补充本 crate 特有内容，不放宽任何根级约束。
+本 crate 遵循根仓库的**全部硬性规则**（[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)），本文件只补充本 crate 特有内容，不放宽任何硬性规则。
 
 ## 职责
 
-`inox-qml-prototype` 是自 Iced 迁移到 QML/Qt Quick（ADR 0033）过程中，证明 **cxx-qt 0.10 绑定链路（Rust → C++ → QML → 返回）** 可用性的最小验证 crate：一个 Rust-backed `QObject`（`MyObject`）暴露 `Q_PROPERTY` 与一个 `qinvokable`，由 QML 模块与 `main.qml` 消费，另以 headless 集成测试验证桥接编译/链接/加载全链路。
+`inox-qml-prototype` 是自 Iced 迁移到 QML/Qt Quick过程中，证明 **cxx-qt 0.10 绑定链路（Rust → C++ → QML → 返回）** 可用性的最小验证 crate：一个 Rust-backed `QObject`（`MyObject`）暴露 `Q_PROPERTY` 与一个 `qinvokable`，由 QML 模块与 `main.qml` 消费，另以 headless 集成测试验证桥接编译/链接/加载全链路。
 
 所属层级：**L3**（迁移原型的 UI 载体，与 `inox-shell` 家族同层；不依赖任何其他 Inox crate，保持自包含）。
 
 ## crate 特有约束
 
-- **`unsafe_code` 例外（ADR 0035）**：根级 §3.2 默认 `#![forbid(unsafe_code)]`。但 `#[cxx_qt::bridge]` 宏生成的 FFI 胶水（`unsafe extern "C++"`、`unsafe fn`）**不自带 `#[allow]`**，根工作区的 `unsafe_code = "forbid"` 会使其编译失败。因此本 crate 在 `Cargo.toml` 单独声明
+- **`unsafe_code` 例外**：根级 §3.2 默认 `#![forbid(unsafe_code)]`。但 `#[cxx_qt::bridge]` 宏生成的 FFI 胶水（`unsafe extern "C++"`、`unsafe fn`）**不自带 `#[allow]`**，根工作区的 `unsafe_code = "forbid"` 会使其编译失败。因此本 crate 在 `Cargo.toml` 单独声明
 
   ```toml
   [lints.rust]
@@ -24,7 +24,7 @@
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()`；headless 测试用 `assert!` / `assert_eq!`。测试中设置的 `QT_QPA_PLATFORM` 属测试专用 `unsafe` 环境写，属允许范围。
 - 日志统一 `tracing`（`debug!`），禁止 `println!`（测试除外）。
 - **令牌规则的适用范围**：根级 §4「只消费设计令牌、禁止硬编码颜色/尺寸」约束的是交付组件；本 crate 是绑定链路的验证样本，`qml/main.qml` 里的 `#2b2b2b`/`#cccccc` 两个字面量是有意为之的最小示例，不构成产品界面。迁移完成后不要再往这里加界面代码——真正的组件在 `inox-<component>` 里。
-- **私有 ABI**：本 crate 只使用 Qt 公开 API，没有使用 ADR 0039 授权的私有 ABI。
+- **私有 ABI**：本 crate 只使用 Qt 公开 API，没有使用迁移收尾授权的私有 ABI。
 
 ## 主要依赖
 
@@ -69,7 +69,7 @@
 
 ```
 crates/inox-qml-prototype/
-  Cargo.toml        # *.workspace = true；[lints.rust] unsafe_code = "allow"（ADR 0035）
+  Cargo.toml        # *.workspace = true；[lints.rust] unsafe_code = "allow"
   build.rs          # CxxQtBuilder::new_qml_module(QmlModule::new("com.inox.prototype.qml").qml_file("qml/main.qml")).files(["src/cxxqt_object.rs"]).build()
   src/lib.rs        # 库入口：pub mod cxxqt_object
   src/main.rs       # QGuiApplication + QQmlApplicationEngine，加载 qrc:/qt/qml/com/inox/prototype/qml/main.qml

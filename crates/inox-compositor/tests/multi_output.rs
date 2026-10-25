@@ -1,4 +1,4 @@
-//! Acceptance test for the multi-output topology (O02, ADR 0019).
+//! Acceptance test for the multi-output topology.
 //!
 //! Two headless outputs of different sizes and scales are advertised to a real
 //! Wayland client, which maps two toplevels onto them. The test then drives the
@@ -149,7 +149,7 @@ fn requested_position(name: &str) -> Option<Point<i32, Logical>> {
 ///
 /// Two GPUs can each expose a `DP-1`. The name a client sees is then ambiguous,
 /// which is exactly why the runtime identity is the backend's key rather than the
-/// name (ADR 0019).
+/// name.
 fn twin_of(name: &str) -> Output {
     let output = Output::new(
         name.to_owned(),

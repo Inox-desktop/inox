@@ -10,7 +10,7 @@
 //!   for control messages between the compositor and the Inox shell.
 //! - [`glass`] provides the bindings for `inox-glass-v1`, Inox's own protocol
 //!   that lets a client ask the compositor to frost the backdrop behind a region
-//!   of its own surface (ADR 0031).
+//!   of its own surface.
 //!
 //! The crate is owned by the L2 layer; see the repository `AGENTS.md` and the
 //! Inox ADR on protocol strategy for the rationale and the versioning rules.

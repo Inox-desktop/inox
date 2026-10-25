@@ -14,7 +14,7 @@
 //! - every id the catalogs define is mentioned by the code, so a message nobody shows
 //!   is deleted rather than translated forever.
 //!
-//! It is the same shape as `inox-greet/tests/catalog.rs`: ADR 0018 accepts a catalog
+//! It is the same shape as `inox-greet/tests/catalog.rs`: the L3 component architecture accepts a catalog
 //! copy per component rather than a shared same-layer crate.
 
 use std::collections::BTreeSet;

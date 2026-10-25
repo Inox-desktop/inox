@@ -7,7 +7,7 @@
 //! without a compositor: the focus order and the disabled reasons are values, not
 //! pixels.
 //!
-//! Three rules come from the interaction contracts of ADR 0013 and the states
+//! Three rules come from the interaction contracts of the interaction contract and the states
 //! acceptance D05 asks for:
 //!
 //! - **A disabled entry always says why.** [`TaskButton::disabled_reason`] is the

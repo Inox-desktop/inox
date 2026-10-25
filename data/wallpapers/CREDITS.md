@@ -1,7 +1,8 @@
 # Bundled wallpapers — sources and licences
 
 Every image in this directory ships with Inox and is offered by the wallpaper
-chooser in `inox-settings` (see `docs/adr/0030-bundled-wallpapers-and-the-default-background.md`).
+chooser in `inox-settings`, under the bundled-wallpapers and default-background
+policy recorded in the ADR.
 The identifiers below are the values `wallpaper.image` accepts and the file names
 are the ones installed into an Inox wallpaper directory
 (`$XDG_DATA_DIRS/inox/wallpapers`).
@@ -31,7 +32,7 @@ Two consequences are worth stating plainly rather than leaving implied:
   call.** Shipping this repository's packages in a distribution is the
   packager's decision to make, and a packager that would rather not rely on the
   Unsplash License can drop `data/wallpapers/` — the session then falls back to
-  the theme background with a warning and keeps working (ADR 0030).
+  the theme background with a warning and keeps working.
 
 ## How the files were produced
 

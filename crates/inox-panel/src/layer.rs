@@ -1,6 +1,6 @@
 //! The panel's protocol leg: a real `wlr-layer-shell` surface, drawn from shared
 //! memory and taking pointer input.
-//! logged exactly one warning saying so (ADR 0018). That is the one thing a panel
+//! logged exactly one warning saying so. That is the one thing a panel
 //! Until this module existed the panel ran as an ordinary `xdg-shell` window on
 //! a widget toolkit's own backend: [`crate::placement`] computed anchors, an
 //! exclusive zone and a keyboard-interactivity policy, and **nothing applied
@@ -210,7 +210,7 @@ pub enum LegError {
     ///
     /// This is deliberately fatal. A panel that cannot be a layer surface has no
     /// placed surface to draw on, and running as an ordinary window would place
-    /// it somewhere it never asked for — the lie ADR 0018 refuses.
+    /// it somewhere it never asked for — the lie the L3 component architecture refuses.
     #[error(
         "the compositor does not offer {0}: the panel is a wlr-layer-shell surface and will \
          not run as an ordinary window whose placement is not applied"

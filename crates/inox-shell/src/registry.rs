@@ -10,16 +10,16 @@
 //! and the settings application), plus the facts the session holds about each.
 //!
 //! ```text
-//! panel          inox-panel           shell.toml          required
-//! launcher       inox-launcher        shell.toml          required
-//! notifications  inox-notifications   notifications.toml  optional
-//! settings       inox-settings        config.toml         optional
+//! panel inox-panel shell.toml required
+//! launcher inox-launcher shell.toml required
+//! notifications inox-notifications notifications.toml optional
+//! settings inox-settings config.toml optional
 //! ```
 //!
 //! What the registry is *for* is being the one place those facts are validated.
 //! A name that no entry has, a name given twice and a configuration path that
 //! points outside the configuration directory are all rejected here, at
-//! construction, with an error that names the entry and the reason (ADR 0009,
+//! construction, with an error that names the entry and the reason (the configuration model,
 //! decision 11; acceptance C01). Everything downstream — starting an entry,
 //! reporting it, restarting it after a failure — can then assume the names it
 //! holds are real and the paths it holds are inside the directory the session
@@ -178,7 +178,7 @@ impl RegistryError {
 ///
 /// The registry does not start anything: it is the resolved description of what
 /// the session is supposed to run, which is deliberately separate from running
-/// it (that is `inox-session`, L4, ADR 0015). It touches no files either — the
+/// it. It touches no files either — the
 /// paths it validates and holds are resolved against the configuration
 /// directory, not opened.
 #[derive(Debug, Clone, PartialEq)]

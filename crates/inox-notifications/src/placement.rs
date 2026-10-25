@@ -21,7 +21,7 @@
 //! compositor does not advertise `zwlr_layer_shell_v1`, so the QML surface runs
 //! as an ordinary window. Keeping the policy here, as data with
 //! tests, is what makes the move to a layer surface a change of host rather than
-//! a change of behaviour; `main.rs` logs exactly one warning naming ADR 0018 and
+//! a change of behaviour; `main.rs` logs exactly one warning naming the L3 component architecture and
 //! the fact that none of this is applied.
 
 use std::collections::BTreeSet;
@@ -104,7 +104,7 @@ pub enum Layer {
     Top,
     /// Above the panel layer, which is where a notification belongs.
     ///
-    /// The lock screen is not a layer and is not bypassed by this: ADR 0015
+    /// The lock screen is not a layer and is not bypassed by this: the session-lock boundary
     /// makes it a protocol of its own, with the compositor owning the lock
     /// state.
     #[default]

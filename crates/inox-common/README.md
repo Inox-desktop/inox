@@ -15,11 +15,11 @@
 | `i18n` | Project Fluent 目录加载、语言协商（`en-US` / `zh-CN`，缺翻译回退默认语言）、以及目录 id 与占位符的一致性检查（验收 Q03）；不是 UI 运行时，因此留在 L1 |
 | `paths` | XDG 基础目录解析（含 Inox 子目录）：不读全局状态，环境以 `XdgEnv` 快照注入，因此可完整单测 |
 
-其余共享类型与工具函数在其**首个真实消费者出现时**再引入：本 crate 刻意不提前声明无人使用的抽象（依赖排期原则见 [ADR 0004](../../docs/adr/0004-m0-skeleton-and-dependency-policy.md)）。
+其余共享类型与工具函数在其**首个真实消费者出现时**再引入：本 crate 刻意不提前声明无人使用的抽象（依赖排期原则见 ）。
 
 ## 开发约定
 
-- 本项目遵循根级 [AGENTS.md](https://github.com/Inox-desktop/inox/blob/main/AGENTS.md) 与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
+- 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**，不在本地进行编译验证。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 

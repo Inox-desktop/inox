@@ -104,7 +104,7 @@ impl fmt::Display for Size {
 /// been consulted.
 ///
 /// The difference between [`Selection::ThemeBackground`] and
-/// [`crate::source::OutputSource::Unavailable`] is the whole of ADR 0014 in this
+/// [`crate::source::OutputSource::Unavailable`] is the whole of the settings save semantics in this
 /// component: "nothing was selected, so the theme background is correct" and
 /// "something was selected and is missing, so the user must be told" are not
 /// the same state and are not rendered the same way.
@@ -122,7 +122,7 @@ pub enum Selection {
     ///
     /// `explicit` is whether the configuration named this wallpaper, or whether
     /// it is the default the session fell back to because nothing was
-    /// configured. The difference is the one ADR 0014 draws: an explicitly
+    /// configured. The difference is the one the settings save semantics draws: an explicitly
     /// chosen wallpaper that is not installed is *reported*, while the default
     /// the user never asked for merely degrades to the theme background.
     Bundled {
@@ -147,7 +147,7 @@ impl Selection {
     /// configuration itself was read from; an absolute path is kept as written,
     /// because a wallpaper is a user-visible file that may well live in
     /// `/usr/share/backgrounds`. `..` is not rejected here — unlike the
-    /// `[components]` paths ADR 0009 decision 11 constrains, a wallpaper path
+    /// `[components]` paths the configuration model, rule 11 constrains, a wallpaper path
     /// is not a file the session will *write*, and refusing `../wallpaper.png`
     /// would break configurations that work with every other desktop.
     ///
