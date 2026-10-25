@@ -15,13 +15,14 @@
 | `systemd/inox-greeter@.service` | `/etc/systemd/system/` | 模板单元，**实例名就是 VT 号**；`User=greeter`、`PAMName=inox-greeter`、`ExecStart=/usr/bin/inox-host` |
 | `systemd/inox-login-fallback.service` | `/etc/systemd/system/` | oneshot，**从不启用**：由 `inox-greeter@.service` 的 `OnFailure=` 触发，登录界面 60 秒内失败 20 次后启动 greetd，让一次失败的启动仍然可登录；不重新启用 greetd，也不改 `display-manager.service` |
 | `rehearse-headless.sh` | — | **不需要 root**的无 VT 预演：私有 `XDG_RUNTIME_DIR` + 替身边界 + 真实 `inox-host`/`inox-compositor`/`inox-greet`，判定宿主编排、Wayland 握手与界面渲染（E2，S07a） |
-| `preflight.sh` | — | 以 root 运行的**只读**预检：五个二进制、三个 PAM 栈及其 `include` 链上的模块、三个单元与 `systemd-analyze verify`、`greeter` 账户、VT/DRM/seat、两个显示管理器抢 VT1；每项 `ok`/`WARN`/`FAIL`，有 FAIL 即非零退出（S06） |
+| `preflight.sh` | — | 以 root 运行的**只读**预检：14 个二进制（8 个 required 缺一即 FAIL、6 个 optional 缺了只 WARN）、三个 PAM 栈及其 `include` 链上的模块、三个单元与 `systemd-analyze verify`、`greeter` 账户、VT/DRM/seat、两个显示管理器抢 VT1；每项 `ok`/`WARN`/`FAIL`，有 FAIL 即非零退出（S06） |
 | `verify-login.sh` | — | **不需要 root**，登录之后跑：把「登录成功了吗」拆成 logind/PAM 服务/VT/`XDG_*`/登录界面存活等不变量；`--after-logout` 检查注销后画面确实交回（S09 的自动化一半） |
-| `install.sh` | — | 装上面的文件 + `greeter` 账户 + VT3 救援 console；默认**不动开机链**，`--enable` 才切换 |
+| `install.sh` | — | 装上面的文件 + `greeter` 账户 + VT3 救援 console；默认**不动开机链**，`--enable` 才切换。`--bin-dir DIR` 额外把 14 个二进制装进 `/usr/bin`（tarball 的安装方式） |
+| `package.sh` | — | **产出发行 tarball**：默认特性 `cargo build --release --workspace --locked` → 暂存 14 个二进制 + 壁纸 + 本目录 → 断言暂存的合成器拒绝 `--test-input`（否则说明后端被编进去了）→ `BUILD-INFO` + `SHA256SUMS` → `target/dist/inox-<version>-<target>.tar.gz`。`--bin-dir` 复用已有二进制。决策见 ADR 0042 |
 | `try-inox-greeter.sh` | — | 在 VT4 起 `inox-greeter@4.service` 并 `chvt 4`，不动开机链 |
 | `try-rollback.sh` | — | 结束试运行：停该实例与边界，把画面切回开机链的 greeter |
 | `rollback-to-greetd.sh` | — | **先**把 `display-manager.service` 与 `enabled` 交回 greetd、**再**停 Inox 单元 |
-| `uninstall.sh` | — | 停/禁用并移除单元与 PAM 栈；**不删** `getty@tty3`、greeter 账户与状态目录 |
+| `uninstall.sh` | — | 停/禁用并移除单元与 PAM 栈；**不删** `getty@tty3`、greeter 账户与状态目录。`--remove-binaries` 才删 `/usr/bin/inox-*` 与 `/usr/share/inox/wallpapers`（发行版包拥有的同一批路径，默认不碰） |
 
 ## 为什么是三个栈
 
@@ -48,10 +49,28 @@
 3. **VT3 永远是救援 console。** 安装时 `enable --now getty@tty3.service`；试运行用 VT4，用户会话落在
    VT2..=6 且跳过 greeter 的 VT。回退与卸载都不删它。
 
+## 二进制从哪来
+
+安装面本身**不产出二进制**。两种来源，都由 `install.sh --bin-dir` 落到 `/usr/bin`：
+
+- **发行 tarball（测试者用这个）**：CI 的 `package` job 每次 PR 都跑 `packaging/package.sh`，
+  产出 `target/dist/inox-<version>-<target>.tar.gz`；打 `v*` tag 时 `release.yml` 把它挂到
+  GitHub Release 上（预发布）。解包后 `sudo ./packaging/install.sh --bin-dir ./bin`。
+- **本地构建**：`cargo build --release --workspace`，然后 `sudo ./packaging/install.sh --bin-dir target/release`。
+
+`package.sh` 用**默认特性**构建，并且会拒绝把 `--all-features` 的产物打成包：那个 feature 会在
+合成器里加一个接受注入键鼠事件的套接字（`inox-compositor/test-input`），不是能交给测试者的东西。
+它会真的运行暂存的 `inox-compositor --test-input` 来证明这一点。
+
+决策：ADR 0042。
+
 ## 与代码的接缝
 
 - `inox-greeter@.service` 只跑 `inox-host`。宿主自己按顺序起 `inox-compositor` 与 `inox-greet`，
   单元里**不得**再写它们——顺序只应有一个所有者。
+- `install.sh` / `preflight.sh` / `uninstall.sh` 里的二进制清单必须一致，而且要覆盖 `inox-session`
+  标成 `required` 的每个组件（`inox-shell`、两个 `inox-panel` 表面、`inox-lock`）。少一个的症状是
+  「口令正确但会话立刻结束」——看起来像密码被拒。清单曾经是五个，这就是把它写进预检的原因。
 - 单元里的 `Environment=XDG_VTNR=%i` 是必需的：systemd 不会给 tty 单元推导这个变量（`getty@tty3.service`
   的 `Environment=` 是空的），而 `pam_systemd` 只从进程环境读 VT。没有它，greeter 的 logind 会话没有 VT、
   libseat 拿不到 seat、合成器上不了屏。

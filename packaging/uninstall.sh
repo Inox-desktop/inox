@@ -12,16 +12,44 @@
 #
 # Idempotent: with nothing installed it reports that and changes nothing.
 #
-# Usage: sudo packaging/uninstall.sh
+# Usage: sudo packaging/uninstall.sh [--remove-binaries]
+#
+#   --remove-binaries also deletes the Inox binaries from /usr/bin and the bundled
+#   wallpapers from /usr/share/inox/wallpapers. Off by default: those are the same
+#   paths a distribution package owns, and removing them from under a package
+#   manager is worse than leaving them. A tarball install removes them this way.
 
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
+readonly DATA_DIR="/usr/share"
+readonly BIN_DIR="/usr/bin"
 readonly PAM_DIR="/etc/pam.d"
 readonly UNIT_DIR="/etc/systemd/system"
 readonly DM_LINK="$UNIT_DIR/display-manager.service"
+
+# The same list install.sh installs; see the comment there for why it is split.
+readonly REQUIRED_BINARIES=(
+    inox-auth
+    inox-host
+    inox-compositor
+    inox-greet
+    inox-session
+    inox-shell
+    inox-panel
+    inox-lock
+)
+readonly OPTIONAL_BINARIES=(
+    inox-wallpaper
+    inox-notifications
+    inox-idle
+    inox-xwayland
+    inox-launcher
+    inox-settings
+)
+readonly BINARIES=("${REQUIRED_BINARIES[@]}" "${OPTIONAL_BINARIES[@]}")
 
 readonly AUTH_UNIT="inox-auth.service"
 readonly GREETER_TEMPLATE="inox-greeter@.service"
@@ -45,6 +73,18 @@ dm_target() {
         basename -- "$(readlink -f "$DM_LINK")"
     fi
 }
+
+remove_binaries=false
+for argument in "$@"; do
+    case "$argument" in
+        --remove-binaries) remove_binaries=true ;;
+        -h | --help)
+            printf 'usage: sudo %s [--remove-binaries]\n' "$SELF"
+            exit 0
+            ;;
+        *) die "unrecognized argument: $argument (see --help)" ;;
+    esac
+done
 
 if [ "$(id -u)" -ne 0 ]; then
     die "run as root: sudo $SELF"
@@ -125,6 +165,26 @@ for stack in inox-auth inox-auth-session inox-greeter; do
         removed_any=true
     fi
 done
+
+# The binaries and the bundled wallpapers are removed only when they are ours to
+# remove. A tarball install put them there via `install.sh --bin-dir`, but the same
+# paths are where a distribution package would put its files, and deleting those
+# from under the package manager is worse than leaving them behind. So this runs
+# only when it was asked for explicitly.
+if [ "$remove_binaries" = true ]; then
+    for binary in "${BINARIES[@]}"; do
+        if [ -f "$BIN_DIR/$binary" ]; then
+            rm -f -- "$BIN_DIR/$binary"
+            log "removed $BIN_DIR/$binary"
+            removed_any=true
+        fi
+    done
+    if [ -d "$DATA_DIR/inox/wallpapers" ]; then
+        rm -rf -- "$DATA_DIR/inox/wallpapers"
+        log "removed $DATA_DIR/inox/wallpapers"
+        removed_any=true
+    fi
+fi
 
 if [ "$removed_any" = false ]; then
     log "nothing was installed; nothing was removed"

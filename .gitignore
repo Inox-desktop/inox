@@ -20,3 +20,6 @@ target/
 # Local per-agent build trees and CI log scratch (never committed).
 /.targets/
 /.ci-logs/
+
+# `python3 -m py_compile` output from the CI packaging check (scripts/*.py).
+__pycache__/

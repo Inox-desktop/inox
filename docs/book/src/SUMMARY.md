@@ -25,6 +25,7 @@
 - [持续集成](./development/ci.md)
 - [测试策略](./development/testing.md)
 - [依赖管理](./development/dependencies.md)
+- [发布制品与金丝雀渠道](./development/release.md)
 
 # 使用
 
