@@ -133,7 +133,11 @@ fn a_real_session_locks_every_output_and_still_logs_out() {
         "the compositor refused the session the session itself authorized: {log}"
     );
     assert!(
-        log.contains("stays locked until you log out"),
+        // `lock-stopped-locked` in `inox-lock/i18n/en-US/lock.ftl`. The message
+        // says "until it is released", not "until you log out": stopping while
+        // locked is what keeps the session locked, and the release is the
+        // authentication boundary's decision, not a logout.
+        log.contains("stays locked until it is released"),
         "the lock client exited without saying the session is still locked: {log}"
     );
 }
