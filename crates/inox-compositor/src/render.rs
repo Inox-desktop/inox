@@ -61,8 +61,10 @@
 //!
 //! 1. The source rectangle is the pane region expanded by
 //!    `ceil(radius) + ceil(amount)` and clipped to the target
-//!    ([`expanded_source_region`]). The expansion is what gives refraction the
-//!    pixels just outside the outline it must bend, and the blur a real
+//!    (`expanded_source_region`, crate-private and therefore deliberately not
+//!    linked from here: a public module must not link to private items,
+//!    `rustdoc::private_intra_doc_links`). The expansion is what gives refraction
+//!    the pixels just outside the outline it must bend, and the blur a real
 //!    neighbourhood at the pane border.
 //! 2. That rectangle — not just the pane — is blurred into the scratch pair with
 //!    the version 1 kernel, or identity-copied with `step = 0` when the radius is

@@ -50,8 +50,10 @@
 //! `Space` that [`InoxState::render_frame`] composites. A toplevel is not a window
 //! until it has drawn: `new_toplevel` only sends the initial configure and parks
 //! the surface in [`InoxState::awaiting_window_count`]'s list, and the first commit
-//! that carries a buffer promotes it (see
-//! [`InoxState::promote_awaiting_toplevel`]). The window the keyboard holds is told
+//! that carries a buffer promotes it (see `promote_awaiting_toplevel`, which is
+//! crate-private and therefore deliberately not linked from here: a public
+//! module must not link to private items, `rustdoc::private_intra_doc_links`).
+//! The window the keyboard holds is told
 //! it is `activated`; `Super+Shift+Q` sends it `xdg_toplevel.close`.
 //!
 //! # Outputs, scaling and the global coordinate space
@@ -412,7 +414,8 @@ pub struct InoxState {
     /// the layout order and the keyboard focus to a client that may never draw —
     /// and a client that never draws must not shrink the other windows. The window
     /// is created here on the first commit that carries a buffer instead; see
-    /// [`InoxState::promote_awaiting_toplevel`].
+    /// `promote_awaiting_toplevel` (crate-private; a public doc must not link to
+    /// private items, `rustdoc::private_intra_doc_links`).
     awaiting_buffer: Vec<ToplevelSurface>,
 
     /// Frosting parameters per surface, keyed by the surface they were set for.
@@ -1871,8 +1874,10 @@ impl InoxState {
     ///
     /// Such a toplevel is not a window: it holds no tile, no Alt+Tab slot and no
     /// focus. It becomes one on its first commit that carries a buffer — see
-    /// [`InoxState::promote_awaiting_toplevel`]. Exposed so the integration test can
-    /// tell "the compositor saw the toplevel" from "the toplevel is a window".
+    /// `promote_awaiting_toplevel` (crate-private; a public doc must not link to
+    /// private items, `rustdoc::private_intra_doc_links`). Exposed so the
+    /// integration test can tell "the compositor saw the toplevel" from
+    /// "the toplevel is a window".
     pub fn awaiting_window_count(&self) -> usize {
         self.awaiting_buffer.len()
     }
