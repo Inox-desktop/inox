@@ -71,7 +71,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 - **Layer 1**：配置解析、通用类型、日志、工具函数，被所有上层依赖。`inox-common` 是叶子节点，不得依赖任何其他 Inox crate。
 - **Layer 2**：核心 Wayland 合成器，基于 Smithay，处理 DRM/KMS、输入、渲染、窗口管理与 XWayland 集成。
-- **Layer 3**：桌面 Shell，使用 **QML + Qt Quick**（cxx-qt 绑定，领域逻辑留 Rust）构建面板、启动器、通知、设置等用户界面组件；Iced 已从依赖图移除。`inox-glass` 是这一层共享的液体玻璃材质与 QML 组件库（ADR 0040），唯一被允许的 L3 → L3 边是 `inox-panel -> inox-glass`，已登记为同层例外。
+- **Layer 3**：桌面 Shell，使用 **QML + Qt Quick**（cxx-qt 绑定，领域逻辑留 Rust）构建面板、启动器、通知、设置等用户界面组件；Iced 已从依赖图移除。`inox-glass` 是这一层共享的液体玻璃材质与 QML 组件库（ADR 0040），它的两个消费者是 `inox-panel`（窗格，运行期用材质 API + 构建期编 QML 资产）与 `inox-notifications`（卡片，只在构建期编 QML 资产），两条 L3 → L3 边都已登记为同层例外（面板见 ADR 0040、通知见 ADR 0044）。
 - **Layer 4**：会话管理、显示管理器、空闲管理等系统级服务。
 
 全部 L1–L4 组件都是本仓库 `crates/` 下的工作区成员。文档站点 `inox-docs` 不属于任何层：它是 `docs/book/` 下的 mdBook，无 `Cargo.toml`，不参与依赖图。
@@ -116,7 +116,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings` | 部分实现 |
 | `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现：锁协议腿与锁表面界面，认证与输入路径未接线 |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现 |
-| `inox-glass` | L3 | `crates/inox-glass` | 液体玻璃材质决策（clamp / 降级 / v1-v2 协商）与共享玻璃 QML 组件库 | crate（无 Qt 依赖） | 已实现（`inox-glass-v1` v2 材质 API、`GlassTarget` 适配器、五个无状态 QML 组件与目录页；面板通过 ADR 0040 的同层例外消费） |
+| `inox-glass` | L3 | `crates/inox-glass` | 液体玻璃材质决策（clamp / 降级 / v1-v2 协商）与共享玻璃 QML 组件库 | crate（无 Qt 依赖） | 已实现（`inox-glass-v1` v2 材质 API、`GlassTarget` 适配器、五个无状态 QML 组件与目录页；两个消费者都编它的 QML 资产——面板画窗格并运行期用材质 API（ADR 0040）、通知画卡片且只在构建期接入（ADR 0044）） |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，启动合成器与 Shell | 二进制 `inox-session` | 部分实现：真实就绪往返、进程监督与限时注销 |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 部分实现：空闲协议客户端与策略，可信锁/挂起未接线 |
 | `inox-auth` | L2 | `crates/inox-auth` | 认证边界（PAM + `auth-v1`） | 二进制 `inox-auth` | 已实现：系统 PAM、套接字服务与对端凭据校验、滚动限额、以账号身份启动固定会话；真机登录验收与 greeter 宿主未完成 |

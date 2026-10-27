@@ -318,6 +318,19 @@ pub fn rects(scene: &Scene) -> Vec<&Value> {
         .collect()
 }
 
+/// The scene's frosted panes.
+///
+/// A pane is a kind of its own rather than a rectangle, because the renderer
+/// instantiates the shared `GlassPane` component for it (ADR 0040 §3). Tests that
+/// mean "the material" ask for these; tests that mean "a filled box" ask for
+/// [`rects`].
+pub fn panes(scene: &Scene) -> Vec<&Value> {
+    items(scene)
+        .iter()
+        .filter(|item| is_kind(item, "pane"))
+        .collect()
+}
+
 /// The scene's lines of text.
 pub fn texts(scene: &Scene) -> Vec<&Value> {
     items(scene)
@@ -355,6 +368,14 @@ pub fn covers(item: &Value, x: f32, y: f32) -> bool {
 /// The topmost rectangle drawn at `(x, y)`.
 pub fn rect_at(scene: &Scene, x: f32, y: f32) -> Option<&Value> {
     rects(scene)
+        .into_iter()
+        .rev()
+        .find(|item| covers(item, x, y))
+}
+
+/// The topmost frosted pane drawn at `(x, y)`.
+pub fn pane_at(scene: &Scene, x: f32, y: f32) -> Option<&Value> {
+    panes(scene)
         .into_iter()
         .rev()
         .find(|item| covers(item, x, y))

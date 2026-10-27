@@ -9,6 +9,15 @@ Inox 的**液态玻璃材质**：一块只做一件事的纯 Rust 决策库，�
 
 这个 crate 就是这两半相遇的地方：令牌怎样变成协议参数、超限怎样 clamp、合成器做不到时怎样降级、尺寸/令牌变了怎样重发。在 ADR 0040 之前这段判断只存在于 `inox-panel/src/frost.rs`，再复制几份必然漂移。
 
+组件库目前有**两个消费者**，两条都是 L3 → L3 边，登记在根 `Cargo.toml` 的 `same_layer_exceptions`：
+
+| 消费者 | 用哪些组件 | 依赖形态 | 授权的 ADR |
+|--------|------------|----------|------------|
+| `inox-panel` | 窗格（菜单栏与 Dock）用 `GlassPane` | **运行期**用材质 API（`frost.rs` 的 `decide`）+ **构建期**读 QML 资产 | 0040 |
+| `inox-notifications` | 通知卡片用 `GlassPane` | **只在构建期**读 QML 资产（运行期不链接本 crate） | 0044 |
+
+新增消费者仍须单独写 ADR 并单独登记。
+
 ## Rust API
 
 ```rust
@@ -50,7 +59,7 @@ match decide(material, capabilities, Region::pane(640, 68)) {
 
 `qml/` 下六个文件：`GlassPane`、`GlassButton`、`GlassToggle`、`GlassSlider`、`GlassTabBar`、`CatalogWindow`。
 
-它们**没有**自己的 QML 模块：Qt 的 QML 类型按二进制注册，跨 crate 的静态注册不可靠；宿主 crate 在自己的 `build.rs` 里把它们编进自己的模块：
+它们**没有**自己的 QML 模块：Qt 的 QML 类型按二进制注册，跨 crate 的静态注册不可靠；宿主 crate 在自己的 `build.rs` 里把它们编进自己的模块（面板与通知两个宿主都是这样做的）：
 
 ```rust
 // 宿主 crate 的 build.rs（例如 inox-panel）
@@ -113,11 +122,12 @@ cargo test -p inox-glass --offline
 - `tests/protocol_drift.rs`：flag 位、`since` 版本、接口版本钉在生成绑定上；ADR 上限值钉住。
 - `tests/qml_assets.rs`：资产规则（无输入、无颜色/文案字面量、Accessible、目录页结构），以及 `qml_files()` 的每个路径存在且以 `.qml` 结尾。
 
-组件像素证据在**面板**的离屏测试里（渲染 `CatalogWindow.qml` 后断言 tint、圆角外透明、开关选中色、滑杆填充宽度）——本 crate 不链接 Qt，不能自己出帧。
+组件像素证据在**面板**的离屏测试里，有两个点：Dock 帧（`render_a_translucent_dock_frame` 断言窗格那一行逐通道等于 `glass.tint` 的预乘值、±1）与目录页（`CatalogWindow.qml` 的 tint、圆角外透明、开关选中色、滑杆填充宽度）——本 crate 不链接 Qt，不能自己出帧。**通知栈**的卡片没有像素证据：它只有投影断言与「QML 模块在离屏平台加载成功」这条加载证据。
 
 ## 已知限制
 
 - **DRM（真机）路径没有玻璃**：合成器侧尚未定义可信 damage（ADR 0040）。本 crate 只转述合成器上报的能力。
+- **通知栈只有纯半透明**：`inox-notifications` 是普通窗口，拿不到 layer 角色，合成器对它报 0；它也没有创建 glass 对象。改完卡片只意味着「材质同源」，不意味着通知有模糊（ADR 0044 的「限制」）。
 - **组件只覆盖五种基础组件**：菜单、对话框等仍各自实现。
 - **不做 socket 级协议测试**：线上证据在 `inox-protocols` 的往返测试与面板的协议测试里。
 

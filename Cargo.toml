@@ -264,6 +264,16 @@ l3_dependencies_on_compositor = ["inox-wallpaper"]
 # the only implementation. `inox-glass` itself depends only downwards, so this is
 # a star with one centre, not a web of L3 edges.
 #
+# `inox-notifications -> inox-glass` (L3 -> L3) is the fourth entry, authorised by
+# ADR 0044, which extends 0040's component library to its second consumer. The
+# notification stack is one of the three surfaces ui-guidelines §12 permits glass
+# on, and its cards are an外壳 floating over the user's windows; drawing the
+# tint/highlight/shade a second time in the notifications crate is exactly the
+# drift ADR 0040 sunk `inox-glass` to prevent. The edge is **build-time only** —
+# `inox-notifications` takes `inox-glass` as a build-dependency so its `build.rs`
+# can compile the QML components into its own module (KDAB/cxx-qt#770) — and it
+# adds no run-time Rust dependency. Deleting it means deleting this entry too.
+#
 # The shell family is a fourth place this will bite: PRD §3.1 lists
 # `inox-panel` and friends as depending on `inox-shell` (L3 -> L3). Nothing does
 # yet, so nothing is listed; adding those edges needs its own ADR and entry here.
@@ -271,4 +281,5 @@ same_layer_exceptions = [
     ["inox-config", "inox-common"],
     ["inox-compositor", "inox-protocols"],
     ["inox-panel", "inox-glass"],
+    ["inox-notifications", "inox-glass"],
 ]

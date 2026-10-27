@@ -2,7 +2,7 @@
 
 - 状态：本规范只**收紧**既有约束，不放宽根 `AGENTS.md` 的任何硬性规则。
 - 适用范围：所有绘制 QML 界面的组件 —— `inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-greet`。
-- 依据：[PRD](../../PRD.md) §9.2、、、[主题与设计令牌](../book/src/configuration/theme.md)、[验收规范](./acceptance.md) 的 Q01–Q03。
+- 依据：PRD §9.2（PRD 已不在本仓库，其余引用一并省略）、[主题与设计令牌](../book/src/configuration/theme.md)、[验收规范](./acceptance.md) 的 Q01–Q03。
 - 设计原则的来源：Apple《Designing Fluid Interfaces》与 Emil Kowalski 的界面工程经验 —— 即时反馈、清晰层次、状态可见、克制动画、看不见的细节累积成手感。这些原则在此被翻译成 **QML + Qt Quick + 设计令牌** 的可执行规则，而不是网页 CSS 的写法。
 
 本页回答的是「令牌已经有了，界面该怎么用它」。令牌本身的取值与 schema 以 [主题与设计令牌](../book/src/configuration/theme.md) 为准，本页不定义新令牌。
@@ -154,4 +154,5 @@
 - **拿不到就降级，不谎报**：`capabilities = 0`、绑定不到 `inox_glass_manager_v1`、或表面没有 layer 角色时，组件必须画**纯半透明**（`tint` / `highlight` / `shade` 照旧，只是没有背景软化与折射），并可以按 `glass.blur = 0` / `refraction = 0` 的语义显式关掉对应的一半。v1 合成器只给模糊、不给折射，这不是失败。**不得**把没有拿到的效果画成「看起来像模糊/折射」的假象，也不得因拿不到能力而反复重建对象（只有表面**后来获得**了 layer 角色才允许销毁重问）。
 - **成本与范围**：每个表面至多一个 glass 对象；模糊与折射只作用于该表面自己的区域与圆角轮廓，普通窗口（非 layer 表面）不会被处理，也不会去处理它。锁定会话不施加任何效果 —— 锁定时普通层根本不参与合成。折射是**静态材质**：不做悬停放大、流动形变、跟手液态动画这类动态半径；状态变化只通过 tint 档位与显隐表达。
 - **键盘与状态不受影响**：玻璃是纯视觉层，不得改变焦点、命中区域、可读状态或键盘顺序（§5、§7）。文字与图标压在半透明材质上时，仍须满足 §7 的对比要求；做不到就加深 `tint` 而不是牺牲文字。
-- **面板的菜单栏与 dock 是这一材质的第一个消费者**：`inox-panel` 的 `theme.rs` 是唯一把 `tokens.glass` 变成窗格填充的地方 —— 一块窗格是「半透明 `tint` + 顶边 `highlight` + 底边 `shade`」的竖直渐变（两道发丝边由窗格自身的填充画出，不额外占一行控件：那一行会被撑满整个表面，而 dock 只应有图块那么宽），键盘导航聚焦时用 `tint_strong`。面板**不自己画模糊或折射**：`glass.blur` 与 `glass.refraction*` 只是向合成器提出的请求，材质决策（clamp、v1/v2 协商、降级）在 L3 的 `inox-glass`；面板画的是纯半透明 + 发丝边，离屏测试用像素证明它确实是半透明，而不是不透明的 `surface`。
+- **面板的菜单栏与 dock 是这一材质的第一个消费者**：`inox-panel` 的 `theme.rs` 是唯一把 `tokens.glass` 变成窗格值的地方（`pane_style` 给出 tint / highlight / shade / hairline / 圆角），窗格本身由共享的 `GlassPane` 组件绘制 —— 半透明 `tint` + 顶边一道 `highlight` 发丝 + 底边一道 `shade` 发丝（两道发丝边是组件的一部分，不额外占一行控件：那一行会被撑满整个表面，而 dock 只应有图块那么宽），键盘导航聚焦时用 `tint_strong`。面板**不自己画模糊或折射**：`glass.blur` 与 `glass.refraction*` 只是向合成器提出的请求，材质决策（clamp、v1/v2 协商、降级）在 L3 的 `inox-glass`；面板画的是纯半透明 + 发丝边，离屏测试用像素证明它确实是半透明，而不是不透明的 `surface`。
+- **通知栈是第二个消费者**（ADR 0044）：通知卡片由同一个 `GlassPane` 绘制，取 `tokens.glass` 的 `tint` / `highlight` / `shade` 与令牌派生的 hairline、圆角。这带来两处必须写明的差别：其一，**玻璃表面用本节材质取代 §4 的卡片公式**（不再是 `surface` 填充 + `border` 描边，而是一块没有外描边的玻璃），因此卡片没有 danger 边框，紧急度只由 urgency rail 与卡片上的文字句子承载（§5 本来就要求颜色不是唯一线索）；其二，通知栈目前仍是**普通窗口**，拿不到 layer 角色，所以它在真实会话里的形态是本节定义的**纯半透明降级态**——不是磨砂玻璃，也不是失败。面板与通知都不自行绘制模糊或折射。

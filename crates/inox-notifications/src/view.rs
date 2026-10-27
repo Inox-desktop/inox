@@ -21,8 +21,11 @@
 //! - **The stack is in the configured corner**, inset by the configured margin:
 //!   the alignment is the same place the layer-surface anchors would put it
 //!   ([`crate::placement`]).
-//! - **A card is a card**: the `surface` token, a hairline edge, the `md` radius
-//!   and the `lg` inset, with `lg` between two cards.
+//! - **A card is a pane of glass**: the shared `GlassPane` from `inox-glass`
+//!   (ADR 0044, ui-guidelines §12), drawn with the `glass` token material — the
+//!   `md` radius, the `lg` inset and `lg` between two cards. The projection
+//!   carries the material's three colours and its hairline width; the pane draws
+//!   them and nothing else.
 //! - **The hierarchy is a heading over body text over captions**: the summary is
 //!   the card's one `heading`, the message is `body`, and the application name,
 //!   the urgency sentence, the timestamp and the reason an action is unavailable
@@ -366,8 +369,16 @@ fn popup_value(popup: &Popup, tokens: &Tokens, geometry: &StackGeometry) -> Valu
             "control": control_value(&theme::close_control(tokens)),
         },
         "card": {
-            "background": colors.surface,
-            "edge": theme::card_edge(tokens, popup.urgency),
+            // The card is a pane of the shared glass material (ADR 0044,
+            // ui-guidelines §12): its tint, both edge hairlines and the hairline
+            // width are properties of `GlassPane`, and none of them is computed
+            // here. A glass card has no outline — the two hairlines are its edges
+            // — so the urgency that used to colour the border is carried by the
+            // rail below and by the urgency sentence in words.
+            "tint": theme::glass_tint(tokens),
+            "highlight": theme::glass_highlight(tokens),
+            "shade": theme::glass_shade(tokens),
+            "hairline": theme::BORDER_WIDTH,
             "radius": theme::card_radius(tokens),
             "inset": geometry.card_padding,
             // The urgency rail: a mark on the leading edge of a critical card,
@@ -686,8 +697,9 @@ mod tests {
             &value["palette"]["background"],
             &value["palette"]["surface"],
             &value["palette"]["text"],
-            &value["stack"]["popups"][0]["card"]["background"],
-            &value["stack"]["popups"][0]["card"]["edge"],
+            &value["stack"]["popups"][0]["card"]["tint"],
+            &value["stack"]["popups"][0]["card"]["highlight"],
+            &value["stack"]["popups"][0]["card"]["shade"],
             &value["stack"]["popups"][0]["close"]["control"]["rest"]["text"],
         ];
 
@@ -718,8 +730,8 @@ mod tests {
         );
         assert_ne!(dark["palette"]["surface"], light["palette"]["surface"]);
         assert_ne!(
-            dark["stack"]["popups"][0]["card"]["background"],
-            light["stack"]["popups"][0]["card"]["background"]
+            dark["stack"]["popups"][0]["card"]["tint"],
+            light["stack"]["popups"][0]["card"]["tint"]
         );
     }
 
@@ -1000,13 +1012,18 @@ mod tests {
     // --- cards --------------------------------------------------------------
 
     #[test]
-    fn a_card_takes_its_surface_edge_radius_and_inset_from_the_tokens() {
+    fn a_card_takes_its_glass_material_radius_and_inset_from_the_tokens() {
         let tokens = Tokens::builtin_dark();
         let value = projected(&queue_with(&[("terminal", "a build finished")]));
         let card = &value["stack"]["popups"][0]["card"];
 
-        assert_eq!(card["background"], theme::qml_color(tokens.colors.surface));
-        assert_eq!(card["edge"], theme::qml_color(tokens.colors.border));
+        assert_eq!(card["tint"], theme::glass_tint(&tokens));
+        assert_eq!(card["highlight"], theme::glass_highlight(&tokens));
+        assert_eq!(card["shade"], theme::glass_shade(&tokens));
+        assert_eq!(
+            card["hairline"].as_f64(),
+            Some(f64::from(theme::BORDER_WIDTH))
+        );
         assert_eq!(
             card["radius"].as_f64(),
             Some(f64::from(theme::card_radius(&tokens)))
@@ -1015,10 +1032,14 @@ mod tests {
             card["inset"].as_f64(),
             Some(f64::from(theme::card_inset(&tokens)))
         );
+        assert!(
+            card["background"].is_null() && card["edge"].is_null(),
+            "a glass card has no fill and no outline of its own: {card}"
+        );
     }
 
     #[test]
-    fn a_critical_notification_is_edged_and_says_so_rather_than_only_being_red() {
+    fn a_critical_notification_says_so_in_words_rather_than_only_being_red() {
         let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
         queue.notify(
             Draft {
@@ -1031,19 +1052,14 @@ mod tests {
             },
             Instant::now(),
         );
-        let tokens = Tokens::builtin_dark();
         let value = projected(&queue);
         let popup = &value["stack"]["popups"][0];
 
         assert_eq!(popup["urgency"], "critical");
         assert_eq!(popup["urgencyNote"], "Critical");
         assert_eq!(
-            popup["card"]["edge"],
-            theme::qml_color(tokens.colors.danger)
-        );
-        assert_ne!(
-            popup["card"]["edge"],
-            theme::qml_color(tokens.colors.border)
+            popup["urgencyColor"],
+            theme::urgency_color(&Tokens::builtin_dark(), Urgency::Critical)
         );
     }
 
@@ -1115,9 +1131,9 @@ mod tests {
             popup["urgencyColor"],
             theme::qml_color(tokens.colors.text_muted)
         );
-        assert_ne!(
-            popup["card"]["edge"],
-            theme::qml_color(tokens.colors.danger)
+        assert_eq!(
+            popup["card"]["rail"]["visible"], false,
+            "low urgency marks nothing on the edge: the sentence says it"
         );
     }
 

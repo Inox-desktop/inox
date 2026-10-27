@@ -256,52 +256,60 @@ pub fn glass_shade(tokens: &Tokens) -> String {
     qml_color(tokens.glass.shade)
 }
 
-/// One colour stop of a pane's vertical fill.
+/// A frosted pane, as the values `GlassPane` binds.
+///
+/// This is the whole of the panel's contribution to drawing glass. The four
+/// tokens plus the hairline width and the corner radius *are* the pane: the
+/// component draws the tint, the one-hairline highlight along the top edge and
+/// the one-hairline shade along the bottom edge, and it is the same component —
+/// compiled from `inox-glass`'s assets by this crate's build script — that every
+/// other consumer draws with (ADR 0040 §3).
+///
+/// Before the component library existed the panel laid the same fill out itself
+/// as a stack of solid bands, because a renderer that branched on a gradient
+/// would be making a decision. [`GlassPane`] removes that work without moving the
+/// decision: the bands and the component draw the same material, and the tokens
+/// are still read only here.
+///
+/// [`GlassPane`]: inox_glass::QML_FILES
 #[derive(Debug, Clone, PartialEq)]
-pub struct Stop {
-    /// Where the stop is on the pane, from `0` (its top edge) to `1` (its
-    /// bottom one).
-    pub at: f32,
-    /// What is drawn from this stop on.
-    pub color: String,
+pub struct PaneStyle {
+    /// The tile of the material: `glass.tint`, or `glass.tint_strong` for a pane
+    /// the keyboard is on.
+    pub tint: String,
+    /// The hairline along the top edge — what reads as "glass".
+    pub highlight: String,
+    /// The darkening along the bottom edge.
+    pub shade: String,
+    /// Thickness of the two hairlines, in logical pixels.
+    pub hairline: f32,
+    /// The corner radius, in logical pixels.
+    pub radius: f32,
+    /// Whether the caller wants the two edge hairlines drawn at all.
+    pub highlighted: bool,
+    pub shaded: bool,
 }
 
-/// The fill of a frosted pane: its tint, with a hairline highlight along the top
-/// edge and — for a floating pane — a shade along the bottom one.
+/// The material of a frosted pane: its tint, both hairline tokens and the radius.
 ///
-/// The two edges are part of the pane's own fill rather than two extra rows of
-/// widgets. A row that spanned the pane would make the pane itself span the
-/// surface it is drawn on, and a dock is only as wide as the tiles it holds; the
-/// stops are fractions of `height`, so `height` is what the hairlines are
-/// derived from. [`crate::view`] lays the stops out as solid bands, which is
-/// exactly what a gradient between these stops is: the hairlines are one pixel
-/// tall and the two ends are the same tint.
-pub fn glass_stops(tokens: &Tokens, strong: bool, height: f32, shaded: bool) -> Vec<Stop> {
-    let edge = (hairline(tokens) / height.max(1.0)).clamp(0.0, 0.5);
-    let tint = glass_tint(tokens, strong);
-    let mut stops = vec![
-        Stop {
-            at: 0.0,
-            color: glass_highlight(tokens),
-        },
-        Stop {
-            at: edge,
-            color: tint.clone(),
-        },
-    ];
-
-    if shaded {
-        stops.push(Stop {
-            at: 1.0 - edge,
-            color: tint,
-        });
-        stops.push(Stop {
-            at: 1.0,
-            color: glass_shade(tokens),
-        });
+/// `strong` selects [`inox_config::Glass::tint_strong`] — the tint of an
+/// emphasised pane, such as a dock the keyboard navigation is on. `shaded` is
+/// false for a pane that reaches the edge of the output (the menu bar), which
+/// draws no bottom shade because there is nothing under it to darken against.
+///
+/// `radius` is passed rather than read here because the two glass surfaces do not
+/// share one: the dock is a floating pill and takes `radii.md`, while the menu bar
+/// is anchored to the screen edge and is square.
+pub fn pane_style(tokens: &Tokens, strong: bool, radius: f32, shaded: bool) -> PaneStyle {
+    PaneStyle {
+        tint: glass_tint(tokens, strong),
+        highlight: glass_highlight(tokens),
+        shade: glass_shade(tokens),
+        hairline: hairline(tokens),
+        radius,
+        highlighted: true,
+        shaded,
     }
-
-    stops
 }
 
 /// The shade a floating pane's shadow is drawn in.
@@ -997,29 +1005,21 @@ mod tests {
         assert_eq!(divider_color(&tokens), border_color(&tokens));
     }
 
-    fn stop_colours(stops: &[Stop]) -> Vec<String> {
-        stops.iter().map(|stop| stop.color.clone()).collect()
-    }
-
     #[test]
     fn a_menu_bar_is_a_tint_with_a_highlight_along_its_top_edge_only() {
         let tokens = Tokens::builtin_dark();
-        let height = 28.0;
-        let stops = glass_stops(&tokens, false, height, false);
+        // The bar is square: it is anchored to the screen edge, so it has no
+        // corner to round and nothing under its bottom edge to darken against.
+        let style = pane_style(&tokens, false, 0.0, false);
 
-        assert_eq!(
-            stop_colours(&stops),
-            vec![glass_highlight(&tokens), glass_tint(&tokens, false)],
-            "the fill starts with the highlight and is the tint from there on"
-        );
-        assert!((stops[0].at - 0.0).abs() < f32::EPSILON);
+        assert_eq!(style.tint, glass_tint(&tokens, false));
+        assert_eq!(style.highlight, glass_highlight(&tokens));
+        assert_eq!(style.shade, glass_shade(&tokens));
+        assert_eq!(style.hairline, hairline(&tokens));
+        assert!((style.radius - 0.0).abs() < f32::EPSILON);
+        assert!(style.highlighted);
         assert!(
-            (stops[1].at - hairline(&tokens) / height).abs() < f32::EPSILON,
-            "the highlight is exactly one hairline of the pane's height"
-        );
-        assert!(
-            !stop_colours(&glass_stops(&tokens, false, height, false))
-                .contains(&glass_shade(&tokens)),
+            !style.shaded,
             "a bar that reaches the screen edge draws no bottom shade"
         );
     }
@@ -1027,10 +1027,10 @@ mod tests {
     #[test]
     fn a_floating_pane_takes_the_group_radius_a_highlight_a_shade_and_a_soft_shadow() {
         let tokens = Tokens::builtin_dark();
-        let height = 70.0;
-        let stops = glass_stops(&tokens, false, height, true);
+        let radius = radius_md(&tokens);
+        let style = pane_style(&tokens, false, radius, true);
 
-        assert!((radius_md(&tokens) - f32::from(tokens.radii.md)).abs() < f32::EPSILON);
+        assert!((radius - f32::from(tokens.radii.md)).abs() < f32::EPSILON);
         assert_eq!(glass_shadow(&tokens), glass_shade(&tokens));
         assert!(
             glass_shadow_blur(&tokens) > 0.0,
@@ -1044,24 +1044,32 @@ mod tests {
         assert!((glass_shadow_offset(&tokens) - hairline(&tokens)).abs() < f32::EPSILON);
 
         assert_eq!(
-            stop_colours(&stops),
-            vec![
-                glass_highlight(&tokens),
-                glass_tint(&tokens, false),
-                glass_tint(&tokens, false),
-                glass_shade(&tokens),
-            ],
-            "the pane is highlighted at the top, tinted in the middle and shaded \
-             at the bottom"
+            style.tint,
+            glass_tint(&tokens, false),
+            "the pane is tinted in the middle"
         );
-        assert!((stops[0].at - 0.0).abs() < f32::EPSILON);
-        assert!((stops[3].at - 1.0).abs() < f32::EPSILON);
-        assert!((stops[2].at - (1.0 - hairline(&tokens) / height)).abs() < f32::EPSILON);
-
-        let strong = glass_stops(&tokens, true, height, true);
-        assert_ne!(stops, strong);
+        assert_eq!(
+            style.highlight,
+            glass_highlight(&tokens),
+            "the pane is highlighted at the top"
+        );
+        assert_eq!(
+            style.shade,
+            glass_shade(&tokens),
+            "the pane is shaded at the bottom"
+        );
+        assert!(style.highlighted, "a floating pane has both edges");
+        assert!(style.shaded);
         assert!(
-            stop_colours(&strong).contains(&glass_tint(&tokens, true)),
+            (style.radius - radius).abs() < f32::EPSILON,
+            "the pill's corner is the radius the caller passes, not one of its own"
+        );
+
+        let strong = pane_style(&tokens, true, radius, true);
+        assert_ne!(style, strong);
+        assert_eq!(
+            strong.tint,
+            glass_tint(&tokens, true),
             "the emphasised pane uses the stronger tint"
         );
         assert_eq!(glass_tint(&tokens, false), qml_color(tokens.glass.tint));

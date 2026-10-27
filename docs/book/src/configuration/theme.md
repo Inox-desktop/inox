@@ -153,7 +153,7 @@ dispersion = true        # 边缘色散
 | `depth` | `false` | `false` | 是否叠加指向中心的球面深度分量 |
 | `dispersion` | `true` | `true` | 是否把折射边缘按通道拆开（细彩色边缘） |
 
-`blur` 与 `refraction*` 都是**请求**：模糊与边缘折射本身由合成器经私有协议 `inox-glass-v1` 绘制，组件拿到的上限由合成器的 `capabilities` / `liquid_capabilities` 回答，超限会被钳制。`blur = 0` 或 `capabilities = 0`（没有渲染支持、表面不是 layer 角色、会话已锁定）时，组件必须退化为**纯半透明**：`tint`/`highlight`/`shade` 照旧，只是没有背景软化，不得假装画出了模糊。决策与安全边界见 ADR 0040（`proposed`）；合成器只在 **headless** 路径绘制模糊与折射，物理（DRM）路径报 0 并保持场景锐利，因此真机上目前仍走纯半透明路径。
+`blur` 与 `refraction*` 都是**请求**：模糊与边缘折射本身由合成器经私有协议 `inox-glass-v1` 绘制，组件拿到的上限由合成器的 `capabilities` / `liquid_capabilities` 回答，超限会被钳制。`blur = 0` 或 `capabilities = 0`（没有渲染支持、表面不是 layer 角色、会话已锁定）时，组件必须退化为**纯半透明**：`tint`/`highlight`/`shade` 照旧，只是没有背景软化，不得假装画出了模糊。决策与安全边界见 ADR 0040（`proposed`）；合成器只在 **headless** 路径绘制模糊与折射，物理（DRM）路径报 0 并保持场景锐利，因此真机上目前仍走纯半透明路径。两个消费者都用这套令牌绘制外壳：面板的窗格（ADR 0040）与通知卡片（ADR 0044）；通知栈是**普通窗口**、没有 layer 角色，所以它的卡片今天**就是**上面说的降级形态——纯半透明，没有背景软化。
 
 `refraction` / `refraction_amount` 是液态玻璃的四个令牌字段，任一为 `0` 就是显式的「不做折射」，语义与 `blur = 0` 相同；`blur = 0` 与 `refraction > 0` 可以同时成立（只要折射、不要模糊），此时组件仍然创建玻璃对象。`refraction` 的取值是折射带的**厚度**，不是圆角：四角半径来自 `[radii]` 的 `md`，由组件投影后经 `set_corner_radii` 发送。`depth` 与 `dispersion` 只是开关，强度不可调。三者同为**美术参数**而非光学模型：合成器无法绘制时报告 0，组件同样退化为纯半透明。
 

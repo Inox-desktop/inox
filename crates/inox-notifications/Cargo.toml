@@ -30,8 +30,11 @@ cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
 serde_json.workspace = true
-# L1: the shared Fluent loader and the design tokens. L3 components take no
-# same-layer dependency and none on the compositor.
+# L1: the shared Fluent loader and the design tokens. The card's glass material
+# is read from `tokens.glass` here; the only same-layer edge this crate has is
+# the **build-time** one to `inox-glass` declared under `[build-dependencies]`
+# below, so no L3 crate is linked into the running daemon, and none on the
+# compositor.
 inox-common.workspace = true
 inox-config.workspace = true
 thiserror.workspace = true
@@ -40,6 +43,17 @@ tracing-subscriber.workspace = true
 
 [build-dependencies]
 cxx-qt-build.workspace = true
+# `build.rs` compiles `inox-glass`'s QML components into this crate's own QML
+# module: a QML module belongs to the binary that registers it
+# (KDAB/cxx-qt#770), so the card's glass pane cannot be imported from another
+# crate. The L3 -> L3 edge this adds is authorised by ADR 0044 and recorded in
+# the root `Cargo.toml`'s `same_layer_exceptions`.
+inox-glass.workspace = true
+# The same 0.10 line `cxx-qt-build` already resolves (cargo unifies the two). It
+# is named directly because `build.rs` aliases the glass QML files inside the
+# qrc itself (`QResourceFile::alias`), and `cxx-qt-build` re-exports
+# `QResource`/`QResources` but not `QResourceFile`.
+qt-build-utils.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -11,13 +11,22 @@
 
 所属层级：**L3**。依赖只有向下：`inox-config`（L1）、`inox-protocols`（L2）与第三方 `wayland-client`、`serde_json`。
 
-## 分层例外（唯一）
+## 分层例外（两条）
 
-`inox-panel -> inox-glass` 是 **L3 → L3**，由 [ADR 0040](../../docs/adr/0040-liquid-glass-material-and-components.md) 明确授权，并登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`。规则：
+已有**两个**消费者，各由一条 ADR 授权，都登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`：
 
-- 例外是**登记制**，不是自由：别的 L3 crate 想依赖 `inox-glass` 必须先在根 `Cargo.toml` 里加一条并说明 ADR 依据，否则 `cargo test -p inox-integration --test layering` 变红。
+| 边 | 消费者 | 用到的组件 | 依赖形态 | 授权的 ADR |
+|----|--------|------------|----------|------------|
+| `inox-panel -> inox-glass` | 菜单栏与 Dock 的窗格 | 材质 API + `GlassPane` | 运行期（`frost.rs` 的 `decide`）+ 构建期（QML 资产） | [ADR 0040](../../docs/adr/0040-liquid-glass-material-and-components.md) |
+| `inox-notifications -> inox-glass` | 通知卡片 | `GlassPane` | **只在构建期**（读 QML 资产；运行期不链接本 crate） | [ADR 0044](../../docs/adr/0044-notification-glass-cards.md) |
+
+两条都是 L3 → L3。构建期那一半是为了让宿主的 `build.rs` 读取 QML 资产路径；通知侧没有运行期依赖，面板侧有（它的降级决策就是本 crate 的 Rust API）。
+
+规则：
+
+- 例外是**登记制**，不是自由：别的 L3 crate 想依赖 `inox-glass` 必须先在根 `Cargo.toml` 里加一条并说明 ADR 依据，否则 `cargo test -p inox-integration --test layering` 变红。**每条新边都要一条新 ADR**——ADR 0040 只授权面板，ADR 0044 才授权通知。
 - `inox-glass` 自己**不得**新增任何 Inox 依赖到 L3 及以上。它不能依赖 `inox-panel`、`inox-compositor`，也不能依赖任何 Qt 绑定。
-- 删除面板那条 edge 时，`same_layer_exceptions` 里的 `["inox-panel", "inox-glass"]` 必须同时删除。
+- 删除其中任一条 edge 时，`same_layer_exceptions` 里对应的条目（`["inox-panel", "inox-glass"]` 或 `["inox-notifications", "inox-glass"]`）必须同时删除。
 
 ## crate 特有约束
 
@@ -83,10 +92,11 @@ qmllint crates/inox-glass/qml/*.qml
 - **proptest**（`tests/negotiation.rs`）覆盖四条不变量：幂等（用协商结果再决定一次不变）、单调（能力更强不会得到更小请求）、诚实（不超过任何上限、不申称没广告的色散）、安静（零能力/空区域/关闭的材质都给 `Plain`）。
 - **漂移测试**（`tests/protocol_drift.rs`）把 flag 位、`since` 版本、接口版本钉在生成绑定上，并钉住 ADR 0040 §1 的四个上限值。协议 XML 本身不携带上限数字（上限是合成器运行时的诚实广告），这一点在测试注释里写明，不假装测了它没测的东西。
 - **资产测试**（`tests/qml_assets.rs`）：`qml_files()` 每个路径存在且以 `.qml` 结尾（`src/qml.rs` 内联测试），外加无输入、无颜色/文案字面量、Accessible role/name、目录页由 `modelJson` 驱动。
-- **没有的东西要说清楚**：本 crate 不做 socket 级协议测试（那需要 wayland-server 扮演合成器），线上证据在 `crates/inox-protocols/tests/glass_roundtrip.rs` 与面板的 `src/tests/protocol.rs`；组件像素证据在面板的离屏测试（渲染 `CatalogWindow.qml`）。
+- **没有的东西要说清楚**：本 crate 不做 socket 级协议测试（那需要 wayland-server 扮演合成器），线上证据在 `crates/inox-protocols/tests/glass_roundtrip.rs` 与面板的 `src/tests/protocol.rs`；组件像素证据在面板的离屏测试，两点：Dock 窗格帧（`render_a_translucent_dock_frame`，逐通道断言 `glass.tint` ±1）与目录页（`CatalogWindow.qml`）。
 
 ## 已知限制
 
 - **DRM（真机）路径没有玻璃**：合成器侧尚未给 passthrough 定义可信 damage（ADR 0040「限制」）。本 crate 的能力判断与之无关——它只诚实地转述合成器的上报。
-- **组件像素证据不在本 crate**：`inox-glass` 不链接 Qt，不能自己出帧；`CatalogWindow.qml` 由面板的离屏宿主渲染并断言。
+- **组件像素证据不在本 crate**：`inox-glass` 不链接 Qt，不能自己出帧；面板的离屏宿主渲染 Dock 帧与 `CatalogWindow.qml` 并做像素断言（前者正是本次改动后「组件与旧色带绘制等价」的证据）。**通知栈**的卡片没有像素证据（只有投影断言与离屏加载证据，见 ADR 0044「限制」）。
+- **通知栈只有纯半透明**：`inox-notifications` 是普通窗口，拿不到 layer 角色，也没有创建 glass 对象；「用同一套材质」不等于「有模糊」（ADR 0044）。
 - **目录页的文案为空**：`catalog::from_theme` 投影出的 `text` / `label` / `accessibleName` / `labels` 都是空串——用户可见文案只能来自 Fluent，调用方填充。

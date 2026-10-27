@@ -64,7 +64,7 @@ shader 仍是 GLSL ES 1.00、仍带 `//_DEFINES_` 标记（Smithay 会替换出 
 
 内容分两半：
 
-**Rust（纯逻辑，无 Qt）**
+#### Rust（纯逻辑，无 Qt）
 
 - `Capabilities`：v1/v2 capabilities 的解析（`from_legacy` / `from_liquid`）、`can_blur` / `can_refract`。
 - `Corners`、`Refraction`、`Material`：设计令牌的材质表达。
@@ -73,7 +73,7 @@ shader 仍是 GLSL ES 1.00、仍带 `//_DEFINES_` 标记（Smithay 会替换出 
 - `Request::apply(&impl GlassTarget)`：把请求写到真实协议对象（`GlassTarget` trait 让它可以被测试替身记录）；对 v1 对象自动跳过 `since=2` 的请求。
 - 常量（`MAX_*`）与 `inox-protocols` 生成的值有一致性测试，禁止两边各写一份悄悄漂移。
 
-**QML（无状态渲染器）**
+#### QML（无状态渲染器）
 
 `qml/` 下提供 `GlassPane`、`GlassButton`、`GlassToggle`、`GlassSlider`、`GlassTabBar` 五个组件，外加 `CatalogWindow.qml` 目录页。规则：
 
@@ -82,7 +82,7 @@ shader 仍是 GLSL ES 1.00、仍带 `//_DEFINES_` 标记（Smithay 会替换出 
 - 每个可交互组件设置 `Accessible.role` / `Accessible.name` / `Accessible.enabled`，名称由调用方传入。
 - 组件文件由宿主 crate 的 `build.rs` 通过 `inox_glass::qml_files()` 收进自己的 QML 模块（Qt 资源按二进制归属，跨 crate 的 QML 插件静态注册不可靠）；面板的离屏测试渲染 `CatalogWindow.qml`，对窗格 tint、圆角外透明、开关选中色、滑杆填充宽度做像素断言。这是组件库的 E1 + 离屏证据。
 
-**分层例外**：`inox-panel -> inox-glass` 是 L3 → L3。按分层规则 1，它登记进根 `Cargo.toml` 的 `same_layer_exceptions`，并由本 ADR 授权；`inox-glass` 本身只向下依赖 `inox-config`（L1）与 `inox-protocols`（L2）。
+**分层例外**：`inox-panel -> inox-glass` 是 L3 → L3。按分层规则 1，它登记进根 `Cargo.toml` 的 `same_layer_exceptions`，并由本 ADR 授权；`inox-glass` 本身只向下依赖 `inox-config`（L1）与 `inox-protocols`（L2）。本 ADR 只授权这一个消费者：后续每增加一个（例如通知栈，见 [ADR 0044](./0044-notification-glass-cards.md)）都需要自己的 ADR 与一条登记条目。
 
 ### 4. 设计令牌：`[glass]` 增加折射字段
 
@@ -108,20 +108,24 @@ dispersion = true        # 边缘色散
 
 ## 后果
 
-**正面**
+### 正面
 
 - 桌面第一次有真正的液态玻璃材质：边缘折射、可配色散、与令牌一致，且客户端无法伪造或读取他人像素。
 - 材质决策只有一份实现，面板与后续组件共享；协议参数、clamp、降级理由都可单元测试。
 - 协议 v2 是加法式的，v1 客户端（现网面板旧版本）不受影响。
 - QML 组件库让新组件的玻璃外观不必重画；目录页就是设计参照。
 
-**负面 / 限制**
+### 负面 / 限制
 
 - **DRM（真机）路径仍不实现玻璃**：`OutputDamageTracker` 的 damage 来自渲染元素自身的 damage snapshot，折射/模糊 passthrough 还没有诚实的 damage 描述。因此本 ADR 交付的是 headless 路径上的完整效果与像素证据，真机验收（E4）仍未取得；不得把 CI 像素测试读作「真机已支持」。
 - 液态玻璃 pass 比 v1 模糊更贵：多一趟全 pane 的片元 pass，色散开启时每个像素 7 次采样；CI 用 llvmpipe，预算按小 pane 设计。
 - 折射参数是「看起来对」的美术参数，不是物理正确的光学模型（参考实现同样如此）；色散强度不可调，只有开关。
 - 新 crate 与同层依赖增加了分层图的复杂度；例外是显式登记的，不是自由的。
 - 组件库只覆盖五种基础组件，菜单、对话框等仍各自实现；不追求与 Kyant 库对等。
+- **组件库的消费者会逐个增加，每条新边都要单独授权**：本 ADR 只授权了 `inox-panel` 一个消费者。
+  [ADR 0044](./0044-notification-glass-cards.md) 已扩展出第二个（`inox-notifications` 的卡片，
+  build 期边），因此 `same_layer_exceptions` 里与 `inox-glass` 有关的条目有两条。
+  这不是把例外变成惯例：每多一个消费者仍须一条 ADR 与一条登记。
 
 ## 考虑过但未被采纳
 

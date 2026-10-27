@@ -68,6 +68,25 @@ Window {
                     border.color: modelData.border_color
                 }
 
+                // A frosted pane is the shared glass component, not a rectangle
+                // the panel tints itself: `GlassPane` belongs to `inox-glass`,
+                // whose assets this crate's `build.rs` compiles into the module
+                // it registers, so the panel and every other consumer draw the
+                // same material from the same tokens (ADR 0040 §3). The
+                // projection carries the five values the component binds and the
+                // panel decides none of them here.
+                GlassPane {
+                    anchors.fill: parent
+                    visible: modelData.kind === "pane"
+                    tint: modelData.color
+                    highlight: modelData.highlight
+                    shade: modelData.shade
+                    hairline: modelData.hairline
+                    highlighted: modelData.highlighted
+                    shaded: modelData.shaded
+                    radius: modelData.radius
+                }
+
                 Text {
                     anchors.fill: parent
                     visible: modelData.kind === "text"

@@ -60,7 +60,15 @@ Window {
     width: root.vm.window.width
     height: column.implicitHeight + 2 * root.vm.metrics.margin
     title: root.vm.window.title
-    color: root.vm.palette.background
+    // The window draws no colour of its own: the cards are glass, and glass only
+    // reads as glass when the stack is a shell over what is behind it
+    // (ui-guidelines §12, ADR 0044). `transparent` is the structural "no colour"
+    // sentinel, not a design colour — the clear colour is not a token because
+    // nothing is being designed here. The compositor softens the backdrop only for
+    // a layer role, so today this reads as plain translucency; the host that
+    // connects `src/placement.rs` to a layer surface is what turns it into
+    // frosted glass.
+    color: "transparent"
     visible: root.vm.window.visible
 
     // The Rust-backed daemon bridge: `modelJson` plus the three invokables above.
@@ -159,7 +167,7 @@ Window {
             Repeater {
                 model: root.vm.stack.popups
 
-                delegate: Rectangle {
+                delegate: GlassPane {
                     id: cardItem
 
                     // The card's data, injected by the view through a required
@@ -176,9 +184,16 @@ Window {
                     width: column.width
                     height: cardColumn.implicitHeight + 2 * root.vm.metrics.cardInset
 
-                    color: cardItem.popup.card.background
-                    border.color: cardItem.popup.card.edge
-                    border.width: root.vm.metrics.borderWidth
+                    // The card is a pane of the shared glass material (ADR 0044,
+                    // ui-guidelines §12): a translucent tint with a highlight
+                    // hairline along its top edge and a shade along its bottom
+                    // one. Every value is a projected token; the pane picks no
+                    // colour and no width of its own, and it has no outline — the
+                    // two hairlines are its edges.
+                    tint: cardItem.popup.card.tint
+                    highlight: cardItem.popup.card.highlight
+                    shade: cardItem.popup.card.shade
+                    hairline: cardItem.popup.card.hairline
                     radius: cardItem.popup.card.radius
 
                     Accessible.role: Accessible.Pane

@@ -52,7 +52,7 @@ use inox_config::{PanelConfig, PanelPosition, PanelSurface, ShellConfig, Theme a
 use serde_json::{Value, json};
 
 use crate::tasks::WindowKey;
-use crate::theme::{self, EntryStyle, InteractionStatus, Stop, TaskEmphasis};
+use crate::theme::{self, EntryStyle, InteractionStatus, PaneStyle, TaskEmphasis};
 use crate::view_model::{PanelStatus, PanelViewModel, TaskButton, TrayItemView};
 
 /// How many extra-large spacing steps a task label may be wide.
@@ -595,6 +595,13 @@ fn rectangle(
         "radius": radius,
         "border": border,
         "border_color": border_color,
+        // A rectangle draws no glass edge: the pane fields of [`Painter::pane`],
+        // at their neutral values.
+        "highlight": theme::TRANSPARENT,
+        "shade": theme::TRANSPARENT,
+        "hairline": 0.0,
+        "highlighted": false,
+        "shaded": false,
         // A rectangle draws no sentence: the text fields of [`line`], at their
         // neutral values.
         "text": "",
@@ -636,6 +643,12 @@ fn line(
         "radius": 0.0,
         "border": 0.0,
         "border_color": theme::TRANSPARENT,
+        // Nor does it draw a glass edge: the pane fields, likewise neutral.
+        "highlight": theme::TRANSPARENT,
+        "shade": theme::TRANSPARENT,
+        "hairline": 0.0,
+        "highlighted": false,
+        "shaded": false,
     })
 }
 
@@ -690,44 +703,48 @@ impl Painter {
         ));
     }
 
-    /// A frosted pane, as the bands its colour stops describe.
+    /// A frosted pane, drawn by the shared `GlassPane` component.
     ///
-    /// A vertical gradient between solid stops is what the pane's fill has
-    /// always been — a one-hairline highlight, the tint, a one-hairline shade —
-    /// so laying it out as the bands between those stops is the same drawing
-    /// with no gradient in the renderer. [`crate::theme::glass_stops`] is the
-    /// one description of that fill: the body is the tint after the leading
-    /// highlight, the first band is the highlight along the top edge, and a
-    /// four-stop fill ends with the shade along the bottom one.
+    /// The panel used to lay the pane out itself as a stack of solid bands, one
+    /// per colour stop, because a renderer that branched on a gradient would be
+    /// making a decision. `GlassPane` — one of `inox-glass`'s stateless
+    /// components, compiled into this crate's own QML module by `build.rs` —
+    /// draws the same material (the tint, one hairline highlight along the top
+    /// edge, one hairline shade along the bottom) from the same tokens, so the
+    /// bands became a component call without the panel gaining a drawing
+    /// decision. It is the same component the dock, the menu bar and every later
+    /// consumer draws with (ADR 0040 §3).
     ///
-    /// The body is drawn rounded to the pane's radius and the two hairlines are
-    /// laid over its edges, so a floating pane keeps its rounded silhouette
-    /// instead of being squared off by the band that covers most of it.
-    fn pane(&mut self, x: f32, y: f32, width: f32, height: f32, stops: &[Stop], radius: f32) {
-        let body = stops.get(1).or_else(|| stops.first());
-
-        if let Some(body) = body {
-            self.rect(x, y, width, height, &body.color, radius);
-        }
-
-        if let (Some(highlight), Some(tint)) = (stops.first(), stops.get(1)) {
-            let band = (tint.at - highlight.at) * height;
-
-            if band > 0.0 && band < height {
-                self.rect(x, y, width, band, &highlight.color, radius);
-            }
-        }
-
-        if stops.len() > 2
-            && let (Some(shade), Some(before)) = (stops.last(), stops.get(stops.len() - 2))
-        {
-            let start = before.at * height;
-            let band = height - start;
-
-            if band > 0.0 && band < height {
-                self.rect(x, y + start, width, band, &shade.color, radius);
-            }
-        }
+    /// The kind is `pane` rather than a rectangle with a colour: the renderer has
+    /// to instantiate a component, and the geometry it needs (radius, hairline,
+    /// both edge flags) is what [`crate::theme::PaneStyle`] decided.
+    fn pane(&mut self, x: f32, y: f32, width: f32, height: f32, style: &PaneStyle) {
+        self.items.push(json!({
+            "kind": "pane",
+            "x": x,
+            "y": y,
+            "w": width.max(0.0),
+            "h": height.max(0.0),
+            // The pane's fill is the tint; `color` carries it so the shared
+            // helpers (`rects`, `color`) keep working on every filled item.
+            "color": style.tint,
+            "radius": style.radius,
+            "border": 0.0,
+            "border_color": theme::TRANSPARENT,
+            // The two edge hairlines, which `GlassPane` draws along the pane's
+            // own top and bottom edges rather than as extra rows of widgets.
+            "highlight": style.highlight,
+            "shade": style.shade,
+            "hairline": style.hairline,
+            "highlighted": style.highlighted,
+            "shaded": style.shaded,
+            // A pane draws no sentence: the text fields of [`line`], at their
+            // neutral values.
+            "text": "",
+            "size": 0.0,
+            "bold": false,
+            "align": Align::Left.as_str(),
+        }));
     }
 
     /// A line of text in a box it may be clipped to.
@@ -1074,7 +1091,13 @@ mod tests {
         // out is the `Unable to assign [undefined]` Qt logged once per binding,
         // per item, per frame — the renderer then drew the *default* rather than
         // what the tokens said. The list is the delegate's, not this module's.
-        const BOUND: [&str; 13] = [
+        //
+        // `highlight`, `shade`, `hairline`, `highlighted` and `shaded` are on it
+        // because the pane is now the shared `GlassPane` component, which binds
+        // those five alongside the geometry every item carries. A rectangle or a
+        // line of text carries them at their structural neutral values, exactly
+        // as it carries the other kind's fields.
+        const BOUND: [&str; 18] = [
             "kind",
             "x",
             "y",
@@ -1088,6 +1111,11 @@ mod tests {
             "size",
             "bold",
             "align",
+            "highlight",
+            "shade",
+            "hairline",
+            "highlighted",
+            "shaded",
         ];
 
         let tokens = Tokens::builtin_dark();
@@ -1117,8 +1145,7 @@ mod tests {
             0.0,
             16.0,
             16.0,
-            &theme::glass_stops(&tokens, false, 16.0, true),
-            theme::radius_md(&tokens),
+            &theme::pane_style(&tokens, false, theme::radius_md(&tokens), true),
         );
 
         let scene = painter.finish(16.0, 16.0);
@@ -1126,10 +1153,19 @@ mod tests {
             .as_array()
             .expect("the scene holds its drawing commands");
 
+        assert_eq!(
+            items.len(),
+            4,
+            "every command is in the scene: a rectangle, an entry, a line of \
+             text and one pane (the pane is a single component call now, not a \
+             body plus two edge bands): {items:?}"
+        );
         assert!(
-            items.len() >= 5,
-            "the commands are all in the scene: {}",
-            items.len()
+            items
+                .iter()
+                .any(|item| item["kind"].as_str() == Some("pane")),
+            "the frosted pane is projected as a pane, which is what makes the \
+             renderer instantiate the shared `GlassPane`: {items:?}"
         );
 
         for item in items {

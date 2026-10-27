@@ -37,8 +37,10 @@ calloop 主循环（layer.rs）
 - `src/layer.rs` —— **协议腿**：`Connection::connect_to_env()` + `calloop` 事件循环，绑定 `wl_compositor` / `wl_shm` / `wl_seat` / `zwlr_layer_shell_v1`（必需，缺失即非零退出）与 `inox_glass_manager_v1`（可选，缺失只降级；绑定版本是 `min(advertised, 2)`）。`capabilities`（v1）与 `liquid_capabilities`（v2）都归一到 `inox_glass::Capabilities`，后者优先；请求经 `Request::apply` 发到线上，v1 对象自动跳过 `since=2` 的请求。一帧 = `view.rs` 的投影经离屏 QML 渲染出的 `Argb8888` 像素（预乘 `B,G,R,A`）；`wl_pointer` 的 enter/leave/motion/button 翻译成 `Pointer` 并按场景的 `entries` 命中，产生的 `Message` 由 `app::update` 应用；`SIGINT`/`SIGTERM` 干净拆卸，`SIGHUP`/D-Bus 重载由 `src/reload.rs` 通过 ping 喂进来。信号源在任何线程（包括 Qt 宿主）创建**之前**装好掩码。
 - `src/reload.rs` —— 会话 D-Bus（`org.inox.Panel`）与 `SIGHUP` 的重载主机；候选文档在另一个线程读取解析，经通道 + `calloop::ping` 交给 `layer.rs` 应用。`[panel] surface` 不采用候选值（那是另一个进程；`--surface` 已覆盖文件），保留运行中的表面并记一条 `warn!`，其余摆放字段热改并在下一个 commit 生效。
 - `src/view.rs`、`src/view_model.rs`、`src/theme.rs`、`src/app.rs` —— 状态 → 视图模型 → **Qt-free 的 JSON 场景**（`{ font_family, background, items: [ ] }` + `entries`）、Elm 更新循环，以及设计令牌 → 场景颜色/尺寸的唯一转换处（`#AARRGGBB` 字符串与数值）。
-- `qml/Main.qml` —— 纯渲染器：只读 `modelJson`，按 `items` 的绝对坐标画矩形与文本。没有颜色字面量、像素字面量或用户可见英文字符串（迁移契约 §4）。
-- **共享玻璃组件库**（`inox-glass` 的 `qml/`，ADR 0040 §3）：五个无状态组件（`GlassPane` / `GlassButton` / `GlassToggle` / `GlassSlider` / `GlassTabBar`）与目录页 `CatalogWindow.qml` 不是独立的 QML 模块，而是由本 crate 的 `build.rs` 用显式 `qml/<name>` 别名编进**自己的** qrc（跨 crate 的静态模块注册不可靠，KDAB/cxx-qt#770），因此它们和 `Main.qml` 同目录、可作为隐式类型使用。离屏测试把目录页渲染成一帧并断言：窗格中心就是 `glass.tint` 令牌、圆角外完全透明、勾选开关的轨道是 accent 令牌、滑杆填充在 `value` 处结束——这是组件库唯一的像素证据，`inox-glass` 自己不链接 Qt。
+- `qml/Main.qml` —— 纯渲染器：只读 `modelJson`，按 `items` 的绝对坐标画矩形、玻璃窗格（`GlassPane`）与文本。没有颜色字面量、像素字面量或用户可见英文字符串（迁移契约 §4）。
+- **共享玻璃组件库**（`inox-glass` 的 `qml/`，ADR 0040 §3）：五个无状态组件（`GlassPane` / `GlassButton` / `GlassToggle` / `GlassSlider` / `GlassTabBar`）与目录页 `CatalogWindow.qml` 不是独立的 QML 模块，而是由本 crate 的 `build.rs` 用显式 `qml/<name>` 别名编进**自己的** qrc（跨 crate 的静态模块注册不可靠，KDAB/cxx-qt#770），因此它们和 `Main.qml` 同目录、可作为隐式类型使用。
+  这些组件**用在生产界面上，不只是测试**：菜单栏与 Dock 的窗格在投影里是 `kind: "pane"` 的图元，`qml/Main.qml` 用它实例化 `GlassPane`（`tint` / `highlight` / `shade` / `hairline` / `radius` 全部来自 `theme::pane_style`），所以面板不再自己把窗格铺成一叠色带。
+  离屏测试另外把组件目录页渲染成一帧并断言：窗格中心就是 `glass.tint` 令牌、圆角外完全透明、勾选开关的轨道是 accent 令牌、滑杆填充在 `value` 处结束——这是组件库的像素证据，`inox-glass` 自己不链接 Qt。
 - `src/cxxqt_object.rs`、`src/offscreen.rs`、`src/offscreen.cpp` —— 唯一的 QML↔Rust 边界：`load(url)` / `setModel(json)` / `render(w, h)`，以及 `QGuiApplication` + `QQmlApplicationEngine` + `QQuickWindow::grabWindow()` 的 C++ 薄宿主。**帧必须带真实 alpha**：Qt 6.8 之前的 offscreen 插件 backing store 是 `QImage::Format_RGB32`，单次抓帧必然不透明，所以宿主首帧探测一次，之后用黑/白两次清屏抓帧按 `a = 255 - max(white - black)` 重建 alpha（预乘颜色取黑底那一帧），两条路径输出同一帧；`INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 是强制走重建路径的测试钩子。
 - `src/headless_tests/` —— 原本的 `tests/*.rs`（crate 只能有 bin target，见迁移契约 §2.1）：`binary`（子进程跑本面板入口）、`catalog`（目录一致性 Q03）、`projection`（投影逐值断言）、`protocol`（真实 `wayland-server` 扮演合成器，E2，含 v2 请求与 v1 回退）、`qml`（经离屏宿主渲染真实像素：任务栏、Dock，以及 `inox-glass` 的组件目录页）。
 - `i18n/en-US/panel.ftl`、`i18n/zh-CN/panel.ftl` —— 全部用户可见文案。
@@ -71,12 +73,12 @@ calloop 主循环（layer.rs）
 | `src/layer.rs` | 协议腿：layer 表面、ARGB 共享内存帧、指针输入、`inox-glass-v1` v2 |
 | `src/reload.rs` | `SIGHUP` 与 `org.inox.Panel` 的重载请求 |
 | `src/view_model.rs` | 状态 → 视图的投影 |
-| `src/view.rs` | Qt-free 的 JSON 场景（矩形 / 文本 / 点击区域） |
+| `src/view.rs` | Qt-free 的 JSON 场景（矩形 / 玻璃窗格 / 文本 / 点击区域） |
 | `src/app.rs` | `State` / `Message` / `update`（Elm） |
-| `src/theme.rs` | 设计令牌 → 场景的颜色与尺寸 |
+| `src/theme.rs` | 设计令牌 → 场景的颜色与尺寸（玻璃窗格由 `pane_style` 给出 `tint` / `highlight` / `shade` / `hairline` / `radius` / 两面发丝开关） |
 | `src/cxxqt_object.rs` | cxx-qt 桥（唯一的 QML↔Rust 边界） |
 | `src/offscreen.rs` / `src/offscreen.cpp` / `src/offscreen.h` | 离屏 QML 宿主的 Rust 面与 C++ 实现 |
-| `qml/Main.qml` | QML 渲染器（无颜色/尺寸/文案字面量） |
+| `qml/Main.qml` | QML 渲染器（无颜色/尺寸/文案字面量；`kind: "pane"` 的图元实例化 `inox-glass` 的 `GlassPane`） |
 | `src/main.rs` | 日志、自检、`--surface`/`--help`，然后 `layer::run` |
 | `src/i18n.rs` | 内嵌的 Fluent 目录 |
 | `i18n/<locale>/panel.ftl` | 文案 |
@@ -90,7 +92,7 @@ calloop 主循环（layer.rs）
 - 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**，本地命令只作自检。
 - 颜色、尺寸、间距、圆角只来自 `inox_config::Theme` 令牌，并且只在 `src/theme.rs` 里转成场景值；QML 里不得出现颜色/像素字面量或用户可见文案。
-- `inox-panel -> inox-glass` 是本仓库唯一的 L3 → L3 依赖，由 ADR 0040 授权并登记在根 `Cargo.toml` 的 `same_layer_exceptions`：玻璃材质的 clamp、降级与 v1/v2 协商只在 `inox-glass` 实现一次。改这条边必须同时改那份登记，否则 `cargo test -p inox-integration --test layering` 变红。
+- `inox-panel -> inox-glass` 是本 crate 唯一的同层依赖，由 ADR 0040 授权并登记在根 `Cargo.toml` 的 `same_layer_exceptions`：玻璃材质的 clamp、降级与 v1/v2 协商只在 `inox-glass` 实现一次。仓库里另有 `inox-notifications -> inox-glass`（ADR 0044），那是通知栈自己的边，与本 crate 无关。改这条边必须同时改那份登记，否则 `cargo test -p inox-integration --test layering` 变红。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)，scope 使用 `panel`。
 
 | 目的 | 命令 |
