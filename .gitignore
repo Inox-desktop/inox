@@ -3,7 +3,7 @@
 # `cargo test -p <crate>` with a relative `INOX_SCREENSHOT_DIR` used to leave
 # `crates/<crate>/target/` behind.
 target/
-
+target-head/
 # mdBook output for the documentation site (`docs/book/book/`). The site used to
 # carry its own .gitignore for this; the single-repository decision removed
 # per-component ignore files, so the root one has to cover it.

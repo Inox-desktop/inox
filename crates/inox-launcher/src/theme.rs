@@ -28,6 +28,7 @@
 //! unscaled Qt Quick window would draw, without this file naming a size the
 //! user changed their mind about.
 
+use inox_config::LauncherConfig;
 use inox_config::Theme;
 use inox_config::theme::Rgba;
 
@@ -65,6 +66,17 @@ const AVERAGE_ADVANCE_RATIO: f32 = 0.5;
 /// [`crate::placement`] sizes the surface before any text exists, so it is
 /// written down once here rather than guessed in two places.
 const LINE_HEIGHT_RATIO: f32 = 1.2;
+
+/// How many characters a tile's label has room for on one line.
+///
+/// A tile is sized so the name it carries stays readable without stretching the
+/// cell: the icon plus `spacing.lg` on either side, or this many average glyphs,
+/// whichever is wider. When `typography.scale` grows, the *cell* grows with the
+/// type instead of the name being cut shorter.
+const GRID_LABEL_CHARS: f32 = 12.0;
+
+/// The number of lines a tile's label wraps to.
+pub const TILE_LABEL_LINES: usize = 2;
 
 /// The body text size of an unscaled Qt Quick window, in logical pixels.
 ///
@@ -262,6 +274,87 @@ pub fn average_advance(tokens: &Theme) -> f32 {
     (text_size(tokens) * AVERAGE_ADVANCE_RATIO).max(1.0)
 }
 
+/// The geometry of the application grid, in logical pixels.
+///
+/// One value, computed once per placement and used by everything that has to
+/// agree about the grid: the surface's height, the projection QML draws, and the
+/// keyboard step (`Left`/`Right` move by one, `Up`/`Down` by a whole
+/// [`Grid::columns`]). There is no second derivation to drift — `crate::app` and
+/// `crate::view` both read the one `crate::placement::Placement::grid`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grid {
+    /// How many tiles fit across the card.
+    pub columns: usize,
+    /// The width of one tile, including nothing of the gap.
+    pub cell_width: f32,
+    /// The height of one tile, including nothing of the gap.
+    pub cell_height: f32,
+    /// The gap between two tiles, horizontally and vertically.
+    pub gap: f32,
+    /// The square the icon is drawn in, inside a tile.
+    pub image: f32,
+}
+
+/// The grid a surface of `surface_width` logical pixels holds.
+///
+/// The card's content is what the tiles get: the window's `xl` padding and the
+/// card's `lg` padding come off the surface first (guidelines §3). A tile is as
+/// wide as its label needs and as tall as its icon plus two label lines, and a
+/// surface too narrow for even one column still gets one — a grid with zero
+/// columns would draw nothing at all.
+///
+/// [`Grid::columns`] is a whole number of [`Grid::cell_width`] plus [`Grid::gap`]
+/// cells: QML sizes the view to exactly that, so the columns the projection names
+/// are the columns the grid draws.
+pub fn grid(tokens: &Theme, config: &LauncherConfig, surface_width: u32) -> Grid {
+    let metrics = Metrics::from_tokens(tokens);
+
+    let image = f32::from(config.icon_size).max(metrics.space_xl * 2.0);
+    let gap = metrics.space_md;
+    let cell_width =
+        (image + metrics.space_lg * 2.0).max(average_advance(tokens) * GRID_LABEL_CHARS);
+    let cell_height =
+        image + metrics.space_sm + line_height(tokens, TextRole::Caption) * TILE_LABEL_LINES as f32;
+
+    let available = (surface_width as f32 - metrics.space_xl * 2.0 - metrics.space_lg * 2.0)
+        .max(MINIMUM_CONTENT_WIDTH);
+    // A `GridView` lays its delegates out on a `cellWidth` grid and fits
+    // `floor(width / cellWidth)` of them per row. The projection publishes the
+    // column count the keyboard steps by, so it has to be that same floor: a grid
+    // told "nine columns" while drawing eight would move the selection by a
+    // number the window is not drawing.
+    let pitch = cell_width + gap;
+    let columns = ((available / pitch).floor() as usize).max(1);
+
+    Grid {
+        columns,
+        cell_width,
+        cell_height,
+        gap,
+        image,
+    }
+}
+
+/// The height of an interactive control: a button, a retry, an action.
+///
+/// The guidelines' §4 asks for an interaction target of at least `spacing.xl`
+/// (32 px) that *grows* with the type; §3 says a control's vertical padding is
+/// `spacing.sm`. At the default scale the two do not agree — a 16 px body line
+/// plus `sm` above and below is 27.2 px — and the guidelines resolve that in
+/// favour of §4, so the floor is what carries the rule until `typography.scale`
+/// has grown the line box past it. The height therefore never shrinks below the
+/// target and never clips the label at 200 % text.
+///
+/// QML binds this instead of adding a line box and a padding together, so the
+/// number is derived once (root AGENTS.md §4) and a test can hold both ends of
+/// it: the floor, and the growth.
+pub fn action_height(tokens: &Theme) -> f32 {
+    let metrics = Metrics::from_tokens(tokens);
+    let label_and_padding = line_height(tokens, TextRole::Body) + metrics.space_sm * 2.0;
+
+    label_and_padding.max(metrics.space_xl)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +545,122 @@ mod tests {
         assert_eq!(card.right, metrics.space_lg);
         assert_eq!(card.bottom, metrics.space_lg);
         assert_eq!(card.left, metrics.space_lg);
+    }
+
+    #[test]
+    fn the_grid_fills_the_card_with_whole_tiles() {
+        let tokens = tokens();
+        let config = LauncherConfig::default();
+        let grid = grid(&tokens, &config, 512);
+        let metrics = Metrics::from_tokens(&tokens);
+
+        let available = 512.0 - metrics.space_xl * 2.0 - metrics.space_lg * 2.0;
+        let used = grid.columns as f32 * grid.cell_width + (grid.columns as f32 - 1.0) * grid.gap;
+        let pitch = grid.cell_width + grid.gap;
+        assert!(
+            used <= available,
+            "the tiles leave the card: {used} of {available}",
+        );
+        assert!(
+            used + pitch > available,
+            "one more column would have fitted",
+        );
+        assert_eq!(grid.columns, 4, "512 px holds four default tiles");
+        assert_eq!(
+            super::grid(&tokens, &config, 1024).columns,
+            8,
+            "the launchpad width holds eight whole cells",
+        );
+        assert!(grid.image >= f32::from(config.icon_size));
+        assert!(
+            grid.cell_height > grid.image,
+            "the label gets room below the icon"
+        );
+    }
+
+    #[test]
+    fn a_narrow_surface_still_gets_one_column() {
+        let tokens = tokens();
+        let config = LauncherConfig::default();
+
+        assert_eq!(grid(&tokens, &config, 0).columns, 1);
+        assert_eq!(grid(&tokens, &config, 120).columns, 1);
+    }
+
+    #[test]
+    fn the_grid_grows_with_the_type_instead_of_cutting_the_label() {
+        let tokens = tokens();
+        let config = LauncherConfig::default();
+        let normal = grid(&tokens, &config, 512);
+
+        let mut scaled = tokens.clone();
+        scaled.typography.scale *= 2.0;
+        let enlarged = grid(&scaled, &config, 512);
+
+        assert!(enlarged.cell_width > normal.cell_width);
+        assert!(enlarged.cell_height > normal.cell_height);
+        assert!(
+            enlarged.columns < normal.columns,
+            "wider tiles mean fewer columns in the same surface",
+        );
+        assert!(enlarged.columns >= 1);
+    }
+
+    #[test]
+    fn a_bigger_configured_icon_enlarges_the_tile() {
+        let tokens = tokens();
+        let plain = grid(&tokens, &LauncherConfig::default(), 512);
+
+        let mut bigger = LauncherConfig::default();
+        bigger.icon_size *= 2;
+        let enlarged = grid(&tokens, &bigger, 512);
+
+        assert!(enlarged.image > plain.image);
+        assert!(enlarged.cell_height > plain.cell_height);
+    }
+
+    #[test]
+    fn the_action_height_never_falls_below_the_interaction_target() {
+        let tokens = tokens();
+        let metrics = Metrics::from_tokens(&tokens);
+
+        assert_eq!(
+            action_height(&tokens),
+            metrics.space_xl,
+            "the default type is shorter than the target, so the target wins",
+        );
+
+        // A theme that shrinks the type still gets a control a pointer can hit.
+        let mut small = tokens.clone();
+        small.typography.scale = 0.5;
+        let small_metrics = Metrics::from_tokens(&small);
+        assert_eq!(action_height(&small), small_metrics.space_xl);
+        assert!(small_metrics.space_xl >= 32.0);
+    }
+
+    #[test]
+    fn the_action_height_grows_with_the_font_scale() {
+        let tokens = tokens();
+        let mut doubled = tokens.clone();
+        doubled.typography.scale *= 2.0;
+        let metrics = Metrics::from_tokens(&doubled);
+
+        let normal = action_height(&tokens);
+        let scaled = action_height(&doubled);
+
+        assert!(
+            scaled > normal,
+            "200 % text needs a taller control: {scaled} vs {normal}",
+        );
+        assert_eq!(
+            scaled,
+            line_height(&doubled, TextRole::Body) + metrics.space_sm * 2.0,
+            "past the floor the height is the label's line box plus the control padding",
+        );
+        assert!(
+            scaled > metrics.space_xl,
+            "the scaled control is taller than the target it had to clear",
+        );
     }
 
     #[test]

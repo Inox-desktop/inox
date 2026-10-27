@@ -10,6 +10,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 ├─────────────────────────────────────────────┤
 │ Layer 3: Shell 与用户界面                   │
 │  inox-shell, inox-panel, inox-launcher,     │
+│  …, inox-glass                              │
 │  inox-notifications, inox-settings,         │
 │  inox-lock, inox-wallpaper                  │
 ├─────────────────────────────────────────────┤
@@ -28,7 +29,7 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 |------|------|------|
 | **L1** 基础设施与共享库 | 通用类型、错误处理、日志、配置解析 | `inox-common`、`inox-config` |
 | **L2** 合成器、窗口管理、协议与认证边界 | DRM/KMS、输入、渲染、窗口管理、协议绑定、XWayland 集成、系统认证 | `inox-compositor`、`inox-protocols`、`inox-xwayland`、`inox-auth` |
-| **L3** Shell 与用户界面 | 基于 QML + Qt Quick 的桌面外壳与 UI 组件（领域逻辑仍在 Rust） | `inox-shell`、`inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-qml-prototype` |
+| **L3** Shell 与用户界面 | 基于 QML + Qt Quick 的桌面外壳与 UI 组件（领域逻辑仍在 Rust） | `inox-shell`、`inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-qml-prototype`、`inox-glass`（共享液态玻璃材质与 QML 组件；两条同层边 `inox-panel -> inox-glass` 与 `inox-notifications -> inox-glass` 见 ADR 0040/0044） |
 | **L4** 会话与系统集成 | 会话管理、空闲管理、显示管理、登录阶段编排 | `inox-session`、`inox-idle`、`inox-greet`、`inox-host` |
 | 元 / 组织 | 文档与组织级模板，不参与依赖图 | `inox`、`.github` |
 | 测试 | 端到端集成测试 | `inox-integration` |
@@ -116,4 +117,4 @@ systemd
 
 ## 当前实现边界
 
-架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与多窗口平铺（见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现。L3 的七个组件已从 Iced 迁到 QML + Qt Quick：面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染进 `wl_shm` 帧），其余五个是普通 Qt 窗口。**仍未取得**的是真实宿主上的截图证据——waydriver 宿主 job 尚未接线；离屏的面板与锁屏也没有 AT-SPI 语义桥。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按登录链落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。
+架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与多窗口平铺（见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现。L3 的七个组件已从 Iced 迁到 QML + Qt Quick：面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染进 `wl_shm` 帧），其余五个是普通 Qt 窗口。L3 新增共享的 `inox-glass`（ADR 0040）：面板经它向合成器请求模糊与折射，并和通知栈一起用它的玻璃 QML 组件绘制自己的外壳（面板的窗格与通知的卡片，后者见 ADR 0044）；通知栈是普通窗口，拿不到 layer 角色，因此它的卡片在真实会话里是**纯半透明**而不是磨砂。**仍未取得**的是真实宿主上的截图证据——waydriver 宿主 job 尚未接线；离屏的面板与锁屏也没有 AT-SPI 语义桥。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按登录链落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。

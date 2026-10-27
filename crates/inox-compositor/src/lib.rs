@@ -5,20 +5,27 @@
 //!
 //! # Current milestone
 //!
-//! The M2.5 hardware path uses libseat, Smithay DRM/GBM scanout, libinput
-//! and explicit frame lifetimes. Headless remains an explicit
-//! software-rendered CI backend. `auto` requires a usable physical output;
-//! device acquisition failure never reports a headless session as ready.
-//! Hardware support is limited to one active connector on one GPU, scale 1.
-//! CI evidence does not replace the O01/O04 human hardware acceptance.
+//! The hardware path uses libseat, Smithay DRM/GBM scanout, libinput and
+//! explicit frame lifetimes. Headless remains an explicit software-rendered CI
+//! backend. `auto` requires a usable physical output; device acquisition failure
+//! never reports a headless session as ready.
+//!
+//! Every GPU on the seat can drive its own connectors, and each output carries
+//! its own position and scale (fractional included). There is no cross-GPU buffer
+//! copy path yet, which is why `linux-dmabuf` is not advertised. CI evidence does
+//! not replace the O01–O04 human hardware acceptance.
+//!
+//! Window management is tiling-only: a toplevel becomes a window on the first
+//! commit that carries a buffer, the focused window is told it is `activated`,
+//! and `Super+Shift+Q` asks it to close. See [`state`] for those paths.
 //!
 //! # Layout
 //!
 //! - [`backend`] — DRM/GBM, libinput and shared frame lifecycle.
 //! - [`config`] — command line parsing into plain configuration data.
-//! - [`glass`] — the pure half of the private `inox-glass-v1` frosted-glass
-//!   protocol: parameters, capability decisions and the pane list the renderer
-//!   frosts.
+//! - [`glass`] — the pure half of the private `inox-glass-v1` glass protocol:
+//!   the blur and refraction parameters, the two capability decisions and the
+//!   pane list the renderer draws.
 //! - [`input`] — key presses mapped to compositor actions.
 //! - [`layout`] — the pure master/stack tiling geometry.
 //! - [`workspace`] — the pure window bookkeeping and layout order.

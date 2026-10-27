@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail};
 use inox_common::i18n::Locale;
 use inox_config::{Appearance, ConfigPaths, InoxConfig};
-use inox_session::runtime::{CommandSpec, RunOptions, ServiceSpec, SessionSpec};
+use inox_session::runtime::{self, CommandSpec, RunOptions, ServiceSpec, SessionSpec, Start};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -134,31 +134,38 @@ fn main() -> Result<()> {
             },
             required,
             oneshot,
+            start: Start::AtStartup,
             environment: BTreeMap::new(),
         },
     )
     .collect();
 
-    // The trusted lock client is started only when the session is asked for it.
-    // `inox-lock --take-lock` takes the real session lock and has no way to
-    // release it again, so starting it unconditionally would lock a session that
-    // nobody asked to lock; the switch is how an operator or an end-to-end test
-    // asks. Manual and idle-triggered locking are still open.
-    if std::env::var_os(LOCK_ON_START).is_some_and(|value| value == "1") {
-        let mut lock = CommandSpec::new(bin_dir.join("inox-lock"));
-        lock.arguments = vec![OsString::from("--take-lock")];
-        services.push(ServiceSpec {
-            name: "lock".into(),
-            command: lock,
-            // A crashed lock UI keeps the session locked and is restarted within
-            // the same bounded budget as every other optional component (ADR
-            // 0015). Once the budget is spent the session stays locked and stops
-            // retrying, which is the fail-closed direction.
-            required: false,
-            oneshot: false,
-            environment: BTreeMap::from([("INOX_LOCK_TOKEN".to_owned(), lock_token)]),
-        });
-    }
+    // The trusted lock client is always in the table, but it is started only when
+    // something asks for it: `INOX_SESSION_TAKE_LOCK=1` asks at boot, and
+    // `session-control-v1` (`inox-lock --request-lock`, a keybinding, the idle
+    // daemon) asks later. Starting it unconditionally would lock a session nobody
+    // asked to lock.
+    //
+    // `start: OnDemand` also means "started once, never restarted": a restart while
+    // the session is locked is a second lock the compositor refuses, and a restart
+    // after an unlock would take the desktop away again.
+    let start = if std::env::var_os(LOCK_ON_START).is_some_and(|value| value == "1") {
+        Start::AtStartup
+    } else {
+        Start::OnDemand
+    };
+    let mut lock = CommandSpec::new(bin_dir.join("inox-lock"));
+    lock.arguments = vec![OsString::from("--take-lock")];
+    services.push(ServiceSpec {
+        name: runtime::LOCK_SERVICE.into(),
+        command: lock,
+        required: false,
+        // A successful exit is the unlock: the client released the lock and the
+        // session should carry on without it.
+        oneshot: true,
+        start,
+        environment: BTreeMap::from([("INOX_LOCK_TOKEN".to_owned(), lock_token)]),
+    });
     let spec = SessionSpec {
         compositor,
         services,

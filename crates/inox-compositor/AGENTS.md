@@ -6,9 +6,11 @@
 
 基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
 
-广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc` 与私有 `inox_glass_manager_v1`（v1），M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及分数缩放起的 `wp_fractional_scale_manager_v1`，以及会话锁与通知总线起的 `ext_session_lock_manager_v1`（v1））。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc` 与私有 `inox_glass_manager_v1`（v2），M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及分数缩放起的 `wp_fractional_scale_manager_v1`，以及会话锁与通知总线起的 `ext_session_lock_manager_v1`（v1））。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
 
 输出拓扑：`InoxState` 持有一张输出表，所有输出映射进同一个 `Space`，位置是全局逻辑坐标（可为负）。分数缩放：每个输出有自己的缩放因子，渲染、光标与 layer 放置按该因子折算为物理像素，命中测试、平铺与工作区留在逻辑坐标。
+
+窗口生命周期：`xdg_toplevel` 创建后**不是窗口**。`XdgShellHandler::new_toplevel` 只发初始 configure 并把它放进 `awaiting_buffer`；第一次携带缓冲的 commit 经 `promote_awaiting_toplevel` 才进入 `Workspace`/`Space`（因此不绘制的 toplevel 不占 tile、不进 Alt+Tab、不拿焦点）。`sync_focus` 同时是 `xdg_toplevel.activated` 的唯一来源（以键盘实际焦点为准，layer 表面独占焦点时窗口确实失活）。`Super+Shift+Q` 通过 `Action::CloseWindow` 发 `xdg_toplevel.close`，只是请求，不拆窗口；`Super+Q` 仍是退出合成器。`xdg_popup` 的 grab 交给 Smithay 的 `PopupGrab`/`PopupKeyboardGrab`/`PopupPointerGrab`，点外部由 grab 自己 dismiss。
 
 ## crate 特有约束
 
@@ -34,12 +36,15 @@
 
 - **显示试用**：`org.inox.Configuration1.Reload` 立即应用并**拒绝**输出改动；输出模式/缩放/位置只能经同一对象路径上的 `org.inox.Configuration2` 的 `Trial`/`Confirm`/`Rollback` 应用。四条不可放宽的规则：**一个会话同一时刻至多一个试用**（第二个 `Trial` 失败）；**期限 30 秒由合成器持有**（`src/trial.rs::TRIAL_DEADLINE` 与 calloop 定时器），到期即恢复试用前的偏好，设置窗口消失也一样；**成功回执必须核对设备状态**——`rescan` 对不支持的 mode 只是 `warn!` 并保留旧 scanout，所以 `physical::apply_output_preferences` 必须在 `refresh_topology` 之后用 `GpuBackend::preferences_in_effect` 逐 connector 读回 mode/scale/position，核对不通过就先回滚再返回失败；**回退只退输出偏好**，主题/语言/输入/平铺保持试用后的值，且不写任何文件（持久化属于 `inox-settings`）。代次规则只由 `src/trial.rs::decide` 决定并有单元测试：迟到或陌生代次的 `Confirm` 失败且不固定模式，未知代次的 `Rollback` 幂等成功。headless 路径（`data.physical.is_none()`）继续拒绝输出改动。真实模式切换与 30 秒回退是 E4 真机证据，不得由 headless/离屏测试推断。
 
-- **毛玻璃（私有 `inox-glass-v1`）**：协议规范在 `inox-protocols/protocol/inox-glass-v1.xml`，纯逻辑（参数、clamp、capabilities 判定、pane 收集与坐标/clip 折算）在 `src/glass.rs`，模糊合成 pass 在 `src/render.rs`（两个 region 大小的可分离 scratch pass + `//_DEFINES_` 标记的 GLSL ES 1.00 shader，缓存于 `HeadlessRenderer`），协议接线在 `src/state.rs`。以下规则不可放宽：
-  - **`capabilities` 绝不广告不会兑现的模糊**：只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」三者同时成立才报 `MAX_BLUR_RADIUS`（64，冻结），否则报 0。普通 `xdg_toplevel` 由平铺路径合成，不实现毛玻璃，因此报 0；客户端据此选择降级为纯半透明。
-  - 参数以 **`WlSurface` 为键**存放在 `InoxState::frost`；表面、glass 对象或客户端任一消失都必须清除（`CompositorHandler::destroyed`、glass 对象的 `Dispatch::destroyed`、`detach_layers_of`、`prune_frost` 四处），死表面不得再被磨砂，也不得把参数留给复用的对象 id。
+- **玻璃材质（私有 `inox-glass-v1` v2）**：协议规范在 `inox-protocols/protocol/inox-glass-v1.xml`，纯逻辑（参数、clamp、capabilities 判定、pane 收集与坐标/clip/透镜折算）在 `src/glass.rs`，模糊与折射 pass 在 `src/render.rs`（两个 region 大小的可分离 scratch pass + 一趟 pane 大小的折射 pass，两个 shader 都带 `//_DEFINES_` 标记的 GLSL ES 1.00 源码，缓存于 `HeadlessRenderer`），协议接线在 `src/state.rs`。以下规则不可放宽：
+  - **两个 capabilities 事件都绝不广告不会兑现的效果**：只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」三者同时成立才报 `MAX_BLUR_RADIUS`（64，冻结）、`MAX_REFRACTION_HEIGHT`（128）、`MAX_REFRACTION_AMOUNT`（64）与 `depth | dispersion` 两个 flag 位，否则两个事件全报 0。普通 `xdg_toplevel` 由平铺路径合成，不实现玻璃，因此报 0；客户端据此选择降级为纯半透明。`capabilities`（v1 事件）永远先发一次，`liquid_capabilities` 只发给 `version() >= 2` 的对象；两个事件都由 `glass::liquid_capabilities` 一处算出，不得各写一份。
+  - **上限常量只有一份**：`MAX_BLUR_RADIUS` / `MAX_CORNER_RADIUS` / `MAX_REFRACTION_HEIGHT` / `MAX_REFRACTION_AMOUNT` 与 `REFRACTION_FLAG_*` 位在 `src/glass.rs`，并有单元测试对 `inox_protocols` 的生成值做漂移检查；`set_refraction` 的 `WEnum` 未知位按协议忽略（只读已知位），不得变成协议错误。
+  - 参数以 **`WlSurface` 为键**存放在 `InoxState::frost`；表面、glass 对象或客户端任一消失都必须清除（`CompositorHandler::destroyed`、glass 对象的 `Dispatch::destroyed`、`detach_layers_of`、`prune_frost` 四处），死表面不得再被绘制，也不得把参数留给复用的对象 id。
   - 同一表面第二个 `get_glass` 是**致命协议错误** `already_created`，不得静默替换成第二个控制器。
-  - **锁定期间没有任何 pane**：`scene_elements` 在锁定分支提前返回（此时还没有考虑任何 layer 表面），`glass::collect_panes(locked = true)` 另有单元测试固定该行为；毛玻璃因此不可能出现在锁定场景里。`tests/session_lock.rs` 用同一场景补上端到端证据：锁定前背景图案可见、pane 内的边真的被抹开，锁定帧只有锁表面（图案与 pane 一个像素都不剩），锁定期间新建的 glass 对象收到 `capabilities(max_radius = 0)`，且毛玻璃请求不打扰已持有的锁；解锁后同一场景回到屏幕。
-  - **物理（DRM）路径不实现毛玻璃（已知限制）**：`OutputDamageTracker` 的 damage 来自渲染元素自身的 damage snapshot，磨砂 passthrough 在该路径还没有诚实的 damage 描述。因此 `backend::drm` 只在场景里出现 pane 时 `warn!` 一次并保持场景清晰，且该路径 `frosting_supported()` 为假使 `capabilities` 报 0。**不得**把这写成「真机已支持毛玻璃」；真机验收属 E4，不得由 headless 测试推断。
+  - **没有透镜的 pane 与 v1 逐字节一致**：`pane.lens == None` 必须走与 v1 完全相同的调用序列；`glass_blur.rs` 的 v1 断言（含销毁对象后整行与对照帧 ±1 相等）是这条约束的守卫，动渲染路径时必须保持它通过。
+  - **锁定期间没有任何 pane**：`scene_elements` 在锁定分支提前返回（此时还没有考虑任何 layer 表面），`glass::collect_panes(locked = true)` 另有单元测试固定该行为；玻璃因此不可能出现在锁定场景里。`tests/session_lock.rs` 用同一场景补上端到端证据：锁定前背景图案可见、pane 内的边真的被抹开，锁定帧只有锁表面（图案与 pane 一个像素都不剩），锁定期间新建的 glass 对象收到 `capabilities(max_radius = 0)`，且玻璃请求不打扰已持有的锁；解锁后同一场景回到屏幕。
+  - **折射只能采样 pane 背后的已合成像素**：源矩形必须外扩 `ceil(blur) + ceil(amount)` 并裁到输出，采样坐标必须 clamp 到半 texel 内，圆角外必须 alpha 0；不得引入第二个 sampler，也不得回写 scratch。`LENS_UNIFORMS` 与 shader 声明的一致性由单元测试固定（Smithay 找不到的 uniform 位置是 -1，只会安静地画错）。
+  - **物理（DRM）路径不实现玻璃（已知限制）**：`OutputDamageTracker` 的 damage 来自渲染元素自身的 damage snapshot，模糊/折射 passthrough 在该路径还没有诚实的 damage 描述。因此 `backend::drm` 只在场景里出现 pane 时 `warn!` 一次并保持场景清晰，且该路径 `frosting_supported()` 为假使两个 capabilities 事件都报 0。**不得**把这写成「真机已支持玻璃」；真机验收属 E4，不得由 headless 测试推断。
 
 ## 主要依赖
 
@@ -73,7 +78,7 @@
 - **核心算法用 `proptest`**：`layout`（master/stack 平铺几何）与 `workspace`（窗口顺序/焦点）的属性测试必须覆盖「每窗口一块、块不越界、块互不重叠、master 列在 stack 左侧」等不变量。
 - **headless 集成测试**（`tests/`）必须可在无显示设备、无 DRM 设备的环境中通过：CI 使用软件渲染（`LIBGL_ALWAYS_SOFTWARE=1`）。
 - 「渲染确实发生」必须由**离屏像素读回**断言，不能只依赖日志；颜色比较需留 ±1 个 8 位步长的容差（不同驱动的 float→unorm 舍入不同）。
-- 窗口/输入集成测试（`tests/window_management.rs`）在**同一进程内**用 `UnixStream::pair()` 连接真实 `wayland-client`，创建 ≥2 个 xdg toplevel，断言合成器可观测状态（托管窗口数、`Space` 中的平铺落点、焦点），**不得 mock 被测核心逻辑**。
+- 窗口/输入集成测试（`tests/window_management.rs`）在**同一进程内**用 `UnixStream::pair()` 连接真实 `wayland-client`，创建 ≥2 个 xdg toplevel，断言合成器可观测状态（托管窗口数、`Space` 中的平铺落点、焦点），并**从客户端事件流**断言窗口生命周期：空提交后窗口数为 0、第一次带缓冲的 commit 才 map、`xdg_toplevel.activated` 随焦点翻转、`xdg_toplevel.close` 只到达焦点窗口且不解散窗口。**不得 mock 被测核心逻辑**；不得为了绕过 map 门槛而直接调用 `add_window`。
 - 键盘解析依赖 XKB rules 文件（`xkb-data`），CI 必须安装该系统包。
 - 一个测试进程只能持有一个 EGL display，**每个测试二进制中只保留一个创建 EGL 的测试**。
 - 进程级测试必须自备私有 `XDG_RUNTIME_DIR`（Wayland 套接字绑定需要绝对路径的运行时目录），并给子进程设定超时，避免 CI 挂死。
@@ -84,7 +89,7 @@
 - **分数缩放**（`tests/fractional_scale.rs`）：进程内、真实客户端——1.5x 输出的物理 mode、`zxdg_output_v1` 的逻辑尺寸与 `wl_output.scale` 的上取整分别断言；真实客户端提交 64x64 缓冲后**读回物理像素**，断言红块覆盖物理 `[12, 108)`：这是区分「真的按 1.5 合成」与「只广告了协议」的判别性断言。没有这条像素证据不得声明分数缩放已支持。
 - **剪贴板**（`tests/clipboard.rs`）：进程内、真实客户端——持焦点的客户端设置选择，随后获得焦点的客户端拿到 offer 并经 fd 读回字节（逐字节相等）；未获焦点的客户端**不得**被投递选择（这是 M3 的访问控制属性）。
 - **拖放**（`tests/drag_and_drop.rs`）：进程内、真实客户端——注入指针按下取得隐式抓取序号，客户端 A 发起拖放（两种 mime），指针移到 B 上后 B 收到 enter 与 mime，drop 后传输字节与源一致；另覆盖「指针移出所有表面后取消」（目标恰好收到一次 leave、不再收到 drop）与「拖放途中目标窗口被销毁」（合成器不崩、会话仍可用）。
-- **毛玻璃**（`tests/glass_blur.rs`）：进程内、真实客户端——背景层表面画一条锐利的黑白竖直边，半透明的 top 层「pane」覆盖它并创建真实 `inox_glass_manager_v1` 对象设置区域与半径。判别性断言：pane 外的边保持锐利（严格处于两端色之间的列 ≤ 2），pane 内的过渡至少 `radius/2` 列（同一场景、同一客户端、**未创建** glass 对象的对照渲染为 0 列），且 pane 区域与对照渲染有明显像素差异（≥ radius 列），因此「删掉模糊」必然使测试失败。另断言 layer 表面 capabilities == `MAX_BLUR_RADIUS`、普通 `xdg_toplevel` 为 0，以及同一表面第二个 `get_glass` 收到 `already_created` 致命协议错误。纯逻辑（clamp 幂等/单调、区域归一化上界、锁定无 pane、pane 排序与 clip）在 `src/glass.rs` 用单元测试与 proptest 固定。
+- **玻璃**（`tests/glass_blur.rs`，一个测试二进制只有一个创建 EGL 的测试，因此两半都在同一个 `#[test]` 里）：v1 部分——背景层表面画一条锐利的黑白竖直边，半透明的 top 层「pane」覆盖它并创建真实 `inox_glass_manager_v1` 对象设置区域与半径。判别性断言：pane 外的边保持锐利（严格处于两端色之间的列 ≤ 2），pane 内的过渡至少 `radius/2` 列（同一场景、同一客户端、**未创建** glass 对象的对照渲染为 0 列），且 pane 区域与对照渲染有明显像素差异（≥ radius 列），因此「删掉模糊」必然使测试失败。v2 部分——背景换成竖条纹（首个黑白边在 pane 内 8 px 处），pane 只设 `radius = 0` + `set_corner_radii(32, 0, 0, 0)` + `set_refraction(24, 8, flags)`：断言首个边缘向外（左）推移 1..=amount+2 列、pane 内部（离轮廓超过 band 的整段）与对照帧 ±1 一致、圆角外像素与对照一致（遮罩真的在遮）、`dispersion` 开启后带内红蓝通道最大差 ≥ 3 而未开启时为 0、`depth` 只改带内像素。另断言全局版本为 2、layer 表面的两个 capabilities 值、两个事件的到达顺序（`capabilities` 在前）、v1 对象收不到 `liquid_capabilities`、普通 `xdg_toplevel` 报 0，以及同一表面第二个 `get_glass` 收到 `already_created` 致命协议错误。`INOX_GLASS_ARTIFACT=<路径>` 时把最终合成帧写成 P6 PPM（不设置时不写任何文件）。纯逻辑（半径/圆角/带宽位移的 clamp 幂等与单调、区域归一化上界、透镜解析不超出 pane、锁定无 pane、pane 排序与 clip、shader 源码约束）在 `src/glass.rs` 与 `src/render.rs` 用单元测试与 proptest 固定。
 - 单线程驱动 + 截止时间：合成器与全部客户端在同一线程交替「收发」与「服务 display」，客户端套接字设为非阻塞，因此**不需要 sleep 排序、也不会有死锁线程**；每个等待都有超时。
 - `test-input` 的解析器与 PPM 编码器是纯函数，必须有单元测试（合法/非法/未知动词/越界数字/尾随空白/CRLF）。
 
@@ -95,17 +100,17 @@ src/
   lib.rs          库入口与模块说明
   main.rs         可执行入口（CLI、日志初始化）
   config.rs       命令行解析、后端选择与配置数据（不依赖 Smithay）
-  input.rs        按键 → 合成器动作的纯逻辑（Alt+Tab / Super+Q 等）
+  input.rs        按键 → 合成器动作的纯逻辑（Alt+Tab / Super+Q / Super+Shift+Q）
   layout.rs       master/stack 平铺几何（纯逻辑 + proptest）
   layers.rs       layer-shell 放置与独占区计算（纯逻辑 + proptest）
   workspace.rs    窗口簿记、每个窗口所属输出与布局顺序（纯逻辑 + proptest）
   topology.rs     输出放置、指针跨输出钳制与逻辑尺寸折算（纯逻辑 + proptest）
   trial.rs        显示试用的纯状态机：代次、30 秒期限、确认/回退判定
-  glass.rs        私有 inox-glass-v1 的纯逻辑：半径 clamp、区域归一化、capabilities 判定、pane 收集（单元测试 + proptest）
+  glass.rs        私有 inox-glass-v1 v2 的纯逻辑：半径/圆角/带宽位移 clamp、区域归一化、capabilities 判定、pane 与透镜解析（单元测试 + proptest）
   runtime.rs      calloop 事件循环：后端探测、套接字、信号、帧定时器（headless）
   runtime/reload.rs  会话 D-Bus 的 Configuration1/Configuration2 端点、离循环候选读取与试用期限
   runtime/physical.rs 物理后端的设备事件源、逐输出帧调度与输出偏好应用
-  render.rs       EGL surfaceless + GLES 离屏渲染（unsafe 例外之一）
+  render.rs       EGL surfaceless + GLES 离屏渲染、模糊与折射 pass（unsafe 例外之一）
   state.rs        Smithay 合成器状态、seat/xdg-shell/shm/viewporter/selection handler、窗口管理与输入注入
   test_input.rs   仅测试的控制通道（`--test-input`，`test-input` feature 默认关闭）
   backend/
@@ -119,12 +124,12 @@ tests/
   fractional_scale.rs    进程内真实客户端：1.5x 输出的逻辑/物理几何与像素落点（O03）
   ipc_global.rs          进程级：广告 inox_ipc 全局并应答 get_version
   signal_shutdown.rs     进程级：终止信号与帧预算都须以退出码 0 结束
-  window_management.rs   真实客户端创建 ≥2 窗口，断言平铺与输入（进程内）
+  window_management.rs   真实客户端创建 ≥2 窗口，断言 map 门槛、平铺、activation、关闭请求与输入（进程内）
   protocol_surface.rs    进程级：M3 全局的接口与版本可绑定；未启用 feature 时拒绝 --test-input
-  session_lock.rs        进程内真实客户端：锁定遮蔽、`locked` 时序、输入/选区隔离、授权拒绝、协议错误与 UI 死亡后拒绝接管；以及毛玻璃场景在锁定前/锁定中的判别性像素证据
+  session_lock.rs        进程内真实客户端：锁定遮蔽、`locked` 时序、输入/选区隔离、授权拒绝、协议错误与 UI 死亡后拒绝接管；以及玻璃场景在锁定前/锁定中的判别性像素证据
   clipboard.rs           进程内真实客户端：只有焦点客户端能读到剪贴板
   drag_and_drop.rs       进程内真实客户端：拖放传输、取消、目标中途销毁
-  glass_blur.rs          进程内真实客户端：毛玻璃的判别性像素证据（pane 内模糊、pane 外锐利、与无 glass 对象的对照渲染不同）＋ capabilities 角色前置条件与重复 get_glass 的致命错误
+  glass_blur.rs          进程内真实客户端：玻璃的判别性像素证据（v1 pane 内模糊/外锐利、v2 边缘折射、内部不变、圆角遮罩、色散分离）＋ 两个 capabilities 事件、角色前置条件与重复 get_glass 的致命错误
 ```
 
 工作区级文件（`Cargo.toml`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`LICENSE`、CI 工作流）在仓库根目录，**各 crate 不再各自保留一份**。

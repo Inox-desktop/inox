@@ -70,6 +70,11 @@ pub(crate) enum UiAction {
         /// The desktop file id of the row.
         id: String,
     },
+    /// A category chip was chosen.
+    SelectCategory {
+        /// The chip's category, as `src/categories.rs` spells it.
+        category: crate::categories::Category,
+    },
     /// The launch control was pressed.
     Activate,
     /// The window was asked to close.
@@ -95,6 +100,7 @@ impl UiAction {
             Self::SetQuery { value } => Some(Message::QueryChanged(value)),
             Self::ClearQuery => Some(Message::QueryCleared),
             Self::Choose { id } => Some(Message::RowChosen(id)),
+            Self::SelectCategory { category } => Some(Message::CategorySelected(category)),
             Self::Activate => Some(Message::Activated),
             Self::Dismiss => Some(Message::Dismissed),
             Self::RetryIndex => Some(Message::IndexRetried),

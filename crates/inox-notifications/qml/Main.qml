@@ -5,7 +5,10 @@
 // which projects the daemon's state, the design tokens and the Fluent catalogs
 // into one JSON model (`src/view.rs`). Do not add a colour, a pixel size or a
 // piece of user-visible text here — add it to the projection instead (root
-// AGENTS.md §4 and §7.3, docs/qml-migration-contract.md §4).
+// AGENTS.md §4 and §7.3, docs/qml-migration-contract.md §4). Every read of the
+// projection is qualified with the root id (`root.vm…`), including inside the
+// delegates: an unqualified name resolves through the scope chain, and the one
+// time it does not is the one time a surface throws a ReferenceError.
 //
 // The daemon's state machine, queue, policy and lock-state redaction all live in
 // Rust. This surface reports three things back and nothing else:
@@ -13,6 +16,32 @@
 //     on its own thread and refreshes the model when something changed;
 //   * `dispatch(json)` — one action the user took (close / action / invoke / link);
 //   * `reportReady(...)` — the load evidence the headless self-check waits for.
+//
+// Four things are worth knowing before changing this file:
+//
+//   * **The window is as tall as the stack it draws.** A card's height depends
+//     on how many lines its body wraps to, which only the text layout knows, so
+//     the height is bound to the column's implicit height plus the projected
+//     margin. `root.vm.window.height` is the *placement* budget — what
+//     `StackGeometry::window_size` reserves for a layer surface — and is not the
+//     height to draw at: binding the window to it is what clipped the second and
+//     third card off the bottom of the surface. The queue caps the live stack at
+//     `max_visible`, so following the content cannot grow without bound.
+//   * **The surface only exists when it has something to show.** `visible` is
+//     bound to a projected flag: with an empty stack the daemon puts no window on
+//     screen (the timer below keeps running either way — it has to, or the daemon
+//     would never notice the first notification).
+//   * **The body is rich text the projection wrote.** `bodyHtml` is built in
+//     Rust from sanitised spans with every character escaped, and the plain
+//     sentence stays in `bodyText` for the semantic tree. Rendering the body as
+//     one rich-text `Text` is what makes it wrap inside the card and what draws
+//     the underline the model keeps.
+//   * **Entrance motion is token-timed and ends where the card rests.** The two
+//     animations below write towards the resting values (opacity 1, no
+//     translation), so a card whose animation never runs is fully readable
+//     (ui-guidelines §8). They touch no input area and take no focus.
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Window
 import com.inox.notifications.qml
@@ -28,11 +57,19 @@ Window {
     // report: the tree has to instantiate every one of them.
     property int popupCards: 0
 
-    width: vm.window.width
-    height: vm.window.height
-    title: vm.window.title
-    color: vm.palette.background
-    visible: true
+    width: root.vm.window.width
+    height: column.implicitHeight + 2 * root.vm.metrics.margin
+    title: root.vm.window.title
+    // The window draws no colour of its own: the cards are glass, and glass only
+    // reads as glass when the stack is a shell over what is behind it
+    // (ui-guidelines §12, ADR 0044). `transparent` is the structural "no colour"
+    // sentinel, not a design colour — the clear colour is not a token because
+    // nothing is being designed here. The compositor softens the backdrop only for
+    // a layer role, so today this reads as plain translucency; the host that
+    // connects `src/placement.rs` to a layer surface is what turns it into
+    // frosted glass.
+    color: "transparent"
+    visible: root.vm.window.visible
 
     // The Rust-backed daemon bridge: `modelJson` plus the three invokables above.
     Notifications {
@@ -109,29 +146,35 @@ Window {
         id: stack
 
         anchors.fill: parent
-        anchors.margins: vm.metrics.margin
+        anchors.margins: root.vm.metrics.margin
 
         Accessible.role: Accessible.Pane
-        Accessible.name: vm.window.title
+        Accessible.name: root.vm.window.title
 
         Column {
             id: column
 
-            width: Math.min(stack.width, vm.metrics.width)
-            spacing: vm.metrics.cardGap
+            width: Math.min(stack.width, root.vm.metrics.width)
+            spacing: root.vm.metrics.cardGap
 
-            anchors.left: vm.alignment.horizontal === "left" ? parent.left : undefined
-            anchors.right: vm.alignment.horizontal === "right" ? parent.right : undefined
-            anchors.top: vm.alignment.vertical === "top" ? parent.top : undefined
-            anchors.bottom: vm.alignment.vertical === "bottom" ? parent.bottom : undefined
+            anchors.left: root.vm.alignment.horizontal === "left" ? parent.left : undefined
+            anchors.right: root.vm.alignment.horizontal === "right" ? parent.right : undefined
+            anchors.top: root.vm.alignment.vertical === "top" ? parent.top : undefined
+            anchors.bottom: root.vm.alignment.vertical === "bottom" ? parent.bottom : undefined
 
             // One card per notification, newest first — the order is the
             // projection's, not the surface's.
             Repeater {
-                model: vm.stack.popups
+                model: root.vm.stack.popups
 
-                delegate: Rectangle {
-                    id: card
+                delegate: GlassPane {
+                    id: cardItem
+
+                    // The card's data, injected by the view through a required
+                    // property: the delegate is a bound component, so the model
+                    // role has to be named here rather than read from a context
+                    // property it would silently fall back to.
+                    required property var modelData
 
                     // Read by the self-check: the tree really instantiated this
                     // popup, rather than merely being told about it.
@@ -139,23 +182,82 @@ Window {
                     property var popup: modelData
 
                     width: column.width
-                    height: cardColumn.implicitHeight + 2 * vm.metrics.cardInset
+                    height: cardColumn.implicitHeight + 2 * root.vm.metrics.cardInset
 
-                    color: popup.card.background
-                    border.color: popup.card.edge
-                    border.width: vm.metrics.borderWidth
-                    radius: popup.card.radius
+                    // The card is a pane of the shared glass material (ADR 0044,
+                    // ui-guidelines §12): a translucent tint with a highlight
+                    // hairline along its top edge and a shade along its bottom
+                    // one. Every value is a projected token; the pane picks no
+                    // colour and no width of its own, and it has no outline — the
+                    // two hairlines are its edges.
+                    tint: cardItem.popup.card.tint
+                    highlight: cardItem.popup.card.highlight
+                    shade: cardItem.popup.card.shade
+                    hairline: cardItem.popup.card.hairline
+                    radius: cardItem.popup.card.radius
 
                     Accessible.role: Accessible.Pane
-                    Accessible.name: popup.summary
+                    Accessible.name: cardItem.popup.summary
+
+                    // The resting state is the final state: opacity 1 and no
+                    // translation. The animations below move *towards* these
+                    // values, so a card is fully visible and correctly placed
+                    // even if they never run (ui-guidelines §8).
+                    opacity: 1
+
+                    transform: Translate {
+                        id: entryRise
+
+                        y: 0
+                    }
+
+                    // Entrance motion: a short fade and a rise of one token step,
+                    // both timed by `motion.fast` and eased out. A delegate is
+                    // rebuilt when the whole projection changes, so a card that
+                    // is already on screen re-enters; the duration is short
+                    // enough that this reads as a refresh rather than a flicker.
+                    NumberAnimation {
+                        target: cardItem
+                        property: "opacity"
+                        from: 0
+                        to: 1
+                        duration: root.vm.motion.fast
+                        easing.type: Easing.OutCubic
+                        running: true
+                    }
+
+                    NumberAnimation {
+                        target: entryRise
+                        property: "y"
+                        from: root.vm.motion.rise
+                        to: 0
+                        duration: root.vm.motion.fast
+                        easing.type: Easing.OutCubic
+                        running: true
+                    }
+
+                    // The urgency rail: a mark on the leading edge of a critical
+                    // card, in the same token colour as its urgency sentence. It
+                    // is inset past the card's own corner so it never pokes
+                    // through it, and it is decoration: the sentence on the card
+                    // is what says "Critical" (ui-guidelines §5, §6).
+                    Rectangle {
+                        visible: cardItem.popup.card.rail.visible
+                        x: root.vm.metrics.borderWidth
+                        y: cardItem.popup.card.rail.inset
+                        width: cardItem.popup.card.rail.width
+                        height: parent.height - 2 * cardItem.popup.card.rail.inset
+                        radius: cardItem.popup.card.rail.radius
+                        color: cardItem.popup.card.rail.color
+                    }
 
                     Column {
                         id: cardColumn
 
-                        x: vm.metrics.cardInset
-                        y: vm.metrics.cardInset
-                        width: parent.width - 2 * vm.metrics.cardInset
-                        spacing: vm.metrics.sectionGap
+                        x: root.vm.metrics.cardInset
+                        y: root.vm.metrics.cardInset
+                        width: parent.width - 2 * root.vm.metrics.cardInset
+                        spacing: root.vm.metrics.sectionGap
 
                         // The header: the application's icon's place, who is
                         // speaking, and the close button.
@@ -168,24 +270,24 @@ Window {
 
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                spacing: vm.metrics.inlineGap
+                                spacing: root.vm.metrics.inlineGap
 
                                 // The space an application icon occupies. This
                                 // daemon does not decode icons yet, so it draws
                                 // the placeholder rather than a hole.
                                 Rectangle {
-                                    visible: popup.icon.present
-                                    width: popup.icon.size
-                                    height: popup.icon.size
-                                    radius: popup.icon.radius
-                                    color: popup.icon.fill
+                                    visible: cardItem.popup.icon.present
+                                    width: cardItem.popup.icon.size
+                                    height: cardItem.popup.icon.size
+                                    radius: cardItem.popup.icon.radius
+                                    color: cardItem.popup.icon.fill
                                 }
 
                                 Text {
-                                    visible: popup.appName !== null
-                                    text: popup.appName !== null ? popup.appName : ""
-                                    color: vm.palette.textMuted
-                                    font.pixelSize: vm.metrics.captionSize
+                                    visible: cardItem.popup.appName !== null
+                                    text: cardItem.popup.appName !== null ? cardItem.popup.appName : ""
+                                    color: root.vm.palette.textMuted
+                                    font.pixelSize: root.vm.metrics.captionSize
 
                                     Accessible.role: Accessible.StaticText
                                     Accessible.name: text
@@ -197,18 +299,18 @@ Window {
 
                                 property bool hovered: closeArea.containsMouse
                                 property bool pressed: closeArea.pressed
-                                property var control: popup.close.control
+                                property var control: cardItem.popup.close.control
 
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: closeLabel.implicitWidth + 2 * vm.metrics.controlInset
-                                height: vm.metrics.controlHeight
-                                radius: vm.metrics.controlRadius
+                                width: closeLabel.implicitWidth + 2 * root.vm.metrics.controlInset
+                                height: root.vm.metrics.controlHeight
+                                radius: root.vm.metrics.controlRadius
 
                                 color: pressed ? control.press.fill
                                                 : hovered ? control.hover.fill
                                                           : control.rest.fill
-                                border.width: vm.metrics.borderWidth
+                                border.width: root.vm.metrics.borderWidth
                                 border.color: pressed ? control.press.border
                                                       : hovered ? control.hover.border
                                                                 : control.rest.border
@@ -217,15 +319,15 @@ Window {
                                     id: closeLabel
 
                                     anchors.centerIn: parent
-                                    text: popup.close.label
-                                    color: pressed ? control.press.text
-                                                   : hovered ? control.hover.text
-                                                             : control.rest.text
-                                    font.pixelSize: vm.metrics.bodySize
+                                    text: cardItem.popup.close.label
+                                    color: closeButton.pressed ? closeButton.control.press.text
+                                                   : closeButton.hovered ? closeButton.control.hover.text
+                                                             : closeButton.control.rest.text
+                                    font.pixelSize: root.vm.metrics.bodySize
                                 }
 
                                 Accessible.role: Accessible.Button
-                                Accessible.name: popup.close.label
+                                Accessible.name: cardItem.popup.close.label
 
                                 MouseArea {
                                     id: closeArea
@@ -235,7 +337,7 @@ Window {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: notifications.dispatch(JSON.stringify({
                                         "type": "close",
-                                        "id": popup.id
+                                        "id": cardItem.popup.id
                                     }))
                                 }
                             }
@@ -244,64 +346,48 @@ Window {
                         // The card's one heading: the notification's summary.
                         Text {
                             width: parent.width
-                            text: popup.summary
-                            color: vm.palette.text
-                            font.pixelSize: vm.metrics.headingSize
+                            text: cardItem.popup.summary
+                            color: root.vm.palette.text
+                            font.pixelSize: root.vm.metrics.headingSize
                             font.bold: true
                             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
 
                             Accessible.role: Accessible.Heading
-                            Accessible.name: popup.summary
+                            Accessible.name: cardItem.popup.summary
                         }
 
-                        // The body: the spans the sanitiser produced, each one
-                        // drawn with the weight, style, underline and colour the
-                        // projection resolved. A link is the only span that does
-                        // anything when clicked.
+                        // The body: one run of escaped rich text, so it wraps to
+                        // the card's width and draws the emphasis the model kept.
+                        // A link is the only thing in it that does something when
+                        // clicked, and it reports the same `link` action the span
+                        // projection used to.
                         Item {
                             id: bodyBox
 
                             width: parent.width
-                            height: bodyFlow.height
-                            visible: popup.body.length > 0
+                            height: bodyLine.implicitHeight
+                            visible: cardItem.popup.bodyText.length > 0
 
                             Accessible.role: Accessible.StaticText
-                            Accessible.name: popup.bodyText
+                            Accessible.name: cardItem.popup.bodyText
 
-                            Flow {
-                                id: bodyFlow
+                            Text {
+                                id: bodyLine
 
                                 width: parent.width
-                                spacing: 0
+                                text: cardItem.popup.bodyHtml
+                                textFormat: Text.RichText
+                                color: root.vm.palette.text
+                                linkColor: root.vm.palette.accent
+                                font.pixelSize: root.vm.metrics.bodySize
+                                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
 
-                                Repeater {
-                                    model: popup.body
-
-                                    delegate: Text {
-                                        id: span
-
-                                        property var piece: modelData
-
-                                        text: piece.text
-                                        color: piece.color
-                                        font.pixelSize: vm.metrics.bodySize
-                                        font.bold: piece.bold
-                                        font.italic: piece.italic
-                                        font.underline: piece.underline
-                                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            enabled: span.piece.link
-                                            hoverEnabled: span.piece.link
-                                            cursorShape: span.piece.link ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                            onClicked: notifications.dispatch(JSON.stringify({
-                                                "type": "link",
-                                                "id": popup.id,
-                                                "href": span.piece.href
-                                            }))
-                                        }
-                                    }
+                                onLinkActivated: function (href) {
+                                    notifications.dispatch(JSON.stringify({
+                                        "type": "link",
+                                        "id": cardItem.popup.id,
+                                        "href": href
+                                    }))
                                 }
                             }
                         }
@@ -311,30 +397,32 @@ Window {
                         // instead of running off the card (ui-guidelines §7).
                         Flow {
                             width: parent.width
-                            spacing: vm.metrics.inlineGap
-                            visible: popup.actions.length > 0
+                            spacing: root.vm.metrics.inlineGap
+                            visible: cardItem.popup.actions.length > 0
 
                             Repeater {
-                                model: popup.actions
+                                model: cardItem.popup.actions
 
                                 delegate: Rectangle {
                                     id: actionButton
+
+                                    required property var modelData
 
                                     property var action: modelData
                                     property bool hovered: actionArea.containsMouse
                                     property bool pressed: actionArea.pressed
 
                                     width: (cardColumn.width
-                                            - (vm.metrics.actionsPerRow - 1) * vm.metrics.controlGap)
-                                           / vm.metrics.actionsPerRow
-                                    height: vm.metrics.controlHeight
-                                    radius: vm.metrics.controlRadius
+                                            - (root.vm.metrics.actionsPerRow - 1) * root.vm.metrics.controlGap)
+                                           / root.vm.metrics.actionsPerRow
+                                    height: root.vm.metrics.controlHeight
+                                    radius: root.vm.metrics.controlRadius
 
                                     color: !action.enabled ? action.control.disabled.fill
                                            : pressed ? action.control.press.fill
                                                      : hovered ? action.control.hover.fill
                                                                : action.control.rest.fill
-                                    border.width: vm.metrics.borderWidth
+                                    border.width: root.vm.metrics.borderWidth
                                     border.color: !action.enabled ? action.control.disabled.border
                                                   : pressed ? action.control.press.border
                                                             : hovered ? action.control.hover.border
@@ -342,13 +430,13 @@ Window {
 
                                     Text {
                                         anchors.centerIn: parent
-                                        width: parent.width - 2 * vm.metrics.controlInset
+                                        width: parent.width - 2 * root.vm.metrics.controlInset
                                         text: actionButton.action.label
                                         color: !actionButton.action.enabled ? actionButton.action.control.disabled.text
                                                : actionButton.pressed ? actionButton.action.control.press.text
                                                                       : actionButton.hovered ? actionButton.action.control.hover.text
                                                                                              : actionButton.action.control.rest.text
-                                        font.pixelSize: vm.metrics.bodySize
+                                        font.pixelSize: root.vm.metrics.bodySize
                                         horizontalAlignment: Text.AlignHCenter
                                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                                     }
@@ -366,7 +454,7 @@ Window {
                                         cursorShape: actionButton.action.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                         onClicked: notifications.dispatch(JSON.stringify({
                                             "type": "action",
-                                            "id": popup.id,
+                                            "id": cardItem.popup.id,
                                             "key": actionButton.action.id
                                         }))
                                     }
@@ -378,11 +466,11 @@ Window {
                         // said on the card rather than only on hover (D05).
                         Text {
                             width: parent.width
-                            visible: popup.actions.length > 0 && popup.actions[0].disabledReason !== null
-                            text: popup.actions.length > 0 && popup.actions[0].disabledReason !== null
-                                  ? popup.actions[0].disabledReason : ""
-                            color: vm.palette.textMuted
-                            font.pixelSize: vm.metrics.captionSize
+                            visible: cardItem.popup.actions.length > 0 && cardItem.popup.actions[0].disabledReason !== null
+                            text: cardItem.popup.actions.length > 0 && cardItem.popup.actions[0].disabledReason !== null
+                                  ? cardItem.popup.actions[0].disabledReason : ""
+                            color: root.vm.palette.textMuted
+                            font.pixelSize: root.vm.metrics.captionSize
                             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
 
                             Accessible.role: Accessible.StaticText
@@ -393,23 +481,23 @@ Window {
                         // only as a colour) and how long ago it arrived.
                         Row {
                             width: parent.width
-                            spacing: vm.metrics.inlineGap
+                            spacing: root.vm.metrics.inlineGap
 
                             Text {
-                                visible: popup.urgencyNote !== null
-                                text: popup.urgencyNote !== null ? popup.urgencyNote : ""
-                                color: popup.urgencyColor
-                                font.pixelSize: vm.metrics.captionSize
+                                visible: cardItem.popup.urgencyNote !== null
+                                text: cardItem.popup.urgencyNote !== null ? cardItem.popup.urgencyNote : ""
+                                color: cardItem.popup.urgencyColor
+                                font.pixelSize: root.vm.metrics.captionSize
                                 font.bold: true
                             }
 
                             Text {
-                                text: popup.age
-                                color: vm.palette.textMuted
-                                font.pixelSize: vm.metrics.captionSize
+                                text: cardItem.popup.age
+                                color: root.vm.palette.textMuted
+                                font.pixelSize: root.vm.metrics.captionSize
 
                                 Accessible.role: Accessible.StaticText
-                                Accessible.name: popup.age
+                                Accessible.name: cardItem.popup.age
                             }
                         }
                     }
@@ -420,29 +508,29 @@ Window {
             Rectangle {
                 id: overflowLine
 
-                property var line: vm.stack.overflow
+                property var line: root.vm.stack.overflow
 
                 width: column.width
-                height: overflowColumn.implicitHeight + 2 * vm.metrics.noticeInset
+                height: overflowColumn.implicitHeight + 2 * root.vm.metrics.noticeInset
                 visible: line !== null
 
-                color: line !== null ? line.background : vm.palette.surfaceVariant
-                border.color: line !== null ? line.edge : vm.palette.border
-                border.width: vm.metrics.borderWidth
+                color: line !== null ? line.background : root.vm.palette.surfaceVariant
+                border.color: line !== null ? line.edge : root.vm.palette.border
+                border.width: root.vm.metrics.borderWidth
                 radius: line !== null ? line.radius : 0
 
                 Column {
                     id: overflowColumn
 
-                    x: vm.metrics.noticeInset
-                    y: vm.metrics.noticeInset
-                    width: parent.width - 2 * vm.metrics.noticeInset
+                    x: root.vm.metrics.noticeInset
+                    y: root.vm.metrics.noticeInset
+                    width: parent.width - 2 * root.vm.metrics.noticeInset
 
                     Text {
                         width: parent.width
                         text: overflowLine.line !== null ? overflowLine.line.text : ""
-                        color: overflowLine.line !== null ? overflowLine.line.textColor : vm.palette.textMuted
-                        font.pixelSize: vm.metrics.captionSize
+                        color: overflowLine.line !== null ? overflowLine.line.textColor : root.vm.palette.textMuted
+                        font.pixelSize: root.vm.metrics.captionSize
                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
 
                         Accessible.role: Accessible.StaticText
@@ -456,29 +544,29 @@ Window {
             Rectangle {
                 id: noticeLine
 
-                property var line: vm.stack.notice
+                property var line: root.vm.stack.notice
 
                 width: column.width
-                height: noticeColumn.implicitHeight + 2 * vm.metrics.noticeInset
+                height: noticeColumn.implicitHeight + 2 * root.vm.metrics.noticeInset
                 visible: line !== null
 
-                color: line !== null ? line.background : vm.palette.surfaceVariant
-                border.color: line !== null ? line.edge : vm.palette.border
-                border.width: vm.metrics.borderWidth
+                color: line !== null ? line.background : root.vm.palette.surfaceVariant
+                border.color: line !== null ? line.edge : root.vm.palette.border
+                border.width: root.vm.metrics.borderWidth
                 radius: line !== null ? line.radius : 0
 
                 Column {
                     id: noticeColumn
 
-                    x: vm.metrics.noticeInset
-                    y: vm.metrics.noticeInset
-                    width: parent.width - 2 * vm.metrics.noticeInset
+                    x: root.vm.metrics.noticeInset
+                    y: root.vm.metrics.noticeInset
+                    width: parent.width - 2 * root.vm.metrics.noticeInset
 
                     Text {
                         width: parent.width
                         text: noticeLine.line !== null ? noticeLine.line.text : ""
-                        color: noticeLine.line !== null ? noticeLine.line.textColor : vm.palette.textMuted
-                        font.pixelSize: vm.metrics.captionSize
+                        color: noticeLine.line !== null ? noticeLine.line.textColor : root.vm.palette.textMuted
+                        font.pixelSize: root.vm.metrics.captionSize
                         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
 
                         Accessible.role: Accessible.StaticText

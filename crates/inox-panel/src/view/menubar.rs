@@ -61,8 +61,7 @@ pub fn menubar(
         pane_y,
         width,
         pane,
-        &theme::glass_stops(tokens, false, pane, false),
-        0.0,
+        &theme::pane_style(tokens, false, 0.0, false),
     );
 
     let top = pane_y + geometry.inset + geometry.highlight_height;

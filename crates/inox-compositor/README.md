@@ -32,31 +32,65 @@ top/overlay 的 `Exclusive` 优先，`OnDemand` 通过点击进入、点击应�
 独占区恢复和坏客户端隔离；CI 的现有合成器分片会执行它。本次没有更换 L3 客户端宿主（Iced 已由 QML + Qt Quick 取代；合成器侧不参与该迁移），
 L3 的 layer-shell 客户端接线仍待完成，亦不宣称真机 DRM 或完整 M4 已验收。
 
-### 毛玻璃（私有 `inox-glass-v1`）
+### 窗口生命周期与关闭
 
-合成器广告私有 `inox_glass_manager_v1` v1：拥有 layer 角色的表面可以创建
-`inox_glass_v1`，指定一个表面局部坐标的区域与一个模糊半径，合成器把该区域**背后已经合成好的
-像素**模糊后覆盖回去，客户端再以自己的半透明像素叠上去。模糊像素不会以任何形式回传给客户端
-（协议里没有 image/`fd`/颜色事件），请求也被裁剪到该表面与所在输出之内。
+`xdg_toplevel` 创建时只是一个空表面。合成器给它发初始 configure 后把它放进
+`awaiting_buffer`，**第一次携带缓冲的 commit** 才把它变成窗口——占一个 tile、进入
+Alt+Tab 顺序、获得键盘焦点。因此创建了却从不绘制的 toplevel（隐藏的辅助窗口、崩溃前
+没画出第一帧的客户端）不会挤占别人的布局，也不会抢走焦点。
 
-- 半径上限为 64（`src/glass.rs::MAX_BLUR_RADIUS`，冻结），`capabilities` 事件如实报告：
-  只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」三者同时
-  成立才报 64，否则报 0。普通 `xdg_toplevel` 走平铺路径，不实现毛玻璃，因此报 0；同一表面
-  第二个 `get_glass` 是致命协议错误 `already_created`。
-- 实现是 `src/render.rs` 里两个 region 大小的可分离 pass（横向、纵向各一次 9-tap 高斯，
-  `step = radius / 4`，GLSL ES 1.00 且带 `//_DEFINES_` 标记的自定义纹理 shader），程序与两张
-  scratch 纹理在 `HeadlessRenderer` 上缓存。为了能采样背景，headless 的渲染目标从
-  renderbuffer 换成了 `GlesTexture`；无 pane 时走的仍是原来的「clear + 逐元素绘制」路径。
-- 参数以表面为键，表面 / glass 对象 / 连接任一消失都会清除，死表面不会再被磨砂；锁定期间
-  `scene_elements` 在考虑任何 layer 表面之前就返回，所以锁定场景里不可能出现 pane。
-- **已知限制**：物理（DRM）路径还没有毛玻璃。它的呈现经 `OutputDamageTracker`，而磨砂
+`xdg_toplevel.activated` 以键盘实际焦点为准，由 `sync_focus` 统一推送：焦点窗口收到
+`Activated`，失去焦点的窗口被清除；layer 表面以 `Exclusive` 拿走键盘时窗口确实处于非激活
+态。`Super+Shift+Q` 向焦点窗口发 `xdg_toplevel.close`（`Action::CloseWindow`）——这是请求，
+客户端可以保存、确认或拒绝，合成器不会替它拆窗口；`Super+Q` 仍然退出合成器。
+
+`xdg_popup` 的 grab 交给 Smithay 的 `PopupGrab` / `PopupKeyboardGrab` /
+`PopupPointerGrab`：菜单打开期间指针与键盘属于它，点击外部由 grab 自己发 `popup_done`
+并收起。被拒绝的 grab 只记 `debug!`，客户端看到的仍是一个普通（无 grab）弹窗。
+
+`tests/window_management.rs` 用真实客户端断言这四条：空提交后窗口数为 0、绘制后平铺落点、
+`activated` 随 Alt+Tab 在两个客户端之间翻转、关闭请求只到达焦点窗口且不解散窗口。
+
+### 玻璃材质（私有 `inox-glass-v1` v2）
+
+合成器广告私有 `inox_glass_manager_v1` **v2**：拥有 layer 角色的表面可以创建
+`inox_glass_v1`，指定一个表面局部坐标的区域、一个模糊半径，以及（v2 起）四角圆角半径与一条
+折射带。合成器把该区域**背后已经合成好的像素**模糊、沿圆角轮廓折射后覆盖回去，客户端再以
+自己的半透明像素叠上去。玻璃像素不会以任何形式回传给客户端（协议里没有 image/`fd`/颜色
+事件），请求也被裁剪到该表面与所在输出之内。
+
+- **v1（模糊）**：半径上限 64（`src/glass.rs::MAX_BLUR_RADIUS`，冻结），`capabilities` 事件
+  如实报告：只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」
+  三者同时成立才报 64，否则报 0。普通 `xdg_toplevel` 走平铺路径，不实现玻璃效果，因此报 0；
+  同一表面第二个 `get_glass` 是致命协议错误 `already_created`。
+- **v2（折射）**：新增请求 `set_corner_radii(top_left, top_right, bottom_right, bottom_left)`
+  与 `set_refraction(height, amount, flags)`，新增事件 `liquid_capabilities`（上限
+  `MAX_CORNER_RADIUS = 16384`、`MAX_REFRACTION_HEIGHT = 128`、
+  `MAX_REFRACTION_AMOUNT = 64`；`flags` 报告合成器真的实现的 `depth` / `dispersion` 位）。
+  `capabilities` 仍然先发一次，v1 对象永远收不到新事件，因此 v1 客户端完全不受影响；两边的
+  上限都遵守同一套三条件诚实规则。
+- 实现是 `src/render.rs`：v1 走两个 region 大小的可分离 pass（横向、纵向各一次 9-tap 高斯，
+  `step = radius / 4`）；带透镜的 pane 先把外扩 `ceil(blur) + ceil(amount)` 的源矩形模糊
+  （`radius == 0` 时同一个 shader 以 `step = 0` 做恒等拷贝），再由一趟 pane 大小的折射 pass
+  采样它——圆角矩形 SDF 遮罩、带内沿 SDF 梯度位移、可选径向 depth 分量、可选 7-tap 色散，
+  轮廓外 alpha 为 0。两个 shader 都是 GLSL ES 1.00 且带 `//_DEFINES_` 标记，只用一个
+  sampler，所有采样 clamp 到半 texel 内；程序与 scratch / lens 纹理在 `HeadlessRenderer` 上
+  缓存。为了能采样背景，headless 的渲染目标从 renderbuffer 换成了 `GlesTexture`；无 pane 时
+  仍走原来的「clear + 逐元素绘制」路径，**没有透镜的 pane 与 v1 逐字节一致**。
+- 参数以表面为键，表面 / glass 对象 / 连接任一消失都会清除；锁定期间 `scene_elements` 在考虑
+  任何 layer 表面之前就返回，所以锁定场景里不可能出现 pane。
+- **已知限制**：物理（DRM）路径还没有玻璃效果。它的呈现经 `OutputDamageTracker`，而模糊/折射
   passthrough 在该路径还没有诚实的 damage 描述，因此 `backend::drm` 在场景里出现 pane 时
-  只 `warn!` 一次并保持画面清晰，同时 `capabilities` 报 0——不广告不会兑现的效果。真机毛玻璃
-  属 E4，尚未执行。
+  只 `warn!` 一次并保持画面清晰，同时两个 capabilities 事件都报 0——不广告不会兑现的效果。
+  真机玻璃属 E4，尚未执行。
 
-`tests/glass_blur.rs` 是判别性证据：pane 外的锐利竖直边保持锐利（严格居中的列 ≤ 2），pane 内的
-过渡至少 `radius/2` 列，而未创建 glass 对象的同场景对照渲染为 0 列，且 pane 区域与对照渲染有
-明显差异；删掉模糊该测试必然失败。真机（DRM）路径的行为未由此推断。
+`tests/glass_blur.rs` 是判别性证据，两半都测。v1 部分：pane 外的锐利竖直边保持锐利（严格居中
+的列 ≤ 2），pane 内的过渡至少 `radius/2` 列，未创建 glass 对象的同场景对照渲染为 0 列。v2 部分：
+背景换成竖条纹，pane 只开折射（`radius = 0`），断言条纹边缘向外推移若干列、pane 内部与对照逐
+字节一致、圆角外的像素仍等于对照（SDF 遮罩真的在遮）、开启 `dispersion` 后同一处红蓝通道分离
+而未开启时为 0、`depth` 只改变带内像素。删掉折射 pass、SDF 遮罩或色散分支，对应断言必然失败。
+设置 `INOX_GLASS_ARTIFACT=<路径>` 时测试还把最终合成帧写成 P6 PPM 供人眼复核；不设置时不写
+任何文件，CI 行为不变。真机（DRM）路径的行为未由此推断。
 
 ### 多输出、多 GPU 与缩放
 

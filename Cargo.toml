@@ -43,6 +43,11 @@ categories = ["desktop"]
 inox-common = { path = "crates/inox-common", version = "0.1" }
 inox-config = { path = "crates/inox-config", version = "0.1" }
 inox-protocols = { path = "crates/inox-protocols", version = "0.1" }
+# The shared liquid-glass material API and QML component library (ADR 0040). It is
+# L3, but it depends only downwards (`inox-config` L1, `inox-protocols` L2 and
+# `wayland-client`), so consumers name it like any other path dependency. The
+# `inox-panel -> inox-glass` edge is the same-layer exception recorded below.
+inox-glass = { path = "crates/inox-glass", version = "0.1" }
 # the authentication boundary. `default-features = false` is the point, not a detail: it is how the
 # login *screen* gets the `auth-v1` contract without linking `libpam` or carrying
 # the code that can start a session. The privileged half is enabled by this
@@ -53,8 +58,20 @@ inox-auth = { path = "crates/inox-auth", version = "0.1", default-features = fal
 # --- third-party: one version for the whole graph -------------------------
 anyhow = "1"
 calloop = { version = "0.14", features = ["signals"] }
+# The keyboard path on the session-lock surface: `wl_keyboard` hands the client an
+# XKB keymap, and reading it by hand would mean reimplementing XKB — which on any
+# layout but US produces the wrong character, silently. Already in the graph through
+# smithay (the compositor links the same system library). The `wayland` feature is
+# deliberately off: it exists for `Keymap::new_from_fd`, which is an `unsafe fn`,
+# and Inox-authored code stays unsafe-free — the lock screen reads the keymap text
+# through a bounded `String` instead.
+xkbcommon = { version = "0.8", default-features = false }
 rustix = { version = "1", features = ["process"] }
 thiserror = "2"
+# wayland-scanner emits `bitflags!` for a `bitfield="true"` protocol enum
+# (`inox-glass-v1` v2's refraction flags). wayland-rs already pulls the
+# same 2.x line in, so this adds no new version to the graph.
+bitflags = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -132,6 +149,10 @@ cxx = "1.0"
 cxx-qt = "0.10.0"
 cxx-qt-lib = { version = "0.10.0", features = ["full"] }
 cxx-qt-build = "0.10.0"
+# The build-script helper behind `cxx-qt-build`; named directly by a crate that
+# needs `QResourceFile` (not re-exported by cxx-qt-build) to give QML resources
+# an explicit alias. Same 0.10.0 `cxx-qt-build` already resolves.
+qt-build-utils = "0.10.0"
 
 # The notification daemon is the process behind `org.freedesktop.Notifications`,
 # so it needs a real D-Bus client and server (M5, acceptance D06). zbus is the
@@ -202,6 +223,11 @@ l3 = [
     # at L3 where the future QML host components sit so the layering test and
     # the CI matrix cover it like any other shard.
     "inox-qml-prototype",
+    # ADR 0040: the shared glass material API and the QML component library. L3
+    # because its consumers are L3 components; the crate itself only depends
+    # downwards, and the one incoming L3 edge is recorded in
+    # `same_layer_exceptions` below.
+    "inox-glass",
 ]
 l4 = ["inox-session", "inox-idle", "inox-greet", "inox-host"]
 test = ["inox-integration"]
@@ -231,10 +257,32 @@ l3_dependencies_on_compositor = ["inox-wallpaper"]
 # the reader. Settling rule 1 for intra-layer ordering is now blocking, not
 # optional.
 #
-# The shell family is the third place this will bite: PRD §3.1 lists
+# `inox-panel -> inox-glass` (L3 -> L3) is the third entry, and ADR 0040
+# authorised it explicitly ("分层例外"): the panel and every later L3 component
+# share one material API and one QML component library instead of each copying
+# the clamp/fallback decisions, which is how `inox-panel/src/frost.rs` came to be
+# the only implementation. `inox-glass` itself depends only downwards, so this is
+# a star with one centre, not a web of L3 edges.
+#
+# `inox-notifications -> inox-glass` (L3 -> L3) is the fourth entry, authorised by
+# ADR 0044, which extends 0040's component library to its second consumer. The
+# notification stack is one of the three surfaces ui-guidelines §12 permits glass
+# on, and its cards are an外壳 floating over the user's windows; drawing the
+# tint/highlight/shade a second time in the notifications crate is exactly the
+# drift ADR 0040 sunk `inox-glass` to prevent. The edge is **build-time only** —
+# `inox-notifications` takes `inox-glass` as a build-dependency so its `build.rs`
+# can compile the QML components into its own module (KDAB/cxx-qt#770) — and it
+# adds no run-time Rust dependency. Deleting it means deleting this entry too.
+#
+# The shell family is a fourth place this will bite: PRD §3.1 lists
 # `inox-panel` and friends as depending on `inox-shell` (L3 -> L3). Nothing does
-# yet, so nothing is listed; adding those edges needs an ADR and an entry here.
-same_layer_exceptions = [["inox-config", "inox-common"], ["inox-compositor", "inox-protocols"]]
+# yet, so nothing is listed; adding those edges needs its own ADR and entry here.
+same_layer_exceptions = [
+    ["inox-config", "inox-common"],
+    ["inox-compositor", "inox-protocols"],
+    ["inox-panel", "inox-glass"],
+    ["inox-notifications", "inox-glass"],
+]
 
 # --- release profile -------------------------------------------------------
 #

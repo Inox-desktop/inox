@@ -33,6 +33,11 @@ inox-config.workspace = true
 # `inox-protocols` is the single source of truth for them, so the
 # panel does not name `wayland-protocols` or `wayland-protocols-wlr` itself.
 inox-protocols.workspace = true
+# The one L3 -> L3 edge, authorised by ADR 0040 and registered in the root
+# `Cargo.toml`'s `same_layer_exceptions`: the glass material decision (clamps,
+# v1/v2 negotiation, the fallback reasons) and the glass QML components live
+# there, so the panel does not grow a second copy of the arithmetic.
+inox-glass.workspace = true
 # Reading the compositor's events, creating the layer surface, taking pointer
 # input and asking for frosted glass.
 wayland-client.workspace = true
@@ -48,6 +53,15 @@ serde_json.workspace = true
 
 [build-dependencies]
 cxx-qt-build.workspace = true
+# `build.rs` compiles `inox-glass`'s QML assets into this crate's own QML
+# module (`inox_glass::qml_files()`), because a QML module belongs to the
+# binary that registers it (KDAB/cxx-qt#770).
+inox-glass.workspace = true
+# The same 0.10 line `cxx-qt-build` 0.10.0 already resolves (cargo unifies the
+# two). It is named directly because `build.rs` aliases the glass QML files
+# inside the qrc itself (`QResourceFile::alias`), and `cxx-qt-build` re-exports
+# `QResource`/`QResources` but not `QResourceFile`.
+qt-build-utils.workspace = true
 
 [dev-dependencies]
 # The protocol tests in `src/tests/protocol.rs` play the compositor side of

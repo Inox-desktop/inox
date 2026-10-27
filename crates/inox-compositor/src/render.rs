@@ -16,10 +16,10 @@
 //! [`HeadlessRenderer::read_frame_rgba`] for the whole frame (the test-input
 //! channel's `dump-frame` command).
 //!
-//! # Frosted glass (backdrop blur)
+//! # Glass (backdrop blur and refraction)
 //!
 //! Smithay 0.7 has no blur either, so [`HeadlessRenderer::render_elements`]
-//! implements the `inox-glass-v1` effect itself (the protocol is
+//! implements both halves of the `inox-glass-v1` effect itself (the protocol is
 //! [`crate::glass`]). The render target is a [`GlesTexture`] rather than a
 //! renderbuffer precisely because a renderbuffer cannot be sampled and the
 //! backdrop has to be read back as a texture to be blurred.
@@ -51,8 +51,39 @@
 //! A glass pass that fails reports [`RenderError::Gles`] and the frame is not
 //! presented, exactly like any other GLES failure on this path: there is no
 //! fall-back to the sharp scene yet. Compilation is the one step that could fail
-//! for a reason the renderer itself does not already reject, and this shader
-//! takes the same three `#define` variants Smithay's own texture program does.
+//! for a reason the renderer itself does not already reject, and both shaders
+//! take the same three `#define` variants Smithay's own texture program does.
+//!
+//! ## The refraction pass (version 2)
+//!
+//! A pane that carries a [`LensPass`] is drawn by one extra fragment pass
+//! instead of the copy-back of step 2 above:
+//!
+//! 1. The source rectangle is the pane region expanded by
+//!    `ceil(radius) + ceil(amount)` and clipped to the target
+//!    (`expanded_source_region`, crate-private and therefore deliberately not
+//!    linked from here: a public module must not link to private items,
+//!    `rustdoc::private_intra_doc_links`). The expansion is what gives refraction
+//!    the pixels just outside the outline it must bend, and the blur a real
+//!    neighbourhood at the pane border.
+//! 2. That rectangle — not just the pane — is blurred into the scratch pair with
+//!    the version 1 kernel, or identity-copied with `step = 0` when the radius is
+//!    zero, so a refraction-only pane costs one copy and no blur.
+//! 3. A pane-region-sized pass (`LENS_SHADER`) samples the scratch: a rounded-rect
+//!    SDF with per-corner radii masks the shape (alpha 0 outside it, ±1 px of
+//!    coverage at the outline), and inside a band of `height` pixels the sample
+//!    coordinate is displaced along the SDF gradient by
+//!    `(1 - sqrt(1 - t²)) * amount` towards the interior, so the backdrop appears
+//!    pushed outwards at the outline and untouched beyond the band. The optional
+//!    depth bit adds a radial component towards the pane centre, the optional
+//!    dispersion bit splits the sample into seven chromatic taps.
+//! 4. That result is drawn back over the pane region, and the client's own
+//!    translucent surface is composited over it as usual.
+//!
+//! Both passes read their own scratch texture and write another one, so the only
+//! texture ever sampled is one that is not attached to the framebuffer being
+//! rendered into. Panes without a lens keep exactly the version 1 path: the same
+//! calls, in the same order, on the same textures.
 //!
 //! # Unsafe code
 //!
@@ -86,7 +117,7 @@ use smithay::{
     utils::{Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Size, Transform},
 };
 
-use crate::glass::GlassPane;
+use crate::glass::{GlassPane, LensPass};
 
 /// Background colour of the headless output, as 8-bit RGBA.
 pub const CLEAR_COLOR_RGBA8: [u8; 4] = [17, 34, 51, 255];
@@ -193,12 +224,185 @@ void main() {
 }
 "#;
 
+/// The fragment shader of the refraction pass.
+///
+/// It draws one pane-sized quad while sampling the blurred scratch texture, so
+/// every constraint [`BLUR_SHADER`] carries applies here too: `#version 100`
+/// first, the literal `//_DEFINES_` marker, one sampler, `alpha`, every tap
+/// clamped into the half-texel inset. On top of that:
+///
+/// - the quad's texture coordinates span exactly the pane's sub-rectangle of the
+///   scratch, so `v_coords * source_size - origin` is the pane-local pixel
+///   coordinate with `y` running down from the pane's top-left corner — the same
+///   orientation the protocol, `set_corner_radii` and the readbacks use.
+/// - `centre` and `half` describe the pane's *shape*: the shape may start outside
+///   the drawable region when the pane was clipped by the output edge, and the
+///   rounded outline has to stay where the client drew its corners.
+/// - the coverage mask, not the sampled alpha, decides the fragment's alpha: the
+///   sampled pixels are always opaque by construction (the target is cleared to
+///   an opaque background before any pane is drawn), so the `NO_ALPHA` variant
+///   deliberately writes the same premultiplied value as the plain one. The shape
+///   has to fade out at its outline in either variant, and nothing else in this
+///   shader depends on the texture's own alpha.
+/// - the corner radii are selected by quadrant, so the four values keep the wire
+///   order (top-left, top-right, bottom-right, bottom-left) all the way to the
+///   fragment.
+/// - the chromatic taps are the reference's seven: red is displaced furthest,
+///   blue least, which is what turns the outline into a colour fringe; with
+///   dispersion off the pass samples once and the edge stays achromatic.
+const LENS_SHADER: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+uniform vec2 inset;
+// The shape's centre and half extent, in pixels, relative to the drawn pane.
+uniform vec2 centre;
+uniform vec2 half_size;
+// Where the drawn pane starts inside the sampled texture, in pixels.
+uniform vec2 origin;
+// The sampled texture's size, in pixels.
+uniform vec2 source_size;
+// Corner radii in pixels, in wire order.
+uniform vec4 corners;
+uniform float height;
+uniform float amount;
+// (depth, dispersion) as 0.0 / 1.0 switches.
+uniform vec2 components;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+vec4 tap(vec2 uv) {
+    return texture2D(tex, clamp(uv, inset, vec2(1.0) - inset));
+}
+
+// Signed distance to a rounded rectangle with per-corner radii, plus the
+// outward unit gradient at `p` (which points outside the shape for the pixels a
+// refraction can reach: sd <= 0 there).
+float rounded_box(vec2 p, vec2 half_extent, vec4 radii, out vec2 gradient) {
+    vec2 q = abs(p);
+    float radius = p.x > 0.0
+        ? (p.y > 0.0 ? radii.z : radii.y)
+        : (p.y > 0.0 ? radii.w : radii.x);
+    radius = min(radius, min(half_extent.x, half_extent.y));
+    vec2 d = q - (half_extent - vec2(radius));
+
+    vec2 direction = vec2(p.x >= 0.0 ? 1.0 : -1.0, p.y >= 0.0 ? 1.0 : -1.0);
+    if (d.x > 0.0 && d.y > 0.0) {
+        gradient = direction * normalize(d);
+    } else if (d.x > d.y) {
+        gradient = vec2(direction.x, 0.0);
+    } else {
+        gradient = vec2(0.0, direction.y);
+    }
+
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
+}
+
+void main() {
+    // Pane-local pixel coordinates, y down from the drawn pane's top-left corner.
+    vec2 local = v_coords * source_size - origin;
+    vec2 p = local - centre;
+
+    vec2 gradient;
+    float sd = rounded_box(p, half_size, corners, gradient);
+
+    // One pixel of antialiasing at the outline, nothing outside it. Outside the
+    // shape the backdrop must stay exactly as the scene drew it.
+    float coverage = clamp(0.5 - sd, 0.0, 1.0);
+    if (coverage <= 0.0) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
+
+    // The band: 1 on the outline, 0 where it reaches the interior.
+    float t = clamp(1.0 + sd / max(height, 0.001), 0.0, 1.0);
+    float bend = (1.0 - sqrt(max(1.0 - t * t, 0.0))) * amount;
+
+    // Sampling towards the interior makes the backdrop near the outline appear
+    // pushed outwards; that is the lens reading the reference produces.
+    vec2 offset = -gradient * bend;
+
+    if (components.x > 0.5) {
+        // The optional depth component: a spherical term that pulls the sample
+        // towards the pane centre, as if the pane were a dome rather than an
+        // edge-only lens. It fades out with the band, so the interior stays
+        // byte-identical to the plain blur.
+        vec2 radial = centre - local;
+        float reach = length(radial);
+        radial = reach > 0.0 ? radial / reach : vec2(0.0, -1.0);
+        offset += radial * (t * amount * 0.5);
+    }
+
+    vec2 uv = (local + origin + offset) / source_size;
+
+    vec3 color;
+    if (components.y > 0.5) {
+        // Seven taps: red displaced furthest, blue least.
+        vec2 shift = offset / source_size;
+        color.r = 0.5 * (tap(uv + shift).r + tap(uv + shift * 0.75).r);
+        color.g = 0.5 * (tap(uv + shift * 0.5).g + tap(uv + shift * 0.25).g);
+        color.b = 0.5 * tap(uv).b
+            + 0.25 * (tap(uv - shift * 0.25).b + tap(uv - shift * 0.5).b);
+    } else {
+        color = tap(uv).rgb;
+    }
+
+    // Premultiplied, with the shape's coverage as the alpha. The sampled pixels
+    // are always opaque (the target is cleared to an opaque background before any
+    // pane is drawn) and only their colour is read, so the NO_ALPHA variant needs
+    // no separate branch: this mask is the shape's, not the texture's.
+    gl_FragColor = vec4(color * coverage, coverage) * alpha;
+
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        gl_FragColor = vec4(0.0, 0.2, 0.0, 0.2) + gl_FragColor * 0.8;
+#endif
+}
+"#;
+
+/// The additional uniforms [`LENS_SHADER`] declares.
+///
+/// One list, used both to compile the program and to pin the declarations in the
+/// unit tests: a name Smithay cannot find is silently ignored (GL reports location
+/// -1), which is exactly the kind of failure that would otherwise only show as a
+/// wrong-looking pane.
+const LENS_UNIFORMS: &[(&str, UniformType)] = &[
+    ("inset", UniformType::_2f),
+    ("centre", UniformType::_2f),
+    ("half_size", UniformType::_2f),
+    ("origin", UniformType::_2f),
+    ("source_size", UniformType::_2f),
+    ("corners", UniformType::_4f),
+    ("height", UniformType::_1f),
+    ("amount", UniformType::_1f),
+    ("components", UniformType::_2f),
+];
+
 smithay::backend::renderer::element::render_elements! {
     pub(crate) SceneElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
-
 /// Everything one output composites: the render elements plus the glass panes.
 ///
 /// Kept together because they are two views of the same scene: a pane's [`GlassPane::at`]
@@ -255,10 +459,10 @@ pub enum RenderError {
     },
     /// A glass pane was drawn before its scratch texture was allocated.
     ///
-    /// Unreachable by construction: `frost_region` allocates
-    /// (and reallocates) the scratch pair before the passes that read it, and
-    /// returns early when the allocation fails. The variant exists so this
-    /// invariant does not have to be expressed with a panic.
+    /// Unreachable by construction: the glass passes allocate (and reallocate)
+    /// the scratch pair and the refraction target before the passes that read
+    /// them, and return early when the allocation fails. The variant exists so
+    /// this invariant does not have to be expressed with a panic.
     #[error("the glass scratch texture was never allocated")]
     MissingScratch,
 }
@@ -277,23 +481,29 @@ struct Target {
 
 /// The two region-sized scratch textures of the blur, and the size they hold.
 ///
-/// Reallocated when a pane's region has a different size than the current pair,
-/// and reused across panes and frames otherwise: the blur runs twice per pane, so
-/// allocating per pass would hand the driver a fresh texture for every frame.
+/// Reallocated when a pass needs a different size than the current pair, and
+/// reused across panes and frames otherwise: a pane runs at least two passes, so
+/// allocating per pass would hand the driver a fresh texture for every frame. For
+/// a refraction pane the size is the *expanded* source rectangle, not the pane.
 struct Scratch {
     horizontal: GlesTexture,
     vertical: GlesTexture,
     size: Size<i32, Physical>,
 }
 
-/// The blur program and scratch textures, compiled and allocated on first use.
+/// The glass programs and scratch textures, compiled and allocated on first use.
 ///
-/// One program serves both passes: the axis is the `step` uniform, and compiling
-/// the same source twice would only produce two identical programs.
+/// One blur program serves both separable passes: the axis is the `step` uniform,
+/// and compiling the same source twice would only produce two identical programs.
+/// The refraction pass is a second program because its work is different, and its
+/// output gets its own pane-sized texture: it is sampled by the draw-back element
+/// while the scratch pair is still the source of the next pane.
 #[derive(Default)]
 struct GlassCache {
     program: Option<GlesTexProgram>,
     scratch: Option<Scratch>,
+    lens_program: Option<GlesTexProgram>,
+    lens: Option<GlesTexture>,
 }
 
 impl GlassCache {
@@ -313,6 +523,43 @@ impl GlassCache {
             .map_err(RenderError::from)?;
         self.program = Some(program.clone());
         Ok(program)
+    }
+
+    /// The compiled refraction program, compiling it on first use.
+    fn lens_program(&mut self, renderer: &mut GlesRenderer) -> Result<GlesTexProgram, RenderError> {
+        if let Some(program) = &self.lens_program {
+            return Ok(program.clone());
+        }
+        let uniforms = LENS_UNIFORMS
+            .iter()
+            .map(|(name, type_)| UniformName::new(*name, *type_))
+            .collect::<Vec<_>>();
+        let program = renderer
+            .compile_custom_texture_shader(LENS_SHADER, &uniforms)
+            .map_err(RenderError::from)?;
+        self.lens_program = Some(program.clone());
+        Ok(program)
+    }
+
+    /// The refraction output texture at `size`, allocating (or resizing) it.
+    fn lens_target(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Physical>,
+    ) -> Result<GlesTexture, RenderError> {
+        let wanted = Size::<i32, BufferCoord>::from((size.w, size.h));
+        let stale = self.lens.as_ref().is_none_or(|lens| lens.size() != wanted);
+        if stale {
+            // `Abgr8888` like the target and the scratch pair: the refraction pass
+            // writes premultiplied colour with a coverage alpha, so the texture
+            // needs an alpha channel of its own.
+            self.lens = Some(<GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
+                renderer,
+                Fourcc::Abgr8888,
+                wanted,
+            )?);
+        }
+        self.lens.clone().ok_or(RenderError::MissingScratch)
     }
 
     /// Make sure both scratch textures exist at `size`.
@@ -497,8 +744,20 @@ impl HeadlessRenderer {
                 drop(frame.finish()?);
             }
 
-            // The target is unbound now, so the blur may sample it.
-            let frost = frost_region(renderer, glass, &target.buffer, pane.region, pane.radius)?;
+            // The target is unbound now, so the glass passes may sample it. A pane
+            // with a lens goes through the refraction pass; one without keeps the
+            // version 1 blur path exactly as it was.
+            let frost = match pane.lens {
+                Some(lens) => lens_region(
+                    renderer,
+                    glass,
+                    &target.buffer,
+                    pane.region,
+                    pane.radius,
+                    &lens,
+                )?,
+                None => frost_region(renderer, glass, &target.buffer, pane.region, pane.radius)?,
+            };
 
             {
                 let mut bound = renderer.bind(&mut target.buffer)?;
@@ -687,6 +946,205 @@ fn frost_region(
     ))
 }
 
+/// The source rectangle a pane's glass passes read: `region` expanded by the blur
+/// radius and the refraction displacement, clipped to the target.
+///
+/// The expansion is what lets the passes behave at the pane's border: the blur
+/// needs real neighbours outside the region it replaces, and the refraction
+/// samples up to `amount` pixels away from where the outline was drawn. `radius`
+/// and `amount` are in the source's pixels. The result always contains `region`:
+/// clipping the expansion cannot cut into a region that already lies inside the
+/// target.
+#[must_use]
+fn expanded_source_region(
+    region: Rectangle<i32, Physical>,
+    radius: f32,
+    amount: f32,
+    target: Rectangle<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    let pad = radius.max(0.0).ceil() as i32 + amount.max(0.0).ceil() as i32;
+    let padded = Rectangle::new(
+        Point::from((
+            region.loc.x.saturating_sub(pad),
+            region.loc.y.saturating_sub(pad),
+        )),
+        Size::from((
+            region.size.w.saturating_add(pad.saturating_mul(2)),
+            region.size.h.saturating_add(pad.saturating_mul(2)),
+        )),
+    );
+    padded.intersection(target).unwrap_or(region)
+}
+
+/// Refract `region` of `source` and return the element that draws the result back
+/// over it.
+///
+/// This is the version 2 pass of the module documentation: blur (or identity-copy)
+/// the expanded source rectangle into the scratch pair, then run the refraction
+/// shader over the pane region sampling that result. The caller must have unbound
+/// `source`: this samples it.
+fn lens_region(
+    renderer: &mut GlesRenderer,
+    glass: &mut GlassCache,
+    source: &GlesTexture,
+    region: Rectangle<i32, Physical>,
+    radius: f32,
+    lens: &LensPass,
+) -> Result<TextureRenderElement<GlesTexture>, RenderError> {
+    let program = glass.program(renderer)?;
+    let source_size = source.size();
+    let target = Rectangle::from_size(Size::<i32, Physical>::from((source_size.w, source_size.h)));
+    let expanded = expanded_source_region(region, radius, lens.amount, target);
+
+    glass.ensure_scratch(renderer, expanded.size)?;
+    let (mut horizontal, mut vertical) = match glass.scratch.as_ref() {
+        Some(scratch) => (scratch.horizontal.clone(), scratch.vertical.clone()),
+        None => return Err(RenderError::MissingScratch),
+    };
+
+    let step = (radius / KERNEL_STEP_DIVISOR).max(0.0);
+    // Same axis convention as `frost_region`: the kernel step is expressed
+    // against the texture each pass samples.
+    blur_pass(
+        renderer,
+        &mut horizontal,
+        source,
+        as_logical(expanded),
+        (step / source_size.w.max(1) as f32, 0.0),
+        program.clone(),
+    )?;
+
+    // `radius == 0` is the protocol's "no blur": one identity copy (`step = 0`
+    // makes the kernel a no-op) and the refraction samples the backdrop exactly as
+    // the scene drew it.
+    let blurred = if step > 0.0 {
+        let scratch_rect = Rectangle::new(
+            Point::from((0.0, 0.0)),
+            Size::from((f64::from(expanded.size.w), f64::from(expanded.size.h))),
+        );
+        blur_pass(
+            renderer,
+            &mut vertical,
+            &horizontal,
+            scratch_rect,
+            (0.0, step / expanded.size.h.max(1) as f32),
+            program,
+        )?;
+        vertical
+    } else {
+        horizontal
+    };
+
+    let lens_program = glass.lens_program(renderer)?;
+    let mut lens_target = glass.lens_target(renderer, region.size)?;
+
+    // Where the drawn pane starts inside the sampled texture, in pixels.
+    let origin = (
+        region.loc.x.saturating_sub(expanded.loc.x),
+        region.loc.y.saturating_sub(expanded.loc.y),
+    );
+    let blurred_size = blurred.size();
+
+    // The quad samples exactly the pane's own pixels of the blurred texture. That
+    // is what makes `v_coords * source_size - origin` the pane-local pixel
+    // coordinate in the shader.
+    let pane_source = Rectangle::<f64, Logical>::new(
+        Point::from((f64::from(origin.0), f64::from(origin.1))),
+        Size::from((f64::from(region.size.w), f64::from(region.size.h))),
+    );
+    let buffer = TextureBuffer::from_texture(renderer, blurred, 1, Transform::Normal, None);
+    let inner = TextureRenderElement::from_texture_buffer(
+        (0.0, 0.0),
+        &buffer,
+        Some(1.0),
+        Some(pane_source),
+        None,
+        Kind::Unspecified,
+    );
+
+    // The shape's centre relative to the drawn pane, in pixels, then its half
+    // extent: a clipped pane keeps the outline of the rectangle its client drew.
+    let centre = (
+        (lens.shape.loc.x - region.loc.x) as f32 + lens.shape.size.w as f32 / 2.0,
+        (lens.shape.loc.y - region.loc.y) as f32 + lens.shape.size.h as f32 / 2.0,
+    );
+    let half_size = (
+        lens.shape.size.w as f32 / 2.0,
+        lens.shape.size.h as f32 / 2.0,
+    );
+    let components = (
+        if lens.depth { 1.0 } else { 0.0 },
+        if lens.dispersion { 1.0 } else { 0.0 },
+    );
+    let inset = (
+        0.5 / blurred_size.w.max(1) as f32,
+        0.5 / blurred_size.h.max(1) as f32,
+    );
+
+    let element = TextureShaderElement::new(
+        inner,
+        lens_program,
+        vec![
+            Uniform::new("inset", UniformValue::_2f(inset.0, inset.1)),
+            Uniform::new("centre", UniformValue::_2f(centre.0, centre.1)),
+            Uniform::new("half_size", UniformValue::_2f(half_size.0, half_size.1)),
+            Uniform::new(
+                "origin",
+                UniformValue::_2f(origin.0 as f32, origin.1 as f32),
+            ),
+            Uniform::new(
+                "source_size",
+                UniformValue::_2f(blurred_size.w as f32, blurred_size.h as f32),
+            ),
+            Uniform::new(
+                "corners",
+                UniformValue::_4f(
+                    lens.corners[0],
+                    lens.corners[1],
+                    lens.corners[2],
+                    lens.corners[3],
+                ),
+            ),
+            Uniform::new("height", UniformValue::_1f(lens.height)),
+            Uniform::new("amount", UniformValue::_1f(lens.amount)),
+            Uniform::new("components", UniformValue::_2f(components.0, components.1)),
+        ],
+    );
+
+    {
+        let damage = [Rectangle::from_size(region.size)];
+        let mut bound = renderer.bind(&mut lens_target)?;
+        let mut frame = renderer.render(&mut bound, region.size, Transform::Normal)?;
+        // The quad covers the whole target, but clearing keeps the result a
+        // replace rather than an accumulation over a previous, differently sized
+        // pane.
+        frame.clear([0.0, 0.0, 0.0, 0.0].into(), &damage)?;
+        drop(draw_render_elements::<GlesRenderer, _, _>(
+            &mut frame,
+            1.0,
+            &[element],
+            &damage,
+        )?);
+        drop(frame.finish()?);
+    }
+
+    // Drawn back 1:1 with the default texture program: this is a copy of the
+    // refraction result, and the shader would only recompute it.
+    let lens_rect = Rectangle::<f64, Logical>::new(
+        Point::from((0.0, 0.0)),
+        Size::from((f64::from(region.size.w), f64::from(region.size.h))),
+    );
+    let buffer = TextureBuffer::from_texture(renderer, lens_target, 1, Transform::Normal, None);
+    Ok(TextureRenderElement::from_texture_buffer(
+        region.loc.to_f64(),
+        &buffer,
+        Some(1.0),
+        Some(lens_rect),
+        None,
+        Kind::Unspecified,
+    ))
+}
+
 /// The glass passes all run at scale 1, so a physical rectangle is also its own
 /// source rectangle in logical units — the only conversion the render element API
 /// needs, and one that keeps the two coordinate kinds from being mixed up.
@@ -854,6 +1312,130 @@ mod tests {
             BLUR_SHADER.contains("uniform vec2 inset;")
                 && BLUR_SHADER.contains("vec2(1.0) - inset"),
             "clamping to a bare 0.0/1.0 would sample the wrapped-around texel"
+        );
+    }
+
+    /// The refraction shader has the same framework contract as the blur one, plus
+    /// two of its own: every uniform the pass sets has to be declared somewhere
+    /// Smithay can find it, and the taps have to be clamped like the blur's.
+    #[test]
+    fn the_lens_shader_is_a_gles2_texture_shader_smithay_can_variant() {
+        assert!(
+            LENS_SHADER.starts_with("#version 100\n"),
+            "the source must begin with the version directive: Smithay injects nothing"
+        );
+        assert!(
+            LENS_SHADER.contains("\n//_DEFINES_\n"),
+            "Smithay replaces the `//_DEFINES_` line with the variant defines"
+        );
+        for define in ["EXTERNAL", "DEBUG_FLAGS", "GL_OES_EGL_image_external"] {
+            assert!(
+                LENS_SHADER.contains(define),
+                "the source must handle the {define} case"
+            );
+        }
+        assert!(
+            LENS_SHADER.contains("uniform sampler2D tex;"),
+            "the framework binds `tex` to unit 0"
+        );
+        assert!(
+            LENS_SHADER.contains("uniform float alpha;"),
+            "the framework sets `alpha`"
+        );
+        assert_eq!(
+            LENS_SHADER.matches("sampler2D").count(),
+            1,
+            "only one sampler is bound: nothing else may be declared"
+        );
+        assert!(
+            LENS_SHADER.contains("clamp(uv, inset, vec2(1.0) - inset)"),
+            "`create_buffer` textures have no CLAMP_TO_EDGE wrap mode, so every \
+             refraction tap has to stay a half texel inside the texture"
+        );
+        for (name, type_) in LENS_UNIFORMS {
+            let declaration = match type_ {
+                UniformType::_1f => format!("uniform float {name};"),
+                UniformType::_2f => format!("uniform vec2 {name};"),
+                UniformType::_4f => format!("uniform vec4 {name};"),
+                other => panic!("{name} has an unexpected type {other:?}"),
+            };
+            assert!(
+                LENS_SHADER.contains(&declaration),
+                "the pass sets `{name}`, so the shader must declare `{declaration}`"
+            );
+        }
+        // The shape and the displacement are the two things the pass is for: a
+        // shader without them would compile and draw the plain blur again.
+        assert!(
+            LENS_SHADER.contains("rounded_box(") && LENS_SHADER.contains("+ sd /"),
+            "the band has to be measured against the rounded-rect distance"
+        );
+        assert!(
+            LENS_SHADER.contains("1.0 - sqrt(") && LENS_SHADER.contains("* amount"),
+            "the reference displacement is (1 - sqrt(1 - t^2)) * amount"
+        );
+        for tap in [
+            "tap(uv + shift)",
+            "tap(uv + shift * 0.75)",
+            "tap(uv + shift * 0.5)",
+        ] {
+            assert!(
+                LENS_SHADER.contains(tap),
+                "the dispersion branch loses the {tap} tap"
+            );
+        }
+        assert_eq!(
+            LENS_SHADER.matches("tap(uv").count(),
+            8,
+            "seven taps in the dispersion branch and the single one otherwise"
+        );
+    }
+
+    #[test]
+    fn the_source_region_is_expanded_by_the_blur_and_the_displacement() {
+        let target = Rectangle::from_size(Size::from((320, 240)));
+        let region = Rectangle::new(Point::from((100, 80)), Size::from((120, 60)));
+
+        let expanded = expanded_source_region(region, 24.0, 16.0, target);
+        assert_eq!(
+            expanded,
+            Rectangle::new(Point::from((60, 40)), Size::from((200, 140))),
+            "ceil(blur) + ceil(amount) on every side, so refraction can sample \
+             outside the outline and the blur has a real neighbourhood"
+        );
+        assert_eq!(
+            expanded_source_region(region, 0.0, 0.0, target),
+            region,
+            "a pane that neither blurs nor bends reads nothing extra"
+        );
+
+        // Rounded up: a fractional radius must never read less than it needs.
+        assert_eq!(
+            expanded_source_region(region, 0.5, 0.5, target),
+            Rectangle::new(Point::from((98, 78)), Size::from((124, 64)))
+        );
+    }
+
+    #[test]
+    fn the_source_region_never_leaves_the_target() {
+        let target = Rectangle::from_size(Size::from((320, 240)));
+        // The pane fills the target and asks for more than there is.
+        let region = Rectangle::from_size(Size::from((320, 240)));
+        assert_eq!(expanded_source_region(region, 64.0, 64.0, target), region);
+
+        // A pane in the top-left corner keeps its inside, loses the outside: the
+        // expansion is cut at the target's edge, so the padded rectangle is 52
+        // wide starting at 0 rather than 64 starting at -12.
+        let region = Rectangle::new(Point::from((0, 0)), Size::from((40, 40)));
+        let expanded = expanded_source_region(region, 8.0, 4.0, target);
+        assert_eq!(
+            expanded,
+            Rectangle::new(Point::from((0, 0)), Size::from((52, 52)))
+        );
+        assert_eq!(
+            expanded.intersection(region),
+            Some(region),
+            "clipping the expansion may never cut into the pane itself"
         );
     }
 }

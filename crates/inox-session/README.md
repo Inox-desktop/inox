@@ -6,7 +6,7 @@ L4 会话监督器：通过真实 Wayland 往返等待合成器，再启动独�
 
 Shell 是一次性检查；面板是必需服务；壁纸、通知与空闲监视为可选服务。每服务滚动 60 秒最多自动重启 3 次；合成器退出会结束会话，不承诺恢复应用连接。SIGINT/SIGTERM 注销；SIGHUP 只说明环境需下次登录才能替换，各组件仍拥有自己的重载机制。
 
-会话为每个会话生成一次性锁屏令牌：传给合成器（`--lock-token`）并只放进可信锁屏客户端的环境（`INOX_LOCK_TOKEN`），其它组件一概拿不到——得到它就等于拿到取锁权限。`INOX_SESSION_TAKE_LOCK=1` 时会话额外启动 `inox-lock --take-lock`（该模式没有解锁路径，因此不做默认启动）。当前只确认合成器 ready，尚无完整桌面 ready 握手。L3 的 layer-shell、窗口服务与通知 D-Bus 等现有缺口不会因为 session 拉起进程而消失。安全锁定、认证、logind 挂起及用户自启动未接线；主动脱离进程组的子孙进程不在首版归属保证内。
+会话为每个会话生成一次性锁屏令牌：传给合成器（`--lock-token`）并只放进可信锁屏客户端的环境（`INOX_LOCK_TOKEN`），其它组件一概拿不到——得到它就等于拿到取锁权限。锁屏客户端按需启动：`INOX_SESSION_TAKE_LOCK=1` 在开机时请求一次，运行期则通过 `session-control-v1`（私有控制套接字 `$XDG_RUNTIME_DIR/inox-session/control.sock`，只有动词 `lock`）请求——`inox-lock --request-lock` 是它的命令行客户端；空闲守护与快捷键将来接同一条通道。当前只确认合成器 ready，尚无完整桌面 ready 握手。L3 的 layer-shell、窗口服务与通知 D-Bus 等现有缺口不会因为 session 拉起进程而消失。安全锁定、认证、logind 挂起及用户自启动未接线；主动脱离进程组的子孙进程不在首版归属保证内。
 
 测试由 CI 运行：纯重启策略、真实子进程/Wayland peer 故障、信号注销与目录清理，以及独立 job 中的真实 Inox headless 启动/退出。本地仅 fmt/check/clippy，不运行 build/test，不以自检代替验收。
 

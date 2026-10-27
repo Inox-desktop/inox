@@ -1,6 +1,6 @@
 //! The cxx-qt bridge: one JSON projection into QML, and the offscreen host.
 //!
-//! the offscreen QML decision decides how this component carries QML: the lock surface stays a
+//! The offscreen QML decision decides how this component carries QML: the lock surface stays a
 //! real `ext_session_lock_v1` surface created by [`crate::session`], and QML is a
 //! pure renderer whose frames are grabbed offscreen and written into the same
 //! `wl_shm` buffer the crate's own renderer used to fill. This module is the
@@ -24,8 +24,6 @@
 //! [`crate::app::OutgoingCommand::Authenticate`]. `view::screen` is
 //! given the projection, which carries the mask's *length*, so there is no path
 //! by which the plaintext could reach this file's property.
-//!
-//! []:
 
 use cxx_qt_lib::QString;
 

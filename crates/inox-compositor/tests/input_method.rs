@@ -56,6 +56,8 @@ struct Client {
     surface_enters: usize,
     surface_leaves: usize,
     locked: bool,
+    /// Buffers the mapped toplevels draw with, kept alive for the whole test.
+    buffers: Vec<wl_buffer::WlBuffer>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -333,6 +335,17 @@ impl Peer {
         let _toplevel = xdg_surface.get_toplevel(&self.queue.handle(), ());
         surface.commit();
         self.sync(display, compositor);
+
+        // A toplevel becomes a window only once it draws, and text-input focus is
+        // only granted to the keyboard-focused (therefore mapped) client. Blue, not
+        // red: the candidate-window assertions below look for red pixels, and the
+        // application window now sits behind them.
+        let buffer = self.solid_buffer(80, 60, [255, 0, 0, 0]);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.commit();
+        self.sync(display, compositor);
+        self.state.buffers.push(buffer);
+
         surface
     }
     fn text_input(&self, id: u32) -> ti::ZwpTextInputV3 {
@@ -346,9 +359,15 @@ impl Peer {
         self.bind::<imm::ZwpInputMethodManagerV2>()
             .get_input_method(&self.bind::<wl_seat::WlSeat>(), &self.queue.handle(), id)
     }
+    /// A solid red `Xrgb8888` buffer, the colour the pixel assertions look for.
     fn buffer(&self, width: i32, height: i32) -> wl_buffer::WlBuffer {
+        self.solid_buffer(width, height, [0, 0, 255, 0])
+    }
+
+    /// A solid `Xrgb8888` buffer in `pixel` (little-endian bytes `[B, G, R, X]`).
+    fn solid_buffer(&self, width: i32, height: i32, pixel: [u8; 4]) -> wl_buffer::WlBuffer {
         let mut file = tempfile::tempfile().unwrap();
-        file.write_all(&[0, 0, 255, 0].repeat((width * height) as usize))
+        file.write_all(&pixel.repeat((width * height) as usize))
             .unwrap();
         let pool = self.bind::<wl_shm::WlShm>().create_pool(
             file.as_fd(),

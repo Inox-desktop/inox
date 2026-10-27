@@ -1,12 +1,12 @@
 //! The projection QML reads: the lock screen's state, as one JSON document.
-//!   nothing to redact. The field is drawn only where
+//!
 //! This module replaces the iced widget tree the crate used to build. QML is a
 //! pure renderer, which means every decision the widget tree made —
 //! which line is danger-coloured, whether there is a field at all, whether the
 //! unlock control is enabled, how wide the card is relative to the surface — has
 //! to be made here, in Rust, on the value [`crate::view_model`] produced. QML
 //! then binds to the record and decides nothing:
-//!   password it would discard.
+//!
 //! ```text
 //! LockViewModel + Theme ──view::screen──▶ JSON ──cxx-qt──▶ QML
 //! ```

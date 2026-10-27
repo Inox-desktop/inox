@@ -715,19 +715,23 @@ fn killing_the_satellite_ends_the_service_but_not_the_session() {
         "after-kill",
     );
     let toplevel = client.create_toplevel([0x40, 0xc0, 0x40], (320, 240));
-    let deadline = Instant::now() + CASE_TIMEOUT;
-    client.wait_until(deadline, "a configure after the satellite died", |state| {
-        state
-            .toplevels
-            .get(toplevel)
-            .is_some_and(|entry| entry.configured.is_some())
-    });
+    // A toplevel is not a window until it draws: the compositor answers the
+    // initial commit with its own configure ("you choose" — the client's 320x240
+    // here), the client attaches a buffer from the configure handler, and the
+    // tile configure follows. Waiting for "a configure" would accept the
+    // pre-map one, so wait for the tile size itself.
+    let tile = expected_tiles(1)[0];
+    client.wait_for_size(
+        toplevel,
+        (tile.w, tile.h),
+        "the surviving session to tile a new Wayland client",
+    );
     let (width, height) = client
         .configured_size(toplevel)
         .expect("just waited for it");
     assert_eq!(
         (width, height),
-        (expected_tiles(1)[0].w, expected_tiles(1)[0].h),
+        (tile.w, tile.h),
         "the surviving session must still tile a Wayland client into the work area"
     );
 

@@ -13,6 +13,8 @@
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）：在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明一次，本 crate 用 `{ workspace = true }` 引用。**新增依赖前先确认依赖方向合法**（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
 
+- **锁请求与锁确认是两件事。** `Idled` 只产生一个请求：经 `session-control-v1` 发 `lock`（`src/transport.rs`），`ok`/`busy` 是派发回执，**不是**锁定。锁定只由合成器的 `session_lock_state` 确认；`Unlocked` 才复位策略，未知值绝不当作未锁。已报告锁定时不得再发请求（合成器不会重复发状态事件）。挂起传输（logind）仍未接线，`AllowSuspend` 只记 warn。
+
 ## 主要依赖
 
 `anyhow`, `tracing`, `tracing-subscriber`；`calloop`、`wayland-client`、`inox-common`、`inox-config`、`inox-protocols`、`thiserror`。

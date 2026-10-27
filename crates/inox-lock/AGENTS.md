@@ -20,17 +20,18 @@
 - **QML 是纯渲染器，且从不看凭据。** `qml/Main.qml` 只读 `bridge.modelJson`：没有颜色字面量、没有像素字面量、没有用户可见英文字符串（迁移契约 §4）；它不接输入、不持状态。**凭据只存在于 `credential::Secret`**：投影里只有由长度推出的掩码串，`Secret` 不在构建 JSON 的作用域内；不得把明文放进任何 `#[qproperty]`、`modelJson`、QML 变量或文本控件。
 - **锁表面不是窗口。** `src/session.rs` 创建并持有 `ext_session_lock_v1` 表面；`src/render.rs` 只填它的缓冲区。离屏宿主（`src/offscreen.cpp`）只创建 `QGuiApplication`（**offscreen** 平台、**software** 场景图）+ `QQmlApplicationEngine` + `QQuickWindow` 并 `grabWindow()`；**不得**引入 Qt Wayland 客户端或 `LayerShellQt` 去「顺手」得到一个表面——那会创建第二个表面，正是会话锁边界拒绝的东西。
 - **信号源必须先于任何线程。** `session::take` 先建 `Signals`（`SIGINT`/`SIGTERM`/`SIGHUP`）再连合成器、最后才创建 Qt 宿主：`signalfd` 只收到「在所有线程里都被阻塞」的信号，而 Qt 会起线程、线程继承创建者的掩码。测试子进程是测试二进制自己（入口在测试线程），`headless_tests` 因此在 spawn 前先于父线程阻塞这些信号、经 `exec` 让子进程继承。改动这条顺序会让 SIGTERM 变成直接杀进程，「会话仍锁定」的提示随之消失。
-- **认证不在本 crate 内。** 不得实现口令校验、不得调用 PAM、不得添加认证 helper 或任何特权路径——这些是会话锁边界的人类安全评审项。`contract::AuthOutcome` 只是答复的形状。
-- **凭据不出安全边界。** 明文只能经 `credential::Secret::expose` 取出，其唯一调用方是发往认证边界的 `contract::AuthAttempt`；禁止把凭据写入日志、通知、剪贴板或截图，禁止给 `Secret` 加 `Clone`/`PartialEq`/`Deref`/`AsRef<str>`。凭据在**取消、UI 隐藏或退出、解锁与挂起**时清零。改 `app::update` 时，新增任何会让会话离开屏幕的路径都必须先清零。
+- **认证不在本 crate 内。** 不得实现口令校验、不得调用 PAM、不得添加认证 helper 或任何特权路径——校验永远在 `inox-auth`。`src/boundary.rs` 只是 `auth-v1` 的**客户端**：它把 `AuthAttempt` 发出去、把答复变成 `contract::AuthOutcome`，仅此而已；任何让它拥有「判断」能力的改动都要先改会话锁边界。
+- **凭据不出安全边界。** 明文只能经 `credential::Secret::expose` 取出；唯一调用链是 `contract::AuthAttempt` → `boundary::ask`，在那里被编码进一帧并随两个缓冲区一起清零。禁止把凭据写入日志、通知、剪贴板或截图，禁止给 `Secret` 加 `Clone`/`PartialEq`/`Deref`/`AsRef<str>`。凭据在**取消、UI 隐藏或退出、解锁与挂起**时清零。改 `app::update` 时，新增任何会让会话离开屏幕的路径都必须先清零。**键盘路径同样不得记录字符**：`app::Key` / `app::Message` 的 `Debug` 里有明文，`?key` 就是一段口令进了日志。
 - **限流文案不含计时。** 「还剩几次」「还要等 37 秒」都是限流器的内部状态，不得出现在任何面向用户的字符串里；等待时长只属于 `attempts::AttemptLimiter`。
 - **用户可见文案只来自 Fluent**，`en-US` 与 `zh-CN` 同步；`headless_tests::catalog` 双向检查「代码提到的 id 都在目录里」与「目录里的 id 都被用到」。
 - **颜色、尺寸、间距、圆角只来自 `inox_config::Theme`。** `view.rs` 与 `theme.rs` 里没有**设计色与设计尺寸**的字面量（结构性哨兵如 `TRANSPARENT`、边框宽 `0.0` 除外）；布局宽度用**比例**（无量纲，如卡片占 `2/(2+2×margin)`），字号四角色由 `spacing.lg × typography.scale` 派生，hairline 为 `spacing.xs / 2`，焦点环为 `spacing.xs`（`docs/quality/ui-guidelines.md` §1–§2）。QML 的初始尺寸由宿主以 context property 传入，QML 里不写像素。
 - **掩码不是文本框。** 凭据字段画的是由**长度**推出的掩码，按键经 `app::key_binding` 以消息到达；不得把明文交给任何持有可能被复制的 `String` 的文本控件。
 - 与工作区内其他 Inox crate 的依赖使用 **path 依赖**（根级 §8）。本 crate 依赖 L1：`inox-common`（i18n）、`inox-config`（设计令牌）；会话锁与通知总线第 7 条之后**另有一条向下的 L3 → L2 边**：`inox-protocols`（`ext-session-lock-v1` 与 `inox-ipc` 绑定）、`wayland-client` 与 `calloop`（协议腿的事件循环）、`rustix`（`memfd_create`）。界面侧：`cxx` / `cxx-qt` / `cxx-qt-lib`、`serde_json`（投影）、构建期 `cxx-qt-build`。**不得**新增 L3 依赖或依赖 `inox-compositor`。
 - 新增依赖前先确认依赖方向合法（根级 §2），否则 `cargo test -p inox-integration --test layering` 会失败。
-- **协议腿没有解锁路径，这是刻意的。** `--take-lock` 取真实的会话锁、遮蔽每个输出、把界面画上去，然后一直保持；它**不得**发送 `unlock_and_destroy`，收到 `SIGTERM`/`SIGINT` 时也不得解锁——没有经过审查的认证边界，就没有任何东西可以构成一次解锁的凭据。改动这条路径前先读会话锁与通知总线第 6 条、锁屏界面与 `src/session.rs` 的模块文档。
-- **本构建对状态说真话，界面因此是「不可用」而不是「请输密码」。** `--take-lock` 在请求取锁**之前**喂进 `ServiceFailure::NotProvided`，投影画出 `Face::Unavailable`，凭据字段与提交控件一律禁用且带可读原因，`retry` 为 `None`。**不得**让这条路径在没有边界时表现出可以认证的样子——`Message::BoundaryRetried` 也不得把边界复位成 `Idle`。改动 `contract`/`view_model`/`app` 的这三处，必须同时改另两处。
-- **锁表面不读键盘，也不读指针。** `src/session.rs` 不绑定 `wl_seat`/`wl_keyboard`/`wl_pointer`，`src/render.rs` 不消费任何 `Message`。理由不是省事：没有可用边界时屏幕上没有任何可操作的东西，输入路径会是不可能执行的代码。它必须与经过评审的认证边界一起落地。
+- **`--request-lock` 只发一条控制请求，不锁任何东西。** 它连会话的 `session-control-v1` 套接字（`INOX_SESSION_CONTROL` → `$XDG_RUNTIME_DIR/inox-session/control.sock`），写 `lock\n`，读 `ok|busy|unknown`，然后退出。`ok` 只表示会话已派发启动请求，**不是**锁定确认（那是合成器的 `session_lock_state`）。它不得退回到「自己画一个锁屏」；没有会话应答应报错并以非零退出。
+- **解锁只有一条路：认证成功。** 只有 `state::LockMachine::unlock` 接受 `AuthOutcome::Success`，只有 `app::update` 的成功分支会排队 `OutgoingCommand::Unlock`，只有 `session::Client::unlock` 会发送 `unlock_and_destroy`，而且只在合成器已确认锁（`locked`）之后；发送后必须 `flush`，否则请求留在发送缓冲里、进程退出、会话仍然锁着。**信号仍然不解锁**：`SIGTERM`/`SIGINT` 停止进程、会话保持锁定并如实告知。`unlock_and_destroy` 没有对应的协议事件，因此不得伪造 `Message::UnlockConfirmed`。
+- **本构建对状态说真话，界面因此可能画出「不可用」而不是「请输密码」。** 启动时探测三件事并把事实喂进状态：认证边界在不在听（`Disconnected`）、本次 uid 有没有账号名（`NotProvided`）、合成器有没有给键盘（`NoInput`）。任何一件不成立，投影就画 `Face::Unavailable`、凭据字段与提交控件一律禁用且带可读原因。**不得**让这条路径在没有边界/没有键盘时表现出可以认证的样子——`Message::BoundaryRetried` 也不得把边界复位成 `Idle`（重试需要重新探测，尚未接线）。改 `contract`/`view_model`/`app` 的这三处时必须同时改另两处。
+- **锁表面只读键盘，不读指针与触摸。** `src/session.rs` 绑定 `wl_seat`/`wl_keyboard`，只在**自己的锁表面**获得焦点时把按键变成 `app::Message`；`src/input.rs` 是唯一读 keymap 的地方（`xkbcommon`，安全文本路径），`src/render.rs` 仍然不消费任何 `Message`。指针/触摸不做：布局在 QML 里，Rust 侧命中测试会是第二份布局数学。输入被接受的相位条件是**合成器已确认锁定**（`Phase::Locked`），`Locking`/`Covering` 不接受提交。IME、compose 死键与按键自动重复都还没有——这是已知限制，必须留在 README 里。
 - **帧由 `src/render.rs` 画，不由别处画。** 锁表面的内容是 `view` 的投影经离屏 Qt Quick 渲染、再转成 `wl_shm` 的 `Argb8888` 字节；尺寸取自 configure、不取自本地推断；不被绘制的尺寸（0 或超过 `MAX_FRAME_BYTES`）拒绝提交，让输出回到合成器的锁定底色，**绝不**提交空缓冲或尺寸不符的缓冲。每个表面一个 `Interface`（各自的 `QQmlApplicationEngine` + `QQuickWindow`），进程级 `QGuiApplication` 只创建一次。
 - **协议腿由 `app::State` 驱动，不得再长出第二份覆盖簿记。** 协议事件喂 `app::Message`，`State::take_outgoing()` 是唯一出口。合成器的 `locked` 与 `LockMachine::reports_locked()` 不一致时必须留下 warn，而不是静默接受。
 - **令牌只经 `INOX_LOCK_TOKEN` 进入本进程，且不得打印。** 它由 `inox-session` 生成、只投递给本组件与合成器；日志、错误信息与用户可见文案里都不得出现它的值。
@@ -40,7 +41,9 @@
 
 - 上游 Inox crate：`inox-common`（`i18n::Localizer`/`Locale`、`i18n::compare_catalogs`）、`inox-config`（`Theme` 令牌、`InoxConfig`/`ConfigPaths`）、`inox-protocols`（`ext-session-lock-v1`、`inox-ipc`；L3 → L2 的合法向下边）。
 - 界面：`cxx` / `cxx-qt` / `cxx-qt-lib`、`serde_json`（投影的序列化）、构建期 `cxx-qt-build`（QML 模块 + C++ 宿主）。
-- 第三方（协议与安全）：`wayland-client`、`calloop`、`rustix`（`fs` + `process`）、`zeroize`（凭据清零）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
+- 认证：`inox-auth`（`default-features = false`，只有 `wire` 契约，不链接 PAM/zbus；L3 → L2 的合法向下边）。
+- 键盘：`xkbcommon`（`wayland` feature 关闭——`new_from_fd` 是 `unsafe fn`，本 crate 手写代码不用）。
+- 第三方（协议与安全）：`wayland-client`、`calloop`、`rustix`（`fs` + `process`）、`users`（**只**用于 `get_user_by_uid`）、`zeroize`（凭据清零）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
 - 测试：`proptest`、`wayland-server`（协议测试扮演合成器一侧）、`tempfile`、`image`（仅在设置 `INOX_SCREENSHOT_DIR` 时写 PNG 工件）。
 
 ## 命令

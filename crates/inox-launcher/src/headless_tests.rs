@@ -113,12 +113,12 @@ fn the_qml_actions_type_into_the_search_field() {
 
     dispatch(&mut state, r#"{"type":"set-query","value":"fire"}"#);
     assert_eq!(state.query, "fire");
-    assert_eq!(state.model.rows.len(), 1);
-    assert_eq!(state.model.rows[0].label, "Firefox");
+    assert_eq!(state.model.tiles.len(), 1);
+    assert_eq!(state.model.tiles[0].label, "Firefox");
 
     dispatch(&mut state, r#"{"type":"clear-query"}"#);
     assert_eq!(state.query, "");
-    assert_eq!(state.model.rows.len(), 3);
+    assert_eq!(state.model.tiles.len(), 3);
 }
 
 #[test]
@@ -144,23 +144,65 @@ fn the_qml_actions_launch_exactly_once_per_selection() {
 }
 
 #[test]
-fn the_qml_actions_move_the_selection_without_wrapping() {
+fn the_qml_actions_step_the_grid_without_wrapping() {
     let mut state = state("en-US");
+    let columns = state.placement.grid.columns;
+    assert!(columns >= 2, "the fixture grid has more than one column");
 
     dispatch(&mut state, r#"{"type":"press","key":"up"}"#);
-    assert_eq!(state.selected, 0, "the first row is already selected");
+    dispatch(&mut state, r#"{"type":"press","key":"left"}"#);
+    assert_eq!(state.selected, 0, "the first tile is already selected");
 
-    dispatch(&mut state, r#"{"type":"press","key":"down"}"#);
-    assert_eq!(state.selected, 1);
+    dispatch(&mut state, r#"{"type":"press","key":"right"}"#);
+    assert_eq!(state.selected, 1, "right is one tile");
 
     for _ in 0..9 {
         dispatch(&mut state, r#"{"type":"press","key":"down"}"#);
     }
     assert_eq!(
         state.selected,
-        state.model.rows.len() - 1,
-        "the last row is a wall, not a wrap-around",
+        state.model.tiles.len() - 1,
+        "the last tile is a wall, not a wrap-around",
     );
+}
+
+/// The projection carries the position of the selection, which is the only
+/// number the QML grid scrolls to, and the column count the keyboard steps by.
+///
+/// The scroll itself happens in QML (`positionViewAtIndex(…, GridView.Contain)`)
+/// and this crate has no QML interaction harness, so what is proved here is the
+/// half that Rust owns: after real key presses through the same `update` a window
+/// uses, the document names the selected tile — and `null` when the screen has no
+/// selection at all. The grid following that number is asserted by inspection of
+/// `qml/Main.qml`, not by a test.
+#[test]
+fn the_projection_carries_the_tile_the_grid_has_to_keep_visible() {
+    let mut state = state("en-US");
+    let document = crate::view::project(&state);
+
+    assert_eq!(document["tiles"].as_array().map(Vec::len), Some(3));
+    assert_eq!(document["selected"].as_u64(), Some(0));
+    assert_eq!(
+        document["grid"]["columns"].as_u64(),
+        Some(state.placement.grid.columns as u64),
+        "the window draws the columns the keyboard moves by",
+    );
+
+    dispatch(&mut state, r#"{"type":"press","key":"down"}"#);
+    let document = crate::view::project(&state);
+    assert_eq!(state.selected, 2);
+    assert_eq!(
+        document["selected"].as_u64(),
+        Some(2),
+        "the projection names the last tile the grid has to keep visible",
+    );
+    assert_eq!(document["tiles"][2]["selected"].as_bool(), Some(true));
+    assert_eq!(document["tiles"][0]["selected"].as_bool(), Some(false));
+
+    // A query that matches nothing leaves no tile to scroll to.
+    let mut filtered = self::state("en-US");
+    dispatch(&mut filtered, r#"{"type":"set-query","value":"zzzz"}"#);
+    assert!(crate::view::project(&filtered)["selected"].is_null());
 }
 
 #[test]
@@ -178,11 +220,14 @@ fn a_held_key_is_not_a_second_press() {
     let mut state = state("en-US");
     let moved = dispatch(
         &mut state,
-        r#"{"type":"press","key":"down","repeat":false}"#,
+        r#"{"type":"press","key":"right","repeat":false}"#,
     );
-    assert_eq!(moved, Some(Message::SelectionMoved(app::Step::Next)));
+    assert_eq!(moved, Some(Message::SelectionMoved(app::Step::Right)));
 
-    let repeated = dispatch(&mut state, r#"{"type":"press","key":"down","repeat":true}"#);
+    let repeated = dispatch(
+        &mut state,
+        r#"{"type":"press","key":"right","repeat":true}"#,
+    );
     assert_eq!(repeated, None, "holding a key is one press, not a stream");
     assert_eq!(state.selected, 1);
 }
@@ -324,8 +369,13 @@ fn the_states_the_acceptance_criteria_name_project_their_own_screens() {
     let ready = state("en-US");
     assert_eq!(ready.model.banner, None);
     assert!(
-        ready.model.prompt.is_some(),
-        "the resting state lists the applications"
+        !ready.model.tiles.is_empty(),
+        "the resting state is the grid of applications",
+    );
+    assert_eq!(
+        ready.model.hint,
+        ready.localizer.message("launcher-search-hint"),
+        "and its hint names the keys the grid binds",
     );
 
     let mut no_match = state("en-US");
@@ -369,8 +419,8 @@ fn the_states_the_acceptance_criteria_name_project_their_own_screens() {
 }
 
 #[test]
-fn a_long_name_is_truncated_to_the_row_it_is_drawn_in() {
-    // A small output: the placement gives a row's label less room, which is the
+fn a_long_name_is_truncated_to_the_tile_it_is_drawn_in() {
+    // A small output: the placement gives a tile's label less room, which is the
     // case a long name has to survive.
     let prepared = prepared_on(
         Theme::builtin_dark(),
@@ -388,19 +438,19 @@ fn a_long_name_is_truncated_to_the_row_it_is_drawn_in() {
     dispatch(&mut state, r#"{"type":"set-query","value":"application"}"#);
 
     let projected = crate::view::project(&state);
-    let row = &projected["rows"][0];
-    assert_eq!(row["truncated"].as_bool(), Some(true));
+    let tile = &projected["tiles"][0];
+    assert_eq!(tile["truncated"].as_bool(), Some(true));
     assert!(
-        row["label"]
+        tile["label"]
             .as_str()
             .is_some_and(|label| label.ends_with('…')),
         "{:?}",
-        row["label"],
+        tile["label"],
     );
     assert_eq!(
-        row["label"].as_str().map(|label| label.chars().count()),
+        tile["label"].as_str().map(|label| label.chars().count()),
         Some(state.placement.label_chars),
-        "a truncated label is exactly as wide as the row's column",
+        "a truncated label is exactly as wide as the tile's label",
     );
 }
 
@@ -428,9 +478,17 @@ fn a_two_hundred_percent_text_scale_grows_the_projected_type() {
     );
     assert!(
         scaled.placement.label_chars > 0,
-        "a 200 % scale may not leave a row with no room for a name",
+        "a 200 % scale may not leave a tile with no room for a name",
     );
-    assert!(scaled.placement.label_chars < normal.placement.label_chars);
+    assert!(
+        scaled_document["grid"]["cell_width"].as_f64()
+            > normal_document["grid"]["cell_width"].as_f64(),
+        "the tile grows with the type rather than cutting the label",
+    );
+    assert!(
+        scaled.placement.grid.columns <= normal.placement.grid.columns,
+        "wider tiles mean fewer columns in the same surface",
+    );
 }
 
 /// The child half of [`the_qml_window_loads_offscreen`].

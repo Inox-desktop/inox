@@ -8,6 +8,8 @@
 
 表面模式：**普通窗口**。`main` 引导 `QGuiApplication` + `QQmlApplicationEngine` 加载内嵌的 `qml/Main.qml`（`Window` 根）；QML 只渲染 Rust 的 JSON 投影并通过一个窄动作通道回报。
 
+**卡片是共享玻璃组件**：每张卡片的根是 L3 的 `inox-glass` 提供的 `GlassPane`（ADR 0044，扩展 ADR 0040 的组件库），材质值（tint / highlight / shade / hairline / 圆角）由 `src/theme.rs` 从 `tokens.glass` 取出后经投影传入。窗口清屏色是 `"transparent"`（结构性哨兵，不是设计色）：玻璃只有在背后能透出东西时才是玻璃。**这不代表通知栈有模糊**——见「已知缺口」。
+
 ## crate 特有约束
 
 - **`unsafe` 例外仅限 cxx-qt 生成的胶水**：`[lints.rust] unsafe_code = "allow"` 覆盖工作区的 `forbid`，因为 `#[cxx_qt::bridge]` 宏必然生成 `unsafe extern "C++"`。Inox 手写的 Rust 仍不写 `unsafe`。
@@ -32,12 +34,12 @@
 - **文案只来自 Fluent**：只能出现消息 id，不得在代码里写用户可见字符串（产品名与组件名除外）。新增 id 必须同时进 `en-US` 与 `zh-CN` 并登记到 `i18n::MESSAGES`；`headless_tests` 双向断言。应用名、摘要、正文与动作标签是**数据**，不是文案。
 - **摆放策略是数据，不是已生效的行为**：`src/placement.rs` 计算锚点/层级/exclusive zone/键盘交互，但当前没有 layer-shell 宿主可应用它。启动时只允许**一条** `warn!` 说明表面是普通窗口，不得声称摆放已生效，也不得引入任何 layer-shell 绑定 crate。
 - **启动必须自检**：没有可用的 Wayland/X11 显示时，以及总线名已被别的守护进程占用时，`main` 必须以可读错误与非零退出码结束；锁状态读不到**不**属于这一类，它是 `warn!` 加一个诚实的 `Disabled` 状态。`zwlr_layer_shell_v1` 的存在性查询仍未实现（`src/lock_state.rs` 的连接只用于读锁状态，不查询 layer-shell）。
-- 新增依赖前先确认依赖方向合法（根级 §2）：本 crate 依赖 L1（`inox-common`、`inox-config`）与 **L2**（`inox-protocols`，用于读 `inox_ipc` 的锁状态事件）——这是一条 **L3 → L2** 的向下边，分层规则 1 允许；**不得**引入同层依赖或到 `inox-compositor` 的依赖。
+- 新增依赖前先确认依赖方向合法（根级 §2）：本 crate 依赖 L1（`inox-common`、`inox-config`）与 **L2**（`inox-protocols`，用于读 `inox_ipc` 的锁状态事件）——这是一条 **L3 → L2** 的向下边，分层规则 1 允许。**唯一允许的同层边是 build 期的 `inox-glass`**：`[build-dependencies]` 里的 `inox-glass` + `qt-build-utils` 只服务于 `build.rs` 把 QML 资产编进本模块（ADR 0044 授权，登记在根 `Cargo.toml` 的 `same_layer_exceptions`；删除该边时登记必须一起删）。运行期**不得**出现 `use inox_glass`，也不得创建 `inox_glass_v1` 对象。除此之外不得引入同层依赖或到 `inox-compositor` 的依赖。
 
 ## 主要依赖
 
-- 上游 Inox crate：`inox-common`（Fluent 加载器）、`inox-config`（`notifications.toml` 模型与设计令牌）、`inox-protocols`（`inox_ipc` 锁状态事件）。
-- 第三方（UI）：`cxx`、`cxx-qt`、`cxx-qt-lib`，构建期 `cxx-qt-build` 注册 `com.inox.notifications.qml` 模块。
+- 上游 Inox crate：`inox-common`（Fluent 加载器）、`inox-config`（`notifications.toml` 模型与设计令牌）、`inox-protocols`（`inox_ipc` 锁状态事件），以及**构建期**的 `inox-glass`（QML 资产；ADR 0044 的 L3 → L3 边，运行期不链接）。
+- 第三方（UI）：`cxx`、`cxx-qt`、`cxx-qt-lib`，构建期 `cxx-qt-build` 注册 `com.inox.notifications.qml` 模块，构建期 `qt-build-utils` 用于把 `inox-glass` 的 QML 以显式别名编进本模块（`cxx-qt-build` 没有再导出 `QResourceFile`）。
 - 第三方（其余）：`zbus` 6.0、`wayland-client` 0.31（读 `inox_ipc`）、`serde_json`（投影与动作通道）、`calloop`（SIGHUP 遮罩）、`thiserror`、`tracing`、`tracing-subscriber`、`anyhow`（仅 `main`）。
 - 测试：`proptest`、`tempfile`；没有离屏渲染/screenshot harness（见「已知缺口」）。
 
@@ -73,24 +75,25 @@
 - **语义树只被「存在性/数量」断言**：`reportReady` 检查标题、弹窗卡片数量与 `Accessible` 控件数下限；离屏平台没有 AT-SPI 桥，screen reader 路径未验证。
 - **会话总线上的名字所有权**：服务会声明 `org.freedesktop.Notifications`，别的守护进程已持有时拒绝启动；这条拒绝的映射有单元测试，而「两条守护进程争一个名字」的真实场景需要一个会话总线，crate 的 CI 分片没有。`bus_tests` 因此走点对点连接：线上协议、回复与信号都是真的，但 p2p 不携带 well-known name。
 - **能真正被问锁状态的合成器**：`src/lock_state.rs` 已接线且它的判断有测试，但本 crate 没有任何测试绑定真实的 `inox_ipc` 全局：工作区里没有可以充当假合成器的服务端，另一端由 `inox-compositor` 的测试负责。
-- **layer 表面**：弹窗栈目前是普通窗口，`src/placement.rs` 的策略没有被应用。
+- **layer 表面**：弹窗栈目前是普通窗口，`src/placement.rs` 的策略没有被应用（合成器**已经**广告 `zwlr_layer_shell_v1` v4，缺的是本 crate 的宿主）。
+- **卡片上的模糊与折射**：卡片用共享玻璃组件画材质（ADR 0044），但本 crate 不创建 `inox_glass_v1` 对象，弹窗栈也没有 layer 角色——合成器只对有 layer 角色的表面广告非零能力。因此真实会话里卡片是**纯半透明**，不是磨砂。「用同一套材质」不等于「有玻璃效果」。
+- **窗口透明（E4）**：`Window.color` 是 `"transparent"`，它只表示 QML 不清屏；能否真的透出背后的桌面取决于 Qt 平台插件的 ARGB visual 与会话合成，离屏测试证明不了。
 - **图标解码与正文图片**：`icon-static` / `body-images` capability 故意不声明；带图标的弹窗画图标将占用的空位，正文 `<img>` 画 alt 文本。
 - **声音 / 持久化**：不声明 `sound` / `persistence` capability；`sound-name`、`suppress-sound`、`resident` 会被读取并记录。
-- **`<u>` 的下划线**：模型保留 `underline` 强调，QML 的 `Text` 富文本路径尚未实现它。
 
 ## 目录结构
 
 ```
 crates/inox-notifications/
   Cargo.toml        工作区继承：字段一律 *.workspace = true
-  build.rs          cxx-qt：注册 com.inox.notifications.qml 模块并编译 bridge
+  build.rs          cxx-qt：注册 com.inox.notifications.qml 模块并编译 bridge；把 inox-glass 的 QML 资产以显式别名编进本模块
   qml/Main.qml      声明式 UI（Window 根），只绑定 vm.*
   src/main.rs       入口、Qt 宿主、--self-check；模块声明（bin-only）
   src/cxxqt_object.rs  #[cxx_qt::bridge]：model_json + pump / dispatch / reportReady
   src/runtime.rs    Runtime（pump 的唯一实现）、Task、Reply/Completer、UiAction
   src/reload.rs     SIGHUP + org.inox.Notifications 的 org.inox.Configuration1 重载桥
   src/view.rs       状态 + 令牌 + Fluent → JSON 投影
-  src/theme.rs      令牌 → QML 颜色与尺寸（纯函数）
+  src/theme.rs      令牌 → QML 颜色与尺寸（纯函数；含卡片玻璃材质的三个颜色）
   src/view_model.rs 状态 → 弹窗栈语义
   src/protocol.rs / markup.rs / actions.rs / queue.rs / policy.rs /
   contract.rs / bus.rs / lock_state.rs / placement.rs / app.rs / i18n.rs

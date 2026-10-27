@@ -56,8 +56,7 @@ pub fn dock(
         pane_y,
         width,
         pane_height,
-        &theme::glass_stops(tokens, emphasised, pane_height, true),
-        theme::radius_md(tokens),
+        &theme::pane_style(tokens, emphasised, theme::radius_md(tokens), true),
     );
 
     // The row the pane holds, laid out exactly as `DockGeometry::row_width`

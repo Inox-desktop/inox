@@ -9,7 +9,7 @@
 ```
 main ─ QGuiApplication + QQmlApplicationEngine ─ qrc:/…/Main.qml (Window)
                                   │
-        Launcher(#[cxx_qt::bridge]) ─┴─ modelJson  ──▶ QML 绑定（颜色/尺寸/文案/行）
+        Launcher(#[cxx_qt::bridge]) ─┴─ modelJson  ──▶ QML 绑定（颜色/尺寸/文案/图标/网格几何）
                      ▲                ◀── dispatch(json) ── 动作
                      │                ◀── pump()（QML Timer 16 ms）
                 State / update  ◀── Queue ◀── 工作线程（索引扫描、启动探针）
@@ -30,13 +30,15 @@ main ─ QGuiApplication + QQmlApplicationEngine ─ qrc:/…/Main.qml (Window)
 |------|------|------|
 | `desktop_entry` | desktop entry 格式解析：`[Desktop Entry]` 组、`Type=Application`、本地化 `Name`/`GenericName`/`Comment`、`Hidden`/`NoDisplay`、`OnlyShowIn`/`NotShowIn`、`TryExec`、`Categories`、`Actions`（含 `[Desktop Action …]` 组）；一行坏行被跳过并记录，一个坏文件不会中断其余文件的扫描 | D02 |
 | `exec` | `Exec` 字段码展开为 **argv**：`%f %F %u %U %i %c %k %%` 与已废弃的 `%d %D %n %N %v %m`，双引号与反斜杠转义。返回 `Vec<String>`，本 crate 里**不存在**任何返回命令行字符串的函数——这就是「搜索词永远不会变成 shell 命令」的结构性保证 | D02 |
-| `index` | XDG 数据目录扫描、目录优先级去重（靠前的目录胜出，`Hidden=true` 同样遮蔽后续同名条目）、子目录 id（`kde/foo.desktop` → `kde-foo.desktop`）、每个不可用文件的诊断 | D02 |
+| `index` | XDG 数据目录扫描、目录优先级去重（靠前的目录胜出，`Hidden=true` 同样遮蔽后续同名条目）、子目录 id（`kde/foo.desktop` → `kde-foo.desktop`）、扫描时解析每个条目的图标文件、每个不可用文件的诊断 | D02、D05 |
 | `search` | 有界查询（`launcher.max_query_chars`）与有界结果（`launcher.max_results`）、确定性排序（全名 > 前缀 > 词前缀 > 子串 > 子序列，平手按名称再按 id）、Unicode 感知、请求代次（旧结果不能覆盖新查询） | D02、Q03 |
 | `contract`、`activation` | 交互契约的 sent/accepted/applied/rejected/timeout 词汇、按**选择代次**幂等的激活（连按回车只启动一次）、失败原因与重试、有界等待后按观测证据给出就绪状态 | D02、D05 |
-| `placement` | layer-shell 放置策略：overlay 层、居中、独占键盘、由配置与令牌推出的尺寸、每输出归属。**纯数据** | D02 前置 |
-| `view_model` | 从状态到画面语义的纯投影：行、选中、禁用原因、加载/空/无匹配/索引不可用四种横幅 | D05 |
+| `placement` | layer-shell 放置策略：overlay 层、居中、独占键盘、输出尺寸的份额（宽 4/5、高 9/10，至少六列、四行网格）、整行对齐的网格列数、每输出归属。**纯数据** | D02 前置 |
+| `view_model` | 从状态到画面语义的纯投影：网格瓦片、选中、禁用原因、分类 chips、加载/空/无匹配/索引不可用四种横幅 | D05 |
 | `view` | 上面那份 JSON 投影：颜色是令牌转换成的 `#AARRGGBB` 字符串，尺寸与字号是令牌推导值，文案是 Fluent 的完整句子 | D05、Q01、Q03 |
-| `theme` | 令牌 → QML 颜色与尺寸的纯函数；字号 = Qt Quick 96 dpi 名义正文尺寸 × `typography.scale`，hairline = `spacing.xs / 2` | Q02 |
+| `theme` | 令牌 → QML 颜色与尺寸的纯函数；字号 = Qt Quick 96 dpi 名义正文尺寸 × `typography.scale`，hairline = `spacing.xs / 2`，网格瓦片与列数由图标尺寸、字宽与卡内可用宽度推出 | Q02 |
+| `icons` | `Icon=` → 图标文件：绝对路径原样使用；否则在 `$XDG_DATA_HOME/icons`、各 `$XDG_DATA_DIRS/icons`、`~/.local/share/icons` 中按 `hicolor` 优先、`{size}x{size}/apps` 接近 96 px 优先、PNG 优先于 `scalable/*.svg` 查找，最后退回 `*/pixmaps`；纯 `std`，路径变 `file://` URL 交给 QML | D05 |
+| `categories` | 把 freedesktop `Categories=` 映射到固定的分类 chips（All、Development、Graphics、Internet、Office、AudioVideo、Game、Utility、System、Education、Science、Other）；chip 只列索引中确有条目的分类 | D05 |
 | `runtime`、`reload` | 本 crate 自己的 `Queue`/`Task`/`oneshot`；SIGHUP 与 `org.inox.Launcher` 的 `Reload`（失败的重新加载保留旧配置） | — |
 | `app`、`i18n`、`qml/Main.qml` | `State` / `Message` / `update`、Fluent 目录装配、声明式界面 | D05 |
 
@@ -46,7 +48,7 @@ main ─ QGuiApplication + QQmlApplicationEngine ─ qrc:/…/Main.qml (Window)
 - **没有像素级 UI 证据。** Iced 时代的 `tests/render.rs`（tiny-skia 离屏渲染 + `INOX_SCREENSHOT_DIR` 截图工件）已随迁移删除；现在断言的是投影值与「QML 模块能在 `QT_QPA_PLATFORM=offscreen` 下加载并回报 ready」。Q02 的截图证据需要 waydriver + 真实 Qt 平台，工作区还没有这样的宿主。
 - **语义树只被「存在性」断言。** QML 用 `Accessible.role`/`Accessible.name` 标注控件，`reportReady` 会检查固定 chrome 的可用控件数量下限，离屏平台没有 AT-SPI 桥；Q01 不声称已验收。Qt 6.12 的 `Accessible` 附加类型也没有「不可用」状态，禁用行把原因放进 `Accessible.description`。
 - **就绪以进程存活为证据。** 交互契约要的是「窗口或 D-Bus 就绪」，而两者当前都不可达：合成器没有窗口列表接口，多数应用也不持有 D-Bus 名字。现在用的是「宽限期后进程仍存活」，它排除了实际最常见的失败（`Exec` 指向一个启动即退出的程序），但比交互契约的 claim 弱，`activation` 的模块文档里写明了。
-- **不加载图标主题。** 条目有图标名时，图标列画名称首字符；没有图标名时画占位符。两种降级在颜色上可区分（D05）。
+- **图标来自已安装的图标主题，不来自本 crate。** `icons` 只按 XDG 图标主题规范查找 `Icon=` 指向的文件；主题里没有该图标（或 Qt 无法解码该文件）时，瓦片退回名称首字符的字母块，两种降级在颜色上可区分（D05）。图标主题的 `index.theme` 继承链与 `symbolic` 目录不参与查找。
 - **重载桥没有自动化测试。** SIGHUP 遮罩与 `org.inox.Launcher` 的 `Reload` 已接线（失败的重新加载保留旧配置），但驱动它们需要会话总线或信号，测试只覆盖了 SIGHUP 安装失败返回错误这一条；改动 `src/reload.rs` / `main::reload_state` 时要人工验证。
 - **`Actions` 只解析不使用。** 交互式启动器只启动条目自身的 `Exec`；动作是索引的一部分，留给后续「右键菜单」。
 

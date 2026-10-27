@@ -20,9 +20,9 @@ use crate::view::{EntryAction, PanelGeometry};
 use crate::view_model::PanelStatus;
 
 use super::support::{
-    Panel, add_tray_item, color, empty_surface, has_text, items, key, number, populated_surface,
-    populated_with, rect_at, rects, sentences, text_item, texts, token, unavailable_surface,
-    window,
+    Panel, add_tray_item, color, empty_surface, has_text, items, key, number, pane_at, panes,
+    populated_surface, populated_with, rect_at, rects, sentences, string, text_item, texts, token,
+    unavailable_surface, window,
 };
 
 // ---------------------------------------------------------------- the taskbar
@@ -384,7 +384,7 @@ fn the_menu_bar_is_projected_at_its_configured_size() {
         "the surface is the bar plus the margin above it"
     );
 
-    let pane = rect_at(&scene, width / 2.0, geometry.margin + geometry.height / 2.0)
+    let pane = pane_at(&scene, width / 2.0, geometry.margin + geometry.height / 2.0)
         .expect("the bar paints its pane");
 
     assert!(
@@ -399,7 +399,7 @@ fn the_light_and_dark_menu_bars_differ() {
     let light = populated_surface(PanelSurface::Menubar, Tokens::builtin_light()).scene();
     let dark = populated_surface(PanelSurface::Menubar, Tokens::builtin_dark()).scene();
 
-    assert_ne!(color(rects(&light)[0]), color(rects(&dark)[0]));
+    assert_ne!(color(panes(&light)[0]), color(panes(&dark)[0]));
 }
 
 #[test]
@@ -518,7 +518,7 @@ fn the_dock_is_projected_above_the_bottom_edge() {
     let scene = panel.scene();
     let (_, height) = panel.size();
     let pane =
-        rect_at(&scene, 1.0, height - geometry.margin - 1.0).expect("the dock paints its pane");
+        pane_at(&scene, 1.0, height - geometry.margin - 1.0).expect("the dock paints its pane");
 
     assert_eq!(scene.surface, PanelSurface::Dock);
     assert!((height - geometry.window_height()).abs() < f32::EPSILON);
@@ -537,7 +537,7 @@ fn the_light_and_dark_docks_differ() {
     let light = populated_surface(PanelSurface::Dock, Tokens::builtin_light()).scene();
     let dark = populated_surface(PanelSurface::Dock, Tokens::builtin_dark()).scene();
 
-    assert_ne!(color(rects(&light)[0]), color(rects(&dark)[0]));
+    assert_ne!(color(panes(&light)[0]), color(panes(&dark)[0]));
 }
 
 #[test]
@@ -551,7 +551,7 @@ fn an_empty_dock_draws_its_pane_and_its_own_state() {
         .notice
         .expect("the dock says what it is doing");
 
-    assert!(!rects(&scene).is_empty(), "an empty dock is still a pane");
+    assert!(!panes(&scene).is_empty(), "an empty dock is still a pane");
     assert!(
         has_text(&scene, &notice),
         "and it says why it is empty rather than being a bare pill"
@@ -724,23 +724,64 @@ fn the_glass_draws_a_highlight_along_the_panes_top_edge() {
     for mode in [PanelSurface::Menubar, PanelSurface::Dock] {
         let panel = populated_surface(mode, tokens.clone());
         let scene = panel.scene();
-        let pane = rects(&scene)
-            .into_iter()
-            .find(|item| {
-                color(item) == crate::theme::glass_tint(&tokens, false) && number(item, "h") > 1.0
-            })
-            .expect("the pane's body is drawn");
-        let top = number(pane, "y");
-        let highlight = rects(&scene).into_iter().find(|item| {
-            color(item) == crate::theme::glass_highlight(&tokens)
-                && (number(item, "y") - top).abs() < f32::EPSILON
-        });
+        // The pane is one `pane` item now, drawn by the shared `GlassPane`
+        // component: it carries both edge colours and the hairline width, and the
+        // component draws them along the pane's own top and bottom edges. The
+        // panel no longer emits a separate band per edge — that was the drawing
+        // the component library took over (ADR 0040 §3).
+        let pane = items(&scene)
+            .iter()
+            .find(|item| item["kind"].as_str() == Some("pane"))
+            .expect("the glass surface projects its pane");
 
+        assert_eq!(
+            string(pane, "highlight"),
+            crate::theme::glass_highlight(&tokens),
+            "{mode:?}: the pane carries the highlight token along its top edge"
+        );
+        assert_eq!(
+            string(pane, "shade"),
+            crate::theme::glass_shade(&tokens),
+            "{mode:?}: and the shade token along its bottom edge"
+        );
         assert!(
-            highlight.is_some(),
-            "{mode:?}: the pane carries a hairline highlight along its top edge"
+            number(pane, "hairline") > 0.0,
+            "{mode:?}: the two edges are drawn one hairline thick"
+        );
+        assert!(
+            (number(pane, "y") - number(pane, "y")).abs() < f32::EPSILON,
+            "{mode:?}: the highlight is the pane's own top edge, not a row above it"
         );
     }
+
+    // The menu bar is anchored to the screen edge: it has nothing under its
+    // bottom edge to darken against, so it draws no shade at all.
+    let menubar = populated_surface(PanelSurface::Menubar, tokens.clone()).scene();
+    let pane = items(&menubar)
+        .iter()
+        .find(|item| item["kind"].as_str() == Some("pane"))
+        .expect("the menu bar projects its pane");
+
+    assert!(
+        !pane["shaded"].as_bool().unwrap_or(true),
+        "a bar that reaches the screen edge draws no bottom shade"
+    );
+
+    // The dock floats, so it has both edges and the group radius.
+    let dock = populated_surface(PanelSurface::Dock, tokens.clone()).scene();
+    let pane = items(&dock)
+        .iter()
+        .find(|item| item["kind"].as_str() == Some("pane"))
+        .expect("the dock projects its pane");
+
+    assert!(
+        pane["shaded"].as_bool().unwrap_or(false),
+        "a floating pane is shaded along its bottom edge"
+    );
+    assert!(
+        (number(pane, "radius") - crate::theme::radius_md(&tokens)).abs() < f32::EPSILON,
+        "the pill's corners are the `radii.md` token"
+    );
 }
 
 #[test]

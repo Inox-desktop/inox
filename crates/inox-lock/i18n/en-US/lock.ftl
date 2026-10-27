@@ -26,15 +26,20 @@ lock-failed = That password was not accepted
 lock-failure-rejected = the authentication service rejected the password
 lock-failure-timed-out = the authentication service did not answer in time
 lock-failure-unavailable = the authentication service is not reachable
+lock-failure-busy = the authentication service is busy with another attempt
+lock-failure-rate-limited = the authentication service is refusing attempts for now
+lock-failure-authenticator = the authentication service could not check the password
 lock-failure-cancelled = the attempt was abandoned before it was answered
 
 # Why nothing can be typed, shown next to the disabled field (acceptance D05).
 lock-disabled-boundary = The authentication service is not available
 # The other half of the same question: not a service that is not answering, but a
-# build that contains no such service at all.
-lock-disabled-boundary-missing = This build has no authentication service
+# session with no account to authenticate as.
+lock-disabled-boundary-missing = This session has no authentication service to use
+lock-disabled-no-input = This screen cannot take keyboard input
 lock-disabled-waiting = Too many attempts for now
 lock-disabled-verifying = An attempt is already being checked
+lock-disabled-locking = The session is not locked yet
 lock-disabled-unlocked = The session is not locked
 lock-disabled-protocol = The session lock protocol is not available
 lock-disabled-no-ui = The lock screen is not running
@@ -55,20 +60,27 @@ lock-protocol-missing-global = the compositor does not offer the session lock pr
 lock-protocol-registry-unavailable = the compositor's registry could not be read
 lock-boundary-disconnected = the authentication service is not reachable
 lock-boundary-timeout = the authentication service did not answer in time
-lock-boundary-not-provided = this build ships no authentication boundary at all: the session-lock boundary requires a human security review of one before the lock screen may authenticate anyone, so nothing is checked here and the session is released by logging out
+lock-boundary-not-provided = this session has no authentication boundary it can use: no account name could be resolved for the uid the session runs as, so nothing is checked here and the session is released by logging out
+lock-boundary-no-input = the compositor offered no keyboard, so nothing can be typed here
 
 # What the binary reports before exiting non-zero.
-lock-start-blocked = The session lock cannot start in this build: { $reason }
-lock-start-blocked-reason = the session-lock boundary requires a human security review of the authentication boundary before this screen may authenticate anyone, and this build has none; pass --take-lock to exercise the session-lock protocol alone (that mode covers every output and cannot release the lock again)
+lock-start-blocked = The session lock cannot start here: { $reason }
+lock-start-blocked-reason = no session-lock token was delivered, so nothing can be locked; inox-session starts this component and delivers the token. To take the lock directly, pass --take-lock with INOX_LOCK_TOKEN set
 
-# The protocol leg. This mode takes the real session lock
-# and has no way to release it, because there is no reviewed authentication
-# boundary to release it with.
+lock-request-accepted = Asked the session to lock; whether every output is covered is the compositor's report, not this command's
+lock-request-busy = The session is not ready to lock yet, or the lock client is already starting
+lock-request-no-session = no session answered: is inox-session running with its control socket?
+lock-request-refused = the session does not offer a lock service
+
+# The protocol leg: this mode takes the real session lock, draws the lock
+# screen on every output, and asks for the release only when the
+# authentication boundary accepts the user.
 lock-taking = Taking the session lock as the trusted client
 lock-taken = The session is locked; every output is covered
+lock-unlocked = The user was authenticated; the session lock was released
 lock-refused = The compositor refused the session lock
-lock-released = The compositor released the session lock
-lock-stopped-locked = Stopped while the session is locked: the session stays locked until you log out
+lock-released = The session lock was released
+lock-stopped-locked = Stopped while the session is locked: the session stays locked until it is released
 lock-stopped-unconfirmed = Stopped before the compositor confirmed the lock
 lock-take-failed = The session lock could not be taken: { $reason }
 lock-token-missing = no session lock token was delivered, so the compositor would refuse the claim; start this component from inox-session, which delivers it

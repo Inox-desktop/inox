@@ -34,16 +34,27 @@
 //!   visible only to the compositor-launched input method connection.
 //! - `inox_ipc` — the private control protocol from `inox-protocols`, at the version
 //!   its own interface declares.
-//! - `inox_glass_manager_v1` (1) — [`InoxGlassManagerV1`], the private frosted-glass
+//! - `inox_glass_manager_v1` (2) — [`InoxGlassManagerV1`], the private glass
 //!   protocol: a layer surface may ask the compositor to blur the already
 //!   composited pixels *behind* one of its regions and blend over the result
+//!   (version 1), and — at version 2 — to bend that backdrop along a rounded
+//!   outline with an optional depth term and chromatic split
 //!   (see [`crate::glass`]). Only a surface that already has a layer role is
 //!   offered the effect, the parameters are keyed by the surface, and the locked
-//!   scene frosts nothing because it never reaches the layer path.
+//!   scene draws nothing because it never reaches the layer path. A manager bound
+//!   at version 1 creates version 1 objects, which keep the blur-only behaviour
+//!   and never receive `liquid_capabilities`.
 //!
 //! Client toplevels become managed windows: they are registered in a
 //! [`Workspace`], tiled by [`LayoutConfig`] and mapped into a Smithay desktop
-//! `Space` that [`InoxState::render_frame`] composites.
+//! `Space` that [`InoxState::render_frame`] composites. A toplevel is not a window
+//! until it has drawn: `new_toplevel` only sends the initial configure and parks
+//! the surface in [`InoxState::awaiting_window_count`]'s list, and the first commit
+//! that carries a buffer promotes it (see `promote_awaiting_toplevel`, which is
+//! crate-private and therefore deliberately not linked from here: a public
+//! module must not link to private items, `rustdoc::private_intra_doc_links`).
+//! The window the keyboard holds is told
+//! it is `activated`; `Super+Shift+Q` sends it `xdg_toplevel.close`.
 //!
 //! # Outputs, scaling and the global coordinate space
 //!
@@ -120,7 +131,7 @@ use inox_protocols::{
         inox_glass_manager_v1::{
             Error as GlassError, InoxGlassManagerV1, Request as GlassManagerRequest,
         },
-        inox_glass_v1::{InoxGlassV1, Request as GlassRequest},
+        inox_glass_v1::{InoxGlassV1, RefractionFlag, Request as GlassRequest},
     },
     ipc::inox_ipc::server::inox_ipc::{
         InoxIpc, LockState as IpcLockState, ReloadResult, Request as InoxIpcRequest,
@@ -138,6 +149,7 @@ use inox_protocols::{
             zwlr_layer_shell_v1::ZwlrLayerShellV1,
             zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
         },
+        xdg::shell::server::xdg_toplevel,
     },
 };
 use smithay::{
@@ -154,8 +166,9 @@ use smithay::{
         },
     },
     desktop::{
-        LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Space, Window,
-        WindowSurfaceType,
+        LayerSurface as DesktopLayerSurface, PopupKeyboardGrab, PopupKind, PopupManager,
+        PopupPointerGrab, PopupUngrabStrategy, Space, Window, WindowSurfaceType,
+        find_popup_root_surface,
     },
     input::{
         Seat, SeatHandler, SeatState,
@@ -167,7 +180,7 @@ use smithay::{
     },
     output::{Mode, Output, PhysicalProperties, Scale as OutputScale, Subpixel},
     reexports::wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
         backend::{ClientData, ClientId, DisconnectReason, GlobalId},
         protocol::wl_data_source::WlDataSource,
     },
@@ -175,8 +188,8 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            send_surface_state, with_states,
+            CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+            get_parent, send_surface_state, with_states,
         },
         fractional_scale::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
@@ -392,6 +405,18 @@ pub struct InoxState {
     layer_focus: Option<WlSurface>,
     popups: PopupManager,
     shm_state: ShmState,
+
+    /// Toplevels that exist but have not drawn anything yet.
+    ///
+    /// `xdg_toplevel` is created before the client has a buffer: the client must
+    /// commit an empty surface first, wait for the initial configure, and only then
+    /// attach one. Mapping the window at creation time would hand a tile, a slot in
+    /// the layout order and the keyboard focus to a client that may never draw —
+    /// and a client that never draws must not shrink the other windows. The window
+    /// is created here on the first commit that carries a buffer instead; see
+    /// `promote_awaiting_toplevel` (crate-private; a public doc must not link to
+    /// private items, `rustdoc::private_intra_doc_links`).
+    awaiting_buffer: Vec<ToplevelSurface>,
 
     /// Frosting parameters per surface, keyed by the surface they were set for.
     ///
@@ -721,6 +746,7 @@ impl InoxState {
             layers: Vec::new(),
             layer_focus: None,
             popups: PopupManager::default(),
+            awaiting_buffer: Vec::new(),
             shm_state,
             frost: HashMap::new(),
             space,
@@ -1074,7 +1100,17 @@ impl InoxState {
 
     /// Composite every advertised output, in advertisement order.
     fn render_outputs(&mut self, renderer: &mut HeadlessRenderer) -> Result<(), RenderError> {
-        let outputs: Vec<(String, (i32, i32), f64, Output)> = self
+        /// One output's render target, taken before the loop so the borrow of
+        /// `self.outputs` ends before `scene_elements` needs `self` mutably.
+        struct Target {
+            id: OutputId,
+            name: String,
+            size: (i32, i32),
+            scale: f64,
+            output: Output,
+        }
+
+        let targets: Vec<Target> = self
             .outputs
             .iter()
             .map(|entry| {
@@ -1084,16 +1120,24 @@ impl InoxState {
                     .map(|mode| mode.size)
                     .unwrap_or_default();
 
-                (
-                    entry.output.name(),
-                    (size.w, size.h),
-                    entry.output.current_scale().fractional_scale(),
-                    entry.output.clone(),
-                )
+                Target {
+                    id: entry.id,
+                    name: entry.output.name(),
+                    size: (size.w, size.h),
+                    scale: entry.output.current_scale().fractional_scale(),
+                    output: entry.output.clone(),
+                }
             })
             .collect();
 
-        for (name, size, scale, output) in outputs {
+        for target in targets {
+            let Target {
+                id,
+                name,
+                size,
+                scale,
+                output,
+            } = target;
             let scene = self
                 .scene_elements(renderer.renderer_mut(), &output)
                 .map_err(RenderError::from)?;
@@ -1105,6 +1149,11 @@ impl InoxState {
                 &scene.elements,
                 &scene.glass,
             )?;
+            // The frame this output just composited is the one its clients are
+            // waiting on. Sending the callbacks here — rather than once for every
+            // output after the loop — keeps a surface's callback tied to the
+            // output it is drawn on, which is what `wl_surface.frame` means.
+            self.send_frame_callbacks(Some(id));
         }
 
         Ok(())
@@ -1305,16 +1354,18 @@ impl InoxState {
         self.frost.retain(|surface, _| surface.is_alive());
     }
 
-    /// The `capabilities` event's `max_radius` for `surface`.
+    /// What this compositor will draw for `surface`: both capability events.
     ///
     /// The honest answer needs three things to hold; see [`crate::glass`] for why
-    /// each one is part of it.
-    fn glass_capability(&self, surface: &WlSurface) -> u32 {
+    /// each one is part of it. The version 1 `capabilities` event reports
+    /// `max_radius` from this struct and the version 2 `liquid_capabilities` event
+    /// reports the rest, so the two can never disagree about the blur.
+    fn glass_capabilities(&self, surface: &WlSurface) -> glass::LiquidCapabilities {
         let layer_role = self
             .layers
             .iter()
             .any(|entry| entry.surface.wl_surface() == surface);
-        glass::capabilities(layer_role, self.lock.accepted(), self.frosting_supported())
+        glass::liquid_capabilities(layer_role, self.lock.accepted(), self.frosting_supported())
     }
 
     /// Whether this compositor draws frosting at all.
@@ -1480,19 +1531,40 @@ impl InoxState {
     pub(crate) fn background(&self) -> [f32; 4] {
         self.background
     }
+    /// Count a frame this compositor presented and settle the lock coverage.
+    ///
+    /// Frame callbacks are **not** sent here: `wl_surface.frame` is per output, so
+    /// the backend that presented names the output it presented (see
+    /// [`InoxState::frame_callbacks_for`]). A single global "a frame happened"
+    /// signal would hand an output's clients a callback every time *another*
+    /// output presented, which makes a multi-head desktop run every client at the
+    /// combined rate of all displays.
     pub(crate) fn frame_presented(&mut self) {
         self.frames_rendered = self.frames_rendered.saturating_add(1);
         self.settle_lock();
-        self.send_frame_callbacks();
     }
-    pub(crate) fn frame_callbacks(&mut self) {
-        self.send_frame_callbacks();
+    /// Send the frame callbacks of one output, for the frame it just presented.
+    pub(crate) fn frame_callbacks_for(&mut self, output: OutputId) {
+        self.send_frame_callbacks(Some(output));
+    }
+
+    /// The id of the output advertised under `name`, if any.
+    ///
+    /// The DRM backend names its scanouts `"<card>:<connector>"`; the compositor
+    /// knows the connector name, so resolving a completion back to one of its own
+    /// outputs is a name lookup rather than a second identity table.
+    pub(crate) fn output_id_named(&self, name: &str) -> Option<OutputId> {
+        self.outputs
+            .iter()
+            .find(|entry| entry.output.name() == name)
+            .map(|entry| entry.id)
     }
     pub(crate) fn frame_budget(&self) -> bool {
         self.exit_after_frames.is_some()
     }
 
-    /// Send a `wl_surface.frame` callback to every mapped surface.
+    /// Send a `wl_surface.frame` callback to the mapped surfaces of one output,
+    /// or of every output when `only` is `None`.
     ///
     /// Without this a client that waits for its frame callback before drawing the next
     /// frame never gets one, so it never repaints: a real client (an XWayland toplevel,
@@ -1502,11 +1574,12 @@ impl InoxState {
     ///
     /// Each surface is told about the output it is on, which is the output whose
     /// frame it is waiting for.
-    fn send_frame_callbacks(&mut self) {
+    fn send_frame_callbacks(&mut self, only: Option<OutputId>) {
         let time = self.start_time.elapsed();
         let outputs: Vec<(OutputId, Output)> = self
             .outputs
             .iter()
+            .filter(|entry| only.is_none_or(|id| id == entry.id))
             .map(|entry| (entry.id, entry.output.clone()))
             .collect();
         let windows: Vec<(WindowId, Window)> = self
@@ -1797,6 +1870,18 @@ impl InoxState {
         self.workspace.len()
     }
 
+    /// Number of toplevels that exist but have not drawn a buffer yet.
+    ///
+    /// Such a toplevel is not a window: it holds no tile, no Alt+Tab slot and no
+    /// focus. It becomes one on its first commit that carries a buffer — see
+    /// `promote_awaiting_toplevel` (crate-private; a public doc must not link to
+    /// private items, `rustdoc::private_intra_doc_links`). Exposed so the
+    /// integration test can tell "the compositor saw the toplevel" from
+    /// "the toplevel is a window".
+    pub fn awaiting_window_count(&self) -> usize {
+        self.awaiting_buffer.len()
+    }
+
     /// The focused window, if any.
     pub fn focused_window(&self) -> Option<WindowId> {
         self.workspace.focused()
@@ -1942,9 +2027,32 @@ impl InoxState {
                 self.workspace.focus_prev();
                 self.sync_focus();
             }
+            Action::CloseWindow => self.close_focused_window(),
             Action::Quit => self.request_exit(),
             Action::SwitchVt(_) => {}
         }
+    }
+
+    /// Ask the focused window to close, the way a window manager does.
+    ///
+    /// `xdg_toplevel.close` is a request, not a command: the client may save first,
+    /// show a confirmation, or ignore it entirely, and the compositor must keep its
+    /// hands off until the client destroys the toplevel. Nothing reaches the client
+    /// while the session is locked, where no ordinary window is focused and the
+    /// compositor's own chords are not intercepted.
+    fn close_focused_window(&mut self) {
+        if self.lock.accepted() {
+            return;
+        }
+        let Some(id) = self.workspace.focused() else {
+            return;
+        };
+        let Some(toplevel) = self.windows.get(&id).and_then(Window::toplevel).cloned() else {
+            return;
+        };
+
+        info!(id = id.get(), "asked the focused window to close");
+        toplevel.send_close();
     }
 
     /// Register a freshly created toplevel as a managed window.
@@ -2006,6 +2114,25 @@ impl InoxState {
             .iter()
             .find(|(_, window)| window_toplevel_surface(window) == Some(surface))
             .map(|(id, _)| *id)
+    }
+
+    /// Turn a toplevel that just committed its first buffer into a managed window.
+    ///
+    /// This is the other half of [`InoxState::new_toplevel`]: a toplevel is created
+    /// empty, and only becomes a window once it has drawn something. Clients that
+    /// create a toplevel and then never map it — a hidden helper window, a client
+    /// that crashed before its first frame — therefore never take a tile, never
+    /// enter the Alt+Tab order and never receive the keyboard.
+    fn promote_awaiting_toplevel(&mut self, surface: &WlSurface) {
+        let Some(index) = self
+            .awaiting_buffer
+            .iter()
+            .position(|toplevel| toplevel.wl_surface() == surface)
+        else {
+            return;
+        };
+        let toplevel = self.awaiting_buffer.remove(index);
+        self.add_window(toplevel);
     }
 
     /// Suggest each managed window its tiled geometry and map it into the space.
@@ -2124,14 +2251,47 @@ impl InoxState {
             keyboard.set_focus(self, focused.clone(), serial);
         }
 
+        // `xdg_toplevel.activated` follows the surface the keyboard actually has,
+        // not the workspace's idea of the focused window: when a layer surface takes
+        // exclusive focus the window behind it really is inactive, and a client that
+        // kept drawing its focused title bar would be lying to the user.
+        let activated = focused.clone();
         self.ime_sync_focus(focused);
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
+        self.sync_window_states(activated.as_ref());
 
         if let Some(id) = self.workspace.focused()
             && let Some(window) = self.windows.get(&id).cloned()
         {
             self.space.raise_element(&window, true);
+        }
+    }
+
+    /// Tell every managed toplevel whether it is the active window.
+    ///
+    /// Without this a client never receives `xdg_toplevel.activated`, so every
+    /// application draws itself as if it were in the background — dimmed title bar,
+    /// no focus ring — no matter how many times the user clicks it. The state is
+    /// pushed through the normal configure path: [`ToplevelSurface::send_pending_configure`]
+    /// only sends when something actually changed, so calling this from every focus
+    /// change and every arrange cannot turn into a configure storm.
+    fn sync_window_states(&mut self, focused: Option<&WlSurface>) {
+        let windows: Vec<Window> = self.windows.values().cloned().collect();
+
+        for window in windows {
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
+            let activated = focused.is_some_and(|surface| surface == toplevel.wl_surface());
+            toplevel.with_pending_state(|state| {
+                if activated {
+                    state.states.set(xdg_toplevel::State::Activated);
+                } else {
+                    state.states.unset(xdg_toplevel::State::Activated);
+                }
+            });
+            toplevel.send_pending_configure();
         }
     }
 
@@ -2571,7 +2731,21 @@ impl CompositorHandler for InoxState {
 
     fn commit(&mut self, surface: &WlSurface) {
         self.repaint = true;
+        // Read the committed buffer *before* the buffer handler consumes it: a
+        // toplevel's first attached buffer is what turns it into a window, and
+        // `on_commit_buffer_handler` takes the assignment out of the surface state.
+        let drew_this_commit = with_states(surface, |states| {
+            states
+                .cached_state
+                .get::<SurfaceAttributes>()
+                .current()
+                .buffer
+                .is_some()
+        });
         on_commit_buffer_handler::<Self>(surface);
+        if drew_this_commit {
+            self.promote_awaiting_toplevel(surface);
+        }
         self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
@@ -2779,7 +2953,12 @@ impl XdgShellHandler for InoxState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        self.add_window(surface);
+        // A toplevel is created empty; it is not a window yet. The initial configure
+        // is what tells the client it may draw (and how large), so send it now and
+        // wait for the first commit that carries a buffer — see
+        // `awaiting_buffer` and `promote_awaiting_toplevel`.
+        surface.send_configure();
+        self.awaiting_buffer.push(surface);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
@@ -2791,8 +2970,54 @@ impl XdgShellHandler for InoxState {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup pointer grabs arrive with the popup milestone.
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        // An `xdg_popup` grab is what makes a menu behave like a menu: the pointer
+        // and keyboard are redirected to the popup for as long as it is up, and a
+        // click anywhere outside dismisses it. Smithay's default grabs implement
+        // exactly the behaviour `xdg-shell` describes, so this only has to hand
+        // them the seat.
+        let Some(seat) = Seat::from_resource(&seat) else {
+            warn!("popup grab requested on a seat that is gone");
+            return;
+        };
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            warn!("popup grab requested without a live root surface");
+            return;
+        };
+
+        // A refused grab is not an error the user sees: the client's popup simply
+        // stays a plain (ungrabbed) surface, which is what the protocol asks for.
+        let mut grab = match self.popups.grab_popup(root, kind, &seat, serial) {
+            Ok(grab) => grab,
+            Err(error) => {
+                debug!(?error, "popup grab refused");
+                return;
+            }
+        };
+
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed() {
+                // A grab already owns the keyboard; the new popup joins the stack
+                // and will get it back when the outer grab is dismissed.
+                grab.ungrab(PopupUngrabStrategy::All);
+            } else {
+                keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+            }
+        }
+
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed() {
+                grab.ungrab(PopupUngrabStrategy::All);
+            } else {
+                pointer.set_grab(
+                    self,
+                    PopupPointerGrab::new(&grab),
+                    serial,
+                    smithay::input::pointer::Focus::Clear,
+                );
+            }
+        }
     }
 
     fn reposition_request(
@@ -2806,6 +3031,11 @@ impl XdgShellHandler for InoxState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // A toplevel destroyed before it ever drew is not in `windows`; it is still
+        // in the awaiting list and must be dropped from it, or a later surface that
+        // reuses the object id would be promoted by mistake.
+        self.awaiting_buffer
+            .retain(|awaiting| awaiting.wl_surface() != surface.wl_surface());
         self.remove_window(&surface);
     }
 }
@@ -2942,14 +3172,34 @@ impl Dispatch<InoxGlassManagerV1, ()> for InoxState {
                     );
                     return;
                 }
-                let glass = data_init.init(id, surface.clone());
+                let object = data_init.init(id, surface.clone());
                 // Sent once, right after creation and before any request on the
-                // object is answered. The client picks its fallback from this
-                // number, so it must never promise more than the compositor will
-                // honour for *this* surface (see `glass_capability`).
-                let max_radius = state.glass_capability(&surface);
-                glass.capabilities(max_radius);
-                debug!(max_radius, "created an inox_glass_v1 object for a surface");
+                // object is answered. The client picks its fallback from these
+                // numbers, so they must never promise more than the compositor
+                // will honour for *this* surface (see `glass_capabilities`).
+                //
+                // `capabilities` goes first and always, because a client that only
+                // listens for the version 1 event must not be left thinking its
+                // object is mute; `liquid_capabilities` follows for version 2
+                // objects only, and is the authoritative answer for those.
+                let capabilities = state.glass_capabilities(&surface);
+                object.capabilities(capabilities.max_radius);
+                if object.version() >= 2 {
+                    object.liquid_capabilities(
+                        capabilities.max_radius,
+                        capabilities.max_refraction_height,
+                        capabilities.max_refraction_amount,
+                        RefractionFlag::from_bits_truncate(capabilities.flags),
+                    );
+                }
+                debug!(
+                    max_radius = capabilities.max_radius,
+                    max_refraction_height = capabilities.max_refraction_height,
+                    max_refraction_amount = capabilities.max_refraction_amount,
+                    flags = capabilities.flags,
+                    version = object.version(),
+                    "created an inox_glass_v1 object for a surface"
+                );
                 state.frost.insert(surface, Frost::default());
             }
             // `Request` is `#[non_exhaustive]`: a later protocol revision may add
@@ -2972,7 +3222,7 @@ impl GlobalDispatch<InoxGlassManagerV1, ()> for InoxState {
     }
 }
 
-/// Frosting parameters for one surface.
+/// Glass parameters for one surface.
 ///
 /// Every request replaces the previous value and takes effect from the next
 /// committed frame, which is why each one asks for a repaint. The parameters live
@@ -2980,6 +3230,12 @@ impl GlobalDispatch<InoxGlassManagerV1, ()> for InoxState {
 /// than by the object itself: the render path walks surfaces, and the surface is
 /// the identity the protocol's one-object-per-surface rule is about. The object's
 /// only job is to stay alive so its surface's requests keep arriving.
+///
+/// The two version 2 requests store the lens next to the version 1 blur
+/// parameters, because both describe one pane: `set_corner_radii` fixes the
+/// outline, `set_refraction` the band that bends the backdrop along it. A version
+/// 1 client cannot send either (wayland-server rejects an unknown request), so a
+/// v1 object's [`Frost`] never grows a lens.
 impl Dispatch<InoxGlassV1, WlSurface> for InoxState {
     fn request(
         state: &mut Self,
@@ -3008,6 +3264,40 @@ impl Dispatch<InoxGlassV1, WlSurface> for InoxState {
                 };
                 frost.set_region(x, y, width, height);
             }
+            GlassRequest::SetCornerRadii {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            } => {
+                let Some(frost) = state.frost.get_mut(surface) else {
+                    return;
+                };
+                frost.set_corner_radii([top_left, top_right, bottom_right, bottom_left]);
+            }
+            GlassRequest::SetRefraction {
+                height,
+                amount,
+                flags,
+            } => {
+                // The protocol asks a compositor to ignore flag bits it does not
+                // know, so an unknown bit is not an error here: the known bits are
+                // read out of the raw value instead of rejecting the request.
+                let (depth, dispersion) = match flags {
+                    WEnum::Value(flags) => (
+                        flags.contains(RefractionFlag::Depth),
+                        flags.contains(RefractionFlag::Dispersion),
+                    ),
+                    WEnum::Unknown(raw) => (
+                        raw & glass::REFRACTION_FLAG_DEPTH != 0,
+                        raw & glass::REFRACTION_FLAG_DISPERSION != 0,
+                    ),
+                };
+                let Some(frost) = state.frost.get_mut(surface) else {
+                    return;
+                };
+                frost.set_refraction(height, amount, depth, dispersion);
+            }
             // The destructor: wayland-server removes the object after dispatch,
             // and `destroyed` below clears the parameters for every other path.
             GlassRequest::Destroy => {
@@ -3023,7 +3313,7 @@ impl Dispatch<InoxGlassV1, WlSurface> for InoxState {
     /// disconnect included.
     ///
     /// The parameters must not outlive the surface they were set for — a dead
-    /// surface must never be frosted again — so they are dropped here as well as
+    /// surface must never be drawn for again — so they are dropped here as well as
     /// in `InoxState::destroyed` and `InoxState::prune_frost`; the three cover
     /// the object, the surface and the client, whichever goes first.
     fn destroyed(

@@ -54,8 +54,15 @@ pub struct IndexedEntry {
     pub generic_name: Option<String>,
     /// Its localized comment.
     pub comment: Option<String>,
-    /// Its icon name.
+    /// Its icon name, as the desktop file wrote it.
     pub icon: Option<String>,
+    /// The icon file the name resolved to, when the session has one.
+    ///
+    /// Resolved once, during the scan (see [`crate::icons`]): the lookup reads
+    /// the icon theme directories, and doing it per frame would make the
+    /// projection pay for the filesystem. `None` is a normal answer — the tile
+    /// falls back to the entry's first letter.
+    pub icon_path: Option<PathBuf>,
     /// Its command line, exactly as written.
     pub exec: String,
     /// Whether it needs a terminal.
@@ -226,6 +233,7 @@ impl AppIndex {
             generic_name: None,
             comment: None,
             icon: None,
+            icon_path: None,
             exec: exec.to_owned(),
             terminal: false,
             working_dir: None,
@@ -245,15 +253,28 @@ pub struct IndexOptions {
     pub directories: Vec<PathBuf>,
     /// The rules that decide whether an entry is listed.
     pub filter: EntryFilter,
+    /// Where an entry's `Icon=` is looked up.
+    ///
+    /// Part of the options rather than of the entry so that a caller with no
+    /// icon directories (the tests, a future index cache) still builds an index;
+    /// [`IndexOptions::new`] leaves it empty.
+    pub icons: crate::icons::IconSearch,
 }
 
 impl IndexOptions {
-    /// Options over explicit directories and an explicit filter.
+    /// Options over explicit directories and an explicit filter, without icons.
     pub fn new(directories: Vec<PathBuf>, filter: EntryFilter) -> Self {
         Self {
             directories: deduplicate(directories),
             filter,
+            icons: crate::icons::IconSearch::none(),
         }
+    }
+
+    /// The same options, with an explicit icon search.
+    pub fn with_icons(mut self, icons: crate::icons::IconSearch) -> Self {
+        self.icons = icons;
+        self
     }
 
     /// The options the session's environment describes.
@@ -271,12 +292,15 @@ impl IndexOptions {
         let mut filter = EntryFilter::from_env(locale);
         filter.include_hidden = include_hidden;
 
-        Ok(Self::new(directories, filter))
+        Ok(Self::new(directories, filter).with_icons(crate::icons::IconSearch::from_env()))
     }
 }
 
 /// `$XDG_DATA_DIRS`, or the two directories the specification defaults to.
-fn data_directories() -> Vec<PathBuf> {
+///
+/// Shared with [`crate::icons`]: icons live under the same data directories as
+/// the desktop files, and the two answers must not drift apart.
+pub(crate) fn data_directories() -> Vec<PathBuf> {
     match std::env::var("XDG_DATA_DIRS") {
         Ok(value) if !value.trim().is_empty() => std::env::split_paths(&value).collect(),
         _ => vec![
@@ -302,6 +326,7 @@ fn deduplicate(directories: Vec<PathBuf>) -> Vec<PathBuf> {
 pub fn scan(options: &IndexOptions, generation: u64) -> AppIndex {
     let mut scanner = Scanner {
         filter: &options.filter,
+        icons: &options.icons,
         seen: BTreeSet::new(),
         index: AppIndex {
             entries: Vec::new(),
@@ -330,6 +355,7 @@ pub fn scan(options: &IndexOptions, generation: u64) -> AppIndex {
 /// One scan's mutable state.
 struct Scanner<'a> {
     filter: &'a EntryFilter,
+    icons: &'a crate::icons::IconSearch,
     seen: BTreeSet<String>,
     index: AppIndex,
 }
@@ -418,7 +444,7 @@ impl Scanner<'_> {
                 }
                 self.index
                     .entries
-                    .push(index_entry(entry, &self.filter.locale));
+                    .push(index_entry(entry, &self.filter.locale, self.icons));
             }
             Err(problem) => self.record(&id, path, problem),
         }
@@ -448,14 +474,20 @@ fn relative_id(root: &Path, path: &Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "-")
 }
 
-/// Turns a parsed entry into an index entry, resolving its localized values.
-fn index_entry(entry: DesktopEntry, locale: &Locale) -> IndexedEntry {
+/// Turns a parsed entry into an index entry, resolving its localized values and
+/// its icon.
+fn index_entry(
+    entry: DesktopEntry,
+    locale: &Locale,
+    icons: &crate::icons::IconSearch,
+) -> IndexedEntry {
     IndexedEntry {
         id: entry.id,
         path: entry.path.clone(),
         name: resolve(&entry.name, locale),
         generic_name: resolve_optional(&entry.generic_name, locale),
         comment: resolve_optional(&entry.comment, locale),
+        icon_path: icons.resolve(entry.icon.as_deref()),
         icon: entry.icon,
         exec: entry.exec,
         terminal: entry.terminal,
@@ -868,6 +900,7 @@ mod tests {
     #[test]
     fn an_entry_reports_the_program_it_names() {
         let entry = IndexedEntry {
+            icon_path: None,
             id: "x.desktop".to_owned(),
             path: PathBuf::from("/usr/share/applications/x.desktop"),
             name: "X".to_owned(),

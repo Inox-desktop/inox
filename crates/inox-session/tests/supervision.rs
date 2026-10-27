@@ -1,7 +1,10 @@
 //! Real process lifecycle with a minimal Wayland peer only at the system boundary.
+use inox_protocols::control;
 use inox_session::runtime::{CommandSpec, RunOptions, ServiceSpec, SessionError, SessionSpec, run};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -53,6 +56,7 @@ fn service(name: &str, program: &str, args: &[&str], required: bool, oneshot: bo
         command: command(program, args),
         required,
         oneshot,
+        start: inox_session::runtime::Start::AtStartup,
         environment: BTreeMap::new(),
     }
 }
@@ -450,5 +454,142 @@ fn the_session_lock_token_reaches_only_the_compositor_and_the_lock_client() {
         "no component other than the lock client may be handed the lock token"
     );
 
+    let _ = child.wait();
+}
+
+/// Writes `script` as an executable in `directory`.
+fn fake_binary(directory: &Path, name: &str, script: &str) {
+    let path = directory.join(name);
+    std::fs::write(&path, script).expect("a component boundary");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("an executable component");
+}
+
+/// The session's control socket, as the lock client finds it.
+fn control_socket(root: &Path) -> std::path::PathBuf {
+    root.join("inox-session").join("control.sock")
+}
+
+/// Sends one request, retrying while the session is still coming up.
+fn request_lock(socket: &Path, deadline: Instant) -> control::Reply {
+    loop {
+        if Instant::now() >= deadline {
+            panic!("the session never answered a lock request");
+        }
+
+        if let Ok(mut stream) = UnixStream::connect(socket) {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("a bounded reply");
+
+            if control::write_request(&mut stream, control::Request::Lock).is_ok()
+                && let Ok(reply) = control::read_reply(&mut stream)
+            {
+                return reply;
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_control_request_starts_the_lock_client_and_nothing_starts_it_unasked() {
+    let root = private_runtime();
+    let binaries = tempfile::tempdir().expect("fake session binaries");
+
+    // The same minimal peer the other tests use: it answers the readiness sync and
+    // then stays connected, which is all a session needs from its compositor.
+    fake_binary(
+        binaries.path(),
+        "inox-compositor",
+        &format!("#!/usr/bin/env python3\n{PEER}"),
+    );
+
+    // A session stops when a *required* component cannot start, so every required
+    // one exists. The lock client is the one this test watches.
+    for name in ["inox-shell", "inox-panel"] {
+        fake_binary(binaries.path(), name, "#!/bin/sh\nexec sleep 60\n");
+    }
+    for name in ["inox-wallpaper", "inox-notifications", "inox-idle"] {
+        fake_binary(binaries.path(), name, "#!/bin/sh\nexec sleep 60\n");
+    }
+
+    let starts = root.path().join("lock-starts");
+    fake_binary(
+        binaries.path(),
+        "inox-lock",
+        &format!(
+            "#!/bin/sh\nprintf x >> '{}'\nexec sleep 60\n",
+            starts.display()
+        ),
+    );
+
+    let log_path = root.path().join("session.log");
+    let log = std::fs::File::create(&log_path).expect("the session log");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_inox-session"))
+        .arg("--headless")
+        .arg("--bin-dir")
+        .arg(binaries.path())
+        .arg("--exit-after-seconds")
+        .arg("8")
+        .env("XDG_RUNTIME_DIR", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("RUST_LOG", "warn")
+        .stdout(log.try_clone().expect("a log handle"))
+        .stderr(log)
+        .spawn()
+        .expect("the session starts");
+
+    let socket = control_socket(root.path());
+    let deadline = Instant::now() + Duration::from_secs(6);
+
+    // Nothing was asked for, so nothing is locked: a session that started its lock
+    // client on boot would take the desktop away from someone who never asked.
+    while !socket.exists() {
+        if Instant::now() >= deadline {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the session never bound its control socket: {log}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !starts.exists(),
+        "the lock client must not start before something asks for it"
+    );
+
+    // Ask, and be told the request was dispatched — not that the session is locked.
+    let mut reply = request_lock(&socket, deadline);
+    while reply == control::Reply::Busy {
+        // The compositor may still be becoming ready; `busy` is the honest answer
+        // until it is.
+        reply = request_lock(&socket, deadline);
+    }
+    assert_eq!(reply, control::Reply::Dispatched);
+
+    // The service really started.
+    let appeared = Instant::now() + Duration::from_secs(3);
+    while !starts.exists() {
+        if Instant::now() >= appeared {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the lock client was never started: {log}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Once, and never restarted on its own: a restart while the session is locked
+    // is a second lock the compositor refuses.
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(
+        std::fs::read(&starts).expect("the marker").len(),
+        1,
+        "an on-demand service is started by a request, not by a timer"
+    );
+
+    let _ = child.kill();
     let _ = child.wait();
 }

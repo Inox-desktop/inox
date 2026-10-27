@@ -601,6 +601,21 @@ fn serve(
     }
 }
 
+/// Whether a peer running as `peer_uid` may authenticate as the account whose uid
+/// is `account_uid`.
+///
+/// The login screen is allowed to name any account: it runs as the greeter (or as
+/// root) and that is exactly what it is for. A lock screen is not — it runs inside
+/// one person's session, and the only account it has any business authenticating is
+/// that person's. Root keeps the login screen's freedom because it can already do
+/// anything.
+///
+/// Written as a pure function so the rule can be tested without a socket, a PAM
+/// stack or an account database.
+fn may_authenticate_as(peer_uid: u32, greeter_uid: Option<u32>, account_uid: u32) -> bool {
+    peer_uid == 0 || Some(peer_uid) == greeter_uid || peer_uid == account_uid
+}
+
 /// Checks one credential and remembers the attempt if it is accepted.
 #[allow(clippy::too_many_arguments)]
 fn authenticate(
@@ -644,7 +659,23 @@ fn authenticate(
         }
     };
 
-    // 6. The authenticator, on the thread that owns it. The credential moves into
+    // 6. Which account this peer may ask about. The greeter and root name any
+    //    account — that is the login path. Everything else is a process inside
+    //    somebody's session (the lock screen), and it may only authenticate the
+    //    account it is already running as: without this, knowing a colleague's
+    //    password would be enough to unlock their locked session.
+    if !may_authenticate_as(uid, config.greeter_uid, account.uid) {
+        info!(
+            %username,
+            peer_uid = uid,
+            account_uid = account.uid,
+            "refusing to authenticate an account other than the peer's own"
+        );
+
+        return answer_attempt(stream, Reply::Rejected { attempt });
+    }
+
+    // 7. The authenticator, on the thread that owns it. The credential moves into
     //    the job: after this line the only copy is the one PAM is looking at.
     let (verdict_tx, verdict_rx) = mpsc::channel();
     let job = Job::Authenticate {
@@ -1166,5 +1197,41 @@ mod tests {
         assert_eq!(policies.mode & 0o007, 0, "nothing for other");
         assert_eq!(policies.mode & 0o070, 0o060, "read and write for the group");
         assert_eq!(policies.mode & 0o700, 0o600, "read and write for the owner");
+    }
+
+    #[test]
+    fn the_greeter_and_root_may_name_any_account() {
+        assert!(
+            may_authenticate_as(0, None, 1000),
+            "root is the login path too"
+        );
+        assert!(
+            may_authenticate_as(967, Some(967), 1000),
+            "the greeter authenticates the account it is logging in"
+        );
+        assert!(
+            may_authenticate_as(967, Some(967), 967),
+            "and it may authenticate itself"
+        );
+    }
+
+    #[test]
+    fn a_session_peer_may_only_authenticate_its_own_account() {
+        // The lock screen runs as the session's user. Authenticating a different
+        // account would mean one person's password unlocks another person's
+        // session, so the answer is the same one a wrong password gets.
+        assert!(may_authenticate_as(1000, Some(967), 1000));
+        assert!(
+            !may_authenticate_as(1000, Some(967), 1001),
+            "a session process may not authenticate a colleague's account"
+        );
+        assert!(
+            !may_authenticate_as(1000, None, 1001),
+            "the same holds when no greeter account exists on the machine"
+        );
+        assert!(
+            !may_authenticate_as(1000, None, 0),
+            "root is a login account, never one a session may authenticate"
+        );
     }
 }

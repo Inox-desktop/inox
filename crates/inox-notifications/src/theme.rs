@@ -5,10 +5,14 @@
 //! projection in [`crate::view`] nor `qml/Main.qml` contains a colour or a pixel
 //! size of its own. What this file implements is `docs/quality/ui-guidelines.md`
 //! §1 (token discipline), §2 (the four type roles), §4 (card geometry), §5 (the
-//! five states of a control) and §6 (a status is a sentence first and a colour
-//! second). The L3 component architecture explains why this small mapping is duplicated in each L3
-//! component instead of being shared — a shared UI crate would be a new
-//! same-layer dependency, which needs a decision of its own.
+//! five states of a control), §6 (a status is a sentence first and a colour
+//! second) and §12 (the card is one of the surfaces allowed to be glass).
+//!
+//! The *material* itself is not implemented here: a card is a shared
+//! `GlassPane` from `inox-glass` (ADR 0044), and what this file does for it is
+//! turn the `glass` tokens into the three colours it takes as properties. The
+//! clamping, the fallback reasons and the request to the compositor live in that
+//! crate; this crate only reads tokens.
 //!
 //! Sizes are derived, never invented. The base text size is
 //! `spacing.lg × typography.scale` — the window-shaped surface rule of §2 — and
@@ -27,12 +31,14 @@ use crate::markup::Emphasis;
 use crate::protocol::Urgency;
 use crate::view_model::ActionEmphasis;
 
-/// The width of a hairline border, in logical pixels.
+/// The width of a hairline, in logical pixels.
 ///
-/// The token set carries a border *colour* and no border width; one logical
-/// pixel is the hairline the tokens are written against, including under
-/// fractional scaling. Every border this crate draws is exactly this wide —
-/// ui-guidelines §4 allows no other.
+/// The token set carries border *colours* and no border width; one logical pixel
+/// is the hairline those colours are written against, including under fractional
+/// scaling. Every border this crate draws is exactly this wide — ui-guidelines §4
+/// allows no other — and it is also the `hairline` a card hands to the shared
+/// glass pane for its two edge lines (ADR 0044). A glass card has no outline of
+/// its own: the highlight and the shade *are* its edges.
 pub const BORDER_WIDTH: f32 = 1.0;
 
 /// The multiple of the base size a window title is drawn at (ui-guidelines §2).
@@ -278,6 +284,25 @@ pub fn control_radius(tokens: &Theme) -> f32 {
     f32::from(tokens.radii.sm)
 }
 
+/// How wide the urgency rail on the leading edge of a critical card is.
+///
+/// ui-guidelines §1 forbids a literal, so the rail is one small spacing step: the
+/// thinnest mark that still reads as a deliberate edge rather than as a second
+/// border. It is drawn in [`urgency_color`], and it is never the only thing that
+/// says "critical" — the urgency sentence on the card says it in words (§5, §6).
+pub fn urgency_rail_width(tokens: &Theme) -> f32 {
+    f32::from(tokens.spacing.sm)
+}
+
+/// How far a card rises while it enters (ui-guidelines §8).
+///
+/// One medium step of the spacing rhythm: enough to read as motion, small enough
+/// that the resting position is already where the eye expects the card. The
+/// animation ends here, and a card that never animated sits here too.
+pub fn entry_rise(tokens: &Theme) -> f32 {
+    f32::from(tokens.spacing.md)
+}
+
 /// How thick the focus ring of a control is (ui-guidelines §1 and §5).
 ///
 /// The accent colour, drawn as thick as `spacing.xs`. This stack never takes
@@ -309,17 +334,26 @@ pub fn urgency_color(tokens: &Theme, urgency: Urgency) -> String {
     }
 }
 
-/// The edge of one card.
+/// The tile of the material a card is drawn with (ADR 0044, ui-guidelines §12).
 ///
-/// ui-guidelines §4: the edge is the `border` token, except for a critical
-/// notification, which takes the danger colour — the same colour its urgency
-/// sentence is written in, so urgency is one colour plus one sentence rather than
-/// a second surface.
-pub fn card_edge(tokens: &Theme, urgency: Urgency) -> String {
-    match urgency {
-        Urgency::Critical => qml_color(tokens.colors.danger),
-        Urgency::Low | Urgency::Normal => qml_color(tokens.colors.border),
-    }
+/// A card is a pane of the shared liquid-glass material: a translucent `glass.tint`
+/// laid over whatever is behind the stack, with a highlight hairline along its top
+/// edge and a shade along its bottom one. The three colours come from the tokens
+/// unchanged — this crate neither mixes nor fades them, and it does not draw the
+/// blur or the refraction (the compositor owns both; a non-layer surface is
+/// granted neither, which is why the card reads as plain translucency today).
+pub fn glass_tint(tokens: &Theme) -> String {
+    qml_color(tokens.glass.tint)
+}
+
+/// The hairline along a card's top edge — what reads as "glass".
+pub fn glass_highlight(tokens: &Theme) -> String {
+    qml_color(tokens.glass.highlight)
+}
+
+/// The darkening along a card's bottom edge.
+pub fn glass_shade(tokens: &Theme) -> String {
+    qml_color(tokens.glass.shade)
 }
 
 /// What one of the daemon's own lines is saying.
@@ -627,6 +661,38 @@ mod tests {
     }
 
     #[test]
+    fn the_urgency_rail_and_the_entry_rise_are_token_steps() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(urgency_rail_width(&tokens), f32::from(tokens.spacing.sm));
+        assert_eq!(entry_rise(&tokens), f32::from(tokens.spacing.md));
+        assert!(
+            urgency_rail_width(&tokens) > BORDER_WIDTH,
+            "a rail is a mark of its own, not a second hairline"
+        );
+        assert!(
+            urgency_rail_width(&tokens) < card_inset(&tokens),
+            "the rail stays out of the card's inset"
+        );
+    }
+
+    #[test]
+    fn the_motion_tokens_are_the_durations_the_surface_animates_with() {
+        let tokens = Theme::builtin_dark();
+
+        assert_eq!(tokens.motion.normal_ms, 200);
+        assert!(
+            tokens.motion.fast_ms < tokens.motion.normal_ms
+                && tokens.motion.normal_ms < tokens.motion.slow_ms,
+            "the three durations are ordered"
+        );
+        assert!(
+            tokens.motion.slow_ms > 0,
+            "an entrance has to take some time"
+        );
+    }
+
+    #[test]
     fn every_urgency_has_a_colour_of_its_own() {
         let tokens = Theme::builtin_dark();
 
@@ -642,19 +708,36 @@ mod tests {
     }
 
     #[test]
-    fn a_critical_card_is_edged_in_the_danger_colour() {
+    fn a_card_is_drawn_with_the_glass_tokens_of_the_material() {
+        // ADR 0044: the card is a shared glass pane, so its three material
+        // colours are the `glass` tokens verbatim — no mixing, no fading, and
+        // not the opaque `surface` fill it used to be.
         let tokens = Theme::builtin_dark();
 
-        let normal = card_edge(&tokens, Urgency::Normal);
-        let critical = card_edge(&tokens, Urgency::Critical);
+        assert_eq!(glass_tint(&tokens), qml_color(tokens.glass.tint));
+        assert_eq!(glass_highlight(&tokens), qml_color(tokens.glass.highlight));
+        assert_eq!(glass_shade(&tokens), qml_color(tokens.glass.shade));
+        assert_ne!(
+            glass_tint(&tokens),
+            qml_color(tokens.colors.surface),
+            "a glass card is translucent; an opaque `surface` fill is not glass"
+        );
+    }
 
-        assert_eq!(normal, qml_color(tokens.colors.border));
-        assert_eq!(critical, qml_color(tokens.colors.danger));
-        assert_ne!(critical, normal);
+    #[test]
+    fn a_critical_card_says_so_in_words_and_a_rail_rather_than_in_an_edge_colour() {
+        // The card no longer has an edge to colour (ADR 0044): urgency is carried
+        // by the rail the projection draws and by the urgency sentence. The
+        // colour is still a token, and still the danger one.
+        let tokens = Theme::builtin_dark();
+
         assert_eq!(
-            card_edge(&tokens, Urgency::Low),
-            normal,
-            "low urgency is said in a sentence, not in a second edge colour"
+            urgency_color(&tokens, Urgency::Critical),
+            qml_color(tokens.colors.danger)
+        );
+        assert!(
+            urgency_rail_width(&tokens) > BORDER_WIDTH,
+            "the rail is what is left to mark a critical card, so it is more than a hairline"
         );
     }
 

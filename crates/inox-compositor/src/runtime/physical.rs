@@ -351,6 +351,15 @@ fn register_drm(
     Ok((backend, token))
 }
 
+/// The connector name in a scanout key of the form `"<card>:<connector>"`.
+///
+/// The DRM backend builds these keys as `format!("{}:{}", card.display(),
+/// output.name())`, and the compositor identifies outputs by the connector name
+/// alone, so this is the only place the two forms meet.
+fn connector_of(key: &str) -> &str {
+    key.rsplit_once(':').map_or(key, |(_, connector)| connector)
+}
+
 /// Handle one DRM event for the device identified by `device_id`.
 fn on_drm_event(
     handle: &Handle,
@@ -385,6 +394,12 @@ fn on_drm_event(
                 // wake clients that are waiting for their frame callback.
                 if physical.complete(handle, &key, token) {
                     data.state.frame_presented();
+                    // `wl_surface.frame` belongs to the output whose frame it is.
+                    // Sending the callbacks to every output would run each client at
+                    // the combined refresh rate of all displays.
+                    if let Some(output) = data.state.output_id_named(connector_of(&key)) {
+                        data.state.frame_callbacks_for(output);
+                    }
                 }
                 if !physical.ready {
                     physical.ready = true;
@@ -605,7 +620,9 @@ fn paint(handle: &Handle, data: &mut CalloopData, key: &str) {
             if let Some(frames) = physical.frames.get_mut(key) {
                 frames.schedule.complete(token);
             }
-            data.state.frame_callbacks();
+            if let Some(output) = data.state.output_id_named(connector_of(key)) {
+                data.state.frame_callbacks_for(output);
+            }
         }
         Err(error) => {
             let retryable = error.retryable();

@@ -6,6 +6,8 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 
 弹窗栈是 **QML + Qt Quick 的普通窗口**，经 cxx-qt 绑定到 Rust（[迁移契约](../../docs/qml-migration-contract.md)）。守护进程的领域逻辑、D-Bus 服务、队列、策略与锁屏脱敏全在 Rust；QML 只渲染一份 JSON 投影并把点击发回来。
 
+**卡片是共享玻璃组件**：每张卡片的根不是自绘的 `Rectangle`，而是 L3 的 `inox-glass` 提供的 `GlassPane`（ADR 0044，扩展 ADR 0040 的组件库）。本 crate 与 `inox-glass` 之间那条 L3 → L3 边**只在构建期**存在：`[build-dependencies]` 让 `build.rs` 能把对方的 QML 资产编进本 crate 自己的 QML 模块（跨 crate 的静态模块注册不可靠，KDAB/cxx-qt#770）；运行期不链接对方的任何代码，也不创建 `inox_glass_v1` 对象。它登记在根 `Cargo.toml` 的 `same_layer_exceptions` 里，删掉条目 `cargo test -p inox-integration --test layering` 会变红。
+
 ## 运行结构
 
 ```
@@ -49,15 +51,17 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 
 | 项 | 原因 |
 |----|------|
-| **像素级 UI 证据** | Iced 时代的 `tests/render.rs`（tiny-skia 离屏渲染 + `INOX_SCREENSHOT_DIR` 截图工件）已随迁移删除。现在断言投影值与「QML 模块在 `QT_QPA_PLATFORM=offscreen` 下加载并回报 ready」；截图证据需要 waydriver + 真实 Qt 平台，工作区还没有宿主。 |
+| **像素级 UI 证据** | Iced 时代的 `tests/render.rs`（tiny-skia 离屏渲染 + `INOX_SCREENSHOT_DIR` 截图工件）已随迁移删除。现在断言投影值与「QML 模块在 `QT_QPA_PLATFORM=offscreen` 下加载并回报 ready」；截图证据需要 waydriver + 真实 Qt 平台，工作区还没有宿主。玻璃卡片**没有**像素断言：`GlassPane` 的像素证据目前只有面板侧的两处（Dock 窗格帧与目录页）；通知栈自己的帧从未被断言过。 |
+| **卡片上的模糊与折射** | 卡片用的是玻璃**材质**，不是玻璃**效果**。本 crate 不创建 `inox_glass_v1` 对象，而且弹窗栈是普通窗口（没有 layer 角色），合成器只对有 layer 角色的表面广告非零能力——因此真实会话里看到的是**纯半透明**，不是磨砂（ADR 0044「限制」）。要看到模糊，得先给通知栈接上 layer-shell 宿主，再补上 `inox-glass` 的 `decide`/`apply` 调用；DRM 路径即使到那时仍按 ADR 0040 报 0。 |
+| **窗口透明（E4）** | `Window.color` 是 `"transparent"`，这只是让 QML 不清屏；真的能透出背后的桌面取决于 Qt 平台插件的 ARGB visual 与会话合成，离屏测试证明不了。 |
 | **会话总线上的名字所有权** | 服务会声明 `org.freedesktop.Notifications`，别的守护进程已持有时拒绝启动；这条拒绝的映射有单元测试，而「两条守护进程争一个名字」的真实场景需要一个会话总线，crate 的 CI 分片没有。`bus_tests` 因此走点对点连接：线上协议、回复与信号都是真的，但 p2p 不携带 well-known name。 |
 | **能真正被问锁状态的合成器** | `src/lock_state.rs` 已接线且它的判断有测试，但本 crate 没有任何测试绑定真实的 `inox_ipc` 全局：工作区里没有可以充当假合成器的服务端，另一端由 `inox-compositor` 的测试负责。 |
-| **layer 表面**：弹窗栈目前是普通窗口 | 合成器尚未广告 `zwlr_layer_shell_v1`；启动时输出**恰好一条** `tracing::warn!` 说明这一点并点名 L3 组件架构，`src/placement.rs` 的策略**没有被应用**。|
+| **layer 表面**：弹窗栈目前是普通窗口 | 合成器**已经**广告 `zwlr_layer_shell_v1` v4，但本 crate 没有接 layer 表面宿主：`src/placement.rs` 的策略仍是纯数据、没有被应用。启动时输出**恰好一条** `tracing::warn!` 说明这一点并点名 L3 组件架构。接入宿主是「卡片能拿到模糊」的前置条件（见上一行列出的模糊限制）。 |
 | **AT-SPI 语义导出** | QML 用 `Accessible.role`/`Accessible.name`/`description` 标注控件，`reportReady` 只断言语义树存在（数量下限）；离屏平台没有 AT-SPI 桥，screen reader 路径未验证。Qt 6.12 的 `Accessible` 也没有「不可用」状态，禁用动作把原因写进 description。 |
 | **图标解码**：`icon-static` 与 `body-images` capability 故意不声明 | 解析主题图标或正文图片需要在交互循环之外做文件查找与解码。带图标的弹窗画出图标将占用的**空位**（按 `display.icon_size`），正文 `<img>` 画 alt 文本。 |
 | **声音**：不声明 `sound` capability | `sound-name` / `suppress-sound` 会被记录，但 Inox 目前不播放任何声音。 |
 | **持久化**：不声明 `persistence` capability | 该 capability 承诺的是 `resident` hint 的行为——动作被触发后保留通知；本守护进程在动作触发时即关闭通知。`resident` 仍会被读取并记录（`protocol::Hints`）。 |
-| `<u>` 的下划线 | 清理器保留 `underline` 强调，但 QML 的 `Text` 富文本路径尚未实现它（模型里有，画面上没有）。 |
+| **正文的富文本** | 清理器保留的强调（`<b>` / `<i>` / `<u>` / 链接）由 `src/view.rs` 变成**转义过的**富文本串 `bodyHtml`：每个文本片段的 `& < > "` 都被转义，标签只由投影自己写出，所以正文会按卡片宽度换行、下划线可见，而 `<script>` 只会是字面文本。纯文本句子仍以 `bodyText` 投影给语义树。 |
 | `<b>`/`<i>` 在正文里生效，在 **summary** 里被展平为纯文本 | 标题只画一行文字，标记在那里没有视觉意义；展平还保证摘要里的 `javascript:` 链接不会变成可点的东西。 |
 | **E2/E3 GUI 证据** | 需要支持 layer-shell 的宿主与真实会话总线，CI 目前都没有。 |
 
@@ -75,13 +79,14 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 | `src/lock_state.rs` | `inox-ipc` 锁状态观察者（自己的连接与线程） |
 | `src/placement.rs` | layer-shell 摆放策略（数据，未应用） |
 | `src/view_model.rs` | 状态 → 弹窗栈语义 |
-| `src/view.rs` | 弹窗栈的 JSON 投影 |
-| `src/theme.rs` | 设计令牌 → QML 颜色与尺寸 |
+| `src/view.rs` | 弹窗栈的 JSON 投影（含窗口可见性、正文富文本、动效时长与高度契约） |
+| `src/theme.rs` | 设计令牌 → QML 颜色与尺寸（含卡片玻璃材质 `glass_tint` / `glass_highlight` / `glass_shade`） |
 | `src/app.rs` | `State` / `Message` / `update`（Elm） |
 | `src/runtime.rs` | `Runtime`（pump 的唯一实现）、`Task`、`Reply`、`UiAction` |
 | `src/reload.rs` | SIGHUP + `org.inox.Configuration1` 重载桥 |
 | `src/cxxqt_object.rs` | cxx-qt 桥（`modelJson` + 三个 invokable） |
-| `qml/Main.qml` | 声明式弹窗栈（只绑定 `vm.*`） |
+| `qml/Main.qml` | 声明式弹窗栈（只绑定 `vm.*`；卡片 delegate 是 `inox-glass` 的 `GlassPane`） |
+| `build.rs` | 注册 `com.inox.notifications.qml`，并用显式 `qml/<name>` 别名把 `inox-glass` 的 QML 资产编进本模块（ADR 0044） |
 | `src/main.rs` | 入口、Qt 宿主、`--self-check` |
 | `src/i18n.rs` | 内嵌的 Fluent 目录 |
 | `i18n/<locale>/notifications.ftl` | 文案 |
@@ -94,7 +99,7 @@ Inox 桌面的通知守护进程：`org.freedesktop.Notifications` 背后的进�
 
 - 本项目遵循[硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查)与本 crate 的 [`AGENTS.md`](./AGENTS.md)。
 - **CI（GitHub Actions）是唯一的构建与测试验证途径**。
-- 颜色、尺寸、间距、圆角与动效时长只来自 `inox_config::Theme` 令牌；守护进程自己的文案只来自 Fluent 目录（应用名、摘要、正文与动作标签是随通知到达的**数据**，不翻译）；QML 里不允许出现字面量颜色、像素尺寸或用户可见英文串。
+- 颜色、尺寸、间距、圆角与动效时长只来自 `inox_config::Theme` 令牌；守护进程自己的文案只来自 Fluent 目录（应用名、摘要、正文与动作标签是随通知到达的**数据**，不翻译）；QML 里不允许出现字面量颜色、像素尺寸或用户可见英文串。卡片是 `inox-glass` 的 `GlassPane`（ADR 0044），玻璃值只在 `src/theme.rs` 里从 `tokens.glass` 取出。
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)，scope 使用 `notifications`。
 
 | 目的 | 命令 |

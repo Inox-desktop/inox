@@ -8,6 +8,7 @@
 
 1. **标准协议绑定再导出**（`src/standard.rs`）：按 PRD 支持级别分组，统一再导出核心 `wl_*`、`wayland-protocols` 扩展与 `wlr` 扩展的 client / server 绑定，使上游版本在单一位置锁定。
 2. **Inox 私有控制协议 `inox-ipc` 绑定**（`src/ipc.rs`）：在编译期由 `wayland-scanner` 从协议 XML 生成 client 与 server 两侧的 Rust 绑定。
+3. **私有会话控制契约 `session-control-v1`**（`src/control.rs`）：不是 Wayland 协议，而是会话监督进程与它自己的桌面之间的一行文本（`lock`），规范文本在 [`protocol/session-control-v1.md`](./protocol/session-control-v1.md)。类型放在本 crate 是因为客户端是 L3（`inox-lock`）、服务端是 L4（`inox-session`），共享类型只能落在两者都合法的 L2 边界上。
 
 协议定义以 [`protocol/inox-ipc.xml`](./protocol/inox-ipc.xml) 为**唯一事实来源（single source of truth）**：需要修改协议时先改 XML，再重新生成绑定，**不要直接改生成的 Rust 代码**。
 

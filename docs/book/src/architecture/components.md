@@ -23,17 +23,18 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 |-------|------|------|------|--------|----------|
 | `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、工具函数 | crate | 已实现（`logging`、`paths`） |
 | `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate | 已实现（模型、解析、错误定位；决策状态仍为 `proposed`） |
-| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc` 绑定 + `inox-glass-v1` 的绑定与协议往返；后者由合成器在 headless 路径实现，DRM 路径报 0） |
-| `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区与私有 `inox_ipc`） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；单输出真实后端已实现，E4 尚未执行） |
+| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc` 绑定 + `inox-glass-v1` v2（模糊 + 圆角折射/色散）的绑定与两个版本的协议往返；效果由合成器在 headless 路径实现，DRM 路径报 0） |
+| `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区、私有 `inox_ipc` 与 `inox-glass-v1` v2） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；headless 路径的玻璃模糊与圆角折射 pass 有像素证据；单输出真实后端已实现，E4 尚未执行；DRM 路径不实现玻璃并诚实报 0） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、真实 X11 连接往返的就绪判定、生命周期） |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 部分实现（跨入口导航、服务契约、内部入口注册表；不绘制界面） |
-| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、菜单栏、Dock、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型；界面为 QML，经**离屏渲染**写入自己创建的 `zwlr_layer_shell_v1` 表面；窗口服务与 SNI 传输尚未实现） |
+| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、菜单栏、Dock、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型；界面为 QML，经**离屏渲染**写入自己创建的 `zwlr_layer_shell_v1` 表面；菜单栏与 Dock 的窗格由 `inox-glass` 的 `GlassPane` 绘制，并绑定 `inox-glass-v1` v2，headless 路径上有模糊与折射；窗口服务与 SNI 传输尚未实现） |
 | `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器 | 二进制 `inox-launcher` | 部分实现（XDG 条目解析、Exec 展开、带代次的搜索；界面为 QML **普通窗口**，`placement.rs` 的层表面策略只建模、未应用） |
-| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏；`org.freedesktop.Notifications` 服务由 `zbus` 提供；界面为 QML **普通窗口**） |
+| `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏；`org.freedesktop.Notifications` 服务由 `zbus` 提供；界面为 QML **普通窗口**，通知卡片是 `inox-glass` 的 `GlassPane`（ADR 0044），但普通窗口拿不到模糊，真实会话里表现为纯半透明） |
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings`（另有 `inoxctl`） | 部分实现（草稿/校验/原子保存/回读状态机；界面为 QML **普通窗口**，无需 layer-shell） |
-| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿与**锁表面界面**已落地——QML 离屏渲染成 configure 尺寸的帧并提交；认证边界与键鼠输入路径未实现，见会话锁边界的安全审查） |
+| `inox-lock` | L3 | `crates/inox-lock` | 锁屏（`ext-session-lock-v1`） | 二进制 `inox-lock` | 部分实现（锁状态机、凭据清理、挂起时序；协议腿、**锁表面界面**、`auth-v1` 客户端与解锁路径、锁表面键盘输入均已落地——QML 离屏渲染成 configure 尺寸的帧并提交，认证成功后才发送唯一的 `unlock_and_destroy`；运行期触发已有 `inox-lock --request-lock` → `session-control-v1`；指针/触摸、IME 与按键重复、挂起传输、空闲链路与快捷键仍未接线，见 README 的已知限制） |
 | `inox-wallpaper` | L3 | `crates/inox-wallpaper` | 壁纸设置与渲染 | 二进制 `inox-wallpaper` | 部分实现（来源解析、缩放几何、原子应用与预览窗口；界面为 QML **普通窗口**，背景层策略只建模、未应用） |
 | `inox-qml-prototype` | L3 | `crates/inox-qml-prototype` | QML + Qt Quick + cxx-qt 的最小原型 | 二进制 | 已实现（最小 bridge、QML 模块与 headless 加载测试；占位原型，不是产品组件） |
+| `inox-glass` | L3 | `crates/inox-glass` | 液态玻璃材质决策（clamp / 降级 / v1-v2 协商）与共享玻璃 QML 组件库 | crate（无二进制、无 Qt 依赖） | 已实现（`inox-glass-v1` v2 的材质 API、`GlassTarget` 适配器、`qml/` 五个无状态组件与 `CatalogWindow` 目录页；纯 Rust 逻辑有单元/proptest/漂移测试；两个消费者都编它的 QML 资产（面板运行期还用它的材质 API），面板画窗格、通知画卡片；组件像素证据由 `inox-panel` 的离屏测试提供；同层例外 `inox-panel -> inox-glass`（ADR 0040）与 `inox-notifications -> inox-glass`（ADR 0044）） |
 | `inox-session` | L4 | `crates/inox-session` | 会话管理器，拉起合成器与 Shell | 二进制 `inox-session` | 部分实现：Wayland 往返就绪、有界进程监督/注销；完整服务 ready 待实现 |
 | `inox-idle` | L4 | `crates/inox-idle` | 空闲管理 | 二进制 `inox-idle` | 部分实现：标准空闲通知客户端与锁前挂起策略；可信锁/挂起通道待审查 |
 | `inox-auth` | L2 | `crates/inox-auth` | 认证边界（PAM + `auth-v1` + VT 分配/交回） | 二进制 `inox-auth` | 已实现：系统 PAM（安全封装，无新增 `unsafe`）、Unix 套接字服务与 `SO_PEERCRED` 对端校验、滚动限额；登录链的会话负责人（`src/leader.rs`：一次登录一个进程，`pam_open_session` 只在它里面调用）与 logind VT 分配/交回（`src/logind.rs`）已落地，一次只允许一个用户会话；口令与打开会话分在**两个栈**上（`--service inox-auth` 校验口令、`--session-service inox-auth-session` 打开会话，见 `packaging/`）；契约文本在 `inox-protocols/protocol/auth-v1.md`；真机 PAM/VT 行为是 E4，尚未取得 |
@@ -103,15 +104,25 @@ L2 与 L3 之间的边界不是「暂时没有依赖」，而是分层规则 3 �
 
 分层规则 6 允许 `inox-wallpaper` 直接依赖 `inox-compositor`，其余 L3 组件不得如此。这一单点登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] l3_dependencies_on_compositor` 中。**该例外目前是空的**：L3 的实现按交互契约的边界完成，壁纸通过 layer-shell 协议而不是合成器内部类型获得渲染面，因此没有任何 L3 crate 依赖合成器。删除登记条目属于**收紧**规则，同样需要 ADR 批准（PRD §2.1），所以条目保留，等待交互契约的裁决。
 
-### L3 组件之间没有 Rust 依赖，共享能力下沉到 L1
+### L3 组件之间的 Rust 依赖有两个登记例外，都指向同一个 crate
 
-七个 L3 组件是**七个独立进程**：面板是 layer-shell 客户端，锁屏是会话锁客户端，启动器、通知、壁纸与设置
+七个 L3 GUI 组件是**七个独立进程**：面板是 layer-shell 客户端，锁屏是会话锁客户端，启动器、通知、壁纸与设置
 是普通窗口应用（迁移后的界面均为 QML，见上一节），`inox-shell` 不持有界面。它们之间以及与
-`inox-compositor` 之间只通过 Wayland 协议、`inox-ipc` 与 D-Bus 协作，**没有新增任何同层边**。
-共享能力放在 L1 的既有职责里：用户可见文案的加载在 `inox-common::i18n`，配置模型在 `inox-config`，
-主题令牌在 `inox-config::theme`。代价是每个组件各有一份「令牌 → QML 颜色与尺寸」的映射（`theme.rs`
-里的 `qml_color` 之类的纯函数，有单测）与一小段 QML/宿主编织代码——这是明确接受的权衡（迁移前那份重复是「令牌 → Iced 主题」映射，取舍本身没变），而不是疏忽；
-共享 UI crate 需要先获得 ADR 批准。
+`inox-compositor` 之间只通过 Wayland 协议、`inox-ipc` 与 D-Bus 协作。共享能力放在 L1 的既有职责里：用户可见文案的加载在 `inox-common::i18n`，配置模型在 `inox-config`，
+主题令牌在 `inox-config::theme`。每个组件仍各有「令牌 → QML 颜色与尺寸」的映射（`theme.rs`
+里的 `qml_color` 之类的纯函数，有单测）与一小段 QML/宿主编织代码——这是明确接受的权衡，不是疏忽。
+
+同层边有两条，都指向 `inox-glass`：
+
+- **`inox-panel -> inox-glass`**（L3 → L3），由 ADR 0040 授权：面板的菜单栏与 Dock 的窗格由 `GlassPane` 绘制，
+  面板在运行期用它的材质 API 做降级决策（`src/frost.rs`），在构建期用它的 QML 资产；
+- **`inox-notifications -> inox-glass`**（L3 → L3），由 ADR 0044 授权：通知卡片同样由 `GlassPane` 绘制，
+  但这条边**只在构建期**（`build.rs` 读 QML 资产），运行期不新增 Rust 依赖。
+
+两条都登记在根 `Cargo.toml` 的 `same_layer_exceptions`。`inox-glass` 不持有界面进程、不做 I/O：它把
+`tokens.glass` 与 `inox-glass-v1` 的 capabilities 合成同一个材质决策（clamp、v1/v2 协商、降级理由），
+并携带五个无状态 QML 玻璃组件。没有这一层，每个组件都会复制同一段 clamp/降级算术，
+而复制出来的版本会缓慢漂移。除此之外不允许再加入 L3 → L3 边：另一个共享 UI crate 仍须先写 ADR。
 
 ### 登录链：三个组件，三个权威
 

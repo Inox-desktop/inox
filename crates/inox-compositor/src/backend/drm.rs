@@ -52,13 +52,19 @@ use smithay::{
 };
 use tracing::{debug, info, warn};
 
-use crate::{InoxState, backend::frame::FrameToken, state::OutputDescriptor};
+use crate::{InoxState, backend::frame::FrameToken, render::SceneElement, state::OutputDescriptor};
 
 /// Whether the "frosted glass is not implemented here" warning has been logged.
 ///
 /// The limitation is a property of the backend, not of a frame, so it is reported
 /// once per process rather than on every frame a frosted pane is on screen.
 static GLASS_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the "probe and render disagreed" warning has been logged.
+///
+/// The disagreement costs one dropped frame and is then recovered from, so it is
+/// reported once per process instead of once per frame at refresh rate.
+static DIVERGENCE_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// Errors that prevent a device from rendering or presenting.
 #[derive(Debug, thiserror::Error)]
@@ -138,6 +144,12 @@ struct Scanout {
     in_flight: Option<Submission>,
     /// Where the configuration asked the output to sit, if it said.
     position: Option<Point<i32, Logical>>,
+    /// The clear colour of the last presented frame, or `None` before the first.
+    ///
+    /// A damage tracker cannot describe a background change (see `render`), so the
+    /// scanout records the colour it last put on screen and forces a frame when it
+    /// differs.
+    last_background: Option<[f32; 4]>,
 }
 
 /// A single GPU and the connectors it currently drives.
@@ -533,6 +545,7 @@ impl GpuBackend {
                 position: preference
                     .and_then(|p| p.position)
                     .map(|p| Point::from((p.x, p.y))),
+                last_background: None,
             });
         }
 
@@ -578,42 +591,80 @@ impl GpuBackend {
             );
         }
         let elements = &scene.elements;
-        // Check scene changes independently of swapchain age. An unused buffer
-        // needs a full redraw, but must not cause an unchanged scene to be submitted.
-        if !state.frame_budget()
-            && scanout
-                .scene_damage
-                .damage_output(1, elements)
-                .map_err(unavailable)?
-                .0
-                .is_none()
-        {
-            return Ok(false);
-        }
-        if state.frame_budget() {
+        let background = state.background();
+        // A new background colour is real damage that no damage tracker can describe:
+        // `damage_output` compares the clear colour against the one it recorded
+        // itself, so the probe can never see the change, and `render_output` only
+        // forces a full redraw once the frame is already being drawn. It therefore
+        // forces the frame exactly like a spent frame budget does.
+        let forced = state.frame_budget() || scanout.last_background != Some(background);
+        if forced {
+            // An empty tracker has recorded no frames, so the render below cannot
+            // reuse old damage and redraws the whole output — whichever buffer of the
+            // swapchain it happens to draw into.
             scanout.damage = OutputDamageTracker::from_output(&scanout.output);
             scanout.scene_damage = OutputDamageTracker::from_output(&scanout.output);
         }
-        let (mut dmabuf, age) = scanout
+        // The buffer comes first: its age is the only honest statement about how far
+        // back the damage has to reach, and both damage calls below must be given the
+        // same one, or the probe predicts a frame the render does not draw. Taking it
+        // costs nothing on a skipped frame, because `next_buffer` caches the slot and
+        // hands back this same buffer (with this same age) until `queue_buffer` takes
+        // it (smithay `drm/surface/gbm.rs`).
+        let (mut dmabuf, buffer_age) = scanout
             .buffers
             .next_buffer()
             .map_err(SwapBuffersError::from)?;
+        let age = tracker_age(buffer_age);
+        // An unchanged scene is not submitted again, so an idle desktop costs no page
+        // flips. The probe is a second `OutputDamageTracker` rather than a second call
+        // into `damage`, because `damage_output` advances the tracker it is called on
+        // — it writes the elements' `last_commit`, the recorded `old_damage` and the
+        // opaque regions (`backend/renderer/damage/mod.rs`) — so probing and then
+        // rendering with one tracker would consume this frame's damage twice and shift
+        // every later buffer-age window by a frame, losing damage instead of drawing
+        // it. Fed the same buffer age, though, two trackers are shown the same frames
+        // in the same order, which makes the probe a faithful dry run of the render:
+        // it answers with no GPU work whether the frame would draw anything at all.
+        let damaged = if forced {
+            false
+        } else {
+            probe_damage(&mut scanout.scene_damage, age, elements)?
+        };
+        if !draws_frame(forced, damaged) {
+            return Ok(false);
+        }
         let mut target = renderer.bind(&mut dmabuf)?;
-        let rendered = scanout
-            .damage
-            .render_output(
-                renderer,
-                &mut target,
-                usize::from(age),
-                elements,
-                state.background(),
-            )
-            .map_err(unavailable)?;
-        let Some(damage) = rendered.damage.cloned() else {
+        let (rendered, sync) = {
+            let result = scanout
+                .damage
+                .render_output(renderer, &mut target, age, elements, background)
+                .map_err(unavailable)?;
+            (result.damage.cloned(), result.sync)
+        };
+        drop(target);
+        let Some(damage) = rendered else {
+            // This frame had damage to draw — the probe reported it, or the frame was
+            // forced — and the render tracker drew none. Both were shown the same
+            // scene at the same buffer age, so this is a disagreement, and the frame
+            // presents nothing; the change is drawn on the next frame instead of being
+            // taken as presented here. The probe's record is now one frame ahead of
+            // the screen, so it is thrown away rather than left ahead: otherwise it
+            // would report the swallowed change as already presented and the screen
+            // would keep the old content until the scene changed once more. No buffer
+            // is stranded by dropping the frame — `next_buffer` hands out the same slot
+            // until `queue_buffer` consumes it.
+            if !DIVERGENCE_WARNING_SHOWN.swap(true, Ordering::Relaxed) {
+                warn!(
+                    %key,
+                    age,
+                    "this frame had damage to draw but the render tracker drew none; \
+                     dropping the frame and rebuilding the probe's record"
+                );
+            }
+            scanout.scene_damage = OutputDamageTracker::from_output(&scanout.output);
             return Ok(false);
         };
-        let sync = rendered.sync;
-        drop(target);
         let submission = Submission {
             token,
             monotonic: Clock::<Monotonic>::new().now().into(),
@@ -624,6 +675,7 @@ impl GpuBackend {
             .queue_buffer(Some(sync), Some(damage), token)
             .map_err(SwapBuffersError::from)?;
         scanout.in_flight = Some(submission);
+        scanout.last_background = Some(background);
 
         Ok(true)
     }
@@ -716,6 +768,50 @@ fn reset_scanout(scanout: &mut Scanout) {
     scanout.damage = OutputDamageTracker::from_output(&scanout.output);
     scanout.scene_damage = OutputDamageTracker::from_output(&scanout.output);
     scanout.in_flight = None;
+    scanout.last_background = None;
+}
+
+/// The buffer age both damage calls of one frame are given.
+///
+/// `GbmBufferedSurface::next_buffer` reports the age of the buffer it hands out, and
+/// Smithay reads that age as "this buffer is missing the last `age - 1` presented
+/// frames" (`backend/renderer/damage/mod.rs`). It is therefore the only age that
+/// describes the buffer being drawn into. A fixed `1` would tell both trackers that
+/// the previous frame's content is in a buffer that is several submissions old, and
+/// the frames they then leave out of the damage are exactly the ones that buffer is
+/// missing — that is the damage the screen would keep showing stale.
+fn tracker_age(buffer_age: u8) -> usize {
+    usize::from(buffer_age)
+}
+
+/// Whether the scene holds damage the buffer at `age` is missing.
+///
+/// This is the probe: the question `render_output` answers, asked of a tracker with
+/// no framebuffer to draw into, so an unchanged output can skip the frame before any
+/// EGL work. It has to be asked at the buffer's own age ([`tracker_age`]) or it
+/// answers for a different buffer than the one the render fills.
+fn probe_damage(
+    probe: &mut OutputDamageTracker,
+    age: usize,
+    elements: &[SceneElement],
+) -> Result<bool, BackendError> {
+    Ok(probe
+        .damage_output(age, elements)
+        .map_err(unavailable)?
+        .0
+        .is_some())
+}
+
+/// Whether a frame has anything to draw, and therefore anything to present.
+///
+/// `probe_damage` is whether the probe found damage the acquired buffer is missing,
+/// so `false` here is what keeps an idle output from submitting page flips that
+/// change nothing. `forced` covers the two cases no probe can answer — a spent frame
+/// budget and a new background colour — and always wins: a forced frame is damage by
+/// definition, and it must reach the screen even if the probe would have said the
+/// scene did not change.
+fn draws_frame(forced: bool, probe_damage: bool) -> bool {
+    forced || probe_damage
 }
 
 /// Move an existing scanout to `mode`.
@@ -950,6 +1046,79 @@ fn requested_scale(preference: &OutputConfig) -> f64 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// A damage tracker over an empty scene: no `SceneElement` is ever constructed and
+    /// the type only names the slice, so nothing has to be drawn and the buffer age
+    /// alone decides whether a frame is skipped. No EGL display is involved.
+    fn tracker() -> OutputDamageTracker {
+        let output = Output::new(
+            "TEST-1".to_owned(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Inox".to_owned(),
+                model: "test".to_owned(),
+            },
+        );
+        output.change_current_state(
+            Some(Mode {
+                size: (1024, 768).into(),
+                refresh: 60_000,
+            }),
+            Some(Transform::Normal),
+            Some(Scale::Integer(1)),
+            Some(Point::from((0, 0))),
+        );
+        OutputDamageTracker::from_output(&output)
+    }
+
+    #[test]
+    fn the_age_handed_to_the_damage_trackers_is_the_buffers_own() {
+        for age in 0..=4u8 {
+            assert_eq!(tracker_age(age), usize::from(age), "buffer age {age}");
+        }
+        // The defect this guards against: handing the probe a hardcoded 1.
+        assert_ne!(tracker_age(3), 1);
+    }
+
+    #[test]
+    fn a_two_frame_old_buffer_needs_a_redraw_even_when_nothing_changed() {
+        let empty: &[SceneElement] = &[];
+        let mut probe = tracker();
+        // The first frame is a full redraw: nothing has been recorded yet.
+        assert!(probe_damage(&mut probe, tracker_age(0), empty).unwrap());
+        // Nothing changed since, and a buffer one submission old still holds the frame
+        // just presented, so the young age lets the frame be skipped.
+        assert!(!probe_damage(&mut probe, tracker_age(1), empty).unwrap());
+        // The same tracker, asked about a buffer two submissions old, has to say the
+        // frame must be drawn: that buffer is missing the frame just presented. This
+        // is the difference between the real age and a hardcoded 1 — claiming 1 here
+        // is what reports "the buffer already holds it" for a buffer that does not.
+        assert!(probe_damage(&mut probe, tracker_age(2), empty).unwrap());
+        // A tracker that recorded fewer frames than the buffer is old cannot describe
+        // it at all and redraws everything, which is the safe direction.
+        let mut fresh = tracker();
+        assert!(probe_damage(&mut fresh, tracker_age(3), empty).unwrap());
+    }
+
+    #[test]
+    fn an_unchanged_scene_costs_no_page_flip() {
+        assert!(!draws_frame(false, false));
+    }
+
+    #[test]
+    fn damage_after_an_idle_period_is_still_drawn() {
+        // Idle frames leave the probe's record on the last presented frame; the first
+        // real change after that has to reach the screen even though the buffers have
+        // aged several submissions in the meantime.
+        assert!(draws_frame(false, true));
+    }
+
+    #[test]
+    fn a_forced_frame_is_drawn_whatever_the_probe_would_have_said() {
+        assert!(draws_frame(true, false));
+        assert!(draws_frame(true, true));
+    }
 
     #[test]
     fn page_flips_before_the_current_submission_are_ignored() {

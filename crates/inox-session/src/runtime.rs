@@ -16,7 +16,7 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, Mode, PostAction};
 use inox_protocols::standard::core::client::wl_callback;
 use rustix::process::{Pid, kill_process_group};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use crate::policy::RestartBudget;
@@ -46,6 +46,21 @@ impl CommandSpec {
     }
 }
 
+/// When a service is started, and therefore whether it is ever restarted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// Started as soon as the compositor is ready, and restarted within budget.
+    AtStartup,
+    /// Started only when something asks for it (`session-control-v1`), and never
+    /// restarted automatically.
+    ///
+    /// This is what the trusted lock client needs: restarting it while the session
+    /// is locked asks a compositor that refuses a second lock, and restarting it
+    /// after an unlock locks the desktop the person just opened. A service that is
+    /// asked for by name is started again by the next request.
+    OnDemand,
+}
+
 /// A compositor-dependent component.
 #[derive(Debug, Clone)]
 pub struct ServiceSpec {
@@ -57,6 +72,8 @@ pub struct ServiceSpec {
     pub required: bool,
     /// A successful exit completes a bootstrap task instead of restarting it.
     pub oneshot: bool,
+    /// Whether the service is started with the session or on request.
+    pub start: Start,
     /// Extra environment for this component alone, layered over the session's.
     ///
     /// This exists for capabilities that must not be handed to every child: the
@@ -231,9 +248,25 @@ impl Drop for Process {
     }
 }
 
+/// The name the lock service is registered under in a session's service table.
+pub const LOCK_SERVICE: &str = "lock";
+
+/// What asking for a service to start did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartOutcome {
+    /// Queued for the next tick.
+    Requested,
+    /// It is already running; nothing was changed.
+    AlreadyRunning,
+    /// This session has no such service.
+    NoSuchService,
+}
+
 struct Supervisor {
     compositor: Process,
     services: Vec<Process>,
+    control: crate::control::Listener,
+    last_lock_request: Option<Instant>,
     runtime: PrivateRuntime,
     environment: BTreeMap<String, String>,
     child_launcher: Option<PathBuf>,
@@ -261,6 +294,89 @@ impl Supervisor {
         }
         info!(reason = ?self.failure, "stopping session");
     }
+    /// Starts a service that is in the table, if it is not already running.
+    fn start_service(&mut self, name: &str) -> StartOutcome {
+        let now = Instant::now();
+        let Some(process) = self.services.iter_mut().find(|p| p.spec.name == name) else {
+            return StartOutcome::NoSuchService;
+        };
+
+        if process.child.is_some() {
+            return StartOutcome::AlreadyRunning;
+        }
+
+        // A service that has finished is started again only by being asked for.
+        process.done = false;
+        process.restart_at = Some(now);
+        info!(component = name, "a service was asked to start");
+
+        StartOutcome::Requested
+    }
+
+    /// Answers one `lock` request.
+    ///
+    /// The reply says what the supervisor did, not what the session is: whether the
+    /// screen is covered is the compositor's `session_lock_state`.
+    fn request_lock(&mut self) -> inox_protocols::control::Reply {
+        use inox_protocols::control::Reply;
+
+        let now = Instant::now();
+
+        if !self.ready {
+            debug!("a lock was requested before the compositor was ready");
+
+            return Reply::Busy;
+        }
+
+        if self
+            .last_lock_request
+            .is_some_and(|last| now.saturating_duration_since(last) < Duration::from_secs(2))
+        {
+            debug!("a lock was requested while the previous request is still fresh");
+
+            return Reply::Busy;
+        }
+
+        self.last_lock_request = Some(now);
+
+        match self.start_service(LOCK_SERVICE) {
+            StartOutcome::Requested => Reply::Dispatched,
+            StartOutcome::AlreadyRunning => Reply::Busy,
+            StartOutcome::NoSuchService => Reply::Unknown,
+        }
+    }
+
+    /// Serves every pending control connection.
+    fn serve_control(&mut self) {
+        let uid = rustix::process::getuid().as_raw();
+
+        loop {
+            match self.control.accept() {
+                Ok(Some(stream)) => {
+                    let crate::control::Served::Request(request, mut stream) =
+                        crate::control::serve(stream, uid)
+                    else {
+                        continue;
+                    };
+
+                    let reply = match request {
+                        inox_protocols::control::Request::Lock => self.request_lock(),
+                    };
+
+                    if let Err(error) = inox_protocols::control::write_reply(&mut stream, reply) {
+                        debug!(%error, "failed to answer a control request");
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    warn!(%error, "failed to accept a control connection");
+
+                    break;
+                }
+            }
+        }
+    }
+
     fn tick(&mut self) -> Result<(), SessionError> {
         let now = Instant::now();
         if self.compositor.reap()?.is_some() && self.stopping.is_none() {
@@ -312,12 +428,19 @@ impl Supervisor {
             // This reports compositor readiness only: L3 has no service-ready transport yet.
             info!("compositor protocol ready; starting desktop components");
             for process in &mut self.services {
-                process.restart_at = Some(now);
+                if process.spec.start == Start::AtStartup {
+                    process.restart_at = Some(now);
+                }
             }
         }
         for process in &mut self.services {
             if let Some(success) = process.reap()? {
-                if success && process.spec.oneshot {
+                if process.spec.start == Start::OnDemand {
+                    // Asked for, once. Restarting the lock client on a timer would
+                    // either be refused by the compositor (already locked) or lock
+                    // a session nobody asked to lock again.
+                    process.done = true;
+                } else if success && process.spec.oneshot {
                     process.done = true;
                 } else {
                     process.restart_at = Some(now);
@@ -421,11 +544,31 @@ pub fn run(spec: SessionSpec, options: RunOptions) -> Result<(), SessionError> {
     let runtime = PrivateRuntime::create(&spec.runtime_dir)?;
     let mut event_loop =
         EventLoop::<Supervisor>::try_new().map_err(|e| SessionError::EventLoop(e.to_string()))?;
+    let handle = event_loop.handle();
+
+    // The control socket exists before any component starts, so a request that
+    // arrives while the compositor is still coming up gets `busy` — an answer —
+    // rather than a connection refused the caller cannot interpret.
+    let control_path = crate::control::path_for(&spec.runtime_dir);
+    let control = crate::control::Listener::bind(&control_path)?;
+    let control_handle = control.handle()?;
+    handle
+        .insert_source(
+            Generic::new(control_handle, Interest::READ, Mode::Level),
+            |_, _, supervisor: &mut Supervisor| {
+                supervisor.serve_control();
+
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|e| SessionError::EventLoop(e.to_string()))?;
+
     let mut compositor = Process::new(ServiceSpec {
         name: "compositor".into(),
         command: spec.compositor,
         required: true,
         oneshot: false,
+        start: Start::AtStartup,
         // The lock token reaches the compositor as an argument, not through the
         // environment: it is the compositor's copy of the capability that decides
         // whether a claim is honoured, and that is a startup decision.
@@ -440,6 +583,8 @@ pub fn run(spec: SessionSpec, options: RunOptions) -> Result<(), SessionError> {
     let mut supervisor = Supervisor {
         compositor,
         services: spec.services.into_iter().map(Process::new).collect(),
+        control,
+        last_lock_request: None,
         runtime,
         environment: spec.environment,
         child_launcher: options.child_launcher,
@@ -455,7 +600,6 @@ pub fn run(spec: SessionSpec, options: RunOptions) -> Result<(), SessionError> {
         finished: false,
         failure: None,
     };
-    let handle = event_loop.handle();
     handle
         .insert_source(Timer::immediate(), |_, _, _: &mut Supervisor| {
             TimeoutAction::ToDuration(TICK)

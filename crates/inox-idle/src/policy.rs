@@ -69,6 +69,16 @@ impl IdlePolicy {
         self.locked
     }
 
+    /// The request whose confirmation is still outstanding, if any.
+    ///
+    /// The daemon needs this to recognise the compositor's report of a lock that
+    /// was already in place: `session_lock_state` is sent on bind and on every
+    /// change, so an already-locked session produces no new event when it is asked,
+    /// and the pending request has to be settled from the state that was observed.
+    pub fn pending(&self) -> Option<RequestId> {
+        self.pending.map(|(id, _)| id)
+    }
+
     /// Reset only after an authenticated unlock from the trusted transport.
     pub fn authenticated_unlock(&mut self) {
         self.locked = false;

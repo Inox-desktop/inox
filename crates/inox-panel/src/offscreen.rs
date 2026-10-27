@@ -35,6 +35,16 @@ use crate::cxxqt_object::qobject::{Offscreen, new_offscreen};
 /// halves (contract §2.2).
 pub const QML_URL: &str = "qrc:/qt/qml/com/inox/panel/qml/qml/Main.qml";
 
+/// The shared glass component catalog, compiled into the same module.
+///
+/// `inox-glass` ships the page and its five components as assets; `build.rs`
+/// aliases them next to `Main.qml`, so the URL differs from [`QML_URL`] only by
+/// the file name. A test renders this page through the same host and asserts its
+/// pixels (ADR 0040 §3) — that is the components' only pixel evidence, because
+/// `inox-glass` links no Qt and cannot draw by itself.
+#[cfg(test)]
+pub const CATALOG_URL: &str = "qrc:/qt/qml/com/inox/panel/qml/qml/CatalogWindow.qml";
+
 /// Why the offscreen renderer could not draw a frame.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -74,11 +84,28 @@ impl Host {
     /// a panel that cannot render is a panel that reports the failure and exits
     /// non-zero.
     pub fn new() -> Result<Self, RenderError> {
+        Self::load(QML_URL)
+    }
+
+    /// Loads `url` instead of the panel's own window.
+    ///
+    /// A test hook, and the only caller is `headless_tests::qml`: the shared
+    /// glass components are compiled into this crate's QML module (ADR 0040 §3),
+    /// so the catalog page that draws all five of them is loaded through the same
+    /// host, the same `QGuiApplication` and the same `grabWindow()` path as the
+    /// panel's own frame. Nothing in production loads another document.
+    #[cfg(test)]
+    pub fn with_url(url: &str) -> Result<Self, RenderError> {
+        Self::load(url)
+    }
+
+    /// Loads the QML window at `url` and returns the renderer.
+    fn load(url: &str) -> Result<Self, RenderError> {
         let mut inner = new_offscreen();
 
         let loaded = inner
             .as_mut()
-            .map(|host| host.load(&QString::from(QML_URL)))
+            .map(|host| host.load(&QString::from(url)))
             .unwrap_or(false);
 
         if !loaded {
@@ -184,6 +211,29 @@ mod tests {
         assert!(
             std::path::Path::new("qml/Main.qml").exists(),
             "the file the module registers is in the crate"
+        );
+    }
+
+    #[test]
+    fn the_catalog_page_sits_next_to_the_panels_own_window() {
+        // Both are compiled into the same QML module by `build.rs`, which is what
+        // makes the glass components same-directory implicit types for either
+        // document.
+        assert_eq!(
+            CATALOG_URL.rsplit('/').next(),
+            Some("CatalogWindow.qml"),
+            "the catalog is the shared glass component page"
+        );
+        assert_eq!(
+            CATALOG_URL.rsplit_once('/').map(|(directory, _)| directory),
+            QML_URL.rsplit_once('/').map(|(directory, _)| directory),
+            "and it shares the module's directory with `Main.qml`"
+        );
+        assert!(
+            inox_glass::qml_files()
+                .iter()
+                .any(|path| path.ends_with("CatalogWindow.qml")),
+            "the file comes from the crate that owns it"
         );
     }
 }

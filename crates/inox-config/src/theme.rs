@@ -152,6 +152,13 @@ impl Default for Colors {
 /// the compositor: the backdrop blur itself is drawn by the compositor, not by
 /// the component, so a session without backdrop blur still shows the
 /// translucency, the highlight and the shade — just without the softening.
+///
+/// Refraction is the second half of the material (ADR 0040): the pane's rounded
+/// edge displaces the pixels behind it towards the outline, strongest at the
+/// contour and fading to nothing over a narrow band. [`Glass::refraction`] is
+/// that band's thickness and [`Glass::refraction_amount`] the peak displacement,
+/// both in logical pixels; either being `0` is the explicit "no refraction"
+/// value and leaves the pane as the v1 frosted pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Glass {
@@ -166,6 +173,18 @@ pub struct Glass {
     /// Blur radius in logical pixels asked of the compositor; 0 means "no
     /// backdrop blur", i.e. plain translucency.
     pub blur: u16,
+    /// Refraction band thickness in logical pixels asked of the compositor; 0
+    /// means "no refraction", i.e. the v1 frosted pane.
+    pub refraction: u16,
+    /// Peak displacement in logical pixels at the pane's outline; it fades to
+    /// zero over the [`Glass::refraction`] band.
+    pub refraction_amount: u16,
+    /// Add the radial "depth" component (a spherical bulge towards the centre)
+    /// on top of the edge displacement.
+    pub depth: bool,
+    /// Split the refracted edge into per-channel offsets, which is what reads as
+    /// a thin chromatic fringe along the contour.
+    pub dispersion: bool,
 }
 
 impl Default for Glass {
@@ -535,6 +554,10 @@ const DARK_GLASS: Glass = Glass {
     highlight: rgba(0xff, 0xff, 0xff, 0x40),
     shade: rgba(0x00, 0x00, 0x00, 0x59),
     blur: 128,
+    refraction: 24,
+    refraction_amount: 12,
+    depth: false,
+    dispersion: true,
 };
 
 /// The light glass: a warm white pane, translucent in the same way.
@@ -544,6 +567,10 @@ const LIGHT_GLASS: Glass = Glass {
     highlight: rgba(0xff, 0xff, 0xff, 0xcc),
     shade: rgba(0x00, 0x00, 0x00, 0x1f),
     blur: 128,
+    refraction: 24,
+    refraction_amount: 12,
+    depth: false,
+    dispersion: true,
 };
 
 #[cfg(test)]
@@ -765,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn both_built_in_themes_carry_a_glass_material_that_asks_for_a_blur() {
+    fn both_built_in_themes_carry_a_glass_material_that_asks_for_a_blur_and_a_lens() {
         let light = Theme::builtin_light();
         let dark = Theme::builtin_dark();
 
@@ -790,7 +817,37 @@ mod tests {
                 theme.glass.highlight.a > 0 && theme.glass.shade.a > 0,
                 "the pane has both a highlight and a shade to read as glass"
             );
+            assert!(
+                theme.glass.refraction > 0 && theme.glass.refraction_amount > 0,
+                "a built-in glass asks the compositor for a refracting edge too"
+            );
+            assert!(
+                !theme.glass.depth,
+                "the conservative default keeps the radial depth component off"
+            );
+            assert!(
+                theme.glass.dispersion,
+                "the reference-0040 glass splits the refracted edge by channel"
+            );
         }
+    }
+
+    #[test]
+    fn the_refraction_tokens_default_to_the_reference_band() {
+        // ADR 0040 §4: a 24 px band with a 12 px peak displacement, no depth
+        // component, and dispersion on — the conservative reference glass.
+        let default = Glass::default();
+
+        assert_eq!(default.refraction, 24);
+        assert_eq!(default.refraction_amount, 12);
+        assert!(!default.depth);
+        assert!(default.dispersion);
+        assert_eq!(default, DARK_GLASS, "the default glass is the dark glass");
+        assert_eq!(
+            LIGHT_GLASS.refraction, default.refraction,
+            "both built-in themes take the same band"
+        );
+        assert_eq!(LIGHT_GLASS.refraction_amount, default.refraction_amount);
     }
 
     #[test]
@@ -807,6 +864,21 @@ mod tests {
             .expect("a theme document without `[glass]`");
 
         assert_eq!(theme.glass, DARK_GLASS);
+    }
+
+    #[test]
+    fn a_theme_document_written_before_refraction_existed_still_loads() {
+        // The refraction tokens postdate the material: a `[glass]` section with
+        // only the v1 keys must keep the dark refraction defaults, not fail and
+        // not silently pick `0`.
+        let file = parse_theme_file("glass = { blur = 128, tint = \"#02030405\" }\n")
+            .expect("a v1 glass section");
+
+        assert_eq!(file.glass.tint, hex("#02030405"));
+        assert_eq!(file.glass.refraction, DARK_GLASS.refraction);
+        assert_eq!(file.glass.refraction_amount, DARK_GLASS.refraction_amount);
+        assert_eq!(file.glass.depth, DARK_GLASS.depth);
+        assert_eq!(file.glass.dispersion, DARK_GLASS.dispersion);
     }
 
     #[test]
@@ -829,6 +901,88 @@ mod tests {
             partial.glass.tint, DARK_GLASS.tint,
             "the fields the file leaves out stay at the dark defaults"
         );
+        assert_eq!(
+            partial.glass.refraction, DARK_GLASS.refraction,
+            "the fields the file leaves out stay at the dark defaults"
+        );
+    }
+
+    #[test]
+    fn a_theme_file_may_override_the_refraction_tokens() {
+        let file = parse_theme_file(
+            "glass = { refraction = 40, refraction_amount = 20, depth = true, dispersion = false }\n",
+        )
+        .expect("a refraction section");
+
+        assert_eq!(file.glass.refraction, 40);
+        assert_eq!(file.glass.refraction_amount, 20);
+        assert!(file.glass.depth);
+        assert!(!file.glass.dispersion);
+        assert_eq!(
+            file.glass.blur, DARK_GLASS.blur,
+            "an explicit refraction does not disturb the blur the file leaves out"
+        );
+
+        let theme = file.materialise("mine", Appearance::Dark);
+        assert_eq!(theme.glass.refraction, 40);
+        assert_eq!(theme.glass.refraction_amount, 20);
+        assert!(theme.glass.depth);
+        assert!(!theme.glass.dispersion);
+    }
+
+    #[test]
+    fn a_glass_without_blur_but_with_refraction_is_representable() {
+        // ADR 0040 §5: the panel creates a glass object when *either* the blur or
+        // the refraction is asked for, so the tokens must be able to say
+        // "no blur, refract anyway" without it reading as a parse error.
+        let file = parse_theme_file("glass = { blur = 0, refraction = 24 }\n")
+            .expect("blur = 0 next to a refraction band");
+
+        assert_eq!(file.glass.blur, 0, "0 is the explicit `no blur` value");
+        assert_eq!(file.glass.refraction, 24);
+        assert_eq!(file.glass.refraction_amount, DARK_GLASS.refraction_amount);
+        assert!(
+            file.glass.blur == 0 && file.glass.refraction > 0,
+            "the material can ask for the lens alone"
+        );
+    }
+
+    #[test]
+    fn refraction_zero_is_the_explicit_no_refraction_value() {
+        // `refraction = 0` is how a theme says "v1 frosted pane": plain
+        // translucency plus blur, with no lens on the edge. It must parse, and
+        // the zero has to survive the merge.
+        let file = parse_theme_file("glass = { refraction = 0 }\n").expect("no refraction");
+
+        assert_eq!(file.glass.refraction, 0);
+        assert_eq!(
+            file.glass.refraction_amount, DARK_GLASS.refraction_amount,
+            "the amount the file leaves out keeps its default; `height = 0` is what disables"
+        );
+
+        let theme = file.materialise("mine", Appearance::Dark);
+        assert_eq!(theme.glass.refraction, 0);
+        assert_eq!(
+            theme.glass.blur, DARK_GLASS.blur,
+            "blur is independent of refraction"
+        );
+    }
+
+    #[test]
+    fn an_unknown_glass_refraction_token_is_rejected_with_its_field_path() {
+        let error =
+            parse_theme_file("glass = { refraction_hight = 24 }\n").expect_err("a typo in a token");
+
+        match error {
+            ConfigError::Parse { field, line, .. } => {
+                assert_eq!(field.as_deref(), Some("glass.refraction_hight"));
+                assert_eq!(line, Some(1));
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+
+        let wrong_type = parse_theme_file("glass = { depth = \"yes\" }\n").expect_err("a string");
+        assert!(wrong_type.to_string().contains("depth"), "{wrong_type}");
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! The credential buffer.
-//! The credential buffer.
-//! the session-lock boundary makes three demands of the thing that holds what a user typed, and
+//! The session-lock boundary makes three demands of the thing that holds what a user typed, and
 //! they are the whole of this module:
 //!
 //! 1. **It does not linger.** The bytes are overwritten with zeros as soon as

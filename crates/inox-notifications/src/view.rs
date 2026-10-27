@@ -21,15 +21,21 @@
 //! - **The stack is in the configured corner**, inset by the configured margin:
 //!   the alignment is the same place the layer-surface anchors would put it
 //!   ([`crate::placement`]).
-//! - **A card is a card**: the `surface` token, a hairline edge, the `md` radius
-//!   and the `lg` inset, with `lg` between two cards.
+//! - **A card is a pane of glass**: the shared `GlassPane` from `inox-glass`
+//!   (ADR 0044, ui-guidelines §12), drawn with the `glass` token material — the
+//!   `md` radius, the `lg` inset and `lg` between two cards. The projection
+//!   carries the material's three colours and its hairline width; the pane draws
+//!   them and nothing else.
 //! - **The hierarchy is a heading over body text over captions**: the summary is
 //!   the card's one `heading`, the message is `body`, and the application name,
 //!   the urgency sentence, the timestamp and the reason an action is unavailable
 //!   are all `caption`.
-//! - **A popup's body is bounded and its spans are structured.** The view model
-//!   caps the text, and each span arrives here as its own value with its
-//!   emphasis and colour resolved, so QML never parses markup.
+//! - **A popup's body crosses the bridge as rich text this module wrote.** The
+//!   view model caps the text; here every character of every span is escaped and
+//!   wrapped in the handful of tags the sanitiser can produce, so QML hands the
+//!   string to a text renderer and never to a markup parser of its own. Escaping
+//!   is what makes wrapping and `<u>` work without trusting the client: a body
+//!   that says `<script>` stays the eight characters the user sent.
 //! - **Controls never leave the card.** The actions carry the row size they are
 //!   laid out in ([`crate::view_model::MAX_ACTIONS_PER_ROW`]), so even the
 //!   sixteen actions a client may legally send wrap instead of overflowing
@@ -37,6 +43,22 @@
 //! - **A link is clickable and nothing else is.** A span that the sanitiser
 //!   produced from an `<a href>` carries its target; QML reports a click on that
 //!   span and nothing else produces one.
+//!
+//! Three presentation facts are decided here for the same reason: QML only draws
+//! them.
+//!
+//! - **The surface exists only when it has something to show**
+//!   ([`surface_is_visible`]): an empty stack projects `window.visible: false`,
+//!   and a daemon with nothing to say puts no window on screen.
+//! - **The drawn height follows the stack, not a budget.** A card's height
+//!   depends on how its body wraps, which only the text layout knows, so
+//!   `window.height` stays the *placement* budget
+//!   ([`StackGeometry::window_size`]) that a layer surface would ask the
+//!   compositor for, and the surface sizes itself to the column it drew.
+//! - **Entrance motion is timed by the tokens and ends where the card rests.**
+//!   `motion` carries the three durations and the rise; QML animates *to* the
+//!   resting values, so a card is fully readable even if the animation never runs
+//!   (ui-guidelines §8).
 
 use inox_config::{DisplayConfig, NotificationPosition, Theme as Tokens};
 use serde_json::{Value, json};
@@ -109,10 +131,17 @@ impl StackGeometry {
         }
     }
 
-    /// The size a popup stack takes before its content is laid out.
+    /// The size a popup stack reserves on its output, before its content is laid
+    /// out.
     ///
-    /// The window opens at the size `max_visible` popups need; a layer surface
-    /// would ask the compositor to size it instead ([`crate::placement`]).
+    /// This is the **placement** budget: the room a layer surface would ask the
+    /// compositor to reserve for [`DisplayConfig::max_visible`] popups, computed
+    /// from the tokens alone. It is not the height the window is drawn at — a
+    /// card grows with the lines its body wraps to, which is a fact only the text
+    /// layout has, so the surface is sized to the stack it actually drew (see
+    /// `qml/Main.qml`). Keeping both numbers is deliberate: the placement budget
+    /// is what a host needs before anything is rendered, and it is what
+    /// [`crate::placement`] is written against.
     pub fn window_size(&self, display: &DisplayConfig) -> (f32, f32) {
         let visible = f32::from(display.max_visible);
         let unit = 2.0 * self.card_padding + self.icon_size.max(self.control_height);
@@ -170,12 +199,18 @@ pub fn project(model: &PopupStack, tokens: &Tokens, display: &DisplayConfig, tit
     let (width, height) = geometry.window_size(display);
     let (horizontal, vertical) = StackGeometry::alignment(display);
     let colors = theme::Colors::resolve(tokens);
+    let motion = tokens.motion;
 
     json!({
         "window": {
             "title": title,
+            // The surface's width is fixed by the configuration; its height is
+            // the placement budget (see `StackGeometry::window_size`) rather
+            // than the height it is drawn at, which follows the stack.
             "width": width,
             "height": height,
+            // A notification daemon with nothing to show is not a window.
+            "visible": surface_is_visible(model),
         },
         "palette": {
             "background": colors.background,
@@ -191,6 +226,15 @@ pub fn project(model: &PopupStack, tokens: &Tokens, display: &DisplayConfig, tit
             "success": colors.success,
         },
         "metrics": geometry.to_json(tokens),
+        // The durations and the distance the entrance motion is drawn with
+        // (ui-guidelines §8): QML animates *to* the resting state, so a card
+        // that never animated is still fully visible.
+        "motion": {
+            "fast": motion.fast_ms,
+            "normal": motion.normal_ms,
+            "slow": motion.slow_ms,
+            "rise": theme::entry_rise(tokens),
+        },
         "alignment": {
             "horizontal": horizontal,
             "vertical": vertical,
@@ -215,6 +259,29 @@ pub fn project(model: &PopupStack, tokens: &Tokens, display: &DisplayConfig, tit
             }),
         },
     })
+}
+
+/// Whether the surface has anything to put on screen.
+///
+/// A daemon holding nothing must not leave a window behind: the empty state is
+/// the absence of a surface, not a rectangle saying "No notifications". Three
+/// things are worth a window:
+///
+/// - a popup to draw;
+/// - the overflow sentence, which says notifications are waiting behind the ones
+///   on screen (D05) — it is never projected without popups, but it is listed so
+///   that the rule is about what is drawn rather than about a count;
+/// - a notice explaining a state the user chose, which in this stack is the
+///   muted line while do not disturb is on: silence with no explanation is
+///   indistinguishable from a daemon that has stopped working.
+///
+/// The plain empty line is deliberately not on that list. It exists in the model
+/// so that the catalogue and the projection tests can read it, and it is not a
+/// reason to draw.
+fn surface_is_visible(model: &PopupStack) -> bool {
+    !model.popups.is_empty()
+        || model.overflow.is_some()
+        || (model.status == crate::view_model::StackStatus::Suppressed && model.notice.is_some())
 }
 
 /// The projection of a daemon holding nothing, used before the host installs one.
@@ -283,27 +350,48 @@ fn popup_value(popup: &Popup, tokens: &Tokens, geometry: &StackGeometry) -> Valu
             "radius": theme::control_radius(tokens),
         },
         "summary": popup.content.summary(),
+        // The plain sentence, for the semantic tree: a screen reader is given
+        // the text, never the tags (root AGENTS.md §7.4).
         "bodyText": popup
             .content
             .body()
             .map(crate::markup::plain_text)
             .unwrap_or_default(),
-        "body": popup
+        // The same sentence as escaped rich text, for the text layout: this is
+        // what makes the body wrap inside the card and what makes `<u>` visible.
+        "bodyHtml": popup
             .content
             .body()
-            .unwrap_or(&[])
-            .iter()
-            .map(|span| span_value(span, tokens))
-            .collect::<Vec<Value>>(),
+            .map(|spans| body_html(spans, tokens))
+            .unwrap_or_default(),
         "close": {
             "label": popup.close.as_str(),
             "control": control_value(&theme::close_control(tokens)),
         },
         "card": {
-            "background": colors.surface,
-            "edge": theme::card_edge(tokens, popup.urgency),
+            // The card is a pane of the shared glass material (ADR 0044,
+            // ui-guidelines §12): its tint, both edge hairlines and the hairline
+            // width are properties of `GlassPane`, and none of them is computed
+            // here. A glass card has no outline — the two hairlines are its edges
+            // — so the urgency that used to colour the border is carried by the
+            // rail below and by the urgency sentence in words.
+            "tint": theme::glass_tint(tokens),
+            "highlight": theme::glass_highlight(tokens),
+            "shade": theme::glass_shade(tokens),
+            "hairline": theme::BORDER_WIDTH,
             "radius": theme::card_radius(tokens),
             "inset": geometry.card_padding,
+            // The urgency rail: a mark on the leading edge of a critical card,
+            // in the same colour as its urgency sentence. The colour is never the
+            // only cue — the sentence says "Critical" in words (ui-guidelines
+            // §5, §6).
+            "rail": {
+                "visible": popup.urgency == crate::protocol::Urgency::Critical,
+                "width": theme::urgency_rail_width(tokens),
+                "color": theme::urgency_color(tokens, popup.urgency),
+                "radius": theme::control_radius(tokens),
+                "inset": theme::card_radius(tokens),
+            },
         },
         "actions": popup
             .actions
@@ -322,28 +410,101 @@ fn urgency_name(urgency: crate::protocol::Urgency) -> &'static str {
     }
 }
 
-/// One body span, with its emphasis and colour resolved.
-fn span_value(span: &MarkupSpan, tokens: &Tokens) -> Value {
-    let style = SpanStyle::from_emphasis(span.emphasis());
-    let (href, link) = match span {
-        MarkupSpan::Link { href, .. } => (Some(href.clone()), true),
-        MarkupSpan::Text { .. } | MarkupSpan::Image { .. } => (None, false),
-    };
-    let color = if link {
-        theme::link(tokens)
-    } else {
-        theme::qml_color(tokens.colors.text)
-    };
+/// One popup's body as the escaped rich text QML lays out.
+///
+/// The body is untrusted input from any application on the session. The
+/// sanitiser ([`crate::markup`]) already turned it into spans, and a span cannot
+/// carry markup: its text is whatever was not accepted as a tag. This function
+/// is the second half of that promise — it may write the tags the sanitiser
+/// can produce (`<b>`, `<i>`, `<u>`, `<font color>`, `<a href>`) and nothing
+/// else, and every character that came from the notification is
+/// [`escape_text`]ed, so a body that says `<script>` is the eight characters a
+/// text renderer draws.
+///
+/// It is HTML because that is what a Qt text layout understands, and it is what
+/// makes the body wrap inside the card: a `Text` in rich-text mode lays out with
+/// the card's width, where a row of separate text items would run past the edge.
+fn body_html(spans: &[MarkupSpan], tokens: &Tokens) -> String {
+    let mut html = String::new();
 
-    json!({
-        "text": span.text(),
-        "bold": style.bold,
-        "italic": style.italic,
-        "underline": style.underline || link,
-        "link": link,
-        "href": href,
-        "color": color,
-    })
+    for span in spans {
+        let style = SpanStyle::from_emphasis(span.emphasis());
+        let (href, link) = match span {
+            MarkupSpan::Link { href, .. } => (Some(href), true),
+            MarkupSpan::Text { .. } | MarkupSpan::Image { .. } => (None, false),
+        };
+        let color = if link {
+            theme::link(tokens)
+        } else {
+            theme::qml_color(tokens.colors.text)
+        };
+
+        // Open the wrappers outside-in and remember what has to be closed, so
+        // the tags nest even though the emphasis arrives as flags.
+        let mut closing: Vec<&str> = Vec::new();
+
+        if let Some(href) = href {
+            html.push_str("<a href=\"");
+            html.push_str(&escape_text(href));
+            html.push_str("\">");
+            closing.push("</a>");
+        }
+
+        html.push_str("<font color=\"");
+        html.push_str(&color);
+        html.push_str("\">");
+        closing.push("</font>");
+
+        if style.bold {
+            html.push_str("<b>");
+            closing.push("</b>");
+        }
+
+        if style.italic {
+            html.push_str("<i>");
+            closing.push("</i>");
+        }
+
+        // A link is underlined as well as coloured: the colour alone is not a
+        // signal a reader who cannot tell it apart can use (ui-guidelines §5).
+        if style.underline || link {
+            html.push_str("<u>");
+            closing.push("</u>");
+        }
+
+        html.push_str(&escape_text(span.text()));
+
+        for tag in closing.iter().rev() {
+            html.push_str(tag);
+        }
+    }
+
+    html
+}
+
+/// Escapes every character a rich-text renderer would otherwise read as markup.
+///
+/// `&`, `<`, `>` and `"` are the four that can change the structure of the
+/// document: the first starts an entity, the next two open and close a tag, and
+/// the fourth ends an attribute. They are escaped wherever they appear, in text
+/// and in an `href`, which is what keeps a body from ever becoming markup. A
+/// character that is not one of the four is passed through unchanged — this is
+/// an escape, not an encoding, so the text a user reads is the text that was
+/// sent.
+fn escape_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            other => escaped.push(other),
+        }
+    }
+
+    escaped
 }
 
 /// One action button and the four states QML draws it in.
@@ -536,8 +697,9 @@ mod tests {
             &value["palette"]["background"],
             &value["palette"]["surface"],
             &value["palette"]["text"],
-            &value["stack"]["popups"][0]["card"]["background"],
-            &value["stack"]["popups"][0]["card"]["edge"],
+            &value["stack"]["popups"][0]["card"]["tint"],
+            &value["stack"]["popups"][0]["card"]["highlight"],
+            &value["stack"]["popups"][0]["card"]["shade"],
             &value["stack"]["popups"][0]["close"]["control"]["rest"]["text"],
         ];
 
@@ -568,8 +730,8 @@ mod tests {
         );
         assert_ne!(dark["palette"]["surface"], light["palette"]["surface"]);
         assert_ne!(
-            dark["stack"]["popups"][0]["card"]["background"],
-            light["stack"]["popups"][0]["card"]["background"]
+            dark["stack"]["popups"][0]["card"]["tint"],
+            light["stack"]["popups"][0]["card"]["tint"]
         );
     }
 
@@ -632,6 +794,145 @@ mod tests {
         assert!(value["window"]["width"].as_f64().is_some_and(|w| w > 0.0));
     }
 
+    // --- the window: visibility, height, motion ----------------------------
+
+    #[test]
+    fn the_surface_is_hidden_while_the_stack_is_empty() {
+        let value = projected(&queue_with(&[]));
+
+        assert_eq!(
+            value["window"]["visible"], false,
+            "a daemon with nothing to show puts no window on screen: {value}"
+        );
+    }
+
+    #[test]
+    fn the_surface_is_visible_while_a_popup_is_drawn() {
+        let value = projected(&queue_with(&[("app", "hello")]));
+
+        assert_eq!(value["window"]["visible"], true);
+    }
+
+    #[test]
+    fn the_muted_surface_stays_visible_because_it_explains_the_silence() {
+        let queue = queue_with(&[("app", "one")]);
+        let display = DisplayConfig::default();
+        let mut policy = Policy::default();
+        policy.set_do_not_disturb(true);
+        let value = project(
+            &model(&queue, &display, &policy, SessionState::Unlocked),
+            &Tokens::builtin_dark(),
+            &display,
+            "Inox Notifications",
+        );
+
+        assert_eq!(value["stack"]["status"], "suppressed");
+        assert_eq!(
+            value["window"]["visible"], true,
+            "do not disturb silences popups; the line that says why is still worth drawing"
+        );
+    }
+
+    #[test]
+    fn the_overflow_line_is_a_reason_to_draw_on_its_own() {
+        let model = PopupStack {
+            status: StackStatus::Showing,
+            popups: Vec::new(),
+            overflow: Some(crate::view_model::OverflowNotice {
+                hidden: 2,
+                message: "2 more waiting".to_owned(),
+            }),
+            notice: None,
+        };
+        let value = project(
+            &model,
+            &Tokens::builtin_dark(),
+            &DisplayConfig::default(),
+            "Inox Notifications",
+        );
+
+        assert_eq!(
+            value["window"]["visible"], true,
+            "a sentence about notifications the user cannot see is something to show (D05)"
+        );
+    }
+
+    #[test]
+    fn the_window_height_is_the_placement_budget_while_the_surface_follows_its_content() {
+        // Three ordinary notifications do not fit the height the projection
+        // budgets for them: each card is at least a header row, a heading, one
+        // line of body and a control row, separated by the section gaps, and
+        // three of those plus the gaps already exceed `window_size`. That is
+        // why the surface is sized to the column it drew and `window.height`
+        // stays what a layer surface would reserve (the placement budget);
+        // binding the window to this number is what clipped the second and
+        // third cards.
+        let tokens = Tokens::builtin_dark();
+        let display = DisplayConfig::default();
+        let geometry = StackGeometry::new(&tokens, &display);
+        let (_, budget) = geometry.window_size(&display);
+
+        let header = geometry.icon_size.max(geometry.control_height);
+        let card = 2.0 * geometry.card_padding
+            + header
+            + geometry.section_gap
+            + geometry.heading_size
+            + geometry.section_gap
+            + geometry.body_size
+            + geometry.section_gap
+            + geometry.control_height;
+        let popups = f32::from(display.max_visible);
+        let drawn = 2.0 * geometry.margin + card * popups + geometry.card_gap * (popups - 1.0);
+
+        assert!(
+            drawn > budget,
+            "the least three cards can occupy is {drawn} px, more than the {budget} px budget that used to be the window"
+        );
+
+        let value = projected(&queue_with(&[("a", "one"), ("b", "two"), ("c", "three")]));
+
+        assert_eq!(value["stack"]["popups"].as_array().map(Vec::len), Some(3));
+        assert_eq!(
+            value["window"]["height"].as_f64(),
+            Some(f64::from(budget)),
+            "the placement budget is still projected, so a host can reserve it"
+        );
+        assert_eq!(
+            value["window"]["width"].as_f64(),
+            Some(f64::from(geometry.width + 2.0 * geometry.margin)),
+            "the width still comes from the projection"
+        );
+    }
+
+    #[test]
+    fn the_motion_durations_are_the_tokens_and_the_rise_is_a_token_step() {
+        let value = projected(&queue_with(&[("app", "hello")]));
+        let tokens = Tokens::builtin_dark();
+        let motion = &value["motion"];
+
+        assert_eq!(
+            motion["fast"].as_u64(),
+            Some(u64::from(tokens.motion.fast_ms))
+        );
+        assert_eq!(
+            motion["normal"].as_u64(),
+            Some(u64::from(tokens.motion.normal_ms))
+        );
+        assert_eq!(
+            motion["slow"].as_u64(),
+            Some(u64::from(tokens.motion.slow_ms))
+        );
+        assert_eq!(
+            motion["rise"].as_f64(),
+            Some(f64::from(theme::entry_rise(&tokens)))
+        );
+        assert!(
+            motion["fast"].as_u64().unwrap_or_default() <= u64::from(tokens.motion.normal_ms)
+                && motion["fast"].as_u64().unwrap_or_default() > 0,
+            "the entrance is neither instant nor slower than a normal transition: {motion}"
+        );
+    }
+
     // --- do not disturb, the lock, the overflow ----------------------------
 
     #[test]
@@ -678,9 +979,13 @@ mod tests {
         assert_eq!(popup["summary"], "A notification arrived");
         assert_eq!(popup["appName"], Value::Null);
         assert_eq!(popup["icon"]["present"], false);
-        assert!(
-            popup["body"].as_array().is_some_and(Vec::is_empty),
+        assert_eq!(
+            popup["bodyText"], "",
             "the body is not in the projection at all: {popup}"
+        );
+        assert_eq!(
+            popup["bodyHtml"], "",
+            "no rich text is drawn for a withheld body: {popup}"
         );
         assert!(
             !value.to_string().contains("a secret summary"),
@@ -707,13 +1012,18 @@ mod tests {
     // --- cards --------------------------------------------------------------
 
     #[test]
-    fn a_card_takes_its_surface_edge_radius_and_inset_from_the_tokens() {
+    fn a_card_takes_its_glass_material_radius_and_inset_from_the_tokens() {
         let tokens = Tokens::builtin_dark();
         let value = projected(&queue_with(&[("terminal", "a build finished")]));
         let card = &value["stack"]["popups"][0]["card"];
 
-        assert_eq!(card["background"], theme::qml_color(tokens.colors.surface));
-        assert_eq!(card["edge"], theme::qml_color(tokens.colors.border));
+        assert_eq!(card["tint"], theme::glass_tint(&tokens));
+        assert_eq!(card["highlight"], theme::glass_highlight(&tokens));
+        assert_eq!(card["shade"], theme::glass_shade(&tokens));
+        assert_eq!(
+            card["hairline"].as_f64(),
+            Some(f64::from(theme::BORDER_WIDTH))
+        );
         assert_eq!(
             card["radius"].as_f64(),
             Some(f64::from(theme::card_radius(&tokens)))
@@ -722,10 +1032,39 @@ mod tests {
             card["inset"].as_f64(),
             Some(f64::from(theme::card_inset(&tokens)))
         );
+        assert!(
+            card["background"].is_null() && card["edge"].is_null(),
+            "a glass card has no fill and no outline of its own: {card}"
+        );
     }
 
     #[test]
-    fn a_critical_notification_is_edged_and_says_so_rather_than_only_being_red() {
+    fn a_critical_notification_says_so_in_words_rather_than_only_being_red() {
+        let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
+        queue.notify(
+            Draft {
+                summary: "urgent".to_owned(),
+                hints: crate::protocol::Hints {
+                    urgency: Urgency::Critical,
+                    ..crate::protocol::Hints::default()
+                },
+                ..Draft::default()
+            },
+            Instant::now(),
+        );
+        let value = projected(&queue);
+        let popup = &value["stack"]["popups"][0];
+
+        assert_eq!(popup["urgency"], "critical");
+        assert_eq!(popup["urgencyNote"], "Critical");
+        assert_eq!(
+            popup["urgencyColor"],
+            theme::urgency_color(&Tokens::builtin_dark(), Urgency::Critical)
+        );
+    }
+
+    #[test]
+    fn a_critical_card_carries_an_urgency_rail_in_the_token_colour() {
         let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
         queue.notify(
             Draft {
@@ -741,16 +1080,30 @@ mod tests {
         let tokens = Tokens::builtin_dark();
         let value = projected(&queue);
         let popup = &value["stack"]["popups"][0];
+        let rail = &popup["card"]["rail"];
 
-        assert_eq!(popup["urgency"], "critical");
-        assert_eq!(popup["urgencyNote"], "Critical");
+        assert_eq!(rail["visible"], true);
         assert_eq!(
-            popup["card"]["edge"],
-            theme::qml_color(tokens.colors.danger)
+            rail["color"],
+            theme::urgency_color(&tokens, Urgency::Critical)
         );
-        assert_ne!(
-            popup["card"]["edge"],
-            theme::qml_color(tokens.colors.border)
+        assert_eq!(
+            rail["width"].as_f64(),
+            Some(f64::from(theme::urgency_rail_width(&tokens)))
+        );
+        assert!(
+            rail["inset"].as_f64().unwrap_or_default() > rail["width"].as_f64().unwrap_or_default(),
+            "the rail is inset past the card's own corner: {rail}"
+        );
+        assert_eq!(
+            popup["urgencyNote"], "Critical",
+            "the rail is a second cue, never the only one: the card still says it in words"
+        );
+
+        let ordinary = projected(&queue_with(&[("app", "hello")]));
+        assert_eq!(
+            ordinary["stack"]["popups"][0]["card"]["rail"]["visible"],
+            false
         );
     }
 
@@ -778,9 +1131,9 @@ mod tests {
             popup["urgencyColor"],
             theme::qml_color(tokens.colors.text_muted)
         );
-        assert_ne!(
-            popup["card"]["edge"],
-            theme::qml_color(tokens.colors.danger)
+        assert_eq!(
+            popup["card"]["rail"]["visible"], false,
+            "low urgency marks nothing on the edge: the sentence says it"
         );
     }
 
@@ -792,63 +1145,126 @@ mod tests {
         assert_eq!(value["stack"]["popups"][0]["urgencyNote"], Value::Null);
     }
 
-    // --- body spans ---------------------------------------------------------
+    // --- the body as escaped rich text --------------------------------------
 
-    #[test]
-    fn a_body_arrives_as_spans_with_their_emphasis_resolved() {
+    /// The rich text and the plain sentence projected for one body, in en-US.
+    fn rich_body(body: &str) -> (String, String) {
         let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
         queue.notify(
             Draft {
                 summary: "marked up".to_owned(),
-                body: sanitize("plain <b>bold</b> and <a href=\"https://example.com\">a link</a>"),
+                body: sanitize(body),
                 ..Draft::default()
             },
             Instant::now(),
         );
-        let tokens = Tokens::builtin_dark();
         let value = projected(&queue);
-        let body = value["stack"]["popups"][0]["body"]
-            .as_array()
-            .expect("a body is an array of spans");
+        let popup = &value["stack"]["popups"][0];
 
-        let bold = body
-            .iter()
-            .find(|span| span["text"] == "bold")
-            .expect("the bold span is there");
-        assert_eq!(bold["bold"], true);
-        assert_eq!(bold["link"], false);
-        assert_eq!(bold["color"], theme::qml_color(tokens.colors.text));
+        (
+            popup["bodyHtml"].as_str().unwrap_or_default().to_owned(),
+            popup["bodyText"].as_str().unwrap_or_default().to_owned(),
+        )
+    }
 
-        let link = body
-            .iter()
-            .find(|span| span["link"] == true)
-            .expect("the link span is there");
-        assert_eq!(link["href"], "https://example.com");
-        assert_eq!(link["underline"], true);
-        assert_eq!(link["color"], theme::link(&tokens));
+    /// Asserts that no `&` in `html` can start a character reference.
+    fn every_ampersand_is_an_entity(html: &str) {
+        for (index, _) in html.match_indices('&') {
+            let rest = &html[index..];
+
+            assert!(
+                ["&amp;", "&lt;", "&gt;", "&quot;"]
+                    .iter()
+                    .any(|entity| rest.starts_with(entity)),
+                "an unescaped `&` can start a character reference: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_keeps_its_emphasis_and_its_link_as_rich_text() {
+        let (html, text) = rich_body(
+            "plain <b>bold</b> <i>italic</i> <u>under</u> <a href=\"https://example.com\">a link</a>",
+        );
+        let tokens = Tokens::builtin_dark();
+
+        assert!(html.contains("<b>bold</b>"), "bold survives: {html}");
+        assert!(html.contains("<i>italic</i>"), "italic survives: {html}");
+        assert!(
+            html.contains("<u>under</u>"),
+            "the underline the model kept is now drawn: {html}"
+        );
+        assert!(
+            html.contains("<a href=\"https://example.com\">"),
+            "a link is an anchor: {html}"
+        );
+        assert!(
+            html.contains(&format!("color=\"{}\"", theme::link(&tokens))),
+            "a link is drawn in the accent colour: {html}"
+        );
+        assert!(
+            html.contains("<u>a link</u>"),
+            "a link is underlined as well as coloured: {html}"
+        );
+        assert_eq!(
+            text, "plain bold italic under a link",
+            "the plain sentence is the text a reader is told about"
+        );
+        every_ampersand_is_an_entity(&html);
+    }
+
+    #[test]
+    fn a_body_that_looks_like_markup_cannot_become_markup() {
+        // The sanitiser keeps an unknown tag as text rather than dropping it, so
+        // `<script>` reaches this module as characters. Escaping is what keeps
+        // those characters from opening an element in the renderer.
+        let (html, text) = rich_body("Hello <script>alert(1)</script> & <b>bold</b>");
+
+        assert!(
+            !html.contains("<script"),
+            "an escaped body has no tag the sanitiser did not mint: {html}"
+        );
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "the tag is text, character for character: {html}"
+        );
+        assert!(html.contains("&amp;"), "an ampersand is escaped: {html}");
+        assert!(
+            html.contains("<b>bold</b>"),
+            "the emphasis the sanitiser accepted is still drawn: {html}"
+        );
+        assert_eq!(
+            text, "Hello <script>alert(1)</script> & bold",
+            "the semantic name is the literal text, tag included"
+        );
+        every_ampersand_is_an_entity(&html);
     }
 
     #[test]
     fn a_body_with_a_script_url_is_projected_as_text_and_not_as_a_link() {
-        let mut queue = Queue::new(QueueConfig::default(), TimeoutConfig::default(), 3);
-        queue.notify(
-            Draft {
-                summary: "unsafe markup".to_owned(),
-                body: sanitize("<a href=\"javascript:alert(1)\">click</a>"),
-                ..Draft::default()
-            },
-            Instant::now(),
-        );
-        let value = projected(&queue);
+        let (html, _) = rich_body("<a href=\"javascript:alert(1)\">click</a>");
 
-        assert_eq!(
-            value["stack"]["popups"][0]["body"][0]["link"], false,
-            "the projection never mints a link the sanitiser refused"
+        assert!(
+            !html.contains("<a href="),
+            "the projection never mints an anchor the sanitiser refused: {html}"
         );
         assert!(
-            value["stack"]["popups"][0]["body"][0]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("javascript"))
+            html.contains("javascript"),
+            "the refused target is kept as the text it was: {html}"
+        );
+        every_ampersand_is_an_entity(&html);
+    }
+
+    #[test]
+    fn escaping_only_touches_the_four_structural_characters() {
+        assert_eq!(
+            escape_text("<a href=\"x\">&"),
+            "&lt;a href=&quot;x&quot;&gt;&amp;"
+        );
+        assert_eq!(
+            escape_text("plain — Unicode stays"),
+            "plain — Unicode stays",
+            "an escape is not an encoding: the text a user reads is the text sent"
         );
     }
 

@@ -19,7 +19,9 @@ inox-common.workspace = true
 inox-config.workspace = true
 inox-protocols.workspace = true
 # `rand` is what mints the session's lock token; see `policy::session_lock_token`.
-rustix = { workspace = true, features = ["rand"] }
+# `net` is for `SO_PEERCRED` on the session control socket: the caller is checked
+# before a byte of the request is read.
+rustix = { workspace = true, features = ["rand", "net"] }
 thiserror.workspace = true
 wayland-client.workspace = true
 

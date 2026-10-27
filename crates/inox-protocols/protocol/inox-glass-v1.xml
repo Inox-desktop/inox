@@ -23,7 +23,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="inox_glass_manager_v1" version="1">
+  <interface name="inox_glass_manager_v1" version="2">
     <description summary="frosted glass (backdrop blur) for a surface">
       Private, unstable Inox protocol that lets a client ask the compositor to
       frost part of a surface it draws: the compositor blurs what is already
@@ -64,6 +64,15 @@
       surface is the one thing the event must never do, precisely because the
       client decides its fallback (plain translucency) from it.
 
+      Version 2 adds the refraction vocabulary (corner radii, a refraction
+      band and its optional depth and dispersion components) reported through
+      the liquid_capabilities event. A manager bound at version 2 creates
+      version 2 glass objects; a manager bound at version 1 keeps creating
+      version 1 objects, which only have the blur parameters and never receive
+      liquid_capabilities. The version bump is therefore what a client uses to
+      opt in to refraction, and a client that does not care about it can keep
+      binding version 1 unchanged.
+
       This protocol is an Inox extension and is not part of the upstream
       wayland-protocols. It is unstable until Inox 1.0: the interface may
       change in a backwards-incompatible way, and consumers must negotiate
@@ -81,6 +90,7 @@
       <entry name="already_created" value="0"
              summary="the surface already has an inox_glass_v1 object"/>
     </enum>
+
 
     <request name="destroy" type="destructor">
       <description summary="destroy the manager object">
@@ -107,7 +117,7 @@
     </request>
   </interface>
 
-  <interface name="inox_glass_v1" version="1">
+  <interface name="inox_glass_v1" version="2">
     <description summary="frosting parameters for one surface">
       Parameters for frosting one surface. Every request replaces the previous
       value; the effect is applied from the next committed frame on.
@@ -120,6 +130,20 @@
       means the backdrop is not blurred, which is what a client wants when its
       glass material must degrade to plain translucency.
     </description>
+
+    <enum name="refraction_flag" bitfield="true" since="2">
+      <description summary="optional parts of the refraction effect">
+        Optional components of a refraction request, combined as a bitfield in
+        the flags argument of set_refraction and of liquid_capabilities. A
+        compositor ignores flags it does not know, so a client may set all of
+        the bits it understands; the liquid_capabilities event says which ones
+        this compositor actually applies.
+      </description>
+      <entry name="depth" value="1"
+             summary="add a radial (towards the centre) component to the displacement"/>
+      <entry name="dispersion" value="2"
+             summary="split the refracted sample into a chromatic separation"/>
+    </enum>
 
     <request name="set_radius">
       <description summary="set the blur radius">
@@ -147,6 +171,54 @@
       <arg name="height" type="int" summary="region height, surface-local"/>
     </request>
 
+    <request name="set_corner_radii" since="2">
+      <description summary="set the corner radii of the refracted shape">
+        Set the four corner radii of the rounded rectangle the refraction is
+        computed for, in the surface's logical coordinates and relative to the
+        region set by set_region. The same shape the client paints its tint
+        into is the shape whose edge refracts the backdrop.
+
+        Values are clamped to the compositor's maximum and to half of the
+        region's shorter side, so a client may ask for a "fully round" pane by
+        sending a large radius. Zero means square corners, which is the
+        initial value of a new object. This request only changes the shape of
+        the refraction; it has no effect while set_refraction is disabled and
+        the blur is off.
+      </description>
+      <arg name="top_left" type="uint" summary="top-left corner radius, logical pixels"/>
+      <arg name="top_right" type="uint" summary="top-right corner radius, logical pixels"/>
+      <arg name="bottom_right" type="uint" summary="bottom-right corner radius, logical pixels"/>
+      <arg name="bottom_left" type="uint" summary="bottom-left corner radius, logical pixels"/>
+    </request>
+
+    <request name="set_refraction" since="2">
+      <description summary="set the refraction band of the liquid-glass material">
+        Ask the compositor to refract the backdrop at the edge of the shape
+        described by set_corner_radii. `height` is the thickness of the band
+        along the inside of the edge, in logical pixels; inside that band the
+        sampled backdrop is displaced towards the edge, most strongly at the
+        edge itself and not at all where the band reaches the interior.
+        `amount` is that maximum displacement, in logical pixels, and is
+        therefore the widest sample offset the compositor will use.
+
+        Either argument being zero disables refraction, which is how a client
+        asks for plain backdrop blur on the same object. Values above the
+        compositor's maxima are clamped rather than refused, and the maxima are
+        reported by liquid_capabilities. A compositor that reports zero for
+        both maxima does not refract this surface's backdrop at all; the client
+        must then draw its material without refraction instead of claiming an
+        effect it did not get.
+
+        The refraction samples only the pixels already composited behind the
+        surface: nothing is read back to the client, and the displacement never
+        reaches outside the surface's region (which the compositor clips).
+      </description>
+      <arg name="height" type="uint" summary="refraction band thickness, logical pixels; 0 disables"/>
+      <arg name="amount" type="uint" summary="maximum displacement, logical pixels; 0 disables"/>
+      <arg name="flags" type="uint" enum="refraction_flag"
+           summary="optional depth and dispersion components"/>
+    </request>
+
     <request name="destroy" type="destructor">
       <description summary="destroy the glass object">
         Destroy the object. Frosting this surface ends with the next committed
@@ -168,6 +240,37 @@
         again for a surface that has gained a layer role since.
       </description>
       <arg name="max_radius" type="uint" summary="largest accepted blur radius, 0 if none"/>
+    </event>
+
+    <event name="liquid_capabilities" since="2">
+      <description summary="what this compositor can refract, for a version 2 object">
+        Sent once, right after the object is created and after capabilities,
+        before any request on the object is answered. A version 1 object never
+        receives it; a version 2 client uses this event as its authoritative
+        answer and may ignore the earlier capabilities event (which is still
+        sent so that a client listening for it keeps its old meaning).
+
+        `max_radius` repeats the blur maximum from capabilities.
+        `max_refraction_height` and `max_refraction_amount` are the largest
+        band thickness and displacement the compositor will apply, in logical
+        pixels; zero for both means this surface's backdrop is not refracted at
+        all (no renderer support, a locked session, or a surface with no layer
+        role, which the compositor does not composite at a known desktop
+        layer). `flags` reports which optional parts of refraction_flag this
+        compositor applies; bits not set are ignored if the client asks for
+        them.
+
+        As with capabilities, the event must never promise an effect the
+        compositor would not draw for this surface: the client decides its
+        fallback (plain translucency) from these numbers.
+      </description>
+      <arg name="max_radius" type="uint" summary="largest accepted blur radius, 0 if none"/>
+      <arg name="max_refraction_height" type="uint"
+           summary="largest accepted refraction band thickness, 0 if none"/>
+      <arg name="max_refraction_amount" type="uint"
+           summary="largest accepted refraction displacement, 0 if none"/>
+      <arg name="flags" type="uint" enum="refraction_flag"
+           summary="optional refraction components this compositor applies"/>
     </event>
   </interface>
 </protocol>

@@ -15,6 +15,7 @@
 //! inside one binary run in parallel threads.
 
 use std::{
+    os::fd::AsFd,
     os::unix::net::UnixStream,
     sync::{
         Arc,
@@ -35,7 +36,7 @@ use smithay::{
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_compositor, wl_registry, wl_surface},
+    protocol::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface},
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
@@ -65,6 +66,9 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
 }
 
 wayland_client::delegate_noop!(Client: ignore wl_compositor::WlCompositor);
+wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
+wayland_client::delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
+wayland_client::delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(Client: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(Client: ignore xdg_wm_base::XdgWmBase);
 wayland_client::delegate_noop!(Client: ignore xdg_surface::XdgSurface);
@@ -228,6 +232,9 @@ fn spawn_client(
         let xdg: xdg_wm_base::XdgWmBase = globals
             .bind(&queue_handle, 1..=6, ())
             .expect("xdg_wm_base must be bindable");
+        let shm: wl_shm::WlShm = globals
+            .bind(&queue_handle, 1..=1, ())
+            .expect("wl_shm must be bindable");
 
         let mut surfaces = Vec::new();
         for _ in 0..2 {
@@ -235,7 +242,27 @@ fn spawn_client(
             let xdg_surface = xdg.get_xdg_surface(&surface, &queue_handle, ());
             let toplevel = xdg_surface.get_toplevel(&queue_handle, ());
             surface.commit();
-            surfaces.push((surface, xdg_surface, toplevel));
+
+            // A toplevel becomes a window only once it draws. Without this buffer the
+            // compositor would correctly refuse to give it a tile, and the topology
+            // assertions below would have nothing to check.
+            let stride = 16 * 4;
+            let file = tempfile::tempfile().expect("failed to create the buffer file");
+            file.set_len((stride * 16) as u64)
+                .expect("failed to size the buffer file");
+            let pool = shm.create_pool(file.as_fd(), stride * 16, &queue_handle, ());
+            let buffer = pool.create_buffer(
+                0,
+                16,
+                16,
+                stride,
+                wl_shm::Format::Argb8888,
+                &queue_handle,
+                (),
+            );
+            surface.attach(Some(&buffer), 0, 0);
+            surface.commit();
+            surfaces.push((surface, xdg_surface, toplevel, buffer, pool));
         }
 
         queue.roundtrip(&mut Client).expect("roundtrip failed");

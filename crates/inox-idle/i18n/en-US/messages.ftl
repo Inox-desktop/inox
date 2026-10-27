@@ -1,5 +1,7 @@
 usage = inox-idle [--timeout-seconds N]
 starting = Monitoring compositor idle notifications.
 failed = Idle monitoring is unavailable: { $reason }
-lock-blocked = Automatic locking is unavailable until the trusted lock transport is reviewed and implemented. Suspend was not requested.
+lock-requested = Asked the session to lock; waiting for the compositor to report the screen covered.
+lock-blocked = The session did not accept the automatic lock request. Suspend was not requested.
+unlocked = The session was unlocked; automatic locking is armed again.
 resumed = User activity resumed.

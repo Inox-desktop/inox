@@ -21,29 +21,33 @@
 //!
 //! The binary runs in the two modes the session-lock boundary and the session-lock and notification bus work leave it (the session-lock and notification bus work
 //! decision 6). Without a flag it starts no lock screen at all: it loads the
-//! configuration, says through Fluent that this build cannot verify anyone, and
-//! exits non-zero — a window that looks like a lock screen over an unlocked
-//! session would be worse than none, because a person would believe it. With
-//! `--take-lock` it runs the protocol leg: it claims the trusted lock role with
-//! the token `inox-session` delivered in `INOX_LOCK_TOKEN`, asks the compositor
-//! for the session lock, gives every output a lock surface, and draws the
-//! interface onto each of them — the projected screen, rendered by QML
-//! offscreen and committed to the surface. That mode exists
-//! so the security-critical half of the component can be exercised against a
-//! real compositor, and it is deliberately incomplete:
+//! configuration, says through Fluent that no session-lock token was delivered —
+//! so nothing can be locked — and exits non-zero. A window that looks like a lock
+//! screen over an unlocked session would be worse than none, because a person
+//! would believe it. With `--take-lock` it runs the protocol leg: it claims the
+//! trusted lock role with the token `inox-session` delivered in
+//! `INOX_LOCK_TOKEN`, asks the compositor for the session lock, gives every output
+//! a lock surface, and draws the interface onto each of them — the projected
+//! screen, rendered by QML offscreen and committed to the surface.
 //!
-//! - it has **no authentication and no unlock path**, so entering it means the
-//!   session is released by logging out, not by typing a password;
-//! - the state is told the truth about that, so what it draws is the screen's
-//!   *unavailable* face: a person reading it is told nothing here can check a
-//!   password, rather than invited to type one;
-//! - it reads no keyboard: with no boundary there is
-//!   nothing on the screen to operate;
-//! - it never sends `unlock_and_destroy`, not even when it is signalled.
+//! What that leg can and cannot do is the honest answer to "can this session be
+//! unlocked?":
+//!
+//! - it **can** authenticate, by asking the privileged `auth-v1` helper in
+//!   `inox-auth` — this crate never checks a password itself — and on an accepted
+//!   attempt it asks the compositor to release the lock (`unlock_and_destroy`).
+//! - the screen says what is true of *this* run: no helper listening, no account
+//!   name for the session's uid, or no keyboard, and it draws its *unavailable*
+//!   face with the reason rather than inviting a password nobody could check.
+//! - the keyboard is read on the lock surfaces only, and a key never unlocks
+//!   anything: it becomes a message, and only an `AuthOutcome::Success` from the
+//!   boundary can move the state machine towards `Unlocking`.
+//! - a signal still unlocks nothing: `SIGTERM`/`SIGINT` stop the process with the
+//!   session locked, and the operator is told so.
 //!
 //! Everything above the protocol leg — the state machine, the limiter, the
-//! credential buffer and the suspend ordering — is exercised by tests rather
-//! than by a running session, at evidence level E0/E1.
+//! credential buffer, the suspend ordering and the projection — is exercised by
+//! tests rather than by a running session, at evidence level E0/E1.
 //!
 //! # This crate is bin-only, on purpose
 //!
@@ -138,23 +142,36 @@
 // `unsafe_code = "forbid"`. `Cargo.toml` narrows the lint to `allow` for that
 // reason; Inox-authored code in this crate still contains no `unsafe`.
 //
-// The domain modules expose rules the binary does not exercise yet: the reviewed
-// authentication boundary, the suspend transport and the unlock path are human
-// security review items. Their tests are the specification until then, so the
-// API is kept and this allowance keeps `cargo check` from calling the
-// specification dead.
-#![allow(dead_code)]
+// The dead-code allowance is **not** crate-wide. It sits on the modules that are
+// the component's typed specification — the state vocabulary, the limiter, the
+// suspend ordering, the projection's inputs and the small `Task` — because the
+// binary exercises a subset of each and the tests exercise all of it. Everything
+// that is actually wired to the outside world (`boundary`, `input`, `session`,
+// `view`, `view_model`, `theme`, `render`'s interface, `main`) is checked
+// normally, so new dead code there is reported rather than hidden.
 
+#[allow(dead_code)] // typed specification: a subset is driven by the binary
 mod app;
+#[allow(dead_code)] // typed specification: the policy API is exercised by tests
 mod attempts;
+mod boundary;
+#[allow(dead_code)] // typed specification: vocabulary whose producer is future work
 mod contract;
 mod credential;
 mod cxxqt_object;
+#[allow(dead_code)] // the catalog table is read by the parity test
 mod i18n;
+mod input;
+// `Interface` is wired; this module also carries the frame-inspection helpers the
+// render tests assert on.
+#[allow(dead_code)]
 mod render;
+#[allow(dead_code)] // the minimal `Task`, kept as the shape `update` returns
 mod runtime;
 mod session;
+#[allow(dead_code)] // typed specification: transitions the binary can reach differ from the tests'
 mod state;
+#[allow(dead_code)] // the suspend ordering is pure logic until logind is wired
 mod suspend;
 mod theme;
 mod view;
@@ -163,11 +180,15 @@ mod view_model;
 #[cfg(test)]
 mod headless_tests;
 
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use inox_common::i18n::{Arg, Localizer};
 use inox_config::{Appearance, ConfigPaths, InoxConfig, Theme as Tokens};
+use inox_protocols::control;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -183,6 +204,9 @@ const EXIT_SESSION_NOT_LOCKED: i32 = 1;
 /// The flag that runs the protocol leg.
 const TAKE_LOCK: &str = "--take-lock";
 
+/// The flag that asks a running session to start the lock client.
+const REQUEST_LOCK: &str = "--request-lock";
+
 /// What this binary accepts.
 const USAGE: &str = "\
 inox-lock [OPTIONS]
@@ -190,8 +214,12 @@ inox-lock [OPTIONS]
 OPTIONS:
     --take-lock Take the real session lock and hold it, drawing the lock screen
                    on every output. Needs INOX_LOCK_TOKEN, which inox-session
-                   delivers. This mode has no authentication and no way to release
-                   the lock again: what it draws says so.
+                   delivers. The lock is released only when the authentication
+                   boundary in inox-auth accepts the user; a screen with no
+                   boundary running says exactly that.
+    --request-lock Ask the running session to start the lock client
+                   (`session-control-v1`). This only dispatches the request: the
+                   session reports whether it is locked, not this command.
     -h, --help Print this help and exit
 ";
 
@@ -208,9 +236,11 @@ fn run(arguments: impl Iterator<Item = String>) -> Result<()> {
     initialise_logging()?;
 
     let mut take_lock = false;
+    let mut request_lock = false;
     for argument in arguments {
         match argument.as_str() {
             TAKE_LOCK => take_lock = true,
+            REQUEST_LOCK => request_lock = true,
             "-h" | "--help" => {
                 // A CLI's own usage text is not a translated string: it names
                 // options, not user-facing prose (root AGENTS.md §7.3 covers what a
@@ -238,13 +268,17 @@ fn run(arguments: impl Iterator<Item = String>) -> Result<()> {
         return run_protocol_leg(localizer, &config.theme);
     }
 
+    if request_lock {
+        return ask_the_session_for_a_lock(localizer.as_ref());
+    }
+
     let reason = localizer.message("lock-start-blocked-reason");
     let blocked = localizer.message_with("lock-start-blocked", &[("reason", Arg::from(reason))]);
 
     error!(
         locale = %config.locale.tag(),
         theme = %config.theme.name,
-        "the Inox session lock will not authenticate anyone in this build"
+        "the Inox session lock was started without a session-lock token"
     );
     error!("{blocked}");
 
@@ -277,6 +311,7 @@ fn run_protocol_leg(localizer: Rc<Localizer>, tokens: &Tokens) -> Result<()> {
             // where the messaging matters: the session is *still locked*.
             warn!("{}", localizer.message("lock-stopped-locked"));
         }
+        SessionOutcome::Unlocked => info!("{}", localizer.message("lock-unlocked")),
         SessionOutcome::Released => info!("{}", localizer.message("lock-released")),
         SessionOutcome::Refused => {
             error!("{}", localizer.message("lock-refused"));
@@ -289,6 +324,70 @@ fn run_protocol_leg(localizer: Rc<Localizer>, tokens: &Tokens) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Asks the running session to start the lock client.
+///
+/// This is `session-control-v1`: one `lock` line to the session's control socket,
+/// one reply back. The reply says the request was *dispatched* — whether the screen
+/// is covered is the compositor's answer, not this command's — so the exit status
+/// reports whether the session understood us, not whether the desktop is locked.
+fn ask_the_session_for_a_lock(localizer: &Localizer) -> Result<()> {
+    let socket = match std::env::var_os(control::SOCKET_VARIABLE).filter(|value| !value.is_empty())
+    {
+        Some(path) => PathBuf::from(path),
+        None => {
+            let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+                .filter(|value| !value.is_empty())
+                .context("XDG_RUNTIME_DIR is not set, so there is no session to ask")?;
+
+            control::socket_path(PathBuf::from(runtime_dir).as_path())
+        }
+    };
+
+    let reply = match converse_with_session(&socket) {
+        Ok(reply) => reply,
+        Err(error) => {
+            warn!(path = %socket.display(), %error, "the session did not answer a lock request");
+            warn!("{}", localizer.message("lock-request-no-session"));
+
+            std::process::exit(EXIT_SESSION_NOT_LOCKED);
+        }
+    };
+
+    match reply {
+        control::Reply::Dispatched => {
+            info!("{}", localizer.message("lock-request-accepted"));
+        }
+        // The request was understood; the session is either not ready or already
+        // starting the lock client, and asking again is what a second keypress does.
+        control::Reply::Busy => {
+            info!("{}", localizer.message("lock-request-busy"));
+        }
+        control::Reply::Unknown => {
+            error!("{}", localizer.message("lock-request-refused"));
+
+            std::process::exit(EXIT_SESSION_NOT_LOCKED);
+        }
+    }
+
+    Ok(())
+}
+
+/// One control conversation: connect, ask, answer.
+fn converse_with_session(socket: &std::path::Path) -> Result<control::Reply> {
+    let mut stream = UnixStream::connect(socket).context("connecting to the session")?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .context("bounding the session's reply")?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .context("bounding the request")?;
+
+    control::write_request(&mut stream, control::Request::Lock).context("asking the session")?;
+    let reply = control::read_reply(&mut stream).context("reading the session's reply")?;
+
+    Ok(reply)
 }
 
 /// Say which part of the environment was missing, in the user's language.

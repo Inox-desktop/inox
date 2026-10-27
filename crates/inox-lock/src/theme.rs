@@ -9,7 +9,9 @@
 //! `docs/quality/ui-guidelines.md` is the contract this file implements: §1 token
 //! discipline, §2 the four type roles, §3 the spacing rhythm, §4 the control and
 //! card geometry, §5 the five states a control is drawn in.
-//! the L3 component architecture explains why there is a copy of this file in every L3 component
+//! Every L3 component carries a copy of this file, for the reason the L3
+//! component architecture gives.
+//!
 //! A lock screen has one job for its colours: it must cover everything under it
 //! and it must not be confusable with the desktop it is hiding. The card is drawn
 //! on the `surface` token over the `background` token, so the whole surface is
@@ -222,6 +224,11 @@ pub fn focus_ring(tokens: &Tokens, fill: Rgba) -> Rgba {
 // ---------------------------------------------------------------------------
 
 /// How a control is being used, in the one vocabulary the guidelines define.
+///
+/// The lock surface draws the resting and disabled states today — it has no
+/// pointer, and its focus ring is a Q01 gap — but the vocabulary is the guidelines'
+/// five states, and the theme tests assert that all five stay distinguishable.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlState {
     /// Nothing is happening to the control.

@@ -1,23 +1,32 @@
-//! Real Wayland clients exercise the private `inox-glass-v1` frosted-glass effect.
+//! Real Wayland clients exercise the private `inox-glass-v1` glass effect.
 //!
-//! This is the discriminative evidence for the feature: a background layer surface
-//! draws a black/white pattern with a sharp vertical edge, a translucent layer
-//! surface ("the pane") is stacked over that edge, and the pane's client asks the
-//! compositor to frost it. The frame is read back twice — once with the same scene
-//! and no glass object at all (the control), once with the effect — and the two
-//! are compared column by column:
+//! This is the discriminative evidence for the feature. Two scenes are rendered
+//! and read back:
 //!
-//! - outside the pane the edge stays sharp, so the compositor did not blur
-//!   anything it was not asked to;
-//! - inside the pane the edge turns into a ramp tens of columns wide, so the blur
-//!   really sampled the composited backdrop rather than the client's pixels;
-//! - the pane region differs from the control render, so "frosting" is not a
-//!   no-op that happens to leave the sharp scene on screen.
+//! - the version 1 half: a background layer surface draws a black/white pattern
+//!   with a sharp vertical edge, a translucent layer surface ("the pane") is
+//!   stacked over that edge, and the pane's client asks the compositor to blur it.
+//!   Outside the pane the edge stays sharp, inside it turns into a ramp tens of
+//!   columns wide, and the same scene without a glass object (the control) shows
+//!   the sharp edge — so "the blur was deleted" fails the test;
+//! - the version 2 half: the backdrop is a striped pattern whose first black/white
+//!   edge sits 8 px inside the pane, and the pane asks for refraction only
+//!   (`radius = 0`). The edge moves outwards by a measurable number of columns, the
+//!   pane's interior stays byte-identical to the control (the band really is a
+//!   band), the pixels outside the rounded corner stay byte-identical (the SDF mask
+//!   really masks), and switching the dispersion bit on separates the red and blue
+//!   channels at the edge while the depth bit keeps moving inside the band only.
 //!
-//! It also pins the protocol's preconditions: `capabilities` is
-//! [`MAX_BLUR_RADIUS`] for a surface that has a layer role, 0 for an ordinary
-//! `xdg_toplevel`, and a second `get_glass` for one surface is a fatal protocol
-//! error.
+//! It also pins the protocol's preconditions: the global is advertised at version
+//! 2, `capabilities` is [`MAX_BLUR_RADIUS`] and `liquid_capabilities` reports the
+//! refraction maxima for a surface that has a layer role, both are 0 for an
+//! ordinary `xdg_toplevel`, a version 1 object never receives the version 2 event,
+//! and a second `get_glass` for one surface is a fatal protocol error.
+//!
+//! With `INOX_GLASS_ARTIFACT` set to a path, the final refraction frame is also
+//! written there as a binary PPM (P6, 8-bit RGB) so a human can look at the effect
+//! without a GPU. Nothing is written when the variable is unset, which is every CI
+//! run.
 //!
 //! One EGL display per process, so this file holds exactly one test, and the
 //! compositor and every client are driven from the same thread without sleeps.
@@ -25,17 +34,22 @@
 use std::{
     collections::HashMap,
     io::{self, Write},
+    ops::Range,
     os::{fd::AsFd, unix::net::UnixStream},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use calloop::EventLoop;
 use inox_compositor::{
-    ClientState, CompositorConfig, HeadlessOutput, InoxState, glass::MAX_BLUR_RADIUS,
+    ClientState, CompositorConfig, HeadlessOutput, InoxState,
+    glass::{MAX_BLUR_RADIUS, MAX_REFRACTION_AMOUNT, MAX_REFRACTION_HEIGHT},
 };
 use inox_protocols::{
-    glass::inox_glass::client::{inox_glass_manager_v1 as manager, inox_glass_v1 as glass},
+    glass::inox_glass::client::{
+        inox_glass_manager_v1 as manager, inox_glass_v1 as glass, inox_glass_v1::RefractionFlag,
+    },
     standard::{
         core::client::{
             wl_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
@@ -75,12 +89,49 @@ const PANE_RGBA: [u8; 4] = [48, 48, 48, 96];
 /// the existing pixel tests use for driver rounding.
 const MAX_INTERMEDIATE_OUTSIDE_PANE: usize = 2;
 
+/// The version 2 pane: taller and wider than the blur one, so its interior is far
+/// from every edge.
+const LENS_PANE_WIDTH: i32 = 160;
+const LENS_PANE_HEIGHT: i32 = 120;
+
+/// A row through the middle of the refraction pane: 60 px from the top and the
+/// bottom edges, both of which are well outside the 24 px band.
+const LENS_ROW: usize = 60;
+
+/// Only the top-left corner is round, so the readback can tell the four wire
+/// values of `set_corner_radii` apart.
+const LENS_CORNER_RADIUS: u32 = 32;
+
+/// The refraction band, in logical pixels (and physical: scale is 1).
+const LENS_BAND: u32 = 24;
+
+/// The peak displacement. Small enough that the backdrop's first edge stays
+/// inside the pane after it is pushed outwards, large enough to move it several
+/// columns.
+const LENS_AMOUNT: u32 = 8;
+
+/// The striped backdrop of the refraction phase: black bands 8 px wide every
+/// 32 px, white in between.
+///
+/// The first black-to-white edge therefore sits at `x = 8`, eight pixels inside the
+/// pane's left outline, and the 32 px period is longer than the band is wide, so
+/// "the first edge moved" cannot be confused with the next edge along.
+const STRIPE_PERIOD: i32 = 32;
+const STRIPE_BLACK: i32 = 8;
+
 #[derive(Default)]
 struct Client {
     globals: HashMap<String, (u32, u32)>,
     configures: HashMap<usize, Vec<(u32, i32, i32)>>,
-    /// `capabilities` per glass object, keyed by the user data it was created with.
+    /// `capabilities` (`max_radius`) per glass object.
     max_radius: HashMap<usize, u32>,
+    /// `liquid_capabilities` per glass object: the two refraction maxima and the
+    /// flag bits, as `(height, amount, flags)`.
+    liquid: HashMap<usize, (u32, u32, u32)>,
+    /// The capability events each glass object received, in order: a version 2
+    /// object must see `capabilities` first even though it is told to trust the
+    /// later one.
+    events: HashMap<usize, Vec<&'static str>>,
     callbacks: usize,
 }
 
@@ -143,8 +194,31 @@ impl Dispatch<glass::InoxGlassV1, usize> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let glass::Event::Capabilities { max_radius } = event {
-            state.max_radius.insert(*id, max_radius);
+        match event {
+            glass::Event::Capabilities { max_radius } => {
+                state.max_radius.insert(*id, max_radius);
+                state.events.entry(*id).or_default().push("capabilities");
+            }
+            glass::Event::LiquidCapabilities {
+                max_radius,
+                max_refraction_height,
+                max_refraction_amount,
+                flags,
+            } => {
+                // The flag set is closed, but a compositor may add a bit before
+                // this client knows it; the raw bits are what is compared.
+                let flags = u32::from(flags);
+                state.max_radius.insert(*id, max_radius);
+                state
+                    .liquid
+                    .insert(*id, (max_refraction_height, max_refraction_amount, flags));
+                state
+                    .events
+                    .entry(*id)
+                    .or_default()
+                    .push("liquid_capabilities");
+            }
+            _ => {}
         }
     }
 }
@@ -283,6 +357,23 @@ impl Peer {
         self.shm_buffer(width, height, &data)
     }
 
+    /// A `wl_shm` buffer of vertical stripes: black for [`STRIPE_BLACK`] columns,
+    /// white for the rest of every [`STRIPE_PERIOD`].
+    fn stripes_buffer(&self, width: i32, height: i32) -> wl_buffer::WlBuffer {
+        let mut data = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..height {
+            for x in 0..width {
+                let colour = if x % STRIPE_PERIOD < STRIPE_BLACK {
+                    [0u8, 0, 0, 255]
+                } else {
+                    [255u8, 255, 255, 255]
+                };
+                data.extend_from_slice(&[colour[2], colour[1], colour[0], colour[3]]);
+            }
+        }
+        self.shm_buffer(width, height, &data)
+    }
+
     fn layer(&self, id: usize, depth: shell::Layer) -> Surface {
         let compositor: wl_compositor::WlCompositor = self.bind(5);
         let shell: shell::ZwlrLayerShellV1 = self.bind(4);
@@ -298,11 +389,23 @@ impl Peer {
         Surface { surface, role, id }
     }
 
-    /// Bind the private glass manager.
+    /// Bind the private glass manager at version 1.
     fn glass_manager(&self) -> manager::InoxGlassManagerV1 {
         let (name, advertised) = self.state.globals["inox_glass_manager_v1"];
         self.registry
             .bind(name, advertised.min(1), &self.queue.handle(), ())
+    }
+
+    /// Bind the private glass manager at version 2, which is what creates version
+    /// 2 glass objects (a child object is created at its parent's version).
+    fn glass_manager_v2(&self) -> manager::InoxGlassManagerV1 {
+        let (name, advertised) = self.state.globals["inox_glass_manager_v1"];
+        assert!(
+            advertised >= 2,
+            "the refraction requests need a version 2 manager, advertised {advertised}"
+        );
+        self.registry
+            .bind(name, advertised.min(2), &self.queue.handle(), ())
     }
 }
 
@@ -467,6 +570,86 @@ fn pane_columns() -> std::ops::Range<usize> {
     0..PANE_WIDTH as usize
 }
 
+/// The four RGBA bytes of one pixel of a readback frame.
+fn pixel(frame: &[u8], x: usize, y: usize) -> [u8; 4] {
+    let index = (y * WIDTH as usize + x) * 4;
+    [
+        frame[index],
+        frame[index + 1],
+        frame[index + 2],
+        frame[index + 3],
+    ]
+}
+
+/// Whether two pixels agree within `tolerance` 8-bit steps, channel by channel.
+///
+/// Drivers round float→unorm differently, so a one-step tolerance is what the
+/// crate's other pixel tests use for "the same pixel".
+fn same(left: [u8; 4], right: [u8; 4], tolerance: u8) -> bool {
+    left.iter()
+        .zip(&right)
+        .all(|(a, b)| a.abs_diff(*b) <= tolerance)
+}
+
+/// The columns of one row where two frames differ by more than `tolerance` in any
+/// channel.
+fn differing(
+    left: &[u8],
+    right: &[u8],
+    y: usize,
+    columns: Range<usize>,
+    tolerance: u8,
+) -> Vec<usize> {
+    columns
+        .filter(|x| !same(pixel(left, *x, y), pixel(right, *x, y), tolerance))
+        .collect()
+}
+
+/// The first column in `columns` where the row goes from dark to light.
+///
+/// Every colour in these scenes is grey, so a hard black/white edge is a single
+/// step; the midpoint of the two plateaus is the crossing. `None` means the whole
+/// range is one side of it — which is itself evidence, so callers decide what it
+/// means.
+fn first_edge(frame: &[u8], y: usize, columns: Range<usize>) -> Option<usize> {
+    let row = row(frame, y);
+    let values = &row[columns.clone()];
+    let low = *values.iter().min()?;
+    let high = *values.iter().max()?;
+    let middle = (u16::from(low) + u16::from(high)) / 2;
+    let start = columns.start.max(1);
+    (start..columns.end).find(|x| u16::from(row[*x]) > middle && u16::from(row[x - 1]) <= middle)
+}
+
+/// Writes the final refraction frame as a binary PPM (P6, 8-bit RGB) when
+/// `INOX_GLASS_ARTIFACT` names a path.
+///
+/// The assertions print the numbers they measured, but "the edge is bent outwards"
+/// is a claim about a picture, and this is the cheapest way to make it checkable by
+/// eye without a GPU. The readback is RGBA8 while PPM wants RGB; alpha is dropped
+/// because the headless target is opaque. Nothing is written (and no directory is
+/// created) when the variable is unset, which is every CI run.
+fn write_artifact(frame: &[u8]) {
+    let Ok(path) = std::env::var("INOX_GLASS_ARTIFACT") else {
+        return;
+    };
+    let path = Path::new(&path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).expect("the artifact directory is created");
+    }
+
+    let mut ppm = format!("P6\n{WIDTH} {HEIGHT}\n255\n").into_bytes();
+    ppm.reserve((WIDTH * HEIGHT * 3) as usize);
+    for texel in frame.as_chunks::<4>().0 {
+        ppm.extend_from_slice(&texel[..3]);
+    }
+    std::fs::write(path, ppm).expect("the artifact frame is written");
+    println!("glass artifact: {}", path.display());
+}
+
 /// Fail the process as soon as the server reports a protocol error.
 fn rejected(display: &mut Display<InoxState>, state: &mut InoxState, peer: &mut Peer) {
     peer.connection.flush().unwrap();
@@ -502,6 +685,200 @@ fn rejected(display: &mut Display<InoxState>, state: &mut InoxState, peer: &mut 
     );
 }
 
+/// The version 2 half of the evidence: refraction on a striped backdrop.
+///
+/// Everything here is measured against a control frame of the same scene with no
+/// glass object, so each assertion separates "the compositor refracted the
+/// backdrop" from "the client's translucent pixels happened to look like that".
+fn refraction_phase(
+    display: &mut Display<InoxState>,
+    state: &mut InoxState,
+    peer: &mut Peer,
+    background: &Surface,
+) {
+    // The same background surface, now a pattern whose first black-to-white edge
+    // sits 8 px inside the pane: the refraction band has something to move.
+    let stripes = peer.stripes_buffer(WIDTH, HEIGHT);
+    background.attach(peer, &stripes);
+    round_trip(display, state, peer);
+
+    // A fresh pane over the left part of the backdrop, no glass object yet.
+    let pane = peer.layer(3, shell::Layer::Top);
+    pane.role
+        .set_size(LENS_PANE_WIDTH as u32, LENS_PANE_HEIGHT as u32);
+    pane.role
+        .set_anchor(layer::Anchor::Top | layer::Anchor::Left);
+    pane.surface.commit();
+    configured(display, state, peer, 3);
+    assert_eq!(
+        pane.configure_size(peer),
+        (LENS_PANE_WIDTH, LENS_PANE_HEIGHT)
+    );
+    let tint = peer.solid_buffer(LENS_PANE_WIDTH, LENS_PANE_HEIGHT, PANE_RGBA);
+    pane.attach(peer, &tint);
+    until(display, state, &mut [peer], |state, _| {
+        state.layer_count() == 2
+    });
+
+    // The control: the same scene with no glass object, so the backdrop is
+    // composited untouched.
+    state.render_frame().unwrap();
+    let control = state.read_frame_rgba().unwrap();
+
+    // A version 2 manager creates a version 2 object, which is told what this
+    // compositor refracts — after it is told what it blurs.
+    let manager = peer.glass_manager_v2();
+    let controller = manager.get_glass(&pane.surface, &peer.queue.handle(), 5);
+    until(display, state, &mut [peer], |_, peers| {
+        peers[0].state.liquid.contains_key(&5)
+    });
+    assert_eq!(
+        peer.state.events[&5],
+        vec!["capabilities", "liquid_capabilities"],
+        "a version 2 object still receives the version 1 event first: a client that \
+         only listens for it must not find its object mute"
+    );
+    assert_eq!(peer.state.max_radius[&5], MAX_BLUR_RADIUS);
+    assert_eq!(
+        peer.state.liquid[&5],
+        (
+            MAX_REFRACTION_HEIGHT,
+            MAX_REFRACTION_AMOUNT,
+            (RefractionFlag::Depth | RefractionFlag::Dispersion).bits()
+        ),
+        "a layer surface is offered the compositor's real refraction maxima and the \
+         components it actually draws"
+    );
+    assert!(
+        !peer.state.liquid.contains_key(&1) && !peer.state.liquid.contains_key(&2),
+        "the version 1 objects of the first half never receive liquid_capabilities"
+    );
+
+    // Refraction without blur: the lens has to do all of the work itself.
+    controller.set_radius(0);
+    controller.set_region(0, 0, LENS_PANE_WIDTH, LENS_PANE_HEIGHT);
+    controller.set_corner_radii(LENS_CORNER_RADIUS, 0, 0, 0);
+    controller.set_refraction(LENS_BAND, LENS_AMOUNT, RefractionFlag::empty());
+    round_trip(display, state, peer);
+    state.render_frame().unwrap();
+    let lens = state.read_frame_rgba().unwrap();
+
+    // 1. The outline bends the backdrop outwards. Sampling towards the interior
+    //    makes the content near the edge appear displaced away from the pane's
+    //    centre, which moves the first edge left.
+    let pane_columns = 0..LENS_PANE_WIDTH as usize;
+    let control_edge = first_edge(&control, LENS_ROW, pane_columns.clone())
+        .expect("the striped backdrop has a black-to-white edge inside the pane");
+    assert_eq!(
+        control_edge, STRIPE_BLACK as usize,
+        "the backdrop's first edge is at x = {STRIPE_BLACK}"
+    );
+    let lens_edge = first_edge(&lens, LENS_ROW, pane_columns)
+        .expect("the refracted edge stays inside the pane: the displacement is small");
+    assert!(
+        lens_edge < control_edge,
+        "refraction must push the backdrop outwards at the outline: the edge moved \
+         from {control_edge} to {lens_edge}"
+    );
+    let shift = control_edge - lens_edge;
+    assert!(
+        (1..=LENS_AMOUNT as usize + 2).contains(&shift),
+        "the edge may move by at most amount + 2 = {} columns, it moved {shift}",
+        LENS_AMOUNT + 2
+    );
+
+    // 2. Beyond the band the pane is byte-identical to the control: refraction is
+    //    an edge effect, not a second blur.
+    let interior = 40..(LENS_PANE_WIDTH as usize - LENS_BAND as usize - 4);
+    assert_eq!(
+        differing(&lens, &control, LENS_ROW, interior.clone(), 1),
+        Vec::<usize>::new(),
+        "the refraction band must not reach the pane's interior"
+    );
+
+    // 3. Outside the rounded corner the backdrop is untouched, while the band that
+    //    runs through that same corner did move pixels: the SDF mask is the only
+    //    thing keeping the corner from being bent. (3, 3) is the sensitive probe:
+    //    it sits outside the shape, and an unmasked pass would sample the backdrop
+    //    ~6 px further in — past the stripe edge at x = 8, i.e. white instead of
+    //    black — so a broken mask cannot pass this by rounding.
+    assert!(
+        same(pixel(&lens, 3, 3), pixel(&control, 3, 3), 1),
+        "outside the rounded shape the pixel must still be the control pixel: {:?} \
+         vs {:?}",
+        pixel(&lens, 3, 3),
+        pixel(&control, 3, 3)
+    );
+    let band = differing(&lens, &control, LENS_ROW, 0..LENS_BAND as usize, 1);
+    assert!(
+        band.len() >= 2,
+        "the refraction band must change the backdrop near the outline, only {} \
+         columns differ from the control",
+        band.len()
+    );
+
+    // 4. Dispersion splits the edge into colour: red is displaced furthest and blue
+    //    least, so the channels disagree where the gradient is strong and agree
+    //    everywhere else.
+    controller.set_refraction(LENS_BAND, LENS_AMOUNT, RefractionFlag::Dispersion);
+    round_trip(display, state, peer);
+    state.render_frame().unwrap();
+    let dispersed = state.read_frame_rgba().unwrap();
+    let split = |frame: &[u8]| {
+        (0..LENS_BAND as usize)
+            .map(|x| {
+                let texel = pixel(frame, x, LENS_ROW);
+                texel[0].abs_diff(texel[2])
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    assert!(split(&control) <= 1, "the control backdrop is grey");
+    assert!(
+        split(&lens) <= 1,
+        "without the dispersion bit the edge stays achromatic"
+    );
+    assert!(
+        split(&dispersed) >= 3,
+        "the dispersion bit must separate red from blue at the edge, the largest \
+         split is {}",
+        split(&dispersed)
+    );
+
+    // 5. Depth moves the sample inside the band and nowhere else.
+    controller.set_refraction(
+        LENS_BAND,
+        LENS_AMOUNT,
+        RefractionFlag::Depth | RefractionFlag::Dispersion,
+    );
+    round_trip(display, state, peer);
+    state.render_frame().unwrap();
+    let depth = state.read_frame_rgba().unwrap();
+    let depth_band = differing(&depth, &dispersed, LENS_ROW, 0..LENS_BAND as usize, 1);
+    assert!(
+        depth_band.len() >= 2,
+        "the depth bit must move the band's sample, only {} columns changed",
+        depth_band.len()
+    );
+    assert_eq!(
+        differing(&depth, &control, LENS_ROW, interior, 1),
+        Vec::<usize>::new(),
+        "the depth component fades out with the band: the interior is still the control"
+    );
+
+    println!(
+        "glass refraction: backdrop edge at {control_edge}, refracted to {lens_edge} \
+         (shift {shift} of at most {}); {band:?} changed in the band; dispersion \
+         split {} where the achromatic edge splits {}",
+        LENS_AMOUNT + 2,
+        split(&dispersed),
+        split(&lens)
+    );
+
+    // After every assertion, the picture a human can open.
+    write_artifact(&depth);
+}
+
 #[test]
 fn frosting_blurs_the_backdrop_of_a_layer_surface_only() {
     let event_loop: EventLoop<'static, ()> = EventLoop::try_new().unwrap();
@@ -521,8 +898,9 @@ fn frosting_blurs_the_backdrop_of_a_layer_surface_only() {
         peers[0].state.globals.contains_key("inox_glass_manager_v1")
     });
     assert_eq!(
-        peer.state.globals["inox_glass_manager_v1"].1, 1,
-        "the private glass global is advertised at its own version"
+        peer.state.globals["inox_glass_manager_v1"].1, 2,
+        "the private glass global is advertised at version 2: refraction is part of \
+         the same interface"
     );
 
     // The thing to be blurred: a background layer surface with a sharp black/white
@@ -660,8 +1038,11 @@ fn frosting_blurs_the_backdrop_of_a_layer_surface_only() {
     let app_surface = xdg.get_xdg_surface(&app, &other.queue.handle(), ());
     let _toplevel = app_surface.get_toplevel(&other.queue.handle(), ());
     app.commit();
+    // The capability rule is about the role, not about the window being mapped: a
+    // toplevel that has not drawn is still an ordinary toplevel surface, which the
+    // tiling path does not frost.
     until(&mut display, &mut state, &mut [&mut other], |state, _| {
-        state.window_count() == 1
+        state.awaiting_window_count() == 1
     });
     let other_manager = other.glass_manager();
     let _toplevel_glass = other_manager.get_glass(&app, &other.queue.handle(), 7);
@@ -677,11 +1058,16 @@ fn frosting_blurs_the_backdrop_of_a_layer_surface_only() {
 
     // The first client is unaffected: one connection's protocol error is not
     // another's, and the session keeps compositing its frosted pane. (The
-    // rejected client's own buffer-less window is gone with it.)
+    // rejected client's own undrawn toplevel is gone with it.)
+    assert_eq!(
+        state.awaiting_window_count(),
+        0,
+        "the disconnected client's toplevel is released"
+    );
     assert_eq!(
         state.window_count(),
         0,
-        "the disconnected client's window is released"
+        "the disconnected client never had a managed window"
     );
     state.render_frame().unwrap();
     let after = state.read_frame_rgba().unwrap();
@@ -746,4 +1132,7 @@ fn frosting_blurs_the_backdrop_of_a_layer_surface_only() {
          inside the pane = {inside_transitions} (control = {control_transitions}); \
          columns changed vs control = {changed}; radius = {RADIUS}, max advertised = {MAX_BLUR_RADIUS}"
     );
+
+    // The version 2 half: the same compositor, the same client, a lens.
+    refraction_phase(&mut display, &mut state, &mut peer, &background);
 }
