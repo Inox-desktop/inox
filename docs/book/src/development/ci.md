@@ -2,9 +2,11 @@
 
 **CI（GitHub Actions）是唯一的构建与测试验证途径。** 本地 `cargo build` / `cargo test` 的结果不作为验收依据（根级 `AGENTS.md` §3.1）。这条规则不是流程偏好，而是项目前提：AI 生成的代码由 CI 判定，人类只审查架构与关键逻辑。
 
-## 单一工作流
+## 工作流分工
 
-`.github/workflows/ci.yml` 是唯一的 Rust 工作流，取代了单仓工作区之前每个组件仓库各自一份的 17 份副本（迁移时其中 3 份已经分叉，意味着「同一份模板复制 17 次」并不保证一致性）。
+`.github/workflows/ci.yml` 是唯一在 PR 与 `main` 上判定改动的 Rust 工作流，取代了单仓工作区之前每个组件仓库各自一份的 17 份副本（迁移时其中 3 份已经分叉，意味着「同一份模板复制 17 次」并不保证一致性）。
+
+另外两个工作流不参与合并判定：`.github/workflows/docs.yml` 只跑 markdownlint，`.github/workflows/release.yml` 只在 `v*` tag 或手工触发时产出并发布金丝雀制品（见[发布制品 job 与 Release 工作流](#发布制品-job-与-release-工作流)）。
 
 | job | 命令 | 作用 |
 |-----|------|------|
@@ -12,12 +14,16 @@
 | `clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 零警告；不链接最终二进制，但依赖的构建脚本仍需要系统库（`libudev.pc` 等），因此与 `build`/`test` 一样安装 |
 | `deny` | `cargo deny check` | 许可证白名单、RUSTSEC 漏洞、重复版本，针对**完整依赖图** |
 | `doc` | `cargo doc --workspace --no-deps --all-features` | 配合 `RUSTDOCFLAGS=-D warnings`，缺失文档注释会失败 |
-| `build` | `cargo build --workspace --release --all-features` | 发布构建（安装链接所需系统库） |
+| `build` | `cargo build --workspace --release --all-features` | 证明发布构建能编译（安装链接所需系统库）。**它不上传任何产物**：可下载的二进制由下面的 `package` job 产出 |
 | `plan` | 由层级表推导测试矩阵 | 覆盖不全或矩阵为空即失败 |
 | `test` | `cargo test -p <crate> --all-features`，**每 crate 一个分片**；作业级 `QT_QPA_PLATFORM=offscreen` | 失败可归因、可局部复现；QML 分片另装 Qt 6 与字体 |
 | `xwayland-e2e` | `INOX_XWAYLAND_E2E=1 cargo test -p inox-xwayland --test headless_x11_mapping` | X11 映射端到端（宿主为第三方 headless 合成器，仅 E2 等级） |
-| `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见 ） |
-| `book` | `mdbook build docs/book` | 本站点构建 |
+| `m3-e2e` | 先 `cargo build --workspace --features inox-compositor/test-input`，再 `INOX_M3_E2E=1 cargo test -p inox-integration --all-features` | M3 的 E3 证据：在 **Inox 自己的合成器**上驱动 X11/剪贴板/拖放用例（第三方宿主不算，见[验收规范 §1](https://github.com/Inox-desktop/inox/blob/main/docs/quality/acceptance.md)） |
+| `book` | 先 `scripts/check-docs.py`，再 `mdbook build docs/book` | 本站点的结构、链接与构建（见[本站点的门禁](#本站点的门禁)） |
+| `package` | `packaging/package.sh --output-dir target/dist` | 产出金丝雀 tarball 并作为 `inox-canary-tarball` artifact 上传（见[发布制品 job 与 Release 工作流](#发布制品-job-与-release-工作流)） |
+| `aur` | `packaging/aur/publish.sh --version <版本> --sha256 SKIP`（两个渠道各一次，`archlinux:base-devel` 容器） | 渲染 AUR 配方的两个渠道、生成 `.SRCINFO`、逐个校验 `depends`/`makedepends` 能在 Arch 官方仓库解析。**不构建**：完整 `makepkg` 在 release 当天、推送之前做（见下） |
+
+上表只列与「怎么判定一次改动」直接相关的 job。另有四个专项 job 不在表内：`msrv`（用 Rust 1.89 跑 `cargo check --locked --workspace --all-targets --all-features`，守住工作区 MSRV）、`session-e2e`（L4 无头会话的启动、会话锁与限时注销）、`input-method-e2e`（Fcitx5 真实拼音预编辑与中文上屏）与 `license-audit`（用 `ldd` 断言只链接已声明的 LGPL Qt 模块，不得出现 GPL-only 模块）。
 
 触发条件：`push` 到 `main`、`pull_request`。**任一 job 失败即阻止合并**。
 
@@ -51,10 +57,46 @@
 
 ## 本站点的门禁
 
-本站点不含 Rust 代码、没有 `Cargo.toml`，因此不参与 fmt/clippy/test/deny 流水线（也就是不参与工作区依赖图与 `cargo deny`）。它的门禁是 `book` job 中的 `mdbook build docs/book`：
+本站点不含 Rust 代码、没有 `Cargo.toml`，因此不参与 fmt/clippy/test/deny 流水线（也就是不参与工作区依赖图与 `cargo deny`）。它的门禁在 `book` job 里，由两步组成：先 `scripts/check-docs.py`，再 `mdbook build docs/book`。
 
-- `src/SUMMARY.md` 里引用的章节文件必须存在；
-- 章节之间的相对链接必须有效；
-- Markdown 语法必须能被 mdBook 解析。
+`mdbook build` **单独**是一个弱门禁：`SUMMARY.md` 里列了一个不存在的章节时，它照样以 0 退出，只生成一个只有标题的占位页。这条路径会以 404 的形式到达已发布的站点。`scripts/check-docs.py` 补的就是这一块：
 
-此外仓库根目录的 `.github/workflows/docs.yml` 用 `markdownlint-cli2` 检查**全部** Markdown 文件（含各 crate 的 `AGENTS.md` 与 `docs/`），规则配置见 `.markdownlint.json`。
+- `src/SUMMARY.md` 里引用的章节必须存在，且 `src/` 下每个 Markdown 页面都要能从 `SUMMARY.md` 到达（存在但未登记的页面在站点上是看不见的）；
+- `docs/` 下的相对链接与图片目标必须能解析（网络链接与页内 `#锚点` 跳过，因此这个检查可以离线跑）；
+- 之后由 `mdbook build docs/book` 确认 Markdown 语法能被 mdBook 解析。
+
+风格不在这两步里：仓库根目录的 `.github/workflows/docs.yml` 用 `markdownlint-cli2` 检查**全部** Markdown 文件（含各 crate 的 `AGENTS.md` 与 `docs/`），规则配置见 `.markdownlint.json`。三件事分别由三个工具负责，不要让其中一个的绿灯替另一个背书。
+
+## 发布制品 job 与 Release 工作流
+
+`package (canary tarball)` job 在**每个 PR 与每次 push 到 `main`** 上产出一个可下载的金丝雀 tarball，并作为 artifact `inox-canary-tarball` 保留 30 天。它存在的理由是验收规范把 E4 的证据固定为「CI 产出的二进制」：只在一个发布日才被执行的打包脚本等于没被验证过，因此这条路必须由每一次 CI 运行承担。
+
+它依次做四件事：
+
+1. 对所有 `packaging/*.sh`、`packaging/aur/*.sh` 与 `scripts/*.sh` 跑 `bash -n`，对 `scripts/*.py` 跑 `python3 -m py_compile`，并跑 `package.sh --help`、`install.sh --help`、`uninstall.sh --help`、`aur/publish.sh --help`。安装面与辅助脚本是仓库里没有任何别的 job 编译或测试的部分，语法错误必须在 CI 上暴露，而不是等到某人的机器处于半安装状态时。注意这**只是语法与入口检查**：`install.sh` 与 `preflight.sh` 需要 root，CI 不执行它们；
+2. `packaging/package.sh --output-dir target/dist` —— 用**默认特性**构建（不是 `--all-features`）、暂存 14 个二进制与 `data/wallpapers`、`packaging/`，写 `BUILD-INFO` 与 `SHA256SUMS`；
+3. 校验 `.sha256`、把 `BUILD-INFO` 从压缩包里读出来，并断言压缩包只有一个顶层目录、含全部 14 个二进制、壁纸与 `packaging/install.sh`；
+4. 上传 artifact。
+
+第 2 步里有一条**只属于产物**的断言：`package.sh` 会真的运行暂存出来的 `bin/inox-compositor --test-input <path>`，要求该选项被拒绝、且错误信息点名 `test-input`。被接受或进程挂住就让打包失败。`--all-features` 会把合成器的 `test-input` feature（一个接受注入键盘与指针事件的套接字）编译进二进制，这条断言让那种构建无法静默出厂；单元测试覆盖不了它，因为被测性质属于制品而不属于源码树。
+
+`.github/workflows/release.yml` 是**另一个**工作流，负责把同一个 tarball 挂到 GitHub Release 上：
+
+- 触发条件是 `v*` tag 的 push，以及手工 `workflow_dispatch`（输入 `version`）；
+- 发布版本必须以根 `Cargo.toml` 的工作区版本开头（`0.1.1-canary.2` 可以，清单还写着 `0.1.1` 时的 `0.2.0-canary.1` 会被拒绝）：否则 `BUILD-INFO`、文件名与 release 标题会一起描述一个没人能复现的构建；
+- 版本里含 `-canary`、`-alpha`、`-beta`、`-rc`、`-dev` 时标为 **prerelease**；
+- 创建 Release 前断言 `BUILD-INFO` 的 `commit` 就是正在发布的那个提交；
+- 手工 dispatch **只上传 workflow artifact，不创建 Release**；
+- Release 创建后，`publish-aur` job 在 `archlinux:base-devel` 里**完整构建** AUR 源码包
+  （`makepkg`，跑配方里的 `--test-input` 断言与产物文件清单断言），通过才推送到
+  `aur.archlinux.org`：稳定 tag → `inox`，预发布 → `inox-canary`。构建失败不会回滚 Release，
+  重跑这次 run 的失败 job 即可；AUR 推送是幂等的。凭据、两个包名的映射与边界见
+  [AUR 包](https://github.com/Inox-desktop/inox/blob/main/packaging/aur/README.md) 与
+  [ADR 0043](../architecture/decisions.md)。
+
+`aur (recipe)` job 只做便宜的静态检查（渲染、`.SRCINFO`、依赖名），因为它要在**每个 PR** 上跑；
+完整的 `makepkg` 构建是半小时级的成本，只在 release 当天、推送之前执行一次。这与 `package.sh`
+在 CI 中持续产出 tarball 的分工一致：便宜的路径每天跑，把「配方语法对但依赖名打错」这类问题
+在合并前暴露；代价高的验证在公开之前做完。
+
+制品怎么拿、怎么装、AUR 包怎么发、以及它**不能声明什么**，见[发布制品与金丝雀渠道](./release.md)。

@@ -1,8 +1,8 @@
 # Inox UI 设计规范
 
-- 状态：本规范只**收紧**既有约束，不放宽根 `AGENTS.md` 的任何硬性规则。
+- 状态：本规范只**收紧**既有约束，不放宽 [硬性规则速查](https://github.com/Inox-desktop/inox/blob/main/README.md#硬性规则速查) 的任何硬性规则。
 - 适用范围：所有绘制 QML 界面的组件 —— `inox-panel`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-lock`、`inox-wallpaper`、`inox-greet`。
-- 依据：PRD §9.2（PRD 已不在本仓库，其余引用一并省略）、[主题与设计令牌](../book/src/configuration/theme.md)、[验收规范](./acceptance.md) 的 Q01–Q03。
+- 依据：[主题与设计令牌](../book/src/configuration/theme.md)、[验收规范](./acceptance.md) 的 Q01–Q03、[组件清单](../book/src/architecture/components.md)。
 - 设计原则的来源：Apple《Designing Fluid Interfaces》与 Emil Kowalski 的界面工程经验 —— 即时反馈、清晰层次、状态可见、克制动画、看不见的细节累积成手感。这些原则在此被翻译成 **QML + Qt Quick + 设计令牌** 的可执行规则，而不是网页 CSS 的写法。
 
 本页回答的是「令牌已经有了，界面该怎么用它」。令牌本身的取值与 schema 以 [主题与设计令牌](../book/src/configuration/theme.md) 为准，本页不定义新令牌。

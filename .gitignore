@@ -20,3 +20,14 @@ target-head/
 # Local per-agent build trees and CI log scratch (never committed).
 /.targets/
 /.ci-logs/
+
+# `python3 -m py_compile` output from the CI packaging check (scripts/*.py).
+__pycache__/
+
+# cxx-qt write a `.qmlls.ini` into each crate root while building the QML modules.
+# These tell the QML language server where cxx-qt generated modules live; they
+# are build output, not source, and are not needed for the build itself. They
+# must be ignored at the *repo* level, not just in a local
+# `../.git/info/exclude`, or the packaging job's dirty-worktree check fires on a
+# clean CI checkout (`git status --porcelain` picks them up there).
+.qmlls.ini

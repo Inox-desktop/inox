@@ -38,10 +38,41 @@ readonly TRIAL_VT="4"
 readonly RESCUE_VT="3"
 readonly BOOT_VT="1"
 
+# The binaries inox-session needs, split the same way install.sh splits them.
+#
 # inox-session and inox-auth are checked too: the trial starts neither, but the
 # boot chain does, and a missing session program turns a correct password into a
 # failed login (crates/inox-auth/src/session.rs).
-readonly BINARIES=(inox-auth inox-host inox-compositor inox-greet inox-session)
+#
+# REQUIRED_BINARIES is the list that decides whether a login can stay up: a
+# required component that cannot start stops the whole session (failure isolation
+# in crates/inox-session/src/runtime.rs). `inox-session` starts `inox-shell` and
+# two `inox-panel` surfaces as required, so a five-binary check — which is what
+# this script used to do — passes a machine whose login fails every time.
+#
+# `inox-lock` is a required *file* without being a required *process*: the session
+# starts it on demand, so its absence does not end a session, but the desktop then
+# cannot lock. That is a FAIL here rather than a WARN because there is nothing to
+# do about it later from inside the session.
+readonly REQUIRED_BINARIES=(
+    inox-auth
+    inox-host
+    inox-compositor
+    inox-greet
+    inox-session
+    inox-shell
+    inox-panel
+    inox-lock
+)
+readonly OPTIONAL_BINARIES=(
+    inox-wallpaper
+    inox-notifications
+    inox-idle
+    inox-xwayland
+    inox-launcher
+    inox-settings
+)
+readonly BINARIES=("${REQUIRED_BINARIES[@]}" "${OPTIONAL_BINARIES[@]}")
 # Three stacks, three jobs: the password, the session, the greeter's own session.
 readonly STACKS=(inox-auth inox-auth-session inox-greeter)
 # The fallback unit is checked too: inox-greeter@1.service names it in OnFailure=,
@@ -109,21 +140,28 @@ printf '[inox-preflight] read-only check of the login chain; nothing here change
 # --- binaries --------------------------------------------------------------
 
 section "binaries in $BIN_DIR"
-missing_binaries=()
-for binary in "${BINARIES[@]}"; do
+missing_required=()
+missing_optional=()
+for binary in "${REQUIRED_BINARIES[@]}"; do
     if [ -x "$BIN_DIR/$binary" ]; then
         ok "$BIN_DIR/$binary"
     else
-        missing_binaries+=("$binary")
-        fail "$BIN_DIR/$binary is missing or not executable"
+        missing_required+=("$binary")
+        fail "$BIN_DIR/$binary is missing or not executable (a required component: the session cannot stay up without it)"
     fi
 done
-if [ "${#missing_binaries[@]}" -gt 0 ]; then
-    note "build from the checkout, then install all five (the units hard-code this prefix):"
-    note "  cargo build --workspace --release"
-    note "  sudo install -m 0755 target/release/inox-auth target/release/inox-host \\"
-    note "      target/release/inox-compositor target/release/inox-greet \\"
-    note "      target/release/inox-session $BIN_DIR/"
+for binary in "${OPTIONAL_BINARIES[@]}"; do
+    if [ -x "$BIN_DIR/$binary" ]; then
+        ok "$BIN_DIR/$binary"
+    else
+        missing_optional+=("$binary")
+        warn "$BIN_DIR/$binary is missing (the session runs without it; the desktop is missing a piece)"
+    fi
+done
+if [ "${#missing_required[@]}" -gt 0 ] || [ "${#missing_optional[@]}" -gt 0 ]; then
+    note "install all ${#BINARIES[@]} from a release tarball, or from a local build:"
+    note "  sudo packaging/install.sh --bin-dir <extracted-tarball>/bin"
+    note "  sudo packaging/install.sh --bin-dir target/release"
 fi
 
 # --- PAM stacks ------------------------------------------------------------

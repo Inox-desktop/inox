@@ -68,6 +68,8 @@ proposed ──► accepted ──► superseded
 | 0039 | 完成全量迁移，并确立私有 ABI / 私有协议的授权边界 | accepted |
 | 0040 | 液态玻璃材质、`inox-glass-v1` v2 与系统玻璃组件库 | proposed |
 | 0041 | `session-control-v1`：手动与空闲触发锁定的私有控制通道 | accepted |
+| 0042 | 发布制品与金丝雀渠道 | proposed |
+| 0043 | AUR 源码包与发布后自动同步 | proposed |
 | 0044 | 通知卡片采用共享玻璃组件（扩展 ADR 0040 的消费者） | proposed |
 
 上表只列与当前架构直接相关的条目。当前 Shell 的 UI 栈

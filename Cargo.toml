@@ -283,3 +283,22 @@ same_layer_exceptions = [
     ["inox-panel", "inox-glass"],
     ["inox-notifications", "inox-glass"],
 ]
+
+# --- release profile -------------------------------------------------------
+#
+# The release profile is part of the artifact contract, not a local preference:
+# `cargo build --release` is what `packaging/package.sh` ships, so anything set
+# here is what a tester runs.
+#
+# `strip = "symbols"` is why the canary tarball is tens of megabytes instead of
+# hundreds: these are twelve binaries linked against Qt and Mesa. Debugging a
+# tester's crash still works from the commit in BUILD-INFO (rebuild that commit
+# and the symbols come back); symbols cannot be recovered from a stripped binary,
+# which is the accepted cost.
+#
+# No LTO: the workspace is large, every PR would pay minutes for it, and the
+# desktop is nowhere near a performance milestone — P01-P05 have no measurements
+# at all (docs/quality/acceptance.md §10). Revisit when a performance budget
+# exists and there is a number to defend.
+[profile.release]
+strip = "symbols"

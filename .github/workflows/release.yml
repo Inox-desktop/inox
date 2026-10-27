@@ -1,0 +1,347 @@
+name: Release
+
+# Publish a canary: a downloadable tarball a tester installs on real hardware.
+#
+# Two triggers, because there are two questions this workflow answers:
+#
+# - a `v*` tag — "cut this version". The tag must be annotated (see
+#   docs/adr/0042) and its message says what changed. The Release is created as a
+#   **prerelease** unless the tag has no `-canary`/`-alpha`/`-beta`/`-rc` suffix.
+# - `workflow_dispatch` — "build the artifact from this commit so I can test it
+#   right now, without deciding a version". No Release is created; the tarball is
+#   only an artifact of the run.
+#
+# Nothing here runs on `push: branches`, so a normal PR never publishes anything.
+# The CI workflow already builds and verifies the same tarball on every PR — this
+# workflow is the part that attaches it to a release.
+#
+# After the GitHub Release is created, the `publish-aur` job publishes the same
+# tag to the AUR as a *source* package (decision: docs/adr/0043). That job builds
+# the AUR recipe with makepkg on Arch first; nothing is pushed to the AUR unless
+# the package builds and passes the compositor's `--test-input` assertion.
+#
+# Why not `--all-features`: it would compile `inox-compositor/test-input`, a socket
+# that accepts injected keyboard and pointer events, into a binary a tester runs.
+# `packaging/package.sh` builds with default features and asserts the staged
+# compositor rejects that option.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into BUILD-INFO (leave empty to use Cargo.toml)"
+        required: false
+        type: string
+
+# A tag push and a manual run for the same commit should not race on the same
+# asset name. Cancelling an older release run is safe: nothing is published until
+# the end, and a superseded tag is a mistake to fix, not work to preserve.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: build the release tarball
+    runs-on: ubuntu-latest
+    # `contents: write` is what creating a Release needs; the repository default
+    # for workflows is `read`, so this has to be asked for explicitly.
+    permissions:
+      contents: write
+    outputs:
+      tarball: ${{ steps.package.outputs.tarball }}
+      checksum: ${{ steps.package.outputs.checksum }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: ./.github/actions/system-deps
+        with:
+          qt: "true"
+
+      # The version has to come from somewhere explicit, because it ends up in the
+      # tarball name, in BUILD-INFO and in the release title. A tag `v0.1.1-canary.2`
+      # means version `0.1.1-canary.2`; a manual run uses its input, or the
+      # workspace version when the input is empty.
+      #
+      # It is passed to the step through the environment rather than interpolated
+      # into the script: a dispatch input is user-supplied text, and `${{ }}` in a
+      # `run:` block is substituted before the shell ever sees it.
+      - name: Resolve the version and whether this is a prerelease
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${INPUT_VERSION}"
+            if [ -z "$version" ]; then
+              version="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+                | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)"
+              version="${version}-dev.${GITHUB_SHA::12}"
+            fi
+          fi
+          case "$version" in
+            *-canary*|*-alpha*|*-beta*|*-rc*|*-dev*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          # The version ends up in a filename and in a release title, so it is
+          # restricted to what a version can contain. This also catches a dispatch
+          # run that was given a tag-like string ("v0.1.1") by mistake.
+          case "$version" in
+            "" | *[!0-9A-Za-z.+-]*)
+              echo "refusing to release with version '$version': expected [0-9A-Za-z.+-]" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+          echo "resolved version: $version (prerelease: $prerelease)"
+
+      # A tag is a promise about the bits behind it. `v0.1.1-canary.2` must not be
+      # published from a tree that still says `0.1.1` in Cargo.toml with different
+      # contents, because then the version in BUILD-INFO, in the tarball name and in
+      # the release title would all describe a build nobody can reproduce.
+      #
+      # The rule is narrow on purpose: the release version must start with the
+      # workspace version, so `0.1.1-canary.2` is fine and `0.2.0-canary.1` needs
+      # the manifest bumped first.
+      - name: Check the tag agrees with the manifest
+        if: github.event_name == 'push'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          workspace_version="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+            | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)"
+          case "$RELEASE_VERSION" in
+            "$workspace_version" | "$workspace_version"-*)
+              echo "ok: $RELEASE_VERSION is a release of workspace version $workspace_version"
+              ;;
+            *)
+              echo "refusing to release '$RELEASE_VERSION': Cargo.toml says '$workspace_version'." >&2
+              echo "bump [workspace.package] version to the release line before tagging." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build and package
+        id: package
+        run: |
+          set -euo pipefail
+          packaging/package.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --output-dir target/dist
+          tarball="$(ls target/dist/*.tar.gz)"
+          checksum="$tarball.sha256"
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+          echo "checksum=$checksum" >>"$GITHUB_OUTPUT"
+
+      - name: Verify the tarball
+        run: |
+          set -euo pipefail
+          cd target/dist
+          sha256sum --check ./*.tar.gz.sha256
+          tarball="$(ls ./*.tar.gz)"
+          tar -xzOf "$tarball" --wildcards '*/BUILD-INFO'
+          # A release artifact must say which commit it came from. `unknown` is
+          # what package.sh writes when git is unavailable, so it means the
+          # checkout is broken rather than that the field is optional.
+          info="$(tar -xzOf "$tarball" --wildcards '*/BUILD-INFO')"
+          printf '%s\n' "$info" | grep -q '^commit: [0-9a-f]\{40\}$' || {
+            echo "BUILD-INFO does not name a commit:" >&2
+            printf '%s\n' "$info" >&2
+            exit 1
+          }
+          printf '%s\n' "$info" | grep -q "^commit: ${GITHUB_SHA}$" || {
+            echo "BUILD-INFO names a different commit than the one being released" >&2
+            exit 1
+          }
+          echo "ok: BUILD-INFO matches the released commit"
+
+      - name: Upload the tarball as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: inox-release-tarball
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      # Creating the Release is what makes this a *canary* rather than a build
+      # log. `--prerelease` is not decoration: it is what stops GitHub, and
+      # anyone reading the releases page, from treating this as a supported
+      # version.
+      - name: Publish the GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tarball="${{ steps.package.outputs.tarball }}"
+          checksum="${{ steps.package.outputs.checksum }}"
+          version="${{ steps.version.outputs.version }}"
+
+          notes="$(mktemp)"
+          cat >"$notes" <<EOF
+          Inox **canary** \`v${version}\` — a developer preview, not a supported release.
+
+          ## What this is
+
+          A tarball of the Inox binaries built from \`${GITHUB_SHA}\` with **default
+          features**, plus the bundled wallpapers and the \`packaging/\` install
+          surface. It exists so real-machine (E4) acceptance can be run on a CI
+          artifact, which is what the acceptance rules require.
+
+          ## What this is not
+
+          - **Not a supported release.** No hardware configuration is declared
+            supported; E4 has no recorded result for this build.
+          - **Not a daily-driver desktop.** The physical DRM/libinput backend is
+            implemented, but no real-machine acceptance has been executed.
+          - **No claim that logging in on real hardware works.** The login chain is
+            wired; its evidence is still outstanding.
+          - **No SBOM, no lifecycle-verified second distribution channel, no
+            upgrade/rollback test.** The AUR package is a build recipe, not a
+            verified channel: it is built on the user's machine and has no
+            install/upgrade/rollback evidence. Those are M6 gates (L01/L02) and
+            are unmet.
+
+          Read \`BUILD-INFO\` inside the tarball for the exact commit, toolchain and
+          feature set, and \`docs/book/src/development/release.md\` in the repository
+          for what to do with it.
+
+          ## Install
+
+          \`\`\`sh
+          tar -xzf $(basename "$tarball")
+          cd $(basename "$tarball" .tar.gz)
+          sudo ./packaging/install.sh --bin-dir ./bin
+          sudo ./packaging/preflight.sh
+          \`\`\`
+
+          ## Checksums
+
+          \`\`\`
+          $(cat "$checksum")
+          \`\`\`
+          EOF
+
+          # `gh` takes the flag list positionally; building it as an array keeps
+          # the empty case from passing an empty argument.
+          args=("v${version}" "$tarball" "$checksum"
+                --title "Inox v${version}" --notes-file "$notes")
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${args[@]}"
+
+          echo "published: $(gh release view "v${version}" --json url --jq .url)"
+
+  # Publish the same tag to the AUR as a source package (decision: ADR 0043).
+  #
+  # Ordering is deliberate: the GitHub Release above is created first, so a broken
+  # AUR recipe cannot keep a release that CI already verified from being
+  # downloadable. A failure here turns the run red and leaves the AUR on the
+  # previous version; re-running only this job (Actions -> the run -> "Re-run
+  # failed jobs") republishes without touching the Release.
+  #
+  # Why the recipe is built here before it is pushed: `makepkg` is what an AUR
+  # user runs, so a recipe that has never been built is a guess. The build also
+  # runs the PKGBUILD's check(), which proves the packaged compositor rejects
+  # `--test-input` — the same assertion packaging/package.sh makes for the
+  # tarball.
+  publish-aur:
+    name: publish to AUR
+    needs: package
+    # A manual dispatch is a test build, not a release: it creates no GitHub
+    # Release and must not move an AUR package either.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The AUR package is built by Arch users, so it is built on Arch here. The
+    # image is the official base-devel image: `makepkg`, `rust`, `pacman` and
+    # `fakeroot` are already there.
+    container:
+      image: archlinux:base-devel
+    # A dependency install plus one full workspace build on a shared runner. The
+    # default ceiling is six hours, but a named budget makes a hang visible in the
+    # job list. The build is the same one CI proves on Ubuntu; here it happens a
+    # second time, on Arch, which is what AUR users compile.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Install git and the AUR transport
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed git openssh curl
+          useradd -m builder
+          # `makepkg --syncdeps` installs missing build dependencies with
+          # `sudo pacman`; the build user needs exactly that and nothing else.
+          printf 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman\n' >/etc/sudoers.d/builder
+          chmod 0440 /etc/sudoers.d/builder
+      - uses: actions/checkout@v4
+      - name: Build, verify and publish the AUR package
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ]; then
+            echo "::error::AUR_SSH_PRIVATE_KEY is not configured: add the AUR account's deploy key as a repository secret (see packaging/aur/README.md)"
+            exit 1
+          fi
+          if [ -z "${RELEASE_VERSION}" ]; then
+            echo "::error::the package job did not output a version"
+            exit 1
+          fi
+
+          install -d -o builder -g builder -m 0700 /home/builder/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >/home/builder/.ssh/aur
+          chown builder:builder /home/builder/.ssh/aur
+          chmod 0600 /home/builder/.ssh/aur
+          # The AUR's git remote is ssh: scan its host key instead of shipping a
+          # copy that will one day be stale.
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >/home/builder/.ssh/known_hosts 2>/dev/null
+          if [ ! -s /home/builder/.ssh/known_hosts ]; then
+            echo "::error::could not scan aur.archlinux.org's ssh host key"
+            exit 1
+          fi
+          chown builder:builder /home/builder/.ssh/known_hosts
+
+          # Work on a builder-owned copy instead of chowning the checkout: the
+          # checkout action's post step runs as root and would then be looking at
+          # a repository owned by somebody else.
+          install -d -o builder -g builder -m 0755 /home/builder/work
+          cp -a -- "$GITHUB_WORKSPACE/." /home/builder/work/
+          chown -R builder:builder /home/builder/work
+
+          runuser -u builder -- env \
+            HOME=/home/builder \
+            GIT_SSH_COMMAND="ssh -i /home/builder/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/builder/.ssh/known_hosts" \
+            bash -c 'cd "$1" && packaging/aur/publish.sh --version "$2" --build --push' _ \
+            /home/builder/work "$RELEASE_VERSION"
+
+          case "$RELEASE_VERSION" in
+            *-canary* | *-alpha* | *-beta* | *-rc* | *-dev*) aur_package=inox-canary ;;
+            *) aur_package=inox ;;
+          esac
+          echo "AUR: https://aur.archlinux.org/packages/${aur_package}" >>"$GITHUB_STEP_SUMMARY"
