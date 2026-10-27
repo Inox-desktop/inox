@@ -547,8 +547,19 @@ fn destroying_the_target_mid_drag_keeps_the_session_alive() {
         "after-target-destroyed",
     );
     let toplevel = newcomer.create_toplevel([0x44, 0xcc, 0x44], (320, 240));
-    let (width, height) = newcomer.wait_for_configure(toplevel, "the newcomer to be configured");
+    // A toplevel is not a window until it draws: the compositor sends the initial
+    // configure (0x0, "you choose"), the client commits its first buffer — the
+    // helper does that from the configure handler — and only then does the tile
+    // exist and a second configure carry its size. So wait for the tile size
+    // rather than for "a configure": the first one the newcomer sees is its own
+    // 320x240, which is exactly what this assertion must not accept.
     let newcomer_tile = tile_of_mapped(2, 1);
+    newcomer.wait_for_size(
+        toplevel,
+        (newcomer_tile.w, newcomer_tile.h),
+        "the newcomer to be tiled after the destroyed target was cleaned up",
+    );
+    let (width, height) = newcomer.wait_for_configure(toplevel, "the newcomer to be configured");
     assert_eq!(
         (width, height),
         (newcomer_tile.w, newcomer_tile.h),
