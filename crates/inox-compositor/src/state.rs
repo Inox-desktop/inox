@@ -127,9 +127,6 @@ use std::{
 
 use calloop::LoopSignal;
 use inox_protocols::{
-    window_manager::inox_window_manager::server::{
-        inox_window_manager_v1::InoxWindowManagerV1,
-    },
     glass::inox_glass::server::{
         inox_glass_manager_v1::{
             Error as GlassError, InoxGlassManagerV1, Request as GlassManagerRequest,
@@ -154,6 +151,7 @@ use inox_protocols::{
         },
         xdg::shell::server::xdg_toplevel,
     },
+    window_manager::inox_window_manager::server::inox_window_manager_v1::InoxWindowManagerV1,
 };
 use smithay::{
     backend::{
@@ -220,8 +218,8 @@ use smithay::{
                 WlrLayerShellState, WlrLayerSurfaceUserData,
             },
             xdg::{
-                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
-                XdgToplevelSurfaceData, XdgShellState,
+                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+                XdgToplevelSurfaceData,
             },
         },
         shm::{ShmHandler, ShmState},

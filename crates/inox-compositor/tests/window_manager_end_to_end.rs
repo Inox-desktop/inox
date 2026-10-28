@@ -73,8 +73,7 @@ struct RuntimeDir(PathBuf);
 
 impl RuntimeDir {
     fn new(label: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("inox-wm-{label}-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("inox-wm-{label}-{}", std::process::id()));
 
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("failed to create the test runtime directory");
@@ -174,7 +173,10 @@ impl Seen {
     /// assertion over the whole log would see the state a window was in before its
     /// last update.
     fn window(&self, handle: u32) -> Option<&Window> {
-        self.windows.iter().rev().find(|window| window.handle == handle)
+        self.windows
+            .iter()
+            .rev()
+            .find(|window| window.handle == handle)
     }
 
     /// The handles that are focused according to their latest record.
@@ -588,9 +590,13 @@ fn the_compositor_serves_and_drives_window_management_over_the_protocol() {
     leg.draw(second);
 
     leg.wait_until("both mapped windows to be announced", |client| {
-        ["notes.txt", "shell"]
-            .iter()
-            .all(|title| client.seen.windows.iter().any(|window| &window.title == title))
+        ["notes.txt", "shell"].iter().all(|title| {
+            client
+                .seen
+                .windows
+                .iter()
+                .any(|window| &window.title == title)
+        })
     });
 
     let (first_handle, second_handle) = {
@@ -656,7 +662,8 @@ fn the_compositor_serves_and_drives_window_management_over_the_protocol() {
             "activation moves the focus, and only the confirmation says so"
         );
         assert!(
-            seen.window(second_handle).is_some_and(|window| !window.focused),
+            seen.window(second_handle)
+                .is_some_and(|window| !window.focused),
             "the previously focused window is told it is not focused"
         );
     }
@@ -742,7 +749,10 @@ fn the_compositor_serves_and_drives_window_management_over_the_protocol() {
                 window.workspace, 0,
                 "switching does not move a window between workspaces"
             );
-            assert!(!window.visible, "a window on a hidden workspace is invisible");
+            assert!(
+                !window.visible,
+                "a window on a hidden workspace is invisible"
+            );
         }
         assert!(
             seen.focused().is_empty(),
@@ -778,28 +788,19 @@ fn the_compositor_serves_and_drives_window_management_over_the_protocol() {
     leg.list.activate(u32::MAX - 1);
     leg.connection.flush().expect("failed to flush the request");
     leg.wait_until("the unknown-window refusal", |client| {
-        client
-            .seen
-            .failures
-            .contains(&(u32::MAX - 1, 0u32))
+        client.seen.failures.contains(&(u32::MAX - 1, 0u32))
     });
 
     leg.list.switch_workspace(WORKSPACES);
     leg.connection.flush().expect("failed to flush the request");
     leg.wait_until("the out-of-range workspace refusal", |client| {
-        client
-            .seen
-            .failures
-            .contains(&(NO_WINDOW_HANDLE, 1u32))
+        client.seen.failures.contains(&(NO_WINDOW_HANDLE, 1u32))
     });
 
     leg.list.move_to_workspace(first_handle, WORKSPACES);
     leg.connection.flush().expect("failed to flush the request");
     leg.wait_until("the out-of-range move refusal", |client| {
-        client
-            .seen
-            .failures
-            .contains(&(first_handle, 1u32))
+        client.seen.failures.contains(&(first_handle, 1u32))
     });
 
     // --------------------------------------------------------------------- close

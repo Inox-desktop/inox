@@ -1094,7 +1094,9 @@ mod tests {
 
             match error {
                 ConfigError::Parse {
-                    field, line, message,
+                    field,
+                    line,
+                    message,
                     ..
                 } => {
                     assert_eq!(field, Some("layout.workspace_count".to_owned()));

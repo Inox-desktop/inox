@@ -74,9 +74,7 @@ use wayland_client::{Dispatch, QueueHandle};
 
 use crate::app::{Message, OutgoingCommand};
 use crate::contract::{CommandState, RejectionReason, ServiceFailure};
-use crate::tasks::{
-    SessionGeneration, WindowId, WindowKey, WindowMode, WindowState, WorkspaceId,
-};
+use crate::tasks::{SessionGeneration, WindowId, WindowKey, WindowMode, WindowState, WorkspaceId};
 
 /// The handle `request_failed` carries when the refused request named no window.
 ///
@@ -439,7 +437,7 @@ impl WindowService {
     /// Records that this compositor does not offer the window service, and reports
     /// whether this is the first time it was said.
     ///
-    /// The panel turns the answer into [`ServiceState::Unavailable`] with its
+    /// The panel turns the answer into [`crate::contract::ServiceState::Unavailable`] with its
     /// retry action; this only owns the log line, so the "one `info!`" rule is a
     /// field rather than a guess about how often the caller asks.
     pub fn report_unavailable(&mut self) -> bool {

@@ -1661,7 +1661,12 @@ mod tests {
         let indicator = state.model().workspace.expect("it stays drawn");
         assert!(!indicator.enabled, "a stale view sends no requests");
 
-        send(&mut state, Message::WorkspaceSwitched { workspace: indicator.next });
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: indicator.next,
+            },
+        );
         assert!(
             state.take_outgoing().is_empty(),
             "and clicking it asks the absent service for nothing"

@@ -138,10 +138,6 @@ use inox_protocols::{
     glass::inox_glass::client::{
         inox_glass_manager_v1::InoxGlassManagerV1, inox_glass_v1 as glass_object,
     },
-    window_manager::inox_window_manager::client::{
-        inox_window_list_v1::{self as window_list, InoxWindowListV1},
-        inox_window_manager_v1::InoxWindowManagerV1,
-    },
     standard::{
         core::client::{
             wl_buffer::{self, WlBuffer},
@@ -157,6 +153,10 @@ use inox_protocols::{
             zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
             zwlr_layer_surface_v1::{self as role, ZwlrLayerSurfaceV1},
         },
+    },
+    window_manager::inox_window_manager::client::{
+        inox_window_list_v1::{self as window_list, InoxWindowListV1},
+        inox_window_manager_v1::InoxWindowManagerV1,
     },
 };
 use tracing::{debug, error, info, warn};
@@ -856,7 +856,9 @@ impl Dispatch<WlRegistry, ()> for Client {
                     // missing global is reported once, after the registry has
                     // been read, not here.
                     "inox_window_manager_v1" => {
-                        state.windows.bind_manager(registry.bind(name, version.min(1), qh, ()));
+                        state
+                            .windows
+                            .bind_manager(registry.bind(name, version.min(1), qh, ()));
                     }
                     _ => {}
                 }
@@ -1924,10 +1926,7 @@ pub fn run(
         let reported = client.windows.report_unavailable();
 
         if reported {
-            app::update(
-                &mut client.state,
-                WindowService::unavailable_message(),
-            );
+            app::update(&mut client.state, WindowService::unavailable_message());
             client.pending_repaint = true;
         }
     }

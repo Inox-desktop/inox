@@ -572,7 +572,9 @@ pub fn workspace_indicator(tokens: &Tokens, status: InteractionStatus) -> EntryS
     let (background, foreground) = match status {
         InteractionStatus::Disabled => (None, muted_text(tokens)),
         InteractionStatus::Pressed => (Some(accent(tokens)), on_accent(tokens)),
-        InteractionStatus::Hovered => (Some(qml_color(tokens.colors.surface_variant)), text(tokens)),
+        InteractionStatus::Hovered => {
+            (Some(qml_color(tokens.colors.surface_variant)), text(tokens))
+        }
         InteractionStatus::Active => (None, muted_text(tokens)),
     };
 
