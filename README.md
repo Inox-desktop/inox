@@ -8,7 +8,6 @@
 - **许可证**：LGPL-3.0（见 [`LICENSE`](./LICENSE)）
 - **本仓库**：`inox` 单仓库
 
-产品质量要求见 PRD 1.3、[桌面验收规范](./docs/quality/acceptance.md)与[验收报告模板](./docs/quality/acceptance-report.md)。本轮参考 [Plasma Desktop 固定快照](./docs/quality/plasma-reference.md)，新增的决策记录均为 `proposed`，待人类评审；文档中的新门槛不代表 CI 已接线或产品已通过。
 
 > 本仓库是**单一仓库（Cargo workspace）**：全部组件位于 [`crates/`](./crates)，架构决策与文档位于 [`docs/`](./docs)。
 > 各组件是工作区成员而非独立仓库，彼此通过 path 依赖连接、一次 PR 一次 CI 完成跨层改动；决策见单仓工作区的决策记录（取代多仓库策略）。
@@ -94,7 +93,6 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 合成器与 Shell **不通过 Rust 依赖**耦合，只通过 Wayland 协议 / D-Bus / IPC 通信，以保证各自可独立运行与测试。
 
-架构决策记录见[文档站的架构决策记录](./docs/book/src/architecture/decisions.md)。
 
 ---
 
