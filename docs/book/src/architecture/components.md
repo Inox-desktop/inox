@@ -23,8 +23,8 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 |-------|------|------|------|--------|----------|
 | `inox-common` | L1 | `crates/inox-common` | 共享类型、错误处理、日志、工具函数 | crate | 已实现（`logging`、`paths`） |
 | `inox-config` | L1 | `crates/inox-config` | 配置模型、TOML 解析、默认配置 | crate | 已实现（模型、解析、错误定位；决策状态仍为 `proposed`） |
-| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc` 绑定 + `inox-glass-v1` v2（模糊 + 圆角折射/色散）的绑定与两个版本的协议往返；效果由合成器在 headless 路径实现，DRM 路径报 0） |
-| `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区、私有 `inox_ipc` 与 `inox-glass-v1` v2） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；headless 路径的玻璃模糊与圆角折射 pass 有像素证据；单输出真实后端已实现，E4 尚未执行；DRM 路径不实现玻璃并诚实报 0） |
+| `inox-protocols` | L2 | `crates/inox-protocols` | 标准协议绑定与自定义 Wayland 协议扩展 | crate | 已实现（标准 `wl_*` 再导出 + 私有 `inox-ipc` 绑定 + `inox-glass-v1` v2（模糊 + 圆角折射/色散）的绑定与两个版本的协议往返 + `inox-window-manager-v1` v1 的绑定与真实 socket pair 上的快照/动词往返；玻璃效果由合成器在 headless 路径实现，DRM 路径报 0） |
+| `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区、私有 `inox_ipc`、`inox-glass-v1` v2 与 `inox-window-manager-v1` v1） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；窗口管理有四种窗口模式、≥2 工作区、`xdg-shell` 模式请求与私有窗口管理协议，证据 E1+E2；headless 路径的玻璃模糊与圆角折射 pass 有像素证据；单输出真实后端已实现，E4 尚未执行；DRM 路径不实现玻璃并诚实报 0。W05/D03 的截图与真机证据仍缺，不得读作通过） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、真实 X11 连接往返的就绪判定、生命周期） |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 部分实现（跨入口导航、服务契约、内部入口注册表；不绘制界面） |
 | `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、菜单栏、Dock、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型；界面为 QML，经**离屏渲染**写入自己创建的 `zwlr_layer_shell_v1` 表面；菜单栏与 Dock 的窗格由 `inox-glass` 的 `GlassPane` 绘制，并绑定 `inox-glass-v1` v2，headless 路径上有模糊与折射；窗口服务与 SNI 传输尚未实现） |
@@ -88,7 +88,7 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 
 PRD §3.1 曾把发布物记作 `inox-comp`；根级 `AGENTS.md` §5 说明这只是简写，实际二进制与你运行的命令都是 `inox-compositor`。
 
-当前 `inox-compositor` 实现的是 **M1 + M2 + M3 的协议面与数据互通**：headless 输出创建、键盘与指针事件处理、以 `xdg-shell` toplevel 为窗口的 master/stack 平铺，以及 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1` 的广告、焦点跟随的剪贴板与 Wayland↔Wayland 拖放（决策已记录，状态仍为 `proposed`）。为测试而加的输入注入套接字由非默认 feature `test-input` 与 `--test-input` 开关共同启用，默认构建不包含、未启用时该选项会被拒绝。`src/backend/drm.rs` 是 M2.5 真实后端的脚手架（决策状态 `proposed`）：后端特性已在 `Cargo.toml` 中启用并被 CI 编译检查，但真实 DRM/KMS 与 libinput 路径尚未在运行中打通。M3 未覆盖的部分：跨 X11/Wayland 边界的拖放被上游阻塞（satellite 无 XDND），`wlr-data-control` 与锁屏剪贴板断言推迟到 M5。详见[构建与运行](../usage/building.md)。
+当前 `inox-compositor` 实现的是 **M1 + M2 + M3 的协议面与数据互通，加上 M4 的窗口管理半边**：headless 输出创建、键盘与指针事件处理、以 `xdg-shell` toplevel 为窗口的窗口管理（四种窗口模式、≥2 工作区、`xdg-shell` 的模式/移动/缩放/标题请求、私有 `inox-window-manager-v1` v1，证据 E1+E2），以及 `wp_viewporter`、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1` 的广告、焦点跟随的剪贴板与 Wayland↔Wayland 拖放（决策已记录，状态仍为 `proposed`）。为测试而加的输入注入套接字由非默认 feature `test-input` 与 `--test-input` 开关共同启用，默认构建不包含、未启用时该选项会被拒绝。`src/backend/drm.rs` 是 M2.5 真实后端的脚手架（决策状态 `proposed`）：后端特性已在 `Cargo.toml` 中启用并被 CI 编译检查，但真实 DRM/KMS 与 libinput 路径尚未在运行中打通。M3 未覆盖的部分：跨 X11/Wayland 边界的拖放被上游阻塞（satellite 无 XDND），`wlr-data-control` 与锁屏剪贴板断言推迟到 M5。W05/D03 所需的截图与真机证据（E3/E4）仍未取得，**不得**读作通过。详见[构建与运行](../usage/building.md)。
 
 ### L2 内部有一条已登记的同层边
 

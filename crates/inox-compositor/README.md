@@ -6,9 +6,9 @@
 
 M1：headless 合成器已实现——创建 `wl_output`、以 EGL surfaceless（`EGL_MESA_platform_surfaceless`）+ GLES 渲染纯色帧、收到终止信号或渲染完指定帧数后干净退出（退出码 0）。渲染路径与 `unsafe` 策略见 [`AGENTS.md`](./AGENTS.md) 的 `unsafe` 例外一节。
 
-M2（PRD §13）：在 M1 的 headless 路径上扩展——通过 `wl_seat` 处理键盘/指针事件（确定性 keymap、修饰键跟踪、焦点投递），以 `xdg-shell` 客户端 toplevel 作为窗口并经 Smithay `desktop::Space` 管理 **≥2 个窗口**，按 master/stack 平铺布局（`proptest` 验证块不重叠、不越界、覆盖率完整）。键位绑定为纯逻辑（`Alt+Tab`/`Alt+Shift+Tab` 切换焦点、`Super+Q` 干净退出）；输入事件通过进程内注入 API 驱动，集成测试用**真实 Wayland 客户端**断言窗口数与平铺落点。M2 沿用 headless 路径（**不启用** libinput/udev/DRM 后端）。
+M2（PRD §13）：在 M1 的 headless 路径上扩展——通过 `wl_seat` 处理键盘/指针事件（确定性 keymap、修饰键跟踪、焦点投递），以 `xdg-shell` 客户端 toplevel 作为窗口并经 Smithay `desktop::Space` 管理 **≥2 个窗口**，按 master/stack 平铺布局（`proptest` 验证块不重叠、不越界、覆盖率完整）。键位绑定为纯逻辑（`Alt+Tab`/`Alt+Shift+Tab` 切换焦点、`Super+Q` 干净退出）；输入事件通过进程内注入 API 驱动，集成测试用**真实 Wayland 客户端**断言窗口数与平铺落点。M2 沿用 headless 路径（**不启用** libinput/udev/DRM 后端）。平铺此后成为四种窗口模式之一，见下文「窗口模式、工作区与任务栏协议」。
 
-合成器同时广告私有 `inox_ipc` 全局（来自 [`inox-protocols`](../../crates/inox-protocols)）：`get_version` 返回协议版本，`reload_config` 现阶段以 `unsupported` 应答，配置热重载在后续里程碑接入。
+合成器同时广告私有 `inox_ipc` 全局（来自 [`inox-protocols`](../../crates/inox-protocols)）：`get_version` 返回协议版本，`reload_config` 把请求交给运行中的配置重载路径并以 `config_reloaded` 回答 `Success` 或 `Rejected`；没有注册重载路径时（例如物理后端未就绪）回答 `Unsupported`。
 
 M3（PRD §13，承接 XWayland 外部进程的边界）：合成器侧补齐 XWayland 互操作所需的协议面。
 
@@ -51,6 +51,61 @@ Alt+Tab 顺序、获得键盘焦点。因此创建了却从不绘制的 toplevel
 `tests/window_management.rs` 用真实客户端断言这四条：空提交后窗口数为 0、绘制后平铺落点、
 `activated` 随 Alt+Tab 在两个客户端之间翻转、关闭请求只到达焦点窗口且不解散窗口。
 
+### 窗口模式、工作区与任务栏协议
+
+平铺不再是唯一形态。每个窗口在任一时刻只处于一种模式——`tiled`、`floating`、`maximized` 或 `fullscreen`
+（`src/workspace.rs` 的 `WindowMode`，互斥枚举而不是可叠加的标志位）；最小化与模式**正交**，保留模式与几何。
+窗口分布在至少一个、至多九个工作区上（`workspace_count`，编号从 0 开始，`Super+1`..=`Super+9` 逐个切换）：
+
+- `Tiled` 走既有的 master/stack 布局；`Floating` 用自己的几何、不参与平铺（首次浮动时取工作区的 2/3 居中矩形）；
+- `Maximized` 填满该输出的**工作区**（`work_area`），因此独占区面板不会被盖住，与 O02 的面板保留区规则一致；
+- `Fullscreen` 填满输出的**整个** area（面板被盖住，这是全屏的定义）；
+- `arrange_windows` 仍是唯一摆放窗口的地方，`sync_focus` 仍是 `xdg_toplevel.activated` 的唯一来源。
+
+`xdg-shell` 的窗口管理请求不再是空实现：`maximize`/`unmaximize`/`fullscreen`/`unfullscreen`/`minimize` 改窗口模式并重排，
+`move`/`resize` 把窗口转为浮动，`title_changed`/`app_id_changed` 不再丢失（标题与 app id 是任务栏画的字）。
+**客户端请求与任务栏请求走同一条路径**：两处都只调用 `InoxState` 上的同一个方法，因此「点最大化按钮」与「面板切换模式」
+不会各自演化出第二套语义。一次 configure 里同时推送 `activated` 与该模式对应的状态位——`maximized`、`fullscreen`，
+或 `Tiled` 的四个边缘位（`xdg-shell` 没有 floating 位，浮动窗口的位全部清空）。
+
+键盘绑定（`src/input.rs` 的纯逻辑，有单元测试）：`Super+F` 浮动/平铺切换、`Super+M` 最大化/还原切换、
+`Super+Shift+F` 全屏/还原切换、`Super+H` 最小化、`Super+1..=9` 切工作区、`Super+Shift+1..=9` 把焦点窗口移到该工作区。
+它们是同一个状态机的键盘半边，不是第二套实现。
+
+`workspace_count` 在启动时来自配置：物理后端读 `compositor.toml` 的 `[layout] workspace_count`，
+headless 用 `--workspaces <N>`（范围 `1..=9`，默认 `1`；越界是解析错误而不是夹取）。headless 启动时**不读取 TOML**，
+`--workspaces` 就是它这一项的等价参数；但**显式重载**（D-Bus `Reload` 或 `SIGHUP`）在两条路径上都会读取配置文档，headless 也能应用其中的 `[layout]`。
+数量在会话期间固定，运行中不动态增删；重载一个更小的数量只会把
+落在消失工作区上的窗口移到最后一个仍然存在的工作区。**浮动窗口的几何不持久化**：会话重启后回到默认位置，不写任何文件
+（持久化属于 `inox-settings` 的后续工作）。**指针交互式移动/缩放尚未实现**：`move`/`resize` 只把窗口转为浮动，
+合成器没有接管拖动与缩放。
+
+#### 私有 `inox-window-manager-v1`（v1）
+
+合成器广告私有 `inox_window_manager_v1` **v1**（`src/window_manager.rs` 是实现，协议规范在
+`inox-protocols/protocol/inox-window-manager-v1.xml`）：面板由此观察并驱动窗口。`get_window_list` 为每个调用创建一个
+`inox_window_list_v1` 观察者，先发快照（`session_generation` → `workspace_state` → 每个窗口一条 `window` → `snapshot_done`），
+之后发增量。三条性质不可放宽：
+
+- **一条请求由状态事件确认，不由应答确认**：`window`/`window_removed` *就是*确认，`request_failed` 是唯一的否定结果
+  （`unknown_window` / `not_permitted` / `unsupported`）。在改动生效前发「已完成」是在撒谎。
+- **事件是完整状态而不是增量**：`window` 带句柄、`app_id`、标题、工作区、输出、模式、是否最小化、是否可见、是否有焦点；
+  漏掉一条事件的观察者会在下一条上收敛。这也是 `diff` 可以只算一次、发给所有观察者的原因。
+- **事件只有两个出口**：`get_window_list` 之后的快照，与 `InoxState::announce_windows()`（窗口/模式/工作区/焦点变化之后调用一次）。
+  别处零散发窗口事件就是观察者失去同步的写法。
+
+`window` 只描述**已经 map 的窗口**（第一次带缓冲的 commit 之后），与 `promote_awaiting_toplevel` 的门槛是同一条规则：
+一个创建了却从不绘制的 toplevel 不应在任务栏留下一个可能永远不出现的按钮。句柄只在它的 `session_generation` 内有意义，
+代次在任何句柄之前发送。协议不授予任何像素，事件只有句柄、字符串与枚举。授权与 `inox_ipc` 相同——任何客户端可绑定，
+因为泄露的正是任务栏本来就画在屏幕上的标题与 app id，请求只是用户通过快捷键已经能做的动作；未来要加特权动词，
+必须同时加授权，不得拓宽这个接口。会话锁定时改动窗口可见性的请求以 `not_permitted` 拒绝（锁定期间不得把普通窗口带到前台），
+`move_to_workspace` / `switch_workspace` 越界同样以 `not_permitted` 拒绝而不是创建工作区。
+**中键关闭是请求**：协议只向客户端发 `xdg_toplevel.close`，客户端可以保存、弹窗或拒绝，面板只在收到 `window_removed` 后才移除按钮。
+
+证据等级：本 crate 的新增证据是 **E1**（`workspace`/`layout`/`input`/`window_manager` 的单元与属性测试，`window_manager` 的
+`diff` 与模式映射另有单元测试）加 **E2**（真实 Wayland 客户端驱动的进程内测试与真实 socket pair 上的协议往返）。
+**E3/E4 仍未取得**：没有截图证据、没有真机运行，waydriver 宿主 job 尚未接线，因此 W05 与 D03 **不得**被读作通过。
+
 ### 玻璃材质（私有 `inox-glass-v1` v2）
 
 合成器广告私有 `inox_glass_manager_v1` **v2**：拥有 layer 角色的表面可以创建
@@ -61,7 +116,7 @@ Alt+Tab 顺序、获得键盘焦点。因此创建了却从不绘制的 toplevel
 
 - **v1（模糊）**：半径上限 64（`src/glass.rs::MAX_BLUR_RADIUS`，冻结），`capabilities` 事件
   如实报告：只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」
-  三者同时成立才报 64，否则报 0。普通 `xdg_toplevel` 走平铺路径，不实现玻璃效果，因此报 0；
+  三者同时成立才报 64，否则报 0。普通 `xdg_toplevel`（无论哪种窗口模式）由窗口路径合成，不实现玻璃效果，因此报 0；
   同一表面第二个 `get_glass` 是致命协议错误 `already_created`。
 - **v2（折射）**：新增请求 `set_corner_radii(top_left, top_right, bottom_right, bottom_left)`
   与 `set_refraction(height, amount, flags)`，新增事件 `liquid_capabilities`（上限
@@ -132,9 +187,10 @@ GPU 都能导入），但**广告 `linux-dmabuf` 之前必须先补上复制路�
   释放遗留状态，seat 能力随设备变化。Smithay 的键码已是 XKB 单位，不再追加 `+8`。
 - 始终提供软件光标路径：支持客户端 cursor surface 与热点，缺省箭头从主题的
   `spacing.lg/xl`、`colors.background/text` 生成；不依赖硬件 cursor plane。
-- 真实会话启动时读取 `InoxConfig` 的输入、平铺、主题及输出 mode；不支持的 mode/scale
+- 真实会话启动时读取 `InoxConfig` 的输入、平铺（含工作区数量）、主题及输出 mode；不支持的 mode/scale
   明确拒绝。键盘重复 rate 为 0 关闭 repeat；delay/rate 必须可表示为 Wayland 有符号字段。
-  headless 保持确定性的测试配置。
+  headless 保持确定性的测试配置：它启动时**不读取 `compositor.toml`**，工作区数量来自 `--workspaces <N>`
+  （`1..=9`，默认 `1`，越界是解析错误），平铺参数为内置默认值；显式重载仍会读取配置文档并应用其中的 `[layout]`。
 - 运行中的配置通过会话 D-Bus 应用：`org.inox.Configuration1.Reload` 立即应用并拒绝输出
   改动（SIGHUP 与 `inoxctl` 没有确认通道）；`org.inox.Configuration2` 的
   `Trial`/`Confirm`/`Rollback` 让输出模式、缩放与位置**试用**：应用成功后 30 秒内没有
@@ -158,6 +214,10 @@ XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
   cargo run -- --headless \
     --output name=DP-1,width=1920,height=1080,x=0,y=0 \
     --output name=DP-2,width=2560,height=1440,scale=1.5,x=1920,y=0
+
+# 三块工作区（headless 没有 TOML 可读，这一项只能走命令行）
+XDG_RUNTIME_DIR=/tmp/inox-runtime LIBGL_ALWAYS_SOFTWARE=1 \
+  cargo run -- --headless --workspaces 3
 
 # 查看选项
 cargo run -- --help

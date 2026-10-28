@@ -21,8 +21,8 @@
 
 ## 为什么是这套组合
 
-- **纯逻辑与副作用分离**：合成器的输入判定、窗口簿记与平铺几何都是不依赖 Smithay 运行时状态的纯函数，因此可以用普通单元测试与 `proptest` 覆盖，不需要真实设备。副作用（协议、渲染、事件循环）留在边界层，由集成测试覆盖。
-- **不用 mock**：`tests/window_management.rs` 在**同一进程内**用 `UnixStream::pair()` 连接一个真实的 `wayland-client`，创建 ≥2 个 xdg toplevel，断言合成器可观测状态（托管窗口数、`Space` 中的平铺落点、焦点）。被验证的是真实协议处理路径，而不是桩。`wayland-client` / `wayland-protocols` 只作为 dev-dependency，不进入发布产物。
+- **纯逻辑与副作用分离**：合成器的输入判定、窗口簿记（窗口模式/工作区/最小化）、平铺几何、浮动默认几何与窗口管理协议的 `diff` 都是不依赖 Smithay 运行时状态的纯函数，因此可以用普通单元测试与 `proptest` 覆盖，不需要真实设备。副作用（协议、渲染、事件循环）留在边界层，由集成测试覆盖。
+- **不用 mock**：`tests/window_management.rs` 在**同一进程内**用 `UnixStream::pair()` 连接一个真实的 `wayland-client`，创建 ≥2 个 xdg toplevel，断言合成器可观测状态（托管窗口数、`Space` 中的平铺落点、焦点）。`tests/window_manager_end_to_end.rs` 更进一步：它用真实 `wayland-client` 驱动**真实合成的二进制**，断言私有窗口管理协议的快照、增量与六个动词，全部结论来自客户端收到的事件。被验证的是真实协议处理路径，而不是桩。`wayland-client` / `wayland-protocols` 只作为 dev-dependency，不进入发布产物。
 - **断言要看得见**：渲染是否真的发生由**离屏像素读回**断言，不能只依赖日志。像素比较留 ±1 个 8 位步长的容差，因为不同驱动的 float → unorm 舍入不同。
 - **CI 无设备**：PRD §6.1 要求 CI 在没有显示设备与输入设备的环境中可复现，因此 M2 的输入通过进程内注入 API 驱动，真实输入设备链路（libinput/udev）推迟到具备后端能力的里程碑。
 
@@ -65,10 +65,10 @@ CI 的 `test` 分片对每个 crate 跑的就是 `cargo test -p <crate> --all-fe
 
 | crate | 现有测试 |
 |------|----------|
-| `inox-compositor` | 命令行解析、按键映射、平铺布局、窗口簿记、合成器状态的 `#[cfg(test)]` 单元测试；布局与窗口簿记的 `proptest` 属性测试；`tests/headless_render.rs`（创建输出并渲染一帧）、`tests/signal_shutdown.rs`（终止信号与帧预算都以退出码 0 结束）、`tests/window_management.rs`（真实客户端多窗口、平铺与输入） |
+| `inox-compositor` | 命令行解析、按键映射（含窗口模式与工作区绑定）、平铺布局与浮动默认几何、窗口簿记（模式/工作区/最小化）、窗口管理协议的 `diff` 与模式映射、合成器状态的 `#[cfg(test)]` 单元测试；布局与窗口簿记的 `proptest` 属性测试；`tests/headless_render.rs`（创建输出并渲染一帧）、`tests/signal_shutdown.rs`（终止信号与帧预算都以退出码 0 结束）、`tests/window_management.rs`（真实客户端多窗口、平铺与输入）、`tests/window_manager_end_to_end.rs`（进程级：真实客户端驱动真实二进制，断言 `inox-window-manager-v1` 的快照顺序、未绘制 toplevel 不出现、六个动词由状态事件确认、越界与未知窗口被拒；不读像素） |
 | `inox-common` | `logging` 与 `paths` 的单元测试。`XdgEnv::from_process` 刻意不做单元测试：edition 2024 下改写进程环境是 `unsafe`，而该 crate `forbid(unsafe_code)`，因此解析逻辑全部经注入的环境快照验证 |
 | `inox-config` | 默认值、解析、字段路径与行列定位、范围校验、主题解析与 `ConfigStore` 热重载的单元测试（含「重载失败保留旧值」） |
-| `inox-protocols` | `tests/standard_bindings.rs` 断言再导出的接口名与版本；`tests/ipc_roundtrip.rs` 在真实连接上跑私有协议的往返 |
+| `inox-protocols` | `tests/standard_bindings.rs` 断言再导出的接口名与版本；`tests/ipc_roundtrip.rs` 在真实连接上跑私有协议的往返；`tests/glass_roundtrip.rs` 与 `tests/window_manager_roundtrip.rs` 在真实 socket pair 上断言私有协议的线格式（后者覆盖快照顺序、`window` 的每个字段与六个动词的参数） |
 | L3 组件（七个） | 纯逻辑的单元测试 + `proptest` 属性测试（导航栈、快照/请求代次、任务分组是划分、缩放几何、搜索排序、通知队列的终态、锁状态机的安全不变量）；这些 crate 是 **bin-only**（含 cxx-qt bridge，不能有 `lib.rs`），原来的 `tests/*.rs` 迁进了 bin 内的 `#[cfg(test)]` 模块（`src/headless_tests/` 或 `src/headless_tests.rs`）：投影断言（令牌 → 颜色/尺寸、Fluent 文案、可达条目）、`QT_QPA_PLATFORM=offscreen` 下的 QML 加载测试（子进程自 spawn）、目录双向一致性（`catalog.rs`）。`inox-panel` / `inox-lock` 另有 `headless_tests/protocol.rs`：真实协议 peer 驱动编译出的二进制，面板一侧断言 layer 表面参数、glass 请求顺序与提交的预乘 `Argb8888` 帧，锁屏一侧断言 `ext-session-lock-v1` 的取锁与帧；`inox-lock` 还有默认拒绝路径的 CLI 测试 |
 | L4 组件（`inox-session`、`inox-idle`、`inox-greet`） | 重启预算、进程组/注销/目录清理、Wayland 线协议 idle 通知、锁前挂起与登录生命周期；greeter 的登录界面按 `state::Greeter` 的生命周期阶段做投影断言，`QT_QPA_PLATFORM=offscreen` 下加载 QML 并等待 `reportReady`，目录双向检查在 `headless_tests/catalog.rs`；独立 CI job 验证真实 Inox headless 启动/注销。认证、greeter 宿主与挂起 E3/E4 尚未完成 |
 | 本站点（`docs/book/`） | 无单元测试要求。文档正确性由 CI 的 `book` job（`mdbook build`）保证，站点结构由 `SUMMARY.md` 与实际章节文件的一致性约束 |

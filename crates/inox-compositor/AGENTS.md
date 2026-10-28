@@ -6,11 +6,13 @@
 
 基于 Smithay 的 Wayland 合成器。所属层级：**L2**。
 
-广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc` 与私有 `inox_glass_manager_v1`（v2），M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及分数缩放起的 `wp_fractional_scale_manager_v1`，以及会话锁与通知总线起的 `ext_session_lock_manager_v1`（v1））。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+广告的全局以 `src/state.rs` 的模块文档为唯一清单（`wl_compositor` v6/`wl_subcompositor`、`wl_shm`、`wl_seat`、每个输出一个 `wl_output`（v4）+`zxdg_output_manager_v1`、`xdg_wm_base`、`zwlr_layer_shell_v1`（v4）、私有 `inox_ipc` 与私有 `inox_glass_manager_v1`（v2），M3 起的 `wp_viewporter`、`wl_data_device_manager`、`zwp_primary_selection_device_manager_v1`，以及分数缩放起的 `wp_fractional_scale_manager_v1`，会话锁与通知总线起的 `ext_session_lock_manager_v1`（v1），以及窗口管理起的私有 `inox_window_manager_v1`（v1））。M3 起剪贴板与主选区的可见性跟随键盘焦点，`sync_focus` 是唯一交接点。
+
+窗口管理：每个窗口在任一时刻只处于 `WindowMode::{Tiled, Floating, Maximized, Fullscreen}` 之一，`minimized` 与模式**正交**（保留模式与几何）。窗口分布在 `Workspace` 的 1..=9 个工作区上，数量来自启动配置（物理后端读 `[layout] workspace_count`，headless 用 `--workspaces`）；会话期间不动态增删。`xdg-shell` 的 `maximize`/`unmaximize`/`fullscreen`/`unfullscreen`/`minimize`/`move`/`resize` 与任务栏的 `inox-window-manager-v1` 请求**走同一个 `InoxState` 方法**——「点最大化按钮」与「面板切换模式」不允许各自演化出第二套语义。`arrange_windows` 仍是唯一摆放窗口的地方，`sync_focus` 仍是 `xdg_toplevel.activated` 的唯一来源，一次 configure 同时推送模式位（`maximized` / `fullscreen` / `Tiled` 的四个边缘位；floating 没有位）与 `activated`。
 
 输出拓扑：`InoxState` 持有一张输出表，所有输出映射进同一个 `Space`，位置是全局逻辑坐标（可为负）。分数缩放：每个输出有自己的缩放因子，渲染、光标与 layer 放置按该因子折算为物理像素，命中测试、平铺与工作区留在逻辑坐标。
 
-窗口生命周期：`xdg_toplevel` 创建后**不是窗口**。`XdgShellHandler::new_toplevel` 只发初始 configure 并把它放进 `awaiting_buffer`；第一次携带缓冲的 commit 经 `promote_awaiting_toplevel` 才进入 `Workspace`/`Space`（因此不绘制的 toplevel 不占 tile、不进 Alt+Tab、不拿焦点）。`sync_focus` 同时是 `xdg_toplevel.activated` 的唯一来源（以键盘实际焦点为准，layer 表面独占焦点时窗口确实失活）。`Super+Shift+Q` 通过 `Action::CloseWindow` 发 `xdg_toplevel.close`，只是请求，不拆窗口；`Super+Q` 仍是退出合成器。`xdg_popup` 的 grab 交给 Smithay 的 `PopupGrab`/`PopupKeyboardGrab`/`PopupPointerGrab`，点外部由 grab 自己 dismiss。
+窗口生命周期：`xdg_toplevel` 创建后**不是窗口**。`XdgShellHandler::new_toplevel` 只发初始 configure 并把它放进 `awaiting_buffer`；第一次携带缓冲的 commit 经 `promote_awaiting_toplevel` 才进入 `Workspace`/`Space`（因此不绘制的 toplevel 不占 tile、不进 Alt+Tab、不拿焦点）。`sync_focus` 同时是 `xdg_toplevel.activated` 的唯一来源（以键盘实际焦点为准，layer 表面独占焦点时窗口确实失活）。`Super+Shift+Q` 通过 `Action::CloseWindow` 发 `xdg_toplevel.close`，只是请求，不拆窗口；`Super+Q` 仍是退出合成器。窗口模式与工作区的键位（`src/input.rs` 的纯逻辑，均有单元测试）：`Super+F` 浮动/平铺切换、`Super+M` 最大化/还原切换（**切换**，不是单向最大化）、`Super+Shift+F` 全屏/还原切换、`Super+H` 最小化、`Super+1..=9` 切工作区、`Super+Shift+1..=9` 把焦点窗口移到该工作区。`xdg_popup` 的 grab 交给 Smithay 的 `PopupGrab`/`PopupKeyboardGrab`/`PopupPointerGrab`，点外部由 grab 自己 dismiss。
 
 ## crate 特有约束
 
@@ -22,10 +24,19 @@
 - 非测试路径禁止 `unwrap()` / `expect()` / `panic!()` / `todo!()` / `unimplemented!()`。
 - 日志统一使用 `tracing`，禁止 `println!` / `eprintln!`；面向 CLI 的输出（如 `--help`）用显式 stdout 写入。
 - MSRV：工作区统一为 `[workspace.package] rust-version = "1.89"`，本 crate 通过 `rust-version.workspace = true` 继承。工作区内不再存在两个 MSRV。
-- 工作区内依赖：`inox-common`、`inox-config` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`）的唯一来源。
+- 工作区内依赖：`inox-common`、`inox-config` 与 `inox-protocols` 都是**path 依赖**（在根 `Cargo.toml` 的 `[workspace.dependencies]` 声明，本 crate 用 `{ workspace = true }` 引用），不再是 git 依赖，因此不涉及 `[sources] allow-git` 与 tag 升级（根级 §8）。`inox-protocols` 是 Wayland 协议（核心 `wl_*` 绑定与私有 `inox-ipc`、`inox-glass-v1`、`inox-window-manager-v1`）的唯一来源。
   - **注意 `inox-compositor -> inox-protocols` 是 L2 → L2 的同层边**：分层规则 1 禁止同层依赖，而协议集中到 `inox-protocols`（规则 4）又要求它。该边已登记在根 `Cargo.toml` 的 `[workspace.metadata.inox.rules] same_layer_exceptions`，规则 1 的裁决（层内顺序）尚未完成。
 - **`test-input` feature（默认关闭）**：`--test-input <PATH>` 只在启用该 feature 的构建里存在，用于让端到端测试驱动**正在运行的合成器进程**（`key`/`motion`/`button`/`dump-frame`，见 `src/test_input.rs`）。约束：默认构建必须直接以 `ConfigError` 拒绝该选项；该通道**不得**成为 Wayland 全局、不得自动启用、不得暴露除「向调用者指定 socket 写命令」以外的能力。修改它时必须同步 `README.md`、本文件与模块文档。
 - **后端开关**：`--backend` 选择 `auto`（默认）/ `headless` / `drm`；`--headless` 保留为 `headless` 的别名。`auto` 与 `drm` 都必须得到可用物理输出，失败返回 `RunError::BackendUnavailable`，不得静默回落 headless。CI 进程测试显式 `--headless`；进程内 `InoxState::new` 始终是确定性的 headless 状态。
+- **配置来源按后端分工**：物理后端启动时用 `InoxConfig` 读 `compositor.toml` 的 `[[outputs]]`、`[input]` 与 `[layout]`（含 `workspace_count`），运行中经会话 D-Bus 与 `SIGHUP` 应用其中允许的部分；**headless 不读取 TOML**，它的等价入口是命令行：`--output` 给输出，`--workspaces <N>`（`1..=9`，默认 `1`，越界是 `ConfigError` 而不是夹取）给工作区数量，`[layout]` 的其余三个键固定为内置默认值。两个入口最终都落到 `Workspace::with_workspaces` / `apply_layout` 这一个所有者上，不得为 headless 另开一份工作区簿记。改动这里时同步 `README.md` 的运行示例与 `docs/book/src/configuration/compositor.md` 的差距表。
+- **私有 `inox-window-manager-v1` 服务端（`src/window_manager.rs`）**：协议规范在 `inox-protocols/protocol/inox-window-manager-v1.xml`，绑定由 `inox-protocols` 生成，本模块只实现服务端。以下规则不可放宽，改动前先读模块文档：
+  - **一条请求由状态事件确认，不由应答确认**：`window` / `window_removed` *就是*确认，`request_failed` 是唯一的否定结果（`unknown_window` / `not_permitted` / `unsupported`）。不得新增「已处理」事件——在改动真正生效前说完成是在撒谎，客户端会画出一个它并不处于的状态。
+  - **事件只有两个出口**：`get_window_list` 之后的快照（`window_manager::serve_snapshot`），与 `InoxState::announce_windows()`——后者在窗口增删、模式、工作区与焦点变化之后被调用。**禁止**在别处零散发窗口事件；漏一次 `announce_windows()` 就是任务栏与桌面不同步，这类缺陷在截图里看不出来，只能靠这条规则与单元测试挡住。
+  - **`WindowRecord` 带完整状态而非增量**，`diff(previous, current)` 是纯函数并有单元测试（删除先于增量、字段逐项变化都会出现、漏掉的事件在下一条上收敛）。正因为记录是完整状态，一次 `diff` 可以发给所有观察者；不得改成逐观察者维护「它见过什么」。
+  - **窗口只在第一次带缓冲的 commit 之后才被通告**（与 `promote_awaiting_toplevel` 同一门槛）：未 map 的 toplevel 不得进快照、不得被 `title_changed` / `app_id_changed` 通告。任务栏不得为可能永远不出现的窗口留一个按钮。
+  - **锁定会话拒绝一切改动窗口可见性的请求**（`activate` / `minimize` / `close` / `set_mode` / `move_to_workspace` / `switch_workspace`）以 `not_permitted` 拒绝；越界的工作区号同样 `not_permitted`，不得顺手创建工作区。
+  - 句柄是 `WindowId` 的 `uint` 投影，只在本次运行的 `session_generation` 内有意义，代次在任何句柄之前发送；`u32::MAX` 保留给「没有窗口」的失败（工作区切换），不得与真实句柄冲突。绑定该全局不做授权（与 `inox_ipc` 相同），未来要加特权动词必须同时加授权，**不得拓宽 v1**。
+  - 契约行为由 `tests/window_manager_end_to_end.rs`（进程级、真实 `wayland-client` 驱动真实二进制：快照顺序、快照报告配置的工作区数、未绘制的 toplevel 不出现、六个动词的确认、越界与未知窗口的拒绝）与 `inox-protocols/tests/window_manager_roundtrip.rs`（真实 socket pair 上的线格式）共同钉住。别把这两条读作 E3/E4 证据：它们不读像素、不截图、不涉及真机。
 - **多输出与多 GPU**：`InoxState::apply_outputs` 是拓扑变更的**唯一入口**，接受期望的输出集合、按 connector 名与 `Output` 实例复用未变的输出（保留其全局、layer 表面与窗口），并让消失输出的窗口迁移到主存活输出。禁止再新增「全量替换」的输出入口：`replace_output` 只是 `apply_outputs` 的单输出包装，仅为兼容既有调用点。物理后端枚举 seat 上的**每一块**能驱动输出的 GPU，每块用**自己的** libseat 租约、`DrmDevice`、`GbmDevice` 与 EGL/GLES 渲染器驱动自己的 connector；跨 GPU 没有复制路径，这一点在广告 `linux-dmabuf` 之前必须先解决。
 - **缩放**：`scale` 取值域为 `0.25..=8.0`，物理后端**不再拒绝**非整数缩放。渲染路径中不得出现硬编码的 `1.0` 缩放：元素位置按输出 scale 折算为物理像素，`draw_render_elements` 也必须收到该 scale（元素的**位置**是物理像素、**尺寸**由逻辑尺寸乘 scale 得出）。
 
@@ -37,7 +48,7 @@
 - **显示试用**：`org.inox.Configuration1.Reload` 立即应用并**拒绝**输出改动；输出模式/缩放/位置只能经同一对象路径上的 `org.inox.Configuration2` 的 `Trial`/`Confirm`/`Rollback` 应用。四条不可放宽的规则：**一个会话同一时刻至多一个试用**（第二个 `Trial` 失败）；**期限 30 秒由合成器持有**（`src/trial.rs::TRIAL_DEADLINE` 与 calloop 定时器），到期即恢复试用前的偏好，设置窗口消失也一样；**成功回执必须核对设备状态**——`rescan` 对不支持的 mode 只是 `warn!` 并保留旧 scanout，所以 `physical::apply_output_preferences` 必须在 `refresh_topology` 之后用 `GpuBackend::preferences_in_effect` 逐 connector 读回 mode/scale/position，核对不通过就先回滚再返回失败；**回退只退输出偏好**，主题/语言/输入/平铺保持试用后的值，且不写任何文件（持久化属于 `inox-settings`）。代次规则只由 `src/trial.rs::decide` 决定并有单元测试：迟到或陌生代次的 `Confirm` 失败且不固定模式，未知代次的 `Rollback` 幂等成功。headless 路径（`data.physical.is_none()`）继续拒绝输出改动。真实模式切换与 30 秒回退是 E4 真机证据，不得由 headless/离屏测试推断。
 
 - **玻璃材质（私有 `inox-glass-v1` v2）**：协议规范在 `inox-protocols/protocol/inox-glass-v1.xml`，纯逻辑（参数、clamp、capabilities 判定、pane 收集与坐标/clip/透镜折算）在 `src/glass.rs`，模糊与折射 pass 在 `src/render.rs`（两个 region 大小的可分离 scratch pass + 一趟 pane 大小的折射 pass，两个 shader 都带 `//_DEFINES_` 标记的 GLSL ES 1.00 源码，缓存于 `HeadlessRenderer`），协议接线在 `src/state.rs`。以下规则不可放宽：
-  - **两个 capabilities 事件都绝不广告不会兑现的效果**：只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」三者同时成立才报 `MAX_BLUR_RADIUS`（64，冻结）、`MAX_REFRACTION_HEIGHT`（128）、`MAX_REFRACTION_AMOUNT`（64）与 `depth | dispersion` 两个 flag 位，否则两个事件全报 0。普通 `xdg_toplevel` 由平铺路径合成，不实现玻璃，因此报 0；客户端据此选择降级为纯半透明。`capabilities`（v1 事件）永远先发一次，`liquid_capabilities` 只发给 `version() >= 2` 的对象；两个事件都由 `glass::liquid_capabilities` 一处算出，不得各写一份。
+  - **两个 capabilities 事件都绝不广告不会兑现的效果**：只有「表面此刻有 layer 角色」∧「会话未锁定」∧「该表面的合成路径真的会施加效果」三者同时成立才报 `MAX_BLUR_RADIUS`（64，冻结）、`MAX_REFRACTION_HEIGHT`（128）、`MAX_REFRACTION_AMOUNT`（64）与 `depth | dispersion` 两个 flag 位，否则两个事件全报 0。普通 `xdg_toplevel` 无论处于哪种窗口模式都由窗口路径合成，不实现玻璃，因此报 0；客户端据此选择降级为纯半透明。`capabilities`（v1 事件）永远先发一次，`liquid_capabilities` 只发给 `version() >= 2` 的对象；两个事件都由 `glass::liquid_capabilities` 一处算出，不得各写一份。
   - **上限常量只有一份**：`MAX_BLUR_RADIUS` / `MAX_CORNER_RADIUS` / `MAX_REFRACTION_HEIGHT` / `MAX_REFRACTION_AMOUNT` 与 `REFRACTION_FLAG_*` 位在 `src/glass.rs`，并有单元测试对 `inox_protocols` 的生成值做漂移检查；`set_refraction` 的 `WEnum` 未知位按协议忽略（只读已知位），不得变成协议错误。
   - 参数以 **`WlSurface` 为键**存放在 `InoxState::frost`；表面、glass 对象或客户端任一消失都必须清除（`CompositorHandler::destroyed`、glass 对象的 `Dispatch::destroyed`、`detach_layers_of`、`prune_frost` 四处），死表面不得再被绘制，也不得把参数留给复用的对象 id。
   - 同一表面第二个 `get_glass` 是**致命协议错误** `already_created`，不得静默替换成第二个控制器。
@@ -82,7 +93,8 @@
 - 键盘解析依赖 XKB rules 文件（`xkb-data`），CI 必须安装该系统包。
 - 一个测试进程只能持有一个 EGL display，**每个测试二进制中只保留一个创建 EGL 的测试**。
 - 进程级测试必须自备私有 `XDG_RUNTIME_DIR`（Wayland 套接字绑定需要绝对路径的运行时目录），并给子进程设定超时，避免 CI 挂死。
-- **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定，`wl_compositor` 必须 ≥ 6 且 `wp_fractional_scale_manager_v1` 可绑定。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
+- **协议面**（`tests/protocol_surface.rs`）：进程级——广告的全局必须与 `src/state.rs` 的清单一致，M3 全局的版本（`wp_viewporter` v1、`wl_data_device_manager` v3、`zwp_primary_selection_device_manager_v1` v1）必须可绑定，`wl_compositor` 必须 ≥ 6 且 `wp_fractional_scale_manager_v1` 可绑定，私有 `inox_window_manager_v1` 必须**广告且可绑定**（v1，无授权门）。`--test-input` 在**未启用 feature 的构建**里必须被拒绝，该断言位于 `#[cfg(not(feature = "test-input"))]`（`--all-features` 的构建反而启用它，断言在那里没有意义）；由于其余 CI job 一律用 `--all-features`，这条门禁由 CI 的 `m3-e2e` job 用**默认 feature** 构建二进制并断言它非零退出且错误信息点名该选项来验证。
+- **窗口管理协议**（`tests/window_manager_end_to_end.rs`，一个测试二进制只有一个创建 EGL 的测试，因此全部断言在同一个 `#[test]` 里）：进程级、真实 `wayland-client` 驱动真实二进制。必须断言：空桌面快照仍按 `session_generation` → `workspace_state` → `snapshot_done` 到达、`workspace_state.count` 等于启动时给定的工作区数、创建后只空提交而从不绘制的 toplevel **从未**出现在任何通告里、`window` 记录带的字段（`app_id`、标题、工作区、输出、模式、minimized/visible/focused）、`activate` 与 `minimize` 的确认来自状态事件而不是应答、四种模式按 `set_mode` 生效并被读回、`switch_workspace` 让别的窗口 `visible = 0` 且不移动它们的 `workspace`、`move_to_workspace` 改工作区字段、未知句柄与越界工作区分别得到 `unknown_window` 与 `not_permitted`、`close` 的确认是 `window_removed`。**不读像素**：这条测试不构成 W05 的截图证据，也不得被读作 E3/E4。
 - **layer-shell**（`tests/layer_shell.rs`）：真实客户端覆盖四层像素顺序、独占区与平铺位置、显式/空输出、初次空提交后的 configure/ack、None/Exclusive/OnDemand 焦点、指针命中、frame callback、卸载/重映射、销毁和崩溃释放资源，以及未确认 configure 的客户端隔离。放置/独占区算法的属性测试覆盖极端整数参数；安全锁屏不属于该协议。
 - **物理后端边界**：`backend::frame` 覆盖首帧、空闲、提交中 damage、失败限流、pause/resume、移除与陈旧完成；`backend::input` 覆盖多设备按键引用与移除清理；DRM 模式排序使用 proptest。真实客户端测试补充能力变更、按键清理、软件光标像素和输出移除/恢复；`signal_shutdown` 强制无效 libseat 后端，验证 auto/drm 不回落、不伪报 ready。E4 真机结果不得由这些测试推断。
 - **多输出**（`tests/multi_output.rs`）：进程内、真实客户端——两个不同分辨率/缩放的 headless 输出各有自己的逻辑工作区且互不重叠；窗口落在主输出的工作区内；主输出消失后窗口迁移到存活输出；全部输出消失时窗口仍被托管、恢复后被主输出收养；O02 的 20 轮拔插往返后客户端仍连着、窗口始终在存活工作区内；重复应用同一拓扑集合不改变窗口位置。
@@ -100,13 +112,14 @@ src/
   lib.rs          库入口与模块说明
   main.rs         可执行入口（CLI、日志初始化）
   config.rs       命令行解析、后端选择与配置数据（不依赖 Smithay）
-  input.rs        按键 → 合成器动作的纯逻辑（Alt+Tab / Super+Q / Super+Shift+Q）
-  layout.rs       master/stack 平铺几何（纯逻辑 + proptest）
+  input.rs        按键 → 合成器动作的纯逻辑（Alt+Tab / Super+Q / Super+Shift+Q / 模式与工作区绑定）
+  layout.rs       master/stack 平铺几何与浮动默认几何（纯逻辑 + proptest）
   layers.rs       layer-shell 放置与独占区计算（纯逻辑 + proptest）
-  workspace.rs    窗口簿记、每个窗口所属输出与布局顺序（纯逻辑 + proptest）
+  workspace.rs    窗口簿记：窗口模式、工作区、每个窗口所属输出与布局顺序（纯逻辑 + proptest）
   topology.rs     输出放置、指针跨输出钳制与逻辑尺寸折算（纯逻辑 + proptest）
   trial.rs        显示试用的纯状态机：代次、30 秒期限、确认/回退判定
   glass.rs        私有 inox-glass-v1 v2 的纯逻辑：半径/圆角/带宽位移 clamp、区域归一化、capabilities 判定、pane 与透镜解析（单元测试 + proptest）
+  window_manager.rs  私有 inox-window-manager-v1 的服务端：完整状态的 `WindowRecord`、纯 `diff`、观察者簿记与快照（单元测试）
   runtime.rs      calloop 事件循环：后端探测、套接字、信号、帧定时器（headless）
   runtime/reload.rs  会话 D-Bus 的 Configuration1/Configuration2 端点、离循环候选读取与试用期限
   runtime/physical.rs 物理后端的设备事件源、逐输出帧调度与输出偏好应用
@@ -125,7 +138,8 @@ tests/
   ipc_global.rs          进程级：广告 inox_ipc 全局并应答 get_version
   signal_shutdown.rs     进程级：终止信号与帧预算都须以退出码 0 结束
   window_management.rs   真实客户端创建 ≥2 窗口，断言 map 门槛、平铺、activation、关闭请求与输入（进程内）
-  protocol_surface.rs    进程级：M3 全局的接口与版本可绑定；未启用 feature 时拒绝 --test-input
+  window_manager_end_to_end.rs  进程级：真实客户端驱动真实二进制，断言 inox-window-manager-v1 的全局可绑定、快照顺序与工作区数、未绘制 toplevel 不出现、六个动词由状态事件确认、越界与未知窗口被拒（E2；不读像素）
+  protocol_surface.rs    进程级：M3 全局与 inox_window_manager_v1 的接口与版本可绑定；未启用 feature 时拒绝 --test-input
   session_lock.rs        进程内真实客户端：锁定遮蔽、`locked` 时序、输入/选区隔离、授权拒绝、协议错误与 UI 死亡后拒绝接管；以及玻璃场景在锁定前/锁定中的判别性像素证据
   clipboard.rs           进程内真实客户端：只有焦点客户端能读到剪贴板
   drag_and_drop.rs       进程内真实客户端：拖放传输、取消、目标中途销毁

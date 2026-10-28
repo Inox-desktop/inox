@@ -154,6 +154,7 @@ mod theme;
 mod tray;
 mod view;
 mod view_model;
+mod window_service;
 
 #[cfg(test)]
 mod headless_tests;

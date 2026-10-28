@@ -178,7 +178,7 @@ mod tests {
     use inox_common::i18n::Locale;
 
     use crate::i18n;
-    use crate::tasks::{SessionGeneration, WindowId, WindowKey};
+    use crate::tasks::{SessionGeneration, WindowId, WindowKey, WindowMode};
     use crate::view_model::{PanelStatus, TaskButton};
 
     fn localizer(tag: &str) -> Localizer {
@@ -203,6 +203,7 @@ mod tests {
             label: "A window".to_owned(),
             active,
             minimized: false,
+            mode: WindowMode::Tiled,
             enabled: true,
             disabled_reason: None,
             tooltip: "app: A window".to_owned(),
@@ -217,6 +218,7 @@ mod tests {
                 PanelStatus::Ready
             },
             tasks,
+            workspace: None,
             tray: Vec::new(),
             clock: Some(ClockLabel {
                 text: "09:05".to_owned(),

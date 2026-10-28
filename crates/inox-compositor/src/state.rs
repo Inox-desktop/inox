@@ -127,6 +127,9 @@ use std::{
 
 use calloop::LoopSignal;
 use inox_protocols::{
+    window_manager::inox_window_manager::server::{
+        inox_window_manager_v1::InoxWindowManagerV1,
+    },
     glass::inox_glass::server::{
         inox_glass_manager_v1::{
             Error as GlassError, InoxGlassManagerV1, Request as GlassManagerRequest,
@@ -216,7 +219,10 @@ use smithay::{
                 LayerSurfaceConfigure, WlrLayerShellGlobalData, WlrLayerShellHandler,
                 WlrLayerShellState, WlrLayerSurfaceUserData,
             },
-            xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+            xdg::{
+                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
+                XdgToplevelSurfaceData, XdgShellState,
+            },
         },
         shm::{ShmHandler, ShmState},
         viewporter::ViewporterState,
@@ -232,7 +238,8 @@ use crate::{
     render::{HeadlessRenderer, RenderError, Scene, SceneElement},
     session_lock::{Claim, LockCoverage, claim},
     topology::{self, OutputId, Placement},
-    workspace::{WindowId, Workspace},
+    window_manager::{RequestError, WindowRecord},
+    workspace::{OutputArrangement, WindowId, WindowMode, Workspace},
 };
 
 /// Physical pixels assumed per inch when translating the headless mode into
@@ -431,10 +438,26 @@ pub struct InoxState {
 
     /// The desktop space that owns the managed windows and their positions.
     space: Space<Window>,
-    /// The tiling order and focus of the managed windows.
+    /// The tiling order, mode, workspace and focus of the managed windows.
     workspace: Workspace,
     /// Maps workspace identifiers to the Smithay windows they stand for.
     windows: HashMap<WindowId, Window>,
+
+    /// The observers of the private `inox-window-manager-v1` protocol.
+    ///
+    /// One entry per live `inox_window_list_v1` object. The service also holds the
+    /// last record set it announced, which is what makes [`WindowService::announce`]
+    /// a diff instead of a broadcast: an observer that missed an event converges on
+    /// the next one because the events carry complete state.
+    pub(crate) window_service: crate::window_manager::WindowService,
+
+    /// The generation this run's window handles belong to.
+    ///
+    /// Sent before any handle. Handles are only meaningful within the generation
+    /// that issued them, so a client that reconnects to a restarted compositor can
+    /// tell an old handle from a new window; the value is derived from this
+    /// process's start so it is very unlikely to repeat.
+    window_generation: u32,
 
     /// Tiling parameters, applied whenever the window set changes.
     layout: LayoutConfig,
@@ -565,16 +588,35 @@ impl InoxState {
         }
         keyboard.change_repeat_info(rate, delay);
         self.input_config = input.clone();
-        self.layout = LayoutConfig {
+        self.apply_layout(LayoutConfig {
             master_ratio: config.compositor.layout.master_ratio,
             master_count: config.compositor.layout.master_count as usize,
             gap: config.compositor.layout.gap,
-        };
+            workspace_count: config.compositor.layout.workspace_count,
+        });
         self.cursor_buffer = crate::cursor::fallback(&config.theme);
         self.background = rgba_floats(config.theme.colors.background);
         self.arrange_windows();
         self.repaint = true;
         Ok(())
+    }
+
+    /// Adopt layout parameters, re-arranging the windows if they changed.
+    ///
+    /// The workspace count is part of the layout because it is configuration, and
+    /// changing it moves every window above the new last workspace down to it.
+    /// That is a live reload, so the windows keep their identity and only their
+    /// workspace number and placement change.
+    pub(crate) fn apply_layout(&mut self, layout: LayoutConfig) {
+        let layout = layout.sanitised();
+        let count_changed = self.workspace.set_workspace_count(layout.workspace_count);
+        self.layout = layout;
+        self.arrange_windows();
+        self.sync_focus();
+        if count_changed {
+            self.announce_windows();
+        }
+        self.repaint = true;
     }
 
     /// Build the state, the headless outputs, the seat and the render target.
@@ -625,7 +667,7 @@ impl InoxState {
             },
         )?;
         state.set_input_capabilities(false, false)?;
-        state.layout = layout;
+        state.apply_layout(layout);
         Ok(state)
     }
 
@@ -691,6 +733,20 @@ impl InoxState {
             "advertised inox_glass_manager_v1 global"
         );
 
+        // The private window-management protocol. Advertised to everyone, like
+        // `inox_ipc`: what it reveals (titles and application ids) is what the
+        // task bar draws on screen anyway, and its requests are user-level window
+        // actions. A future revision that adds a privileged verb must add the
+        // authorization with it rather than widening this global.
+        let window_manager_version = inox_window_manager_version();
+        let window_manager_global = display_handle
+            .create_global::<Self, InoxWindowManagerV1, ()>(window_manager_version, ());
+        debug!(
+            ?window_manager_global,
+            version = window_manager_version,
+            "advertised inox_window_manager_v1 global"
+        );
+
         let viewporter_state = ViewporterState::new::<Self>(display_handle);
         let data_device_state = DataDeviceState::new::<Self>(display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
@@ -707,6 +763,12 @@ impl InoxState {
         let space = Space::default();
 
         ime::init(display_handle);
+
+        // One generation per compositor run. The value only has to differ from
+        // the previous run's so a client can tell an old handle from a new window,
+        // so it is derived from the clock of this process's start; the protocol
+        // documents it as advisory for exactly this reason.
+        let window_generation = window_generation();
 
         let mut state = Self {
             compositor_state,
@@ -750,8 +812,14 @@ impl InoxState {
             shm_state,
             frost: HashMap::new(),
             space,
-            workspace: Workspace::new(),
+            workspace: Workspace::with_workspaces(config.workspace_count),
             windows: HashMap::new(),
+            // The headless backend takes the workspace count from the command
+            // line; the physical one passes its `compositor.toml` value through
+            // `apply_layout` after this constructor. Both end up in the same
+            // place — `Workspace`, via `apply_layout` — so there is one owner.
+            window_service: crate::window_manager::WindowService::new(window_generation),
+            window_generation,
             layout: LayoutConfig::default(),
             pointer_location: Point::from((0.0, 0.0)),
             swallowed_presses: SwallowedPresses::default(),
@@ -921,6 +989,10 @@ impl InoxState {
         self.note_lock_owner_loss();
         self.sync_focus();
         self.inject_pointer_motion(self.pointer_location);
+        // A window's output name and its visible flag are part of the record, so
+        // an unplug that migrates windows is a task-bar change even though no
+        // window was added or removed.
+        self.announce_windows();
 
         Ok(())
     }
@@ -1445,6 +1517,11 @@ impl InoxState {
         self.sync_focus();
         self.inject_pointer_motion(self.pointer_location);
         self.broadcast_lock_state();
+        // The focus moved while the lock was held, so which window the task bar
+        // draws as focused changed with it. A locked session refuses every request
+        // that would change what is on screen, but unlocking is what makes those
+        // requests meaningful again, and the task bar must see the new focus.
+        self.announce_windows();
     }
 
     /// Keep the lock's coverage in step with the advertised outputs.
@@ -2015,21 +2092,70 @@ impl InoxState {
     }
 
     /// Apply a compositor action triggered by a key binding.
+    ///
+    /// Every window-management action here drives the same `InoxState` method the
+    /// private window-management protocol drives, so a shortcut and a task-bar
+    /// button cannot grow two meanings for "maximize" (ADR 0045 §2).
     fn perform(&mut self, action: Action) {
         match action {
             Action::FocusNext => {
                 self.layer_focus = None;
                 self.workspace.focus_next();
                 self.sync_focus();
+                self.announce_windows();
             }
             Action::FocusPrev => {
                 self.layer_focus = None;
                 self.workspace.focus_prev();
                 self.sync_focus();
+                self.announce_windows();
             }
             Action::CloseWindow => self.close_focused_window(),
             Action::Quit => self.request_exit(),
             Action::SwitchVt(_) => {}
+            Action::ToggleFloating => {
+                let Some(id) = self.focused_window() else {
+                    return;
+                };
+                let mode = match self.workspace.mode_of(id) {
+                    Some(WindowMode::Floating) => WindowMode::Tiled,
+                    _ => WindowMode::Floating,
+                };
+                self.set_window_mode_now(id, mode);
+            }
+            Action::Maximize => {
+                let Some(id) = self.focused_window() else {
+                    return;
+                };
+                let mode = match self.workspace.mode_of(id) {
+                    Some(WindowMode::Maximized) => WindowMode::Tiled,
+                    _ => WindowMode::Maximized,
+                };
+                self.set_window_mode_now(id, mode);
+            }
+            Action::ToggleFullscreen => {
+                let Some(id) = self.focused_window() else {
+                    return;
+                };
+                let mode = match self.workspace.mode_of(id) {
+                    Some(WindowMode::Fullscreen) => WindowMode::Tiled,
+                    _ => WindowMode::Fullscreen,
+                };
+                self.set_window_mode_now(id, mode);
+            }
+            Action::Minimize => {
+                let Some(id) = self.focused_window() else {
+                    return;
+                };
+                self.minimize_window_now(id, true);
+            }
+            Action::SwitchWorkspace(workspace) => self.switch_workspace_now(workspace),
+            Action::MoveToWorkspace(workspace) => {
+                let Some(id) = self.focused_window() else {
+                    return;
+                };
+                self.move_window_to_workspace_now(id, workspace);
+            }
         }
     }
 
@@ -2055,6 +2181,306 @@ impl InoxState {
         toplevel.send_close();
     }
 
+    /// Bring a window to the front, switching to its workspace first.
+    ///
+    /// This is the one activation path: `xdg-activation`-style client requests, the
+    /// task bar's `activate` and the keyboard's focus chords all end up here, so
+    /// "activating" means exactly one thing. A window on another workspace is made
+    /// visible first — focusing a window the user cannot see would hand the
+    /// keyboard to a surface that is not composited, which is what the protocol's
+    /// `focused` flag would then misreport.
+    pub(crate) fn activate_window(&mut self, id: WindowId) -> Result<(), RequestError> {
+        if self.lock.accepted() {
+            return Err(RequestError::NotPermitted);
+        }
+        let Some(workspace) = self.workspace.workspace_of(id) else {
+            return Err(RequestError::UnknownWindow);
+        };
+
+        // Leaving the minimized state is part of activation, not a separate step:
+        // a window that is put away is brought back by the same click that focuses
+        // it.
+        self.workspace.set_minimized(id, false);
+        if workspace != self.workspace.active_workspace() {
+            self.workspace.switch_workspace(workspace);
+        }
+        if !self.workspace.focus(id) {
+            // The window exists but cannot take the focus — on another output with
+            // no display, say. It is still a real window, so this is not
+            // `unknown_window`; the honest answer is that the compositor cannot
+            // show it.
+            return Err(RequestError::Unsupported);
+        }
+
+        self.sync_focus();
+        self.announce_windows();
+        Ok(())
+    }
+
+    /// Put a window into `mode`, re-arranging its output.
+    ///
+    /// The mode replaces the previous one rather than adding to it: a maximized
+    /// window returned to `Tiled` re-enters the master/stack layout with the order
+    /// it always had. `minimized` is orthogonal and untouched.
+    pub(crate) fn set_window_mode(
+        &mut self,
+        id: WindowId,
+        mode: WindowMode,
+    ) -> Result<(), RequestError> {
+        if self.lock.accepted() {
+            return Err(RequestError::NotPermitted);
+        }
+        if !self.workspace.contains(id) {
+            return Err(RequestError::UnknownWindow);
+        }
+
+        self.set_window_mode_now(id, mode);
+        Ok(())
+    }
+
+    /// The mode change without the policy checks, for the keyboard bindings.
+    fn set_window_mode_now(&mut self, id: WindowId, mode: WindowMode) {
+        if !self.workspace.set_mode(id, mode) {
+            return;
+        }
+        // Maximizing or fullscreening a window makes it the one the user is
+        // looking at, which is what the matching task-bar click would do; leaving
+        // the focus elsewhere would let the new fullscreen window cover an
+        // unfocused one. A window that cannot take the focus keeps its previous
+        // focus, which is the `workspace.focus` contract.
+        self.workspace.focus(id);
+        self.arrange_windows();
+        self.sync_focus();
+        self.announce_windows();
+    }
+
+    /// Put a window away, or bring it back.
+    pub(crate) fn minimize_window(
+        &mut self,
+        id: WindowId,
+        minimized: bool,
+    ) -> Result<(), RequestError> {
+        if self.lock.accepted() {
+            return Err(RequestError::NotPermitted);
+        }
+        if !self.workspace.contains(id) {
+            return Err(RequestError::UnknownWindow);
+        }
+
+        self.minimize_window_now(id, minimized);
+        Ok(())
+    }
+
+    /// The minimize change without the policy checks.
+    fn minimize_window_now(&mut self, id: WindowId, minimized: bool) {
+        if !self.workspace.set_minimized(id, minimized) {
+            return;
+        }
+        // The workspace hands the focus to a visible window when the focused one
+        // goes away; restoring a window does not steal it.
+        self.arrange_windows();
+        self.sync_focus();
+        self.announce_windows();
+    }
+
+    /// Ask a window to close.
+    ///
+    /// `xdg_toplevel.close` is a request to the application, never a kill: the
+    /// client may save, prompt or refuse, so the window stays managed until the
+    /// client destroys the toplevel and `window_removed` confirms it.
+    pub(crate) fn close_window(&mut self, id: WindowId) -> Result<(), RequestError> {
+        if self.lock.accepted() {
+            return Err(RequestError::NotPermitted);
+        }
+        let Some(toplevel) = self.windows.get(&id).and_then(Window::toplevel).cloned() else {
+            return Err(RequestError::UnknownWindow);
+        };
+
+        info!(id = id.get(), "asked a window to close");
+        toplevel.send_close();
+        Ok(())
+    }
+
+    /// Move a window to another workspace.
+    ///
+    /// Out of range is refused rather than created: a workspace no key and no
+    /// task-bar entry reaches would be state nothing can get to. A window moved to
+    /// the workspace being shown becomes visible and is focused; one moved away
+    /// hands the focus to the next window of the workspace it left.
+    pub(crate) fn move_window_to_workspace(
+        &mut self,
+        id: WindowId,
+        workspace: u32,
+    ) -> Result<(), RequestError> {
+        if self.lock.accepted() {
+            return Err(RequestError::NotPermitted);
+        }
+        if workspace >= self.workspace.workspace_count() {
+            return Err(RequestError::NotPermitted);
+        }
+        if !self.workspace.contains(id) {
+            return Err(RequestError::UnknownWindow);
+        }
+
+        self.move_window_to_workspace_now(id, workspace);
+        Ok(())
+    }
+
+    /// The workspace move without the policy checks.
+    fn move_window_to_workspace_now(&mut self, id: WindowId, workspace: u32) {
+        if !self.workspace.move_to_workspace(id, workspace) {
+            return;
+        }
+        self.arrange_windows();
+        self.sync_focus();
+        self.announce_windows();
+    }
+
+    /// Show another workspace.
+    pub(crate) fn switch_workspace(&mut self, workspace: u32) -> Result<(), RequestError> {
+        if self.lock.accepted() {
+            return Err(RequestError::NotPermitted);
+        }
+        if workspace >= self.workspace.workspace_count() {
+            return Err(RequestError::NotPermitted);
+        }
+
+        self.switch_workspace_now(workspace);
+        Ok(())
+    }
+
+    /// The workspace switch without the policy checks.
+    fn switch_workspace_now(&mut self, workspace: u32) {
+        if !self.workspace.switch_workspace(workspace) {
+            return;
+        }
+        self.arrange_windows();
+        self.sync_focus();
+        self.announce_windows();
+    }
+
+    /// Carry out a client's mode request for `surface`.
+    ///
+    /// The window is looked up by surface, so a request for a toplevel that never
+    /// drew is ignored: it is not a window yet, and giving it a mode would put a
+    /// task button on screen for something that may never appear. A locked session
+    /// refuses every mode change for the same reason it refuses activation — no
+    /// ordinary window may change what is on screen behind a lock.
+    fn request_mode(&mut self, surface: &ToplevelSurface, mode: WindowMode) {
+        if self.lock.accepted() {
+            return;
+        }
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+
+        self.set_window_mode_now(id, mode);
+    }
+
+    /// Carry out a client's minimize request for `surface`.
+    fn request_minimized(&mut self, surface: &ToplevelSurface, minimized: bool) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+
+        self.minimize_window_now(id, minimized);
+    }
+
+    /// The window-management observer bookkeeping, for the protocol dispatch.
+    ///
+    /// Exposed to the crate rather than to the outside world because only
+    /// [`crate::window_manager`]'s dispatch has any business with it: everything
+    /// else announces through [`InoxState::announce_windows`], which is the one
+    /// entry point that keeps "who knows what" in one place.
+    pub(crate) fn window_service(&mut self) -> &mut crate::window_manager::WindowService {
+        &mut self.window_service
+    }
+
+    /// The shown workspace and how many exist, for the snapshot header.
+    ///
+    /// One accessor rather than two because the two numbers are only meaningful
+    /// together — the protocol always sends them as one `workspace_state` event,
+    /// and an active number without its count cannot be bounds-checked.
+    pub(crate) fn workspace_state(&self) -> (u32, u32) {
+        (
+            self.workspace.active_workspace(),
+            self.workspace.workspace_count(),
+        )
+    }
+
+    /// The complete state of every managed window, in layout order.
+    ///
+    /// This is the input to the snapshot and to every announcement, so the two
+    /// cannot disagree about what a window is. Only mapped windows are reported:
+    /// a toplevel that exists but has not drawn takes no tile and must get no task
+    /// button, and announcing it would put one on screen for a window that may
+    /// never appear.
+    ///
+    /// The title and app id are read from the toplevel's own role data — what the
+    /// client set — rather than cached here, so a `set_title` that arrived after
+    /// this compositor last looked is still reported correctly.
+    pub(crate) fn window_records(&self) -> Vec<WindowRecord> {
+        // "Focused" is the window that actually has the keyboard, not the one the
+        // workspace believes is focused: a layer surface asking for exclusive
+        // focus really does take it, and a task bar that kept that window lit
+        // would be telling the user the opposite of what their keys do. The two
+        // are the same whenever nothing has taken the keyboard away.
+        let focused = self
+            .keyboard_focus()
+            .and_then(|surface| self.window_id_for_surface(&surface));
+
+        self.workspace
+            .windows()
+            .into_iter()
+            .filter_map(|id| {
+                let window = self.windows.get(&id)?;
+                let toplevel = window.toplevel()?;
+                let (app_id, title) = toplevel_identity(toplevel.wl_surface());
+                let output = self
+                    .workspace
+                    .output_of(id)
+                    .and_then(|output| self.outputs.iter().find(|entry| entry.id == output))
+                    .map(|entry| entry.key.clone())
+                    .unwrap_or_default();
+
+                Some(WindowRecord {
+                    // Handles are the workspace's identifiers and never repeat
+                    // within a run, so the protocol's `uint` handle is the same
+                    // number the compositor uses internally. `try_from` rather
+                    // than `as`: a run would have to mint more than four billion
+                    // windows to overflow it, and truncating silently would be a
+                    // handle collision instead.
+                    handle: crate::window_manager::handle_of(id),
+                    app_id,
+                    title,
+                    workspace: self.workspace.workspace_of(id).unwrap_or_default(),
+                    output,
+                    mode: self.workspace.mode_of(id).unwrap_or_default(),
+                    minimized: self.workspace.is_minimized(id),
+                    visible: self.workspace.is_visible(id),
+                    focused: focused == Some(id),
+                })
+            })
+            .collect()
+    }
+
+    /// Tell every observer what changed about the managed windows.
+    ///
+    /// One of the two places window-management events leave this compositor (the
+    /// other is the snapshot in `window_manager::serve`). Every mutation that can
+    /// change what a task bar shows calls this; missing a call is a task bar that
+    /// silently disagrees with the desktop, which is why the announcement is a
+    /// single function instead of an event sent from each site.
+    pub(crate) fn announce_windows(&mut self) {
+        let generation = self.window_generation;
+        let records = self.window_records();
+        let active = self.workspace.active_workspace();
+        let count = self.workspace.workspace_count();
+
+        self.window_service
+            .announce(generation, active, count, &records);
+    }
+
     /// Register a freshly created toplevel as a managed window.
     ///
     /// A new window lands on the output under the pointer, falling back to the
@@ -2070,6 +2496,7 @@ impl InoxState {
             let id = self.workspace.add(OutputId::new(u64::MAX));
             self.workspace.assign(id, None);
             self.windows.insert(id, Window::new_wayland_window(surface));
+            self.announce_windows();
 
             return;
         };
@@ -2085,6 +2512,7 @@ impl InoxState {
 
         self.arrange_windows();
         self.sync_focus();
+        self.announce_windows();
     }
 
     /// Forget the window built from a destroyed toplevel.
@@ -2106,6 +2534,7 @@ impl InoxState {
 
         self.arrange_windows();
         self.sync_focus();
+        self.announce_windows();
     }
 
     /// Identifier of the managed window built from `surface`, if any.
@@ -2135,19 +2564,27 @@ impl InoxState {
         self.add_window(toplevel);
     }
 
-    /// Suggest each managed window its tiled geometry and map it into the space.
+    /// Suggest each managed window its placement and map it into the space.
     ///
-    /// Every output tiles its own windows inside its own work area, in the global
+    /// Every output arranges its own windows inside its own area, in the global
     /// coordinate space, so a window on the second display is placed next to the
-    /// first display's area rather than on top of it.
+    /// first display's area rather than on top of it. The placement depends on the
+    /// window's mode: a tiled window goes through the master/stack layout of the
+    /// work area, a maximized one fills the work area (leaving an exclusive-zone
+    /// panel uncovered), a fullscreen one fills the whole area, and a floating one
+    /// keeps its own geometry — see [`Workspace::arrange`].
+    ///
+    /// Windows the workspace returns no placement for — on another workspace, or
+    /// minimized — are dropped from the space by the stale sweep below, which is
+    /// what makes them invisible: the space *is* the set of composited windows.
     fn arrange_windows(&mut self) {
         self.repaint = true;
-        let work_areas: Vec<(OutputId, Rectangle<i32, Logical>)> = self
+        let arrangements: Vec<OutputArrangement> = self
             .outputs
             .iter()
-            .map(|entry| (entry.id, entry.work_area))
+            .map(|entry| OutputArrangement::new(entry.id, entry.area, entry.work_area))
             .collect();
-        let tiles = self.workspace.arrange(&work_areas, self.layout);
+        let tiles = self.workspace.arrange(&arrangements, self.layout);
         let mut mapped: Vec<Window> = Vec::with_capacity(tiles.len());
 
         for (id, tile) in &tiles {
@@ -2266,30 +2703,55 @@ impl InoxState {
         {
             self.space.raise_element(&window, true);
         }
+
+        // This is the only place the keyboard focus changes, so it is also the only
+        // place the task bar's `focused` flag can become stale. `sync_focus` runs
+        // very often (every arrange calls it), and `announce_windows` costs nothing
+        // when nothing changed: the diff against the last announced records is
+        // empty and no observer is written to.
+        self.announce_windows();
     }
 
-    /// Tell every managed toplevel whether it is the active window.
+    /// Tell every managed toplevel what state it is in.
     ///
     /// Without this a client never receives `xdg_toplevel.activated`, so every
     /// application draws itself as if it were in the background — dimmed title bar,
-    /// no focus ring — no matter how many times the user clicks it. The state is
-    /// pushed through the normal configure path: [`ToplevelSurface::send_pending_configure`]
-    /// only sends when something actually changed, so calling this from every focus
-    /// change and every arrange cannot turn into a configure storm.
+    /// no focus ring — no matter how many times the user clicks it. The same is
+    /// true of the mode bits: a client that asked to be maximized needs the
+    /// `maximized` state in its configure, or it keeps drawing its own undecorated
+    /// window size and believes the request was ignored, which it was until this
+    /// function ran (ADR 0045 §2).
+    ///
+    /// The state is pushed through the normal configure path:
+    /// [`ToplevelSurface::send_pending_configure`] only sends when something
+    /// actually changed, so calling this from every focus change and every arrange
+    /// cannot turn into a configure storm.
     fn sync_window_states(&mut self, focused: Option<&WlSurface>) {
-        let windows: Vec<Window> = self.windows.values().cloned().collect();
+        let windows: Vec<(WindowId, Window)> = self
+            .windows
+            .iter()
+            .map(|(id, window)| (*id, window.clone()))
+            .collect();
 
-        for window in windows {
+        for (id, window) in windows {
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };
             let activated = focused.is_some_and(|surface| surface == toplevel.wl_surface());
+            let mode = self.workspace.mode_of(id).unwrap_or_default();
+
             toplevel.with_pending_state(|state| {
                 if activated {
                     state.states.set(xdg_toplevel::State::Activated);
                 } else {
                     state.states.unset(xdg_toplevel::State::Activated);
                 }
+
+                // The mode is one enum, so exactly one of these two bits is set.
+                // A `Tiled` window gets the four edge bits instead: that is how a
+                // client learns it should draw without decorations on the edges
+                // that touch the tiling grid.
+                set_mode_state(&mut state.states, mode);
             });
             toplevel.send_pending_configure();
         }
@@ -3030,6 +3492,76 @@ impl XdgShellHandler for InoxState {
         surface.send_repositioned(token);
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        // A client's own request and a task-bar button go through the same method,
+        // so "point at the maximize button" and "the panel asked for maximized"
+        // cannot produce two different results (ADR 0045 §2).
+        self.request_mode(&surface, WindowMode::Maximized);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.request_mode(&surface, WindowMode::Tiled);
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+        // The output argument is ignored on purpose: a window is fullscreen on the
+        // output it is already on. Honouring a request to be fullscreen on a
+        // *different* output would mean moving the window, which is a workspace
+        // decision rather than a mode one, and there is no bound key for it.
+        self.request_mode(&surface, WindowMode::Fullscreen);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.request_mode(&surface, WindowMode::Tiled);
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if self.lock.accepted() {
+            // No ordinary window changes what is on screen behind a lock.
+            return;
+        }
+        self.request_minimized(&surface, true);
+    }
+
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
+        // A client asked to be moved interactively. With no pointer-drive path for
+        // the request itself, the honest implementation is to take it out of the
+        // tiling layout, where a client-driven move can at least start: a window
+        // that stays tiled is immediately re-tiled by the next arrange, so the
+        // request would otherwise do nothing at all.
+        self.request_mode(&surface, WindowMode::Floating);
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        _serial: Serial,
+        _edges: xdg_toplevel::ResizeEdge,
+    ) {
+        // Same reasoning as `move_request`: resizing only makes sense for a window
+        // that is not tiled, because the tiling layout owns a tiled window's size.
+        self.request_mode(&surface, WindowMode::Floating);
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        // The title is what the task bar draws, so a change is a window-management
+        // event. Only a mapped window is announced, and `window_records` only
+        // reads mapped ones; announcing an unmapped toplevel's title would create
+        // a task button for a window that may never appear.
+        if self.window_id_for_surface(surface.wl_surface()).is_some() {
+            self.announce_windows();
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        // Grouping is by `app_id`, so a late `set_app_id` moves a window between
+        // groups on the task bar and has to be announced like any other change.
+        if self.window_id_for_surface(surface.wl_surface()).is_some() {
+            self.announce_windows();
+        }
+    }
+
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // A toplevel destroyed before it ever drew is not in `windows`; it is still
         // in the awaiting list and must be dropped from it, or a later surface that
@@ -3038,6 +3570,97 @@ impl XdgShellHandler for InoxState {
             .retain(|awaiting| awaiting.wl_surface() != surface.wl_surface());
         self.remove_window(&surface);
     }
+}
+
+/// The `(app_id, title)` a toplevel's client set, either possibly empty.
+///
+/// Read through Smithay's role data because it is the client's own statement and
+/// the task bar must not invent one: an empty `app_id` is a real value the panel
+/// labels "unknown application", not a reason to fall back to a process name.
+fn toplevel_identity(surface: &WlSurface) -> (String, String) {
+    with_states(surface, |states| {
+        let attributes = states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok())
+            .map(|attributes| {
+                (
+                    attributes.app_id.clone().unwrap_or_default(),
+                    attributes.title.clone().unwrap_or_default(),
+                )
+            });
+
+        attributes.unwrap_or_default()
+    })
+}
+
+/// Set the `xdg_toplevel` state bits a window mode implies.
+///
+/// `xdg-shell` has no "floating" state: a floating window is simply not tiled, so
+/// its bits are all cleared. `Tiled` sets all four edge bits, which is what tells a
+/// client every edge borders the tiling grid and none of them should draw a shadow.
+/// A client bound below version 2 cannot see the edge bits at all; Smithay filters
+/// them out of the configure for such a client, so setting them here is always
+/// correct.
+fn set_mode_state(states: &mut smithay::wayland::shell::xdg::ToplevelStateSet, mode: WindowMode) {
+    for state in [
+        xdg_toplevel::State::TiledLeft,
+        xdg_toplevel::State::TiledRight,
+        xdg_toplevel::State::TiledTop,
+        xdg_toplevel::State::TiledBottom,
+        xdg_toplevel::State::Maximized,
+        xdg_toplevel::State::Fullscreen,
+    ] {
+        states.unset(state);
+    }
+
+    match mode {
+        WindowMode::Tiled => {
+            for state in [
+                xdg_toplevel::State::TiledLeft,
+                xdg_toplevel::State::TiledRight,
+                xdg_toplevel::State::TiledTop,
+                xdg_toplevel::State::TiledBottom,
+            ] {
+                states.set(state);
+            }
+        }
+        WindowMode::Floating => {}
+        WindowMode::Maximized => {
+            states.set(xdg_toplevel::State::Maximized);
+        }
+        WindowMode::Fullscreen => {
+            states.set(xdg_toplevel::State::Fullscreen);
+        }
+    }
+}
+
+/// A generation number for this compositor run's window handles.
+///
+/// Handles are only meaningful within their generation, and a restarted
+/// compositor re-uses small integers for different windows, so the number has to
+/// change between runs. It is derived from the Unix epoch in seconds, which is
+/// monotonic across restarts and needs no coordination with anyone; the protocol
+/// calls it advisory because a Wayland connection cannot outlive its compositor
+/// anyway. A system clock that runs backwards would produce a duplicate
+/// generation, which is the one case this cannot rule out, and the protocol's
+/// description already limits what a client may conclude from it.
+fn window_generation() -> u32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+
+    // Truncation is deliberate: four billion seconds is the whole range a `uint`
+    // offers and any truncation is still a different number most of the time.
+    now.as_secs() as u32
+}
+
+/// The `inox-window-manager-v1` protocol version the compositor advertises.
+///
+/// Read from the generated interface so the advertised version can never drift
+/// from the XML, exactly like [`inox_ipc_version`].
+fn inox_window_manager_version() -> u32 {
+    <InoxWindowManagerV1 as Resource>::interface().version
 }
 
 /// The `inox_ipc` protocol version the compositor advertises and answers with.
@@ -3571,6 +4194,7 @@ impl FractionalScaleHandler for InoxState {
 }
 
 smithay::delegate_fractional_scale!(InoxState);
+
 smithay::delegate_shm!(InoxState);
 smithay::delegate_viewporter!(InoxState);
 smithay::delegate_data_device!(InoxState);

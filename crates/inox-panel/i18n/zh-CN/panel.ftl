@@ -78,3 +78,19 @@ panel-clock-month-full-9 = 9 月
 panel-clock-month-full-10 = 10 月
 panel-clock-month-full-11 = 11 月
 panel-clock-month-full-12 = 12 月
+
+# 任务区左侧的工作区指示器（ADR 0045 §4）。`active` 与 `next` 从 1 开始计数，
+# 与用户数工作区的方式一致；`count` 是工作区总数。`next` 是点击后会显示的
+# 工作区，不是已经显示过的。
+panel-workspace-indicator = { $active }/{ $count }
+panel-workspace-tooltip = 第 { $active } 个工作区，共 { $count } 个；点击切换到第 { $next } 个
+panel-workspace-disabled-service = 窗口服务不可用
+
+# 窗口模式（ADR 0045 §2）。它们命名合成器的四种状态；在任务项上右键会按
+# 这个顺序循环切换。
+panel-task-mode-tiled = 平铺
+panel-task-mode-floating = 浮动
+panel-task-mode-maximized = 最大化
+panel-task-mode-fullscreen = 全屏
+panel-task-tooltip-mode = { $app }：{ $title }（{ $mode }）
+panel-task-tooltip-mode-empty = { $app }（{ $mode }）

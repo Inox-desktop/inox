@@ -15,9 +15,15 @@
 //! copy path yet, which is why `linux-dmabuf` is not advertised. CI evidence does
 //! not replace the O01–O04 human hardware acceptance.
 //!
-//! Window management is tiling-only: a toplevel becomes a window on the first
-//! commit that carries a buffer, the focused window is told it is `activated`,
-//! and `Super+Shift+Q` asks it to close. See [`state`] for those paths.
+//! Window management: a toplevel becomes a window on the first commit that
+//! carries a buffer, and it is then in exactly one of four modes — tiled,
+//! floating, maximized or fullscreen — on one of at least one workspace. The
+//! focused window is told it is `activated` and told its mode through the same
+//! configure; `Super+Shift+Q` asks it to close. A client's own `xdg-shell`
+//! request and a task-bar button drive the same state machine, so there is one
+//! definition of "maximize" in this compositor rather than two. The mode and
+//! workspace state is published to the shell over the private
+//! [`window_manager`] protocol. See [`state`] for those paths.
 //!
 //! # Layout
 //!
@@ -26,9 +32,13 @@
 //! - [`glass`] — the pure half of the private `inox-glass-v1` glass protocol:
 //!   the blur and refraction parameters, the two capability decisions and the
 //!   pane list the renderer draws.
-//! - [`input`] — key presses mapped to compositor actions.
+//! - [`input`] — key presses mapped to compositor actions, including the window
+//!   mode and workspace chords (`Super+F`/`M`/`Shift+F`/`H`, `Super+1..=9`,
+//!   `Super+Shift+1..=9`).
 //! - [`layout`] — the pure master/stack tiling geometry.
-//! - [`workspace`] — the pure window bookkeeping and layout order.
+//! - [`window_manager`] — the server half of the private `inox-window-manager-v1`
+//!   protocol: the complete-state record, the pure diff and the observers.
+//! - [`workspace`] — the pure window bookkeeping: modes, workspaces and layout order.
 //! - [`render`] — the EGL/GLES render target and one of the crate's `unsafe` sites.
 //! - `test_input` — the test-only control channel behind `--test-input`, present only in
 //!   builds with the `test-input` feature (off by default).
@@ -54,6 +64,7 @@ pub mod state;
 pub mod test_input;
 pub mod topology;
 pub mod trial;
+pub mod window_manager;
 pub mod workspace;
 
 pub use backend::{BackendError, GpuBackend};

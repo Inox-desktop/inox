@@ -557,6 +557,34 @@ pub fn notice_action(tokens: &Tokens, status: InteractionStatus) -> EntryStyle {
     }
 }
 
+/// The workspace indicator that opens the task area.
+///
+/// It is a control, not a decoration: it says which workspace the windows on the
+/// strip belong to, and a click asks for the next one (ADR 0045 §4). It is drawn
+/// as an *outline* rather than as a filled entry, because the strip's one filled
+/// control is the application the user is looking at — a second filled box would
+/// compete with it for the same "this is what is in use" reading.
+///
+/// The four interaction states are the panel's, not the indicator's: hovering it
+/// takes the alternate surface, pressing it takes the accent, and a disabled one
+/// has no fill and no outline (D05: a disabled control says why in its tooltip).
+pub fn workspace_indicator(tokens: &Tokens, status: InteractionStatus) -> EntryStyle {
+    let (background, foreground) = match status {
+        InteractionStatus::Disabled => (None, muted_text(tokens)),
+        InteractionStatus::Pressed => (Some(accent(tokens)), on_accent(tokens)),
+        InteractionStatus::Hovered => (Some(qml_color(tokens.colors.surface_variant)), text(tokens)),
+        InteractionStatus::Active => (None, muted_text(tokens)),
+    };
+
+    EntryStyle {
+        background,
+        text_color: foreground,
+        border_width: hairline(tokens),
+        border_color: border_color(tokens),
+        radius: radius(tokens),
+    }
+}
+
 /// The mark under a dock tile: the accent colour when the group is active, and
 /// nothing at all when it is not.
 ///

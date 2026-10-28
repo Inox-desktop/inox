@@ -82,3 +82,19 @@ panel-clock-month-full-9 = September
 panel-clock-month-full-10 = October
 panel-clock-month-full-11 = November
 panel-clock-month-full-12 = December
+
+# The workspace indicator at the left of the task area (ADR 0045 §4). `active` and
+# `next` are one-based, the way a user counts workspaces; `count` is how many
+# exist. `next` is what a click will show, not what it did.
+panel-workspace-indicator = { $active }/{ $count }
+panel-workspace-tooltip = Workspace { $active } of { $count }; click for workspace { $next }
+panel-workspace-disabled-service = The window service is not available
+
+# Window modes (ADR 0045 §2). They name the compositor's four states; the right
+# click on a task entry cycles through them in this order.
+panel-task-mode-tiled = tiled
+panel-task-mode-floating = floating
+panel-task-mode-maximized = maximized
+panel-task-mode-fullscreen = fullscreen
+panel-task-tooltip-mode = { $app }: { $title } ({ $mode })
+panel-task-tooltip-mode-empty = { $app } ({ $mode })

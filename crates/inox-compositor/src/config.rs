@@ -139,6 +139,7 @@ OPTIONS:
                                name, width, height, refresh, scale, x, y.
                                Example: --output name=DP-2,width=1920,height=1080,scale=1.5,x=1920,y=0
     --socket <NAME>            Wayland socket name [default: auto-selected]
+    --workspaces <N>           Number of workspaces, 1..=9 [default: 1]
     --input-method <EXEC>      Launch a trusted input method (for example fcitx5)
     --input-method-arg <ARG>   Append one argument to the input method command
     --lock-token <TOKEN>       One-shot token that authorizes the session lock 
@@ -174,6 +175,15 @@ pub struct CompositorConfig {
     pub input_method: Vec<String>,
     /// Number of frames to render before exiting, or `None` to run until signalled.
     pub exit_after_frames: Option<u64>,
+    /// How many workspaces the session's windows can be spread over.
+    ///
+    /// The headless backend has no `compositor.toml` to read, so this is the
+    /// CLI-side answer to the same question the physical backend takes from
+    /// `[layout] workspace_count`; it is clamped into
+    /// [`inox_config::LayoutConfig`]'s range by `workspace::Workspace` itself. One
+    /// is the default so every existing invocation keeps its single-workspace
+    /// desktop.
+    pub workspace_count: u32,
     /// Path of the test-input control socket, set only by `--test-input`.
     ///
     /// Populated exclusively in builds with the `test-input` feature, where
@@ -191,6 +201,7 @@ impl Default for CompositorConfig {
             lock_token: None,
             input_method: Vec::new(),
             exit_after_frames: None,
+            workspace_count: 1,
             test_input_path: None,
         }
     }
@@ -368,6 +379,10 @@ where
                     return Err(invalid_value(&option, &value, "must not be empty"));
                 }
                 config.socket_name = Some(value);
+            }
+            "--workspaces" => {
+                let value = take_value(&option, inline, &mut args)?;
+                config.workspace_count = parse_workspace_count(&value)?;
             }
             "--input-method" => {
                 let value = take_value(&option, inline, &mut args)?;
@@ -600,6 +615,29 @@ fn parse_scale(value: &str) -> Result<f64, ConfigError> {
 }
 
 /// Parse an output position coordinate, bounded to the range `inox-config` enforces.
+/// Parse `--workspaces`.
+///
+/// The bound is 1..=9 for the same reason `inox-config`'s `workspace_count` is:
+/// `Super+1`..=`Super+9` are the only bound workspace chords, so a tenth
+/// workspace would be state no key reaches. The two bounds are asserted equal by
+/// the configuration crate's own tests, and this parser rejects rather than
+/// clamps so a mistyped launch argument is never silently ignored.
+fn parse_workspace_count(value: &str) -> Result<u32, ConfigError> {
+    let count: u32 = value
+        .parse()
+        .map_err(|_| invalid_value("--workspaces", value, "expected a whole number"))?;
+
+    if !(crate::workspace::MIN_WORKSPACES..=crate::workspace::MAX_WORKSPACES).contains(&count) {
+        return Err(invalid_value(
+            "--workspaces",
+            value,
+            "expected a number of workspaces between 1 and 9",
+        ));
+    }
+
+    Ok(count)
+}
+
 fn parse_coordinate(value: &str) -> Result<i32, ConfigError> {
     let coordinate: i32 = value
         .parse()

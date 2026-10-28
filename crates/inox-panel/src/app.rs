@@ -1,20 +1,18 @@
 //! The panel application: state, messages and the Elm update loop.
-//! The shape is iced's and the technology stack makes it mandatory: a [`State`], a
 //! The shape is Elm's, and keep it while the toolkit moves:
 //! a [`State`], a [`Message`] per thing that can happen, one [`update`] that is
 //! the only place state changes, and a projection ([`crate::view::scene`]) that
 //! only reads. Nothing in `update` performs I/O — it records what the UI decided
-//! and hands it to the transport that will carry it, which is
+//! and hands it to the transport that carries it, which is
 //! [`OutgoingCommand`]. The widgets are QML now, which changes
 //! who *draws* the state and nothing about who *owns* it.
-//! milestone (the L3 component architecture records the scope: domain models, service contract and
-//! **The transport does not exist yet.** The window service the panel subscribes
-//! to is reached over `inox-ipc`/D-Bus, neither of which is implemented in this
-//! milestone. So the panel starts in
-//! [`ServiceState::Connecting`], queues exactly one
-//! [`OutgoingCommand::Snapshot`], and shows the starting state until a transport
-//! feeds it a [`Message::Snapshot`]. `main.rs` says so at startup, and the tests
-//! below drive the same messages a transport would.
+//!
+//! **The transport is [`crate::window_service`]**, which speaks the compositor's
+//! private `inox-window-manager-v1` protocol. This module is deliberately unaware
+//! of it: it queues [`OutgoingCommand`]s, [`crate::layer`] drains them into the
+//! protocol leg, and the leg feeds the [`Message`]s below back in. That is the
+//! whole of the coupling, and it is what keeps `update` testable without a
+//! compositor.
 //!
 //! Two behaviours are load-bearing and tested here rather than asserted in a
 //! comment:
@@ -26,6 +24,12 @@
 //!   over the entries the view can actually activate, wraps at both ends, and is
 //!   cleared by [`Message::FocusCleared`] — the panel's own focus, which is what
 //!   D01 means by "显式导航有唯一焦点".
+//!
+//! A request is settled by the state event that confirms it, never by the act of
+//! sending: [`Message::WindowUpdated`] and [`Message::WindowRemoved`] take the
+//! in-flight request off the window they name, and only
+//! [`Message::CommandSettled`] with a rejection settles a request negatively
+//! (ADR 0045's "一条请求由状态事件确认，不由应答确认").
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -40,7 +44,10 @@ use tracing::debug;
 
 use crate::clock::{self, ClockLabel};
 use crate::contract::{CommandState, PendingRequests, RequestId, ServiceFailure, ServiceState};
-use crate::tasks::{Applied, SessionGeneration, TaskList, WindowKey, WindowState};
+use crate::tasks::{
+    Applied, SessionGeneration, TaskList, WindowKey, WindowMode, WindowState, WorkspaceId,
+    WorkspaceView,
+};
 use crate::tray::{Tray, TrayItem, TrayItemId, TrayItemUpdate};
 use crate::view_model::{PanelInput, PanelViewModel};
 
@@ -55,9 +62,11 @@ pub const TICK: Duration = Duration::from_secs(1);
 
 /// A command the panel asks the transport to carry to the window service.
 ///
-/// The panel's own record of what it wants; neither the transport nor the
-/// protocol exists in this milestone, so these are queued and one of them (the
-/// opening snapshot) is logged at startup so that the intent is visible.
+/// The panel's own record of what it wants; [`crate::layer`] drains the queue and
+/// [`crate::window_service`] turns each command into `inox-window-manager-v1`
+/// requests. Nothing here is the outcome of anything: a command that is sent is
+/// not a command that took effect, and the confirming state event arrives later as
+/// a [`Message`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutgoingCommand {
     /// Ask for the current windows, as the first thing after connecting or
@@ -79,6 +88,46 @@ pub enum OutgoingCommand {
         /// The window to minimize.
         window: WindowKey,
     },
+    /// Ask `window`'s application to close its window (middle click).
+    ///
+    /// A request to the application, not a kill: it may save first, prompt or
+    /// refuse, so the panel keeps the button until the window is really gone.
+    Close {
+        /// The request this command belongs to.
+        request: RequestId,
+        /// The window to close.
+        window: WindowKey,
+    },
+    /// Ask the compositor to show `window` in `mode` (right click, one step
+    /// through the cycle).
+    SetMode {
+        /// The request this command belongs to.
+        request: RequestId,
+        /// The window to change.
+        window: WindowKey,
+        /// The mode to ask for.
+        mode: WindowMode,
+    },
+    /// Move `window` to another workspace.
+    MoveToWorkspace {
+        /// The request this command belongs to.
+        request: RequestId,
+        /// The window to move.
+        window: WindowKey,
+        /// The zero-based workspace to move it to.
+        workspace: WorkspaceId,
+    },
+    /// Show another workspace, from the indicator next to the task area.
+    ///
+    /// Names no window: it is the one request whose confirmation is
+    /// `workspace_state` rather than a `window` event, and whose failure the
+    /// protocol reports against the reserved no-window handle.
+    SwitchWorkspace {
+        /// The request this command belongs to.
+        request: RequestId,
+        /// The zero-based workspace to show.
+        workspace: WorkspaceId,
+    },
 }
 
 /// Everything the panel knows.
@@ -99,6 +148,7 @@ pub struct State {
     last_tick: Option<DateTime<Local>>,
     focused: Option<WindowKey>,
     pending: PendingRequests,
+    workspace: WorkspaceView,
     outgoing: VecDeque<OutgoingCommand>,
 }
 
@@ -167,6 +217,7 @@ impl State {
             last_tick: None,
             focused: None,
             pending: PendingRequests::new(),
+            workspace: WorkspaceView::Unknown,
             outgoing,
         }
     }
@@ -231,6 +282,11 @@ impl State {
         self.focused
     }
 
+    /// The workspaces the window service reports, and which one is shown.
+    pub fn workspace(&self) -> WorkspaceView {
+        self.workspace
+    }
+
     /// Takes the commands waiting for a transport.
     ///
     /// Whatever is returned is the caller's to send; an empty queue is the
@@ -250,6 +306,7 @@ impl State {
             clock: self.clock.clone(),
             config: &config,
             focused: self.focused,
+            workspace: self.workspace,
         }
         .project(&self.localizer)
     }
@@ -337,6 +394,10 @@ impl State {
         // old service never answered will not be answered now.
         self.pending.clear();
         self.focused = None;
+        // The snapshot carries no workspaces: `workspace_state` precedes it in
+        // the protocol's order, so what the panel holds is already this
+        // session's report. It is kept — dropping it would hide the indicator
+        // until the service next reported.
         debug!(
             generation = generation.get(),
             windows = count,
@@ -370,6 +431,10 @@ impl State {
         self.service = ServiceState::Connecting;
         self.focused = None;
         self.pending.clear();
+        // The workspaces belong to the session that reported them: a report for
+        // another generation invalidates the count and the active one along with
+        // the windows, and the new session's `workspace_state` will say both.
+        self.workspace = WorkspaceView::Unknown;
         self.outgoing.push_back(OutgoingCommand::Snapshot);
         debug!(
             generation = generation.get(),
@@ -425,24 +490,111 @@ impl State {
         self.outgoing.push_back(match action {
             Action::Activate => OutgoingCommand::Activate { request, window },
             Action::Toggle => OutgoingCommand::Toggle { request, window },
+            Action::Close => OutgoingCommand::Close { request, window },
+            Action::CycleMode { mode } => OutgoingCommand::SetMode {
+                request,
+                window,
+                mode,
+            },
+            Action::MoveToWorkspace { workspace } => OutgoingCommand::MoveToWorkspace {
+                request,
+                window,
+                workspace,
+            },
         });
+    }
+
+    /// Asks the service to show `workspace`, unless a switch is already in flight.
+    ///
+    /// The indicator is the one entry that acts on no window, so it is the one
+    /// request deduplicated on its own slot rather than per window. A panel whose
+    /// indicator is disabled by [`ServiceState::accepts_commands`] sends nothing,
+    /// exactly like a task button.
+    fn switch_workspace(&mut self, workspace: WorkspaceId) {
+        if !self.service.accepts_commands() {
+            debug!(
+                workspace = workspace.get(),
+                "ignoring a workspace switch: the window service is not available"
+            );
+            return;
+        }
+
+        if Some(workspace) == self.workspace.active() {
+            debug!(
+                workspace = workspace.get(),
+                "the workspace is already the one on screen; not switching"
+            );
+            return;
+        }
+
+        let Some(request) = self.pending.issue() else {
+            debug!(
+                workspace = workspace.get(),
+                "a workspace switch is already in flight; not sending another"
+            );
+            return;
+        };
+
+        self.outgoing
+            .push_back(OutgoingCommand::SwitchWorkspace { request, workspace });
+    }
+
+    /// Records what the service reports about the workspaces.
+    ///
+    /// A report that names no change is still the service's truth for the
+    /// generation in hand — applying it again is how a view is rebuilt after an
+    /// event was missed — so it is recorded, not ignored.
+    fn workspace_state(&mut self, active: WorkspaceId, count: u32) {
+        let reported = WorkspaceView::new(active.get(), count);
+        let same = self.workspace == reported;
+
+        self.workspace = reported;
+
+        if same {
+            debug!(
+                active = active.get(),
+                count, "the window service confirmed the workspaces in hand"
+            );
+        } else {
+            debug!(
+                active = active.get(),
+                count, "the window service reported its workspaces"
+            );
+        }
     }
 }
 
-/// What a task button asks the window service to do.
+/// What a task entry asks the window service to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     /// Bring the window forward.
     Activate,
     /// Put the window away.
     Toggle,
+    /// Ask the application to close the window.
+    Close,
+    /// Ask for another mode.
+    CycleMode {
+        /// The mode the click asked for.
+        mode: WindowMode,
+    },
+    /// Move the window to another workspace.
+    MoveToWorkspace {
+        /// The workspace to move it to.
+        workspace: WorkspaceId,
+    },
 }
 
 /// Everything the panel reacts to.
 ///
 /// These are the messages a transport, a timer or a widget produces; nothing
 /// else mutates [`State`].
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` because a message is a value: the transport tests compare what an
+/// event *became* with the message the panel would have been handed by hand, and
+/// a comparison that had to go through `match` would be a second decoding of the
+/// same table.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// The window service answered with the windows of a session generation.
     ///
@@ -488,7 +640,7 @@ pub enum Message {
         /// The item's registration.
         id: TrayItemId,
     },
-    /// The window service reported the session generation it is serving.
+    /// The service reported the session generation it is serving.
     ///
     /// A readiness report carries no windows, so it never makes the panel
     /// `Ready`: the panel drops whatever belonged to another session and asks
@@ -496,6 +648,17 @@ pub enum Message {
     ServiceReady {
         /// The generation it is serving.
         generation: SessionGeneration,
+    },
+    /// The service reported how many workspaces there are and which is shown.
+    ///
+    /// This event is also the confirmation of a [`OutgoingCommand::SwitchWorkspace`]:
+    /// the protocol has no acknowledgement, and a workspace switch is confirmed
+    /// by the workspace state it produced (ADR 0045 §1).
+    WorkspacesChanged {
+        /// The zero-based workspace currently shown.
+        active: WorkspaceId,
+        /// How many workspaces exist.
+        count: u32,
     },
     /// The window service went away.
     ServiceUnavailable {
@@ -518,6 +681,46 @@ pub enum Message {
     TaskToggled {
         /// The window to put away.
         key: WindowKey,
+    },
+    /// The user middle-clicked a task entry: ask the application to close.
+    ///
+    /// A request, not a removal: the panel keeps the button until the service
+    /// reports the window gone (ADR 0045 §4, "中键关闭是请求").
+    TaskClosed {
+        /// The window to close.
+        key: WindowKey,
+    },
+    /// The user right-clicked a task entry: ask for the next mode in the cycle.
+    ///
+    /// The mode asked for is the one *after* what the service last reported, so
+    /// the cycle advances on what is on screen rather than on what the panel
+    /// hoped for.
+    TaskModeCycled {
+        /// The window to change.
+        key: WindowKey,
+        /// The mode the request asks for, so the request is one value.
+        mode: WindowMode,
+    },
+    /// The user moved a window to another workspace, at the indicator's edge.
+    TaskMovedToWorkspace {
+        /// The window to move.
+        key: WindowKey,
+        /// The workspace to move it to.
+        workspace: WorkspaceId,
+    },
+    /// The user clicked the workspace indicator: show the next workspace.
+    WorkspaceSwitched {
+        /// The workspace to show.
+        workspace: WorkspaceId,
+    },
+    /// A workspace switch the panel asked for was refused.
+    ///
+    /// The protocol reports this against its reserved "no window" handle, so it
+    /// cannot be matched to a window: it settles the one workspace request in
+    /// flight and nothing else.
+    WorkspaceSwitchFailed {
+        /// Why the service refused it.
+        reason: crate::contract::RejectionReason,
     },
     /// Explicit navigation asked for the next entry.
     FocusNext,
@@ -546,6 +749,19 @@ pub fn update(state: &mut State, message: Message) {
                     %key,
                     "dropped a window state from another session generation"
                 );
+            } else {
+                // A `window` event is the confirmation of whatever request named
+                // this window: the protocol has no acknowledgement, so the state
+                // it reports *is* the outcome. Settling here rather than on send
+                // is what keeps a task button from looking done before the window
+                // really moved (ADR 0045 §1).
+                if let Some(request) = state.pending.take(key) {
+                    debug!(
+                        request = request.get(),
+                        %key,
+                        "a request was confirmed by the window event it produced"
+                    );
+                }
             }
         }
         Message::WindowRemoved { key } => {
@@ -579,6 +795,34 @@ pub fn update(state: &mut State, message: Message) {
             }
         }
         Message::ServiceReady { generation } => state.service_ready(generation),
+        Message::WorkspacesChanged { active, count } => {
+            state.workspace_state(active, count);
+
+            // The workspace state is the confirmation of a switch: the protocol
+            // answers a `switch_workspace` with no event of its own, only with
+            // the state that follows it (ADR 0045 §1).
+            if let Some(request) = state.pending.pending_workspace()
+                && state.pending.settle_workspace(request).is_some()
+            {
+                debug!(
+                    request = request.get(),
+                    active = active.get(),
+                    "a workspace switch was confirmed by the workspace state"
+                );
+            }
+        }
+        Message::WorkspaceSwitchFailed { reason } => {
+            let settled = state
+                .pending
+                .pending_workspace()
+                .and_then(|request| state.pending.settle_workspace(request));
+
+            debug!(
+                ?reason,
+                settled = settled.map(RequestId::get),
+                "the window service refused a workspace switch"
+            );
+        }
         Message::ServiceUnavailable { reason } => {
             debug!(?reason, "the window service is not available");
             state.service = ServiceState::Unavailable { reason };
@@ -601,6 +845,17 @@ pub fn update(state: &mut State, message: Message) {
         }
         Message::TaskActivated { key } => state.request(key, Action::Activate),
         Message::TaskToggled { key } => state.request(key, Action::Toggle),
+        Message::TaskClosed { key } => state.request(key, Action::Close),
+        Message::TaskModeCycled { key, mode } => {
+            // The mode is decided by the caller from what the view drew, so the
+            // update loop indexes no table of its own: one definition of the
+            // cycle ([`WindowMode::cycled`]) and one place that reads it.
+            state.request(key, Action::CycleMode { mode });
+        }
+        Message::TaskMovedToWorkspace { key, workspace } => {
+            state.request(key, Action::MoveToWorkspace { workspace });
+        }
+        Message::WorkspaceSwitched { workspace } => state.switch_workspace(workspace),
         Message::FocusNext => state.step_focus(1),
         Message::FocusPrevious => state.step_focus(-1),
         Message::FocusCleared => {
@@ -1103,6 +1358,340 @@ mod tests {
             state.take_outgoing().as_slice(),
             [OutgoingCommand::Toggle { window, .. }] if *window == key(2)
         ));
+    }
+
+    #[test]
+    fn a_middle_click_queues_a_close_request_and_keeps_the_button() {
+        let mut state = connected();
+
+        send(&mut state, Message::TaskClosed { key: key(1) });
+
+        let commands = state.take_outgoing();
+        assert_eq!(
+            commands.len(),
+            1,
+            "one middle click is one request: {commands:?}"
+        );
+        assert!(matches!(
+            commands[0],
+            OutgoingCommand::Close { window, .. } if window == key(1)
+        ));
+        assert!(
+            state.tasks().contains(key(1)),
+            "closing is a request: the button stays until the service reports the \
+             window gone (ADR 0045 §4)"
+        );
+
+        // A second middle click is not a second request.
+        send(&mut state, Message::TaskClosed { key: key(1) });
+        assert!(state.take_outgoing().is_empty());
+    }
+
+    #[test]
+    fn a_right_click_queues_the_next_mode_in_the_cycle() {
+        let mut state = connected();
+
+        send(
+            &mut state,
+            Message::TaskModeCycled {
+                key: key(1),
+                mode: WindowMode::Tiled.cycled(),
+            },
+        );
+
+        assert!(matches!(
+            state.take_outgoing().as_slice(),
+            [OutgoingCommand::SetMode { window, mode, .. }]
+                if *window == key(1) && *mode == WindowMode::Floating
+        ));
+
+        // The service reports the mode it really applied, and the button follows
+        // the service rather than the request.
+        let mut floating = state.tasks().window(key(1)).cloned().expect("known");
+        floating.mode = WindowMode::Floating;
+        send(
+            &mut state,
+            Message::WindowUpdated {
+                key: key(1),
+                window: floating,
+            },
+        );
+        assert_eq!(
+            state.model().task(key(1)).map(|task| task.mode),
+            Some(WindowMode::Floating)
+        );
+
+        send(
+            &mut state,
+            Message::TaskModeCycled {
+                key: key(1),
+                mode: WindowMode::Maximized,
+            },
+        );
+        assert!(matches!(
+            state.take_outgoing().as_slice(),
+            [OutgoingCommand::SetMode { mode, .. }] if *mode == WindowMode::Maximized
+        ));
+    }
+
+    #[test]
+    fn moving_a_window_to_a_workspace_is_queued_as_one_request() {
+        let mut state = connected();
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(0),
+                count: 3,
+            },
+        );
+
+        send(
+            &mut state,
+            Message::TaskMovedToWorkspace {
+                key: key(1),
+                workspace: WorkspaceId::new(2),
+            },
+        );
+
+        let commands = state.take_outgoing();
+        assert!(
+            matches!(
+                commands.as_slice(),
+                [OutgoingCommand::MoveToWorkspace { window, workspace, .. }]
+                    if *window == key(1) && *workspace == WorkspaceId::new(2)
+            ),
+            "the window and the workspace both reach the transport: {commands:?}"
+        );
+
+        // The window keeps its request in flight, so the next click is dropped.
+        send(
+            &mut state,
+            Message::TaskMovedToWorkspace {
+                key: key(1),
+                workspace: WorkspaceId::new(1),
+            },
+        );
+        assert!(state.take_outgoing().is_empty());
+    }
+
+    #[test]
+    fn a_window_event_settles_the_request_it_confirms() {
+        // The protocol has no acknowledgement: the `window` event *is* the
+        // outcome. The request must therefore be forgettable once that event
+        // arrives, and only then.
+        let mut state = connected();
+        send(&mut state, Message::TaskActivated { key: key(1) });
+        assert_eq!(state.take_outgoing().len(), 1);
+
+        let mut retitled = state.tasks().window(key(1)).cloned().expect("known");
+        retitled.title = "Inox — updated".to_owned();
+        send(
+            &mut state,
+            Message::WindowUpdated {
+                key: key(1),
+                window: retitled,
+            },
+        );
+
+        send(&mut state, Message::TaskActivated { key: key(1) });
+        assert_eq!(
+            state.take_outgoing().len(),
+            1,
+            "the confirmation freed the window for the next request"
+        );
+    }
+
+    #[test]
+    fn a_window_removed_settles_the_close_request_it_confirms() {
+        let mut state = connected();
+        send(&mut state, Message::TaskClosed { key: key(1) });
+        assert!(matches!(
+            state.take_outgoing().as_slice(),
+            [OutgoingCommand::Close { .. }]
+        ));
+
+        send(&mut state, Message::WindowRemoved { key: key(1) });
+
+        assert_eq!(state.tasks().len(), 1);
+        assert!(
+            state.model().task(key(1)).is_none(),
+            "the confirmation of a close is the window going away"
+        );
+    }
+
+    #[test]
+    fn a_workspace_switch_is_queued_once_and_confirmed_by_the_workspace_state() {
+        let mut state = connected();
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(0),
+                count: 3,
+            },
+        );
+        assert_eq!(state.workspace(), WorkspaceView::new(0, 3));
+
+        let next = state.model().workspace.map(|indicator| indicator.next);
+        assert_eq!(next, Some(WorkspaceId::new(1)));
+
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: WorkspaceId::new(1),
+            },
+        );
+
+        let commands = state.take_outgoing();
+        assert!(matches!(
+            commands.as_slice(),
+            [OutgoingCommand::SwitchWorkspace { workspace, .. }]
+                if *workspace == WorkspaceId::new(1)
+        ));
+
+        // A second click while the first is unanswered is dropped.
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: WorkspaceId::new(2),
+            },
+        );
+        assert!(state.take_outgoing().is_empty());
+
+        // The workspace state that follows *is* the confirmation.
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(1),
+                count: 3,
+            },
+        );
+        assert_eq!(state.workspace().active(), Some(WorkspaceId::new(1)));
+
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: WorkspaceId::new(2),
+            },
+        );
+        assert_eq!(
+            state.take_outgoing().len(),
+            1,
+            "the switch was settled by the state it produced"
+        );
+    }
+
+    #[test]
+    fn clicking_the_workspace_the_panel_is_already_on_asks_for_nothing() {
+        let mut state = connected();
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(1),
+                count: 3,
+            },
+        );
+
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: WorkspaceId::new(1),
+            },
+        );
+
+        assert!(
+            state.take_outgoing().is_empty(),
+            "there is nothing to switch to"
+        );
+    }
+
+    #[test]
+    fn a_refused_workspace_switch_settles_the_switch_not_a_window() {
+        let mut state = connected();
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(0),
+                count: 2,
+            },
+        );
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: WorkspaceId::new(1),
+            },
+        );
+        assert_eq!(state.take_outgoing().len(), 1);
+
+        send(
+            &mut state,
+            Message::WorkspaceSwitchFailed {
+                reason: RejectionReason::NotPermitted,
+            },
+        );
+
+        // The refusal is not an achieved switch: the indicator still says the
+        // workspace the service last reported, and the control is free again.
+        assert_eq!(state.workspace().active(), Some(WorkspaceId::new(0)));
+        send(
+            &mut state,
+            Message::WorkspaceSwitched {
+                workspace: WorkspaceId::new(1),
+            },
+        );
+        assert_eq!(state.take_outgoing().len(), 1);
+    }
+
+    #[test]
+    fn a_service_that_is_down_disables_the_workspace_indicator() {
+        let mut state = connected();
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(0),
+                count: 3,
+            },
+        );
+        send(
+            &mut state,
+            Message::ServiceUnavailable {
+                reason: ServiceFailure::Disconnected,
+            },
+        );
+
+        let indicator = state.model().workspace.expect("it stays drawn");
+        assert!(!indicator.enabled, "a stale view sends no requests");
+
+        send(&mut state, Message::WorkspaceSwitched { workspace: indicator.next });
+        assert!(
+            state.take_outgoing().is_empty(),
+            "and clicking it asks the absent service for nothing"
+        );
+    }
+
+    #[test]
+    fn a_new_session_forgets_the_workspaces_of_the_old_one() {
+        let mut state = connected();
+        send(
+            &mut state,
+            Message::WorkspacesChanged {
+                active: WorkspaceId::new(1),
+                count: 4,
+            },
+        );
+
+        send(
+            &mut state,
+            Message::ServiceReady {
+                generation: SessionGeneration::new(9),
+            },
+        );
+
+        assert_eq!(
+            state.workspace(),
+            WorkspaceView::Unknown,
+            "a workspace count belongs to the session that reported it"
+        );
+        assert_eq!(state.model().workspace, None);
     }
 
     #[test]

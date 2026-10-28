@@ -60,6 +60,8 @@ const EXPECTED_GLOBALS: &[&str] = &[
     // M4, fractional scaling: the exact scale a surface should render at.
     "wp_fractional_scale_manager_v1",
     "zwp_text_input_manager_v3",
+    // M4, window management: the task bar's view of the managed windows.
+    "inox_window_manager_v1",
 ];
 
 /// A private `XDG_RUNTIME_DIR` for one compositor process.

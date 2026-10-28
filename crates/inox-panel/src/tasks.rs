@@ -78,11 +78,10 @@ impl fmt::Display for SessionGeneration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct WorkspaceId(u32);
 
-// The window-service transport is not implemented, so nothing constructs a
-// workspace yet. The newtype and its conversions are kept because they are
-// what a transport will use; a bare `u32` would let a window number and a
-// workspace number be confused.
-#[allow(dead_code)]
+// The window service reports workspaces through `workspace_state`, and the
+// panel's indicator and `activate`/`move_to_workspace` requests carry them. The
+// newtype keeps a window handle and a workspace number from being confused; a
+// bare `u32` would let either be passed where the other is meant.
 impl WorkspaceId {
     /// The workspace a compositor reports.
     pub const fn new(raw: u32) -> Self {
@@ -92,6 +91,158 @@ impl WorkspaceId {
     /// The raw workspace number.
     pub const fn get(self) -> u32 {
         self.0
+    }
+}
+
+/// How the compositor is showing a window.
+///
+/// The protocol's `window_mode`, one value per window and never a set of flags:
+/// maximizing a tiled window replaces tiling, and returning to [`WindowMode::Tiled`]
+/// puts the window back into the tiling layout (ADR 0045 §2). Whether the window
+/// is *minimized* is a separate field on [`WindowState`], because minimizing
+/// keeps the mode: a window that is put away and then restored comes back to the
+/// mode it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum WindowMode {
+    /// Placed by the tiling layout.
+    #[default]
+    Tiled,
+    /// Placed freely, outside the tiling layout.
+    Floating,
+    /// Filling the output's work area.
+    Maximized,
+    /// Filling the whole output, above the shell's surfaces.
+    Fullscreen,
+}
+
+impl WindowMode {
+    /// The mode in the protocol's numbering.
+    ///
+    /// The panel decodes the wire value with this table rather than a cast, so a
+    /// compositor that grew a fifth mode is refused as unknown instead of drawn
+    /// as a wrong one; the numbers themselves are frozen by
+    /// `inox-protocols`'s metadata test.
+    pub const fn from_protocol(raw: u32) -> Option<Self> {
+        Some(match raw {
+            0 => Self::Tiled,
+            1 => Self::Floating,
+            2 => Self::Maximized,
+            3 => Self::Fullscreen,
+            _ => return None,
+        })
+    }
+
+    /// The mode the protocol numbers.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Tiled => 0,
+            Self::Floating => 1,
+            Self::Maximized => 2,
+            Self::Fullscreen => 3,
+        }
+    }
+
+    /// The next mode when the user cycles through them with the right button.
+    ///
+    /// The order is the protocol's own (`tiled → floating → maximized →
+    /// fullscreen → tiled`), and it is a method here rather than arithmetic in
+    /// the update loop so that the cycle is one testable definition.
+    pub const fn cycled(self) -> Self {
+        match self {
+            Self::Tiled => Self::Floating,
+            Self::Floating => Self::Maximized,
+            Self::Maximized => Self::Fullscreen,
+            Self::Fullscreen => Self::Tiled,
+        }
+    }
+
+    /// The catalog id of this mode's name.
+    pub const fn message_id(self) -> &'static str {
+        match self {
+            Self::Tiled => "panel-task-mode-tiled",
+            Self::Floating => "panel-task-mode-floating",
+            Self::Maximized => "panel-task-mode-maximized",
+            Self::Fullscreen => "panel-task-mode-fullscreen",
+        }
+    }
+}
+
+/// The workspaces the service reports, and which one is shown.
+///
+/// `workspace_state` is the only event that produces one of these, and the
+/// numbers are the service's: `active` is zero-based and always below `count`,
+/// and `count` is at least one because a desktop with no workspace has nowhere
+/// to put a window. Until the event arrives the panel knows of no workspaces at
+/// all and draws no indicator ([`WorkspaceView::Unknown`]) rather than inventing
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceView {
+    /// The service has not said how many workspaces there are.
+    #[default]
+    Unknown,
+    /// The service reports `count` workspaces with `active` shown.
+    Known {
+        /// The workspace currently shown.
+        active: WorkspaceId,
+        /// How many workspaces exist.
+        count: u32,
+    },
+}
+
+impl WorkspaceView {
+    /// Records what the service reported.
+    ///
+    /// A count of zero is not a desktop the service can be in — the protocol
+    /// makes one the floor — so a zero is treated as no report rather than as an
+    /// empty workspace list the panel would have to draw.
+    pub fn new(active: u32, count: u32) -> Self {
+        if count == 0 {
+            return Self::Unknown;
+        }
+
+        Self::Known {
+            active: WorkspaceId::new(active.min(count - 1)),
+            count,
+        }
+    }
+
+    /// How many workspaces there are, or `None` before the service says.
+    pub const fn count(self) -> Option<u32> {
+        match self {
+            Self::Unknown => None,
+            Self::Known { count, .. } => Some(count),
+        }
+    }
+
+    /// The workspace currently shown, or `None` before the service says.
+    pub const fn active(self) -> Option<WorkspaceId> {
+        match self {
+            Self::Unknown => None,
+            Self::Known { active, .. } => Some(active),
+        }
+    }
+
+    /// Whether the indicator has anything to say.
+    ///
+    /// A single workspace is a real configuration and one where switching does
+    /// nothing, so the panel draws no indicator for it: a control that cannot
+    /// change anything is not a control.
+    pub const fn is_shown(self) -> bool {
+        matches!(self, Self::Known { count, .. } if count > 1)
+    }
+
+    /// The workspace after `active` when the user clicks the indicator.
+    ///
+    /// The cycle wraps, so the one click the indicator offers can reach every
+    /// workspace the service reports.
+    pub const fn next(self) -> Option<WorkspaceId> {
+        match self {
+            Self::Unknown => None,
+            Self::Known { active, count } if count > 1 => {
+                Some(WorkspaceId::new((active.get() + 1) % count))
+            }
+            Self::Known { .. } => None,
+        }
     }
 }
 
@@ -143,8 +294,11 @@ impl fmt::Display for WindowKey {
 /// Everything the panel knows about one window.
 ///
 /// These are the fields the window service reports; the panel adds nothing of
-/// its own. A field the panel does not draw yet (maximized, fullscreen) is kept,
-/// because dropping it would make the model a lossy copy of the service.
+/// its own. [`WindowState::mode`] is the compositor's statement about how the
+/// window is shown, and `maximized` / `fullscreen` are its two projections: they
+/// are kept because the panel has always had them (ADR 0045 §4), and
+/// [`WindowState::of_mode`] is the one place that sets all three so the three can
+/// never disagree.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WindowState {
     /// Application the window belongs to, as the server reports it.
@@ -155,11 +309,17 @@ pub struct WindowState {
     pub app_id: String,
     /// Window title.
     pub title: String,
+    /// How the compositor is showing the window.
+    pub mode: WindowMode,
     /// Whether the window is minimized.
     pub minimized: bool,
     /// Whether the window is maximized.
+    ///
+    /// Derived from [`WindowState::mode`]; see [`WindowState::of_mode`].
     pub maximized: bool,
     /// Whether the window is fullscreen.
+    ///
+    /// Derived from [`WindowState::mode`]; see [`WindowState::of_mode`].
     pub fullscreen: bool,
     /// Workspace the window lives on.
     pub workspace: WorkspaceId,
@@ -167,6 +327,23 @@ pub struct WindowState {
     pub output: OutputId,
     /// Whether this is the window the compositor reports as focused.
     pub focused: bool,
+}
+
+impl WindowState {
+    /// The state of a window shown in `mode`.
+    ///
+    /// The one constructor the protocol leg uses, because it is the one place
+    /// that keeps `mode`, `maximized` and `fullscreen` in agreement: a state
+    /// built field by field could say `mode: Maximized` and `maximized: false`,
+    /// and two representations of the same fact would drift.
+    pub fn of_mode(mode: WindowMode) -> Self {
+        Self {
+            mode,
+            maximized: mode == WindowMode::Maximized,
+            fullscreen: mode == WindowMode::Fullscreen,
+            ..Self::default()
+        }
+    }
 }
 
 /// What [`TaskList::apply`] did with a state.
@@ -586,6 +763,125 @@ mod tests {
         assert_eq!(list.active(), None);
         assert!(list.groups().is_empty());
         assert!(list.windows().next().is_none());
+    }
+
+    #[test]
+    fn the_mode_cycle_is_the_protocol_order_and_wraps() {
+        // The right button cycles through the four modes the protocol defines.
+        // The order is the compositor's, not the panel's: tiled is where a
+        // window starts and where it returns.
+        assert_eq!(WindowMode::Tiled.cycled(), WindowMode::Floating);
+        assert_eq!(WindowMode::Floating.cycled(), WindowMode::Maximized);
+        assert_eq!(WindowMode::Maximized.cycled(), WindowMode::Fullscreen);
+        assert_eq!(WindowMode::Fullscreen.cycled(), WindowMode::Tiled);
+
+        let mut mode = WindowMode::Tiled;
+        for _ in 0..4 {
+            mode = mode.cycled();
+        }
+        assert_eq!(mode, WindowMode::Tiled, "four steps return to the start");
+    }
+
+    #[test]
+    fn the_mode_numbers_are_the_protocols() {
+        // The numbers are frozen by `inox-protocols`'s metadata test; the panel
+        // decodes them with the same table, so a silent renumbering is caught on
+        // either side.
+        for (mode, code) in [
+            (WindowMode::Tiled, 0),
+            (WindowMode::Floating, 1),
+            (WindowMode::Maximized, 2),
+            (WindowMode::Fullscreen, 3),
+        ] {
+            assert_eq!(mode.code(), code);
+            assert_eq!(WindowMode::from_protocol(code), Some(mode));
+        }
+
+        assert_eq!(
+            WindowMode::from_protocol(4),
+            None,
+            "a mode this build does not know is unknown, not a wrong one"
+        );
+        assert_eq!(WindowState::default().mode, WindowMode::Tiled);
+    }
+
+    #[test]
+    fn a_state_built_from_a_mode_keeps_its_two_projections_in_agreement() {
+        for mode in [
+            WindowMode::Tiled,
+            WindowMode::Floating,
+            WindowMode::Maximized,
+            WindowMode::Fullscreen,
+        ] {
+            let state = WindowState::of_mode(mode);
+
+            assert_eq!(state.mode, mode);
+            assert_eq!(state.maximized, mode == WindowMode::Maximized);
+            assert_eq!(state.fullscreen, mode == WindowMode::Fullscreen);
+        }
+
+        let mut floating = WindowState::of_mode(WindowMode::Floating);
+        floating.minimized = true;
+        assert_eq!(
+            floating.mode,
+            WindowMode::Floating,
+            "minimizing is orthogonal to the mode: a put-away window keeps it"
+        );
+    }
+
+    #[test]
+    fn a_workspace_report_before_any_report_is_unknown() {
+        let view = WorkspaceView::default();
+
+        assert_eq!(view, WorkspaceView::Unknown);
+        assert_eq!(view.count(), None);
+        assert_eq!(view.active(), None);
+        assert!(!view.is_shown(), "nothing is drawn before the service says");
+        assert_eq!(view.next(), None);
+    }
+
+    #[test]
+    fn one_workspace_is_a_report_but_has_no_indicator() {
+        let view = WorkspaceView::new(0, 1);
+
+        assert_eq!(view.active(), Some(WorkspaceId::new(0)));
+        assert_eq!(view.count(), Some(1));
+        assert!(
+            !view.is_shown(),
+            "a control that cannot change anything is not a control"
+        );
+        assert_eq!(view.next(), None, "and so nothing to switch to");
+    }
+
+    #[test]
+    fn the_indicator_cycles_through_every_workspace() {
+        let view = WorkspaceView::new(0, 3);
+        assert!(view.is_shown());
+        assert_eq!(view.next(), Some(WorkspaceId::new(1)));
+
+        let view = WorkspaceView::new(2, 3);
+        assert_eq!(
+            view.next(),
+            Some(WorkspaceId::new(0)),
+            "the last workspace wraps to the first"
+        );
+    }
+
+    #[test]
+    fn a_report_outside_its_own_bounds_is_clamped_rather_than_drawn() {
+        let view = WorkspaceView::new(7, 3);
+        assert_eq!(
+            view.active(),
+            Some(WorkspaceId::new(2)),
+            "a service cannot show a workspace it does not have"
+        );
+
+        assert_eq!(
+            WorkspaceView::new(0, 0),
+            WorkspaceView::Unknown,
+            "a desktop with no workspace has nowhere to put a window, so a zero \
+             count is no report rather than an empty list"
+        );
     }
 
     /// Every invariant the panel relies on, checked after every step of a

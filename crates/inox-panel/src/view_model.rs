@@ -24,7 +24,7 @@ use inox_config::PanelConfig;
 
 use crate::clock::ClockLabel;
 use crate::contract::ServiceState;
-use crate::tasks::{TaskList, WindowKey};
+use crate::tasks::{TaskList, WindowKey, WindowMode, WorkspaceId, WorkspaceView};
 use crate::tray::{Tray, TrayItemId, TrayStatus};
 
 /// The longest a label the projection produces may be, in characters.
@@ -65,6 +65,12 @@ pub struct TaskButton {
     pub active: bool,
     /// Whether every window of the group is minimized.
     pub minimized: bool,
+    /// How the compositor is showing the window the button acts on.
+    ///
+    /// The button's `key` is the group's focused window, so this is the mode of
+    /// *that* window: it is what the right click's cycle advances from, and what
+    /// the tooltip says the window is doing.
+    pub mode: WindowMode,
     /// Whether the button can be clicked.
     pub enabled: bool,
     /// Why it cannot be, in the user's language (D05). `None` when it can.
@@ -88,6 +94,31 @@ pub struct TrayItemView {
     pub tooltip: String,
 }
 
+/// The workspace indicator, drawn at the left of the task area.
+///
+/// It says which workspace is shown out of how many, and clicking it asks for
+/// the next one. It is **one** entry rather than a row of one per workspace:
+/// `panel.max_task_buttons` bounds the strip's controls, and a nine-workspace
+/// desktop would otherwise spend the task area on workspace numbers (ADR 0045
+/// §4, "工作区指示器画在任务区左侧，点击切换工作区").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceIndicator {
+    /// The label the indicator shows: the active workspace of the count.
+    pub label: String,
+    /// The workspace currently shown.
+    pub active: WorkspaceId,
+    /// How many workspaces there are.
+    pub count: u32,
+    /// The workspace a click asks for.
+    pub next: WorkspaceId,
+    /// Whether the indicator can be clicked.
+    pub enabled: bool,
+    /// Why it cannot be, in the user's language. `None` when it can.
+    pub disabled_reason: Option<String>,
+    /// What a hover shows.
+    pub tooltip: String,
+}
+
 /// Everything the view draws.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelViewModel {
@@ -95,6 +126,9 @@ pub struct PanelViewModel {
     pub status: PanelStatus,
     /// Task buttons, in the order they are drawn and navigated.
     pub tasks: Vec<TaskButton>,
+    /// The workspace indicator, when the service reports more than one
+    /// workspace and the surface draws a task area.
+    pub workspace: Option<WorkspaceIndicator>,
     /// Tray items, display-only.
     pub tray: Vec<TrayItemView>,
     /// The clock, when the configuration shows one and it could be rendered.
@@ -139,6 +173,8 @@ pub struct PanelInput<'a> {
     pub config: &'a PanelConfig,
     /// The entry explicit navigation is focused on, if any.
     pub focused: Option<WindowKey>,
+    /// The workspaces the window service reports.
+    pub workspace: WorkspaceView,
 }
 
 impl PanelInput<'_> {
@@ -162,6 +198,11 @@ impl PanelInput<'_> {
                 let title = group.title(self.tasks);
                 let active = group.is_active(self.tasks);
                 let minimized = group.is_minimized(self.tasks);
+                let mode = self
+                    .tasks
+                    .window(key)
+                    .map(|state| state.mode)
+                    .unwrap_or_default();
 
                 Some(TaskButton {
                     key,
@@ -170,23 +211,16 @@ impl PanelInput<'_> {
                     label: label(title, &app, group.len(), localizer),
                     active,
                     minimized,
+                    mode,
                     enabled: usable,
                     disabled_reason: (!usable)
                         .then(|| localizer.message("panel-task-disabled-service")),
-                    tooltip: if title.is_empty() {
-                        localizer.message_with(
-                            "panel-task-tooltip-empty",
-                            &[("app", app.as_str().into())],
-                        )
-                    } else {
-                        localizer.message_with(
-                            "panel-task-tooltip",
-                            &[("app", app.as_str().into()), ("title", title.into())],
-                        )
-                    },
+                    tooltip: tooltip(title, &app, mode, localizer),
                 })
             })
             .collect();
+
+        let workspace = workspace_indicator(self.workspace, usable, localizer);
 
         let tray: Vec<TrayItemView> = self
             .tray
@@ -226,6 +260,7 @@ impl PanelInput<'_> {
         PanelViewModel {
             status,
             tasks,
+            workspace,
             tray,
             clock: self.clock.clone().filter(|_| self.config.show_clock),
             notice,
@@ -262,6 +297,92 @@ impl PanelInput<'_> {
             ServiceState::Ready { .. } => (PanelStatus::Ready, None, no_retry),
         }
     }
+}
+
+/// What a hover over a task entry shows.
+///
+/// The application and the window's title, and — for a window the compositor is
+/// not showing the ordinary way — the mode it is in. A tiled window adds nothing:
+/// tiling is what a window normally does, and a tooltip that said "tiled" on
+/// every button would be noise. The mode is the reason a button looks the way it
+/// does, so it is the one thing worth naming (ADR 0045 §4).
+fn tooltip(title: &str, app: &str, mode: WindowMode, localizer: &Localizer) -> String {
+    let app = app.to_owned();
+
+    match mode {
+        WindowMode::Tiled if title.is_empty() => {
+            localizer.message_with("panel-task-tooltip-empty", &[("app", app.into())])
+        }
+        WindowMode::Tiled => localizer.message_with(
+            "panel-task-tooltip",
+            &[("app", app.into()), ("title", title.into())],
+        ),
+        mode => {
+            let mode = localizer.message(mode.message_id());
+
+            if title.is_empty() {
+                localizer.message_with(
+                    "panel-task-tooltip-mode-empty",
+                    &[("app", app.into()), ("mode", mode.into())],
+                )
+            } else {
+                localizer.message_with(
+                    "panel-task-tooltip-mode",
+                    &[("app", app.into()), ("title", title.into()), ("mode", mode.into())],
+                )
+            }
+        }
+    }
+}
+
+/// The workspace indicator, when the service reports more than one workspace.
+///
+/// The indicator is a control, so it obeys the same two rules the task buttons
+/// do: it says why it cannot be clicked when the service is away (D05), and it
+/// is drawn only when it has something to change — a one-workspace desktop has
+/// no indicator, because a control that cannot change anything is not a control.
+fn workspace_indicator(
+    workspace: WorkspaceView,
+    usable: bool,
+    localizer: &Localizer,
+) -> Option<WorkspaceIndicator> {
+    if !workspace.is_shown() {
+        return None;
+    }
+
+    let (Some(active), Some(count), Some(next)) =
+        (workspace.active(), workspace.count(), workspace.next())
+    else {
+        return None;
+    };
+
+    // The label is the active workspace of the count, one-based as a user
+    // counts them: the protocol's numbering is zero-based and that is a fact
+    // about the wire, not about what a person reads.
+    let label = localizer.message_with(
+        "panel-workspace-indicator",
+        &[
+            ("active", i64::from(active.get() + 1).into()),
+            ("count", i64::from(count).into()),
+        ],
+    );
+
+    Some(WorkspaceIndicator {
+        label: label.clone(),
+        active,
+        count,
+        next,
+        enabled: usable,
+        disabled_reason: (!usable).then(|| localizer.message("panel-workspace-disabled-service")),
+        tooltip: localizer.message_with(
+            "panel-workspace-tooltip",
+            &[
+                ("active", i64::from(active.get() + 1).into()),
+                ("count", i64::from(count).into()),
+                ("next", i64::from(next.get() + 1).into()),
+            ],
+        ),
+    })
 }
 
 /// The name of an application, or a localized placeholder for one that has none.
@@ -407,6 +528,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -450,6 +572,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -470,6 +593,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -493,6 +617,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -523,6 +648,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -563,6 +689,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -590,6 +717,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -612,6 +740,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: Some(key(3)),
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -631,6 +760,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: Some(key(99)),
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -649,6 +779,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -679,6 +810,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -701,6 +833,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -732,6 +865,7 @@ mod tests {
             clock: Some(clock.clone()),
             config: &showing,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
         assert_eq!(project(&input, &english()).clock, Some(clock));
 
@@ -745,6 +879,7 @@ mod tests {
             }),
             config: &hidden,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
         assert_eq!(project(&input, &english()).clock, None);
     }
@@ -761,6 +896,7 @@ mod tests {
             clock: None,
             config: &config,
             focused: None,
+            workspace: WorkspaceView::Unknown,
         };
 
         let model = project(&input, &english());
@@ -777,10 +913,137 @@ mod tests {
                     clock: None,
                     config: &config,
                     focused: None,
+                    workspace: WorkspaceView::Unknown,
                 },
                 &english()
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_one_workspace_desktop_draws_no_indicator() {
+        let tasks = list();
+        let tray = Tray::new();
+        let config = PanelConfig::default();
+        let input = PanelInput {
+            tasks: &tasks,
+            tray: &tray,
+            service: &ready(),
+            clock: None,
+            config: &config,
+            focused: None,
+            workspace: WorkspaceView::new(0, 1),
+        };
+
+        assert_eq!(
+            project(&input, &english()).workspace,
+            None,
+            "a control that cannot change anything is not a control"
+        );
+    }
+
+    #[test]
+    fn the_indicator_says_which_workspace_is_shown_of_how_many() {
+        let tasks = list();
+        let tray = Tray::new();
+        let config = PanelConfig::default();
+        let input = PanelInput {
+            tasks: &tasks,
+            tray: &tray,
+            service: &ready(),
+            clock: None,
+            config: &config,
+            focused: None,
+            workspace: WorkspaceView::new(1, 3),
+        };
+
+        let model = project(&input, &english());
+        let indicator = model.workspace.as_ref().expect("three workspaces");
+
+        assert_eq!(
+            indicator.label, "2/3",
+            "a reader counts workspaces from one, the wire counts from zero"
+        );
+        assert_eq!(indicator.active, WorkspaceId::new(1));
+        assert_eq!(indicator.count, 3);
+        assert_eq!(indicator.next, WorkspaceId::new(2));
+        assert!(indicator.enabled);
+        assert_eq!(indicator.disabled_reason, None);
+        assert_eq!(
+            indicator.tooltip, "Workspace 2 of 3; click for workspace 3",
+            "the tooltip says what the click will do, not what it did"
+        );
+
+        let chinese = project(&input, &localizer("zh-CN"));
+        assert_eq!(
+            chinese.workspace.map(|indicator| indicator.label),
+            Some("2/3".to_owned()),
+            "the numbers are the locale's numbers through Fluent, not a literal"
+        );
+    }
+
+    #[test]
+    fn a_service_that_is_down_disables_the_indicator_with_a_reason() {
+        let tasks = list();
+        let tray = Tray::new();
+        let config = PanelConfig::default();
+        let service = ServiceState::Unavailable {
+            reason: crate::contract::ServiceFailure::Disconnected,
+        };
+        let input = PanelInput {
+            tasks: &tasks,
+            tray: &tray,
+            service: &service,
+            clock: None,
+            config: &config,
+            focused: None,
+            workspace: WorkspaceView::new(0, 4),
+        };
+
+        let model = project(&input, &english());
+        let indicator = model.workspace.expect("the indicator stays drawn");
+
+        assert!(!indicator.enabled);
+        assert_eq!(
+            indicator.disabled_reason.as_deref(),
+            Some("The window service is not available"),
+            "a disabled control says why (D05)"
+        );
+    }
+
+    #[test]
+    fn a_task_button_reports_the_mode_its_window_is_in() {
+        let mut tasks = list();
+        let mut maximized = tasks.window(key(3)).cloned().expect("known");
+        maximized.mode = WindowMode::Maximized;
+        maximized.maximized = true;
+        tasks.apply(key(3), maximized);
+
+        let tray = Tray::new();
+        let config = PanelConfig::default();
+        let input = PanelInput {
+            tasks: &tasks,
+            tray: &tray,
+            service: &ready(),
+            clock: None,
+            config: &config,
+            focused: None,
+            workspace: WorkspaceView::Unknown,
+        };
+
+        let model = project(&input, &english());
+        let terminal = model.task(key(3)).expect("the focused window's button");
+
+        assert_eq!(
+            terminal.mode,
+            WindowMode::Maximized,
+            "the button acts on the group's focused window, so it is that window's mode"
+        );
+        assert_eq!(
+            model.task(key(1)).map(|task| task.mode),
+            Some(WindowMode::Tiled),
+            "and every other button reports its own group's mode"
         );
     }
 }

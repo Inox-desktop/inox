@@ -136,6 +136,7 @@ pub(super) fn prepare() -> Result<Prepared, RunError> {
             master_ratio: config.compositor.layout.master_ratio,
             master_count: config.compositor.layout.master_count as usize,
             gap: config.compositor.layout.gap,
+            workspace_count: config.compositor.layout.workspace_count,
         },
         outputs,
         theme: config.theme,

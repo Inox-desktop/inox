@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="inox_window_manager">
+  <copyright>
+    Copyright (c) 2026, Inox Desktop Contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="inox_window_manager_v1" version="1">
+    <description summary="Inox private window-management protocol">
+      Private, unstable Inox protocol that lets the desktop's own shell observe
+      and drive window management.
+
+      Why this is a protocol and not a link. The compositor owns windows, their
+      placement, focus and the workspaces they live on; the panel draws them as
+      task buttons. `AGENTS.md` §2 forbids a Cargo dependency between the two,
+      so the panel cannot ask the compositor's data structures directly. What it
+      needs is narrower than the compositor's whole state: *which windows exist,
+      what they are called, which workspace and output they are on, and which
+      one has the focus*, plus four verbs — activate, minimize, close and set
+      mode — and the workspace switches that go with a task bar. None of that is
+      in `xdg-shell` (a client may not ask about another client's toplevel), and
+      `inox-ipc` is a session-wide control global bound once per connection
+      rather than a per-observer subscription. Hence a global of its own.
+
+      What this protocol is not. It grants no window content, no pixels and no
+      screen reading: the events carry handles, strings and enumerations, and
+      the requests are the same actions a user already has through a keyboard
+      binding. Binding it does not make a client the window manager — the
+      compositor keeps every decision, and a request it cannot or will not
+      honour is answered by `request_failed`, never by a silent no-op the
+      caller could mistake for success.
+
+      Who may bind it. Every client may, exactly like `inox_ipc`: what a client
+      learns here (titles and application ids) is what the task bar shows on
+      screen anyway, and the requests are ordinary user-level window actions.
+      A future revision that adds a privileged verb must add the authorization
+      with it rather than widening this one.
+
+      Versioning. `inox-window-manager-v1` follows `inox-ipc`'s rules: it is
+      unstable until Inox 1.0, it may change incompatibly, and consumers
+      negotiate through the version the global is bound at instead of assuming
+      a revision.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager"/>
+    </request>
+
+    <request name="get_window_list">
+      <description summary="observe and drive the managed windows">
+        Create an observer of the compositor's managed windows. The new
+        `inox_window_list_v1` immediately receives `session_generation`, then
+        `workspace_state`, then one `window` event per managed window in the
+        compositor's layout order, and finally `snapshot_done`. Everything after
+        that is incremental.
+
+        A client may create more than one list object, and each one is served
+        independently: a client that drops a list and creates another gets a
+        fresh snapshot, which is how a reconnect rebuilds its view without
+        having to track what it missed.
+      </description>
+      <arg name="id" type="new_id" interface="inox_window_list_v1"/>
+    </request>
+  </interface>
+
+  <interface name="inox_window_list_v1" version="1">
+    <description summary="one observer's view of the managed windows">
+      The events of this object are the compositor's authoritative statement
+      about its windows, and the panel treats them as such: a window's state
+      here is what it draws, not what it asked for.
+
+      Handles. `window` is assigned by the compositor and is opaque to the
+      client: it is not a process id, not a title and not a position in the
+      list, all of which can be reused for a different window. A handle is only
+      meaningful together with the `session_generation` it was issued under,
+      which is why the generation is sent before any handle: a client that
+      reconnects to a restarted compositor must not match an old handle against
+      a new window.
+
+      Read-back, not acknowledgement. A request here does not get a success
+      event, because a compositor that said "done" before the change reached
+      the screen would be lying: the `window` event carrying the new state (or
+      `window_removed` for `close`) *is* the confirmation, and a client shows
+      the effect it reads back rather than the request it sent. Failures are
+      the exception and are reported, because a silent no-op would let a task
+      button stay disabled for ever with nothing to log.
+    </description>
+
+    <enum name="window_mode">
+      <description summary="how the compositor is showing a window">
+        A window is in exactly one of these modes. They are not independent
+        flags: maximizing a tiled window replaces tiling, and returning to
+        `tiled` restores the window to the tiling layout. `minimized` is
+        separate and orthogonal — a window keeps its mode while it is away.
+
+        The mode is the compositor's statement about what it is doing, and a
+        client that asked for something else learns the truth from the next
+        `window` event rather than from the request it sent.
+      </description>
+      <entry name="tiled" value="0" summary="placed by the tiling layout"/>
+      <entry name="floating" value="1" summary="placed freely, outside the tiling layout"/>
+      <entry name="maximized" value="2" summary="filling the output's work area"/>
+      <entry name="fullscreen" value="3" summary="filling the whole output, above the shell surfaces"/>
+    </enum>
+
+    <enum name="request_error">
+      <description summary="why the compositor did not carry out a request"/>
+      <entry name="unknown_window" value="0"
+             summary="no window with that handle is managed any more"/>
+      <entry name="not_permitted" value="1"
+             summary="the session's policy refuses this change"/>
+      <entry name="unsupported" value="2"
+             summary="this compositor cannot do that"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop observing"/>
+    </request>
+
+    <request name="activate">
+      <description summary="bring a window to the front and give it the keyboard">
+        Switch to the workspace the window is on, leave `minimized` if it is
+        there, and make it the focused window. This is what a task button does
+        when the user clicks a window that is not already focused.
+
+        If the session is locked, the request fails with `not_permitted`: no
+        ordinary window may be focused behind a lock.
+      </description>
+      <arg name="window" type="uint" summary="the window to activate"/>
+    </request>
+
+    <request name="minimize">
+      <description summary="put a window away, keeping it managed">
+        The window stops being composited and loses the focus, but keeps its
+        handle, its mode and its workspace, so activating it later restores it
+        where it was. This is what a task button does when the user clicks the
+        window that already had the focus.
+      </description>
+      <arg name="window" type="uint" summary="the window to put away"/>
+    </request>
+
+    <request name="close">
+      <description summary="ask a window to close">
+        Sends `xdg_toplevel.close` to the client. This is a request to the
+        application, not a kill: it may save first, prompt, or refuse, and the
+        compositor keeps managing the window until the client destroys the
+        toplevel. The confirmation is therefore `window_removed`.
+      </description>
+      <arg name="window" type="uint" summary="the window to close"/>
+    </request>
+
+    <request name="set_mode">
+      <description summary="change how a window is shown">
+        Ask the compositor to show `window` in `mode`. The compositor applies
+        the placement the mode implies — `maximized` fills the output's work
+        area, so an exclusive-zone panel stays uncovered, while `fullscreen`
+        fills the whole output — and reports the result with a `window` event.
+      </description>
+      <arg name="window" type="uint" summary="the window to change"/>
+      <arg name="mode" type="uint" enum="window_mode" summary="the mode to apply"/>
+    </request>
+
+    <request name="move_to_workspace">
+      <description summary="move a window to another workspace">
+        Move `window` to `workspace`, which must be a workspace number below the
+        count reported by `workspace_state`; anything else fails with
+        `not_permitted` rather than creating a workspace nothing can reach.
+
+        A window moved to the workspace the user is looking at stays focused; a
+        window moved away leaves the focus to the next window of the workspace
+        it left.
+      </description>
+      <arg name="window" type="uint" summary="the window to move"/>
+      <arg name="workspace" type="uint" summary="the zero-based workspace to move it to"/>
+    </request>
+
+    <request name="switch_workspace">
+      <description summary="show another workspace">
+        Make `workspace` the active one. Every window on it is composited
+        again and the windows of the workspace being left stop being
+        composited; each affected window is announced with a `window` event
+        when its `visible` flag changes, so a client's view stays exact without
+        having to re-snapshot.
+
+        Out-of-range numbers fail with `not_permitted`, like
+        `move_to_workspace`.
+      </description>
+      <arg name="workspace" type="uint" summary="the zero-based workspace to show"/>
+    </request>
+
+    <event name="session_generation">
+      <description summary="the session the handles below belong to">
+        Sent once, before any handle. Handles from another generation are
+        stale and must be discarded rather than compared numerically with the
+        ones that follow: a compositor restart re-uses small integers for
+        different windows.
+
+        The value is advisory. A Wayland connection cannot outlive the
+        compositor that served it, so this exists to let a client keep the
+        ordering of its own view honest, not to authenticate anything.
+      </description>
+      <arg name="generation" type="uint" summary="the generation this session's handles belong to"/>
+    </event>
+
+    <event name="workspace_state">
+      <description summary="how many workspaces there are and which one is shown">
+        Sent when the list is created and again whenever either number changes.
+        `active` is zero-based and always below `count`; `count` is at least
+        one, because a desktop with no workspace has nowhere to put a window.
+      </description>
+      <arg name="active" type="uint" summary="the workspace currently shown"/>
+      <arg name="count" type="uint" summary="how many workspaces exist"/>
+    </event>
+
+    <event name="window">
+      <description summary="a window's complete state">
+        Sent once per managed window while the snapshot is built, and again
+        whenever anything about it changes: its title or application id, its
+        mode, whether it is minimized, whether it is visible on the active
+        workspace, whether it has the focus, or where it lives. It carries the
+        complete state rather than a delta so that a client which missed an
+        event still converges on the next one.
+
+        `output` is the connector the window is on, as the compositor spells it
+        ("eDP-1", "headless-1"), or the empty string while no display is
+        available and the window is managed but unplaced.
+
+        A window is announced only once it has drawn something: a toplevel that
+        exists but has no buffer takes no tile and gets no task button, and
+        announcing it would put a button on screen for a window that may never
+        appear.
+      </description>
+      <arg name="window" type="uint" summary="the window's handle"/>
+      <arg name="app_id" type="string" summary="the application id the client set, possibly empty"/>
+      <arg name="title" type="string" summary="the title the client set, possibly empty"/>
+      <arg name="workspace" type="uint" summary="the zero-based workspace the window is on"/>
+      <arg name="output" type="string" summary="the connector name, or empty when unplaced"/>
+      <arg name="mode" type="uint" enum="window_mode" summary="how the window is being shown"/>
+      <arg name="minimized" type="uint" summary="1 while the window is put away, else 0"/>
+      <arg name="visible" type="uint" summary="1 while the window is on the shown workspace and not minimized, else 0"/>
+      <arg name="focused" type="uint" summary="1 on the window that has the keyboard, else 0"/>
+    </event>
+
+    <event name="window_removed">
+      <description summary="a window is gone">
+        The window's toplevel was destroyed, so the handle is dead: it is never
+        re-issued, and a request naming it fails with `unknown_window`. This is
+        also how a `close` request is confirmed to have been carried out.
+      </description>
+      <arg name="window" type="uint" summary="the window that went away"/>
+    </event>
+
+    <event name="snapshot_done">
+      <description summary="the initial snapshot is complete">
+        Sent after the last `window` of the snapshot, so a client can tell an
+        empty desktop from a snapshot it has not finished receiving. Nothing
+        else is sent until it has.
+      </description>
+    </event>
+
+    <event name="request_failed">
+      <description summary="a request was not carried out">
+        Sent instead of the state change the request asked for. A client must
+        not treat a request as done because it was sent: the confirmation is
+        the `window` or `window_removed` event, and this is the other outcome.
+
+        `window` is the handle the failed request named, so a client holding
+        one request per window can match the failure to the request it has in
+        flight.
+      </description>
+      <arg name="window" type="uint" summary="the window the failed request named"/>
+      <arg name="reason" type="uint" enum="request_error" summary="why it failed"/>
+    </event>
+  </interface>
+</protocol>

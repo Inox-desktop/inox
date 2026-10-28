@@ -173,10 +173,19 @@ pub enum RejectionReason {
 /// One request per window at a time. That is the whole of the interaction contract, rule 4's
 /// "同一动作无重复请求" as far as the panel is concerned: an impatient second
 /// click on a task button is dropped instead of becoming a second activation.
+///
+/// A workspace switch is the one request that names no window, so it cannot be
+/// keyed like the others: it is issued with [`PendingRequests::issue`] and it
+/// lives in its own slot ([`PendingRequests::pending_request`]), which is what
+/// keeps "at most one switch in flight" true without a second bookkeeping
+/// structure. The window-keyed [`PendingRequests::begin`] / [`PendingRequests::settle`]
+/// pair is unchanged, and the two never see each other's identifiers.
 #[derive(Debug, Default)]
 pub struct PendingRequests {
     next: u64,
     in_flight: BTreeMap<WindowKey, RequestId>,
+    /// The identifier of the workspace switch in flight, if there is one.
+    workspace: Option<RequestId>,
 }
 
 impl PendingRequests {
@@ -185,14 +194,21 @@ impl PendingRequests {
         Self::default()
     }
 
-    /// How many requests are in flight.
+    /// How many window requests are in flight.
+    ///
+    /// The workspace switch has its own accessor ([`PendingRequests::pending_workspace`])
+    /// because it is about no window; this count is what the deduplication rule
+    /// is expressed over.
     pub fn len(&self) -> usize {
         self.in_flight.len()
     }
 
     /// Whether no request is in flight.
+    ///
+    /// The workspace switch counts: it is a request the panel is waiting on, and
+    /// a caller asking "is anything outstanding" means it too.
     pub fn is_empty(&self) -> bool {
-        self.in_flight.is_empty()
+        self.in_flight.is_empty() && self.workspace.is_none()
     }
 
     /// Whether a request for `window` is in flight.
@@ -245,13 +261,72 @@ impl PendingRequests {
         self.in_flight.remove(&window)
     }
 
-    /// Forgets every in-flight request.
+    /// Withdraws the request about `window` from the in-flight set.
+    ///
+    /// Unlike [`PendingRequests::settle`], which answers a reply that arrived,
+    /// this is the panel taking its own request back: the request reached its
+    /// outcome through a state event (`window` / `window_removed`), and the
+    /// identifier is not being echoed by the service. The request is found by
+    /// its window, which is how the leg knows what is pending.
+    ///
+    /// Returns the identifier that left the set, for the log.
+    pub fn take(&mut self, window: WindowKey) -> Option<RequestId> {
+        self.in_flight.remove(&window)
+    }
+
+    /// Starts a request that names no window, or `None` when one is in flight.
+    ///
+    /// Used by the workspace indicator, which switches a workspace rather than
+    /// acting on a window: the request still has an identifier so its outcome can
+    /// be logged, but it is not attached to any window's entry.
+    pub fn issue(&mut self) -> Option<RequestId> {
+        if self.workspace.is_some() {
+            return None;
+        }
+
+        self.next += 1;
+        let id = RequestId(self.next);
+        self.workspace = Some(id);
+
+        Some(id)
+    }
+
+    /// The identifier of the request in flight for `window`, if any.
+    ///
+    /// The window-service leg matches a state event back to the request it
+    /// settles with this: a `window` event for a window with a request in
+    /// flight is that request's confirmation (the protocol has no other), so the
+    /// leg needs to know which identifier the event settles.
+    pub fn pending_request(&self, window: WindowKey) -> Option<RequestId> {
+        self.in_flight.get(&window).copied()
+    }
+
+    /// The identifier of the workspace switch in flight, if there is one.
+    pub fn pending_workspace(&self) -> Option<RequestId> {
+        self.workspace
+    }
+
+    /// Forgets the workspace switch in flight.
+    ///
+    /// Returns the identifier that left the set, or `None` when nothing was in
+    /// flight — a failure for a request the panel never sent changes nothing.
+    pub fn settle_workspace(&mut self, id: RequestId) -> Option<RequestId> {
+        if self.workspace == Some(id) {
+            self.workspace = None;
+            return Some(id);
+        }
+
+        None
+    }
+
+    /// Forgets every in-flight request, workspace switch included.
     ///
     /// Used when the connection is re-established: a request sent to the old
     /// service will never be answered, and the panel must not stay disabled
     /// waiting for a reply that cannot come.
     pub fn clear(&mut self) {
         self.in_flight.clear();
+        self.workspace = None;
     }
 }
 
@@ -344,6 +419,72 @@ mod tests {
         assert!(pending.is_empty());
         assert!(!pending.is_pending(key(1)));
         assert!(pending.begin(key(1)).is_some());
+    }
+
+    #[test]
+    fn a_request_is_found_by_the_window_it_is_about() {
+        let mut pending = PendingRequests::new();
+        let id = pending.begin(key(1)).expect("nothing is in flight");
+
+        assert_eq!(pending.pending_request(key(1)), Some(id));
+        assert_eq!(pending.pending_request(key(2)), None);
+
+        assert_eq!(pending.take(key(1)), Some(id));
+        assert_eq!(pending.take(key(1)), None, "twice is the same as once");
+        assert_eq!(pending.pending_request(key(1)), None);
+    }
+
+    #[test]
+    fn only_one_workspace_switch_is_in_flight_at_a_time() {
+        let mut pending = PendingRequests::new();
+        let first = pending.issue().expect("nothing is in flight");
+
+        assert_eq!(pending.pending_workspace(), Some(first));
+        assert_eq!(
+            pending.issue(),
+            None,
+            "a second click on the indicator while the first is unanswered is \
+             dropped, exactly like a second click on a task button"
+        );
+        assert_eq!(pending.pending_workspace(), Some(first));
+    }
+
+    #[test]
+    fn a_workspace_switch_settles_only_its_own_identifier() {
+        let mut pending = PendingRequests::new();
+        let workspace = pending.issue().expect("nothing is in flight");
+        let window = pending.begin(key(1)).expect("nothing is in flight for it");
+
+        assert_eq!(
+            pending.settle_workspace(window),
+            None,
+            "a window request is not a workspace request"
+        );
+        assert_eq!(pending.pending_workspace(), Some(workspace));
+        assert!(pending.is_pending(key(1)));
+
+        assert_eq!(pending.settle_workspace(workspace), Some(workspace));
+        assert_eq!(pending.pending_workspace(), None);
+        assert!(
+            pending.is_pending(key(1)),
+            "and the two kinds of request do not interfere: settling the switch \
+             leaves the window request exactly where it was"
+        );
+    }
+
+    #[test]
+    fn clearing_releases_the_workspace_switch_too() {
+        let mut pending = PendingRequests::new();
+        pending.issue();
+
+        pending.clear();
+
+        assert_eq!(pending.pending_workspace(), None);
+        assert!(
+            pending.issue().is_some(),
+            "the indicator is clickable again once the panel knows the switch \
+             will never be answered"
+        );
     }
 
     #[test]

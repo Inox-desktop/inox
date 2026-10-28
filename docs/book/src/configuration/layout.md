@@ -21,7 +21,7 @@
 | 文件 | 读取者 | schema 状态 |
 |------|--------|-------------|
 | `config.toml` | 所有组件（入口：组件文件、环境变量、主题、语言） | 已实现 |
-| `compositor.toml` | `inox-compositor` | 已实现，但合成器**尚未读取** |
+| `compositor.toml` | `inox-compositor` | 已实现；物理后端启动时读取，headless 后端不读 TOML（用命令行参数） |
 | `shell.toml` | `inox-panel`、`inox-launcher`、`inox-wallpaper` | 已实现，见[该页](./shell.md) |
 | `notifications.toml` | `inox-notifications` | 已实现，见[该页](./notifications.md) |
 | `themes/<name>/theme.toml` | 所有消费设计令牌的组件 | 已实现 |

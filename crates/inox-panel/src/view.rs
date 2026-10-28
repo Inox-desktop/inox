@@ -51,9 +51,10 @@ use inox_common::i18n::Localizer;
 use inox_config::{PanelConfig, PanelPosition, PanelSurface, ShellConfig, Theme as Tokens};
 use serde_json::{Value, json};
 
-use crate::tasks::WindowKey;
+use crate::layer::Button;
+use crate::tasks::{WindowKey, WindowMode, WorkspaceId};
 use crate::theme::{self, EntryStyle, InteractionStatus, PaneStyle, TaskEmphasis};
-use crate::view_model::{PanelStatus, PanelViewModel, TaskButton, TrayItemView};
+use crate::view_model::{PanelStatus, PanelViewModel, TaskButton, TrayItemView, WorkspaceIndicator};
 
 /// How many extra-large spacing steps a task label may be wide.
 ///
@@ -206,16 +207,29 @@ pub(super) struct NoticeMetrics {
 
 /// What a click on an entry asks the panel to do.
 ///
-/// The projection decides it, [`crate::layer`] carries it out: a click on the
-/// application the user is already looking at is the request to put it away
-/// (D03), a click on any other brings it forward, and the retry action asks the
-/// window service again (D05).
+/// The projection decides it, [`crate::layer`] carries it out. Left clicks keep
+/// the semantics the taskbar has always had — [`EntryAction::Activate`] on a
+/// window that is not focused, [`EntryAction::Toggle`] on the one that is (D03)
+/// — and the two new verbs are the other mouse buttons'
+/// ([`EntryAction::for_button`]): a middle click asks the application to close,
+/// a right click asks for the next window mode. The workspace indicator asks for
+/// the next workspace, and the retry action asks the window service again (D05).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryAction {
     /// Bring this window forward.
     Activate(WindowKey),
     /// Put this window away.
     Toggle(WindowKey),
+    /// Ask the application to close this window.
+    Close(WindowKey),
+    /// Ask for `mode` on this window: one step through the cycle.
+    CycleMode(WindowKey, WindowMode),
+    /// Show this workspace.
+    ///
+    /// Its own variant rather than a window's: a workspace switch names no
+    /// window, and reusing a window variant would switch a workspace when the
+    /// user clicked a task.
+    SwitchWorkspace(WorkspaceId),
     /// Reach the window service again.
     Retry,
 }
@@ -259,10 +273,22 @@ impl Interaction {
 /// A plain value: routing a pointer event only needs the geometry and the action,
 /// so the input half copies entries out of a scene instead of borrowing the whole
 /// projection for as long as it holds one.
+///
+/// An entry carries one action per mouse button, because the panel's controls do
+/// more than one thing: a left click on a task activates or minimizes it, a
+/// middle click asks the application to close, and a right click asks for the
+/// next mode. The three are decided *here*, by the projection that knows the
+/// window's state, so [`crate::layer`] never has to look a window up to know what
+/// a click meant — and a button the entry has no meaning for is `None` rather
+/// than an invented behaviour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Entry {
-    /// What a click means.
+    /// What a left click means.
     pub action: EntryAction,
+    /// What a middle click means, when it means anything.
+    pub middle: Option<EntryAction>,
+    /// What a right click means, when it means anything.
+    pub right: Option<EntryAction>,
     /// Whether the entry accepts a click at all.
     pub enabled: bool,
     /// Left edge.
@@ -276,6 +302,34 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// An entry whose only meaning is its left click.
+    pub const fn new(action: EntryAction, enabled: bool, x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            action,
+            middle: None,
+            right: None,
+            enabled,
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// What a press of `button` on this entry means.
+    ///
+    /// A side button, or a button this entry has no meaning for, is `None`: the
+    /// panel has no use for "back" or "forward" on a task strip, and ignoring the
+    /// press is not an error.
+    pub fn action_for(self, button: Button) -> Option<EntryAction> {
+        match button {
+            Button::Left => Some(self.action),
+            Button::Middle => self.middle,
+            Button::Right => self.right,
+            Button::Back | Button::Forward => None,
+        }
+    }
+
     /// Whether `(x, y)` is inside this entry.
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
@@ -443,6 +497,22 @@ pub fn panel(
         right -= geometry.group_gap;
     }
 
+    // The workspace indicator opens the task area: it says which workspace the
+    // windows below belong to, so it is read before them (ADR 0045 §4).
+    if let Some(indicator) = &model.workspace {
+        let slot = painter.workspace_indicator(
+            indicator,
+            tokens,
+            &geometry,
+            left,
+            top,
+            content_height,
+            interaction,
+        );
+
+        left += slot + geometry.group_gap;
+    }
+
     // The task area is what is left: fluid, clipped, laid out last.
     let area_width = (right - left).max(0.0);
     let mut cursor = left;
@@ -526,8 +596,14 @@ fn task_view(
         Align::Left,
     );
 
+    // The three buttons a task entry answers: left keeps the taskbar's
+    // activate/minimize semantics, middle asks the application to close, right
+    // asks for the next mode. All three are decided here, from the state the
+    // button was drawn from, so the input path never has to look a window up.
     painter.entries.push(Entry {
         action,
+        middle: Some(EntryAction::Close(task.key)),
+        right: Some(EntryAction::CycleMode(task.key, task.mode.cycled())),
         enabled: task.enabled,
         x,
         y,
@@ -831,16 +907,66 @@ impl Painter {
             false,
             Align::Left,
         );
-        self.entries.push(Entry {
-            action: EntryAction::Retry,
-            enabled: true,
-            x: action_x,
+        self.entries.push(Entry::new(
+            EntryAction::Retry,
+            true,
+            action_x,
             y,
-            width: action_width,
+            action_width,
             height,
-        });
+        ));
 
         sentence_width + metrics.group_gap + action_width
+    }
+
+    /// The workspace indicator: the active workspace of the count, and the click
+    /// that asks for the next one.
+    ///
+    /// It is drawn as an entry and a line of text — the same two primitives every
+    /// other control uses — so the renderer needs no new kind and the panel makes
+    /// no drawing decision of its own: the fill, the label colour, the outline and
+    /// the radius all come from [`theme::workspace_indicator`].
+    ///
+    /// Returns the width the group took, so the caller can place the task area
+    /// after it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn workspace_indicator(
+        &mut self,
+        indicator: &WorkspaceIndicator,
+        tokens: &Tokens,
+        geometry: &PanelGeometry,
+        x: f32,
+        y: f32,
+        height: f32,
+        interaction: &Interaction,
+    ) -> f32 {
+        let action = EntryAction::SwitchWorkspace(indicator.next);
+        let style = theme::workspace_indicator(
+            tokens,
+            interaction.status(action, indicator.enabled),
+        );
+        let width = estimate_width(&indicator.label, geometry.caption_size)
+            .min(geometry.label_max_width)
+            + geometry.entry_padding * 2.0;
+
+        self.entry(&style, x, y, width, height);
+        self.text(
+            x + geometry.entry_padding,
+            y,
+            (width - geometry.entry_padding * 2.0).max(0.0),
+            height,
+            &indicator.label,
+            &style.text_color,
+            geometry.caption_size,
+            false,
+            Align::Center,
+        );
+
+        // The indicator answers the left button only: closing or re-moding a
+        // workspace is not a verb, so the two other buttons mean nothing here.
+        self.entries.push(Entry::new(action, indicator.enabled, x, y, width, height));
+
+        width
     }
 
     /// The tray items, as one group: display-only, so they show a title and take
@@ -941,6 +1067,7 @@ mod tests {
         PanelViewModel {
             status: PanelStatus::Ready,
             tasks: Vec::new(),
+            workspace: None,
             tray: Vec::new(),
             clock: None,
             notice: None,

@@ -15,6 +15,11 @@ use smithay::{
 };
 
 /// A compositor action triggered by a key binding.
+///
+/// The window-management actions are the keyboard's half of the same state
+/// machine the private `inox-window-manager-v1` protocol drives: a shortcut and
+/// a task-bar button both end up calling one `InoxState` method, so the two can
+/// never disagree about what "maximize" means (ADR 0045).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Move the keyboard focus to the next window in layout order.
@@ -31,6 +36,23 @@ pub enum Action {
     Quit,
     /// Switch to a virtual terminal through the runtime's libseat session.
     SwitchVt(u8),
+    /// Put the focused window into [`crate::workspace::WindowMode::Floating`], or
+    /// back into [`crate::workspace::WindowMode::Tiled`] when it already floats.
+    ToggleFloating,
+    /// Maximize the focused window, filling its output's work area.
+    Maximize,
+    /// Put the focused window into fullscreen, or back to tiled/floating when it
+    /// already is; the previous mode is what it returns to.
+    ToggleFullscreen,
+    /// Put the focused window away, keeping it managed.
+    Minimize,
+    /// Show the zero-based workspace numbered `n`, counting from 0.
+    ///
+    /// The count is `Super+1`..=`Super+9` → 0..=8, so a workspace with no bound
+    /// key does not exist ([`crate::workspace::MAX_WORKSPACES`]).
+    SwitchWorkspace(u32),
+    /// Move the focused window to the zero-based workspace numbered `n`.
+    MoveToWorkspace(u32),
 }
 
 /// Resolve a key press into a compositor [`Action`].
@@ -68,7 +90,69 @@ pub fn action_for_key(sym: Keysym, modifiers: &ModifiersState) -> Option<Action>
         });
     }
 
+    if modifiers.logo {
+        // The window-management chords. Each one names a mode or a workspace and
+        // nothing else, because the state machine behind them is the same one the
+        // task bar drives: a shortcut that meant something subtly different from
+        // the corresponding protocol request would give a session two definitions
+        // of "maximize" (ADR 0045 §2).
+        if is_f(sym) {
+            return Some(if modifiers.shift {
+                Action::ToggleFullscreen
+            } else {
+                Action::ToggleFloating
+            });
+        }
+        if is_m(sym) {
+            return Some(Action::Maximize);
+        }
+        if is_h(sym) {
+            return Some(Action::Minimize);
+        }
+        // `Super+1`..=`Super+9` switch workspaces; with `Shift` they move the
+        // focused window to that workspace instead. `MAX_WORKSPACES` is nine for
+        // exactly this reason: a workspace no chord reaches is unreachable state.
+        if let Some(workspace) = workspace_digit(sym) {
+            return Some(if modifiers.shift {
+                Action::MoveToWorkspace(workspace)
+            } else {
+                Action::SwitchWorkspace(workspace)
+            });
+        }
+    }
+
     None
+}
+
+/// Whether `sym` is `F` at either of its levels.
+fn is_f(sym: Keysym) -> bool {
+    sym == Keysym::new(keysyms::KEY_f) || sym == Keysym::new(keysyms::KEY_F)
+}
+
+/// Whether `sym` is `M` at either of its levels.
+fn is_m(sym: Keysym) -> bool {
+    sym == Keysym::new(keysyms::KEY_m) || sym == Keysym::new(keysyms::KEY_M)
+}
+
+/// Whether `sym` is `H` at either of its levels.
+fn is_h(sym: Keysym) -> bool {
+    sym == Keysym::new(keysyms::KEY_h) || sym == Keysym::new(keysyms::KEY_H)
+}
+
+/// The zero-based workspace a `1`..=`9` key means, if `sym` is one.
+///
+/// The keysyms for the digits are consecutive (`KEY_1` through `KEY_9`), which is
+/// what makes the mapping one subtraction rather than a lookup table; the keypad
+/// keys are deliberately not bound, because `Super+KP_1` would be a second,
+/// undocumented way to reach the same workspace.
+fn workspace_digit(sym: Keysym) -> Option<u32> {
+    let raw = sym.raw();
+    let first = keysyms::KEY_1;
+    let last = keysyms::KEY_9;
+
+    (first..=last)
+        .contains(&raw)
+        .then_some(raw.wrapping_sub(first))
 }
 
 /// Whether `sym` is `Q` at either of its levels.
@@ -305,6 +389,130 @@ mod tests {
         assert_eq!(
             action_for_key(Keysym::new(keysyms::KEY_a), &shift_only),
             None
+        );
+    }
+
+    fn super_only() -> ModifiersState {
+        ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        }
+    }
+
+    fn super_shift() -> ModifiersState {
+        ModifiersState {
+            logo: true,
+            shift: true,
+            ..ModifiersState::default()
+        }
+    }
+
+    #[test]
+    fn super_f_toggles_floating_and_super_shift_f_toggles_fullscreen() {
+        // Both levels of the key have to count, or `Super+Shift+F` would never
+        // match: `Shift` moves `F` to its uppercase level, so the seat reports
+        // `F` and not `f`.
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_f), &super_only()),
+            Some(Action::ToggleFloating)
+        );
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_F), &super_shift()),
+            Some(Action::ToggleFullscreen)
+        );
+
+        // The two chords are distinguished by the modifier, exactly like
+        // `Super+Q` and `Super+Shift+Q`: the same key at either level is one
+        // action with `Super` alone.
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_f), &super_shift()),
+            Some(Action::ToggleFullscreen),
+            "Shift is what selects fullscreen, not the symbol's case"
+        );
+    }
+
+    #[test]
+    fn super_m_maximizes_and_super_h_minimizes() {
+        for key in [keysyms::KEY_m, keysyms::KEY_M] {
+            assert_eq!(
+                action_for_key(Keysym::new(key), &super_only()),
+                Some(Action::Maximize)
+            );
+        }
+        for key in [keysyms::KEY_h, keysyms::KEY_H] {
+            assert_eq!(
+                action_for_key(Keysym::new(key), &super_only()),
+                Some(Action::Minimize)
+            );
+        }
+    }
+
+    #[test]
+    fn super_digits_switch_workspaces_and_super_shift_digits_move_the_window() {
+        // The mapping is zero-based: `Super+1` is the first workspace, and the
+        // protocol and the task bar spell that number `0`.
+        for (key, workspace) in [
+            (keysyms::KEY_1, 0),
+            (keysyms::KEY_2, 1),
+            (keysyms::KEY_5, 4),
+            (keysyms::KEY_9, 8),
+        ] {
+            assert_eq!(
+                action_for_key(Keysym::new(key), &super_only()),
+                Some(Action::SwitchWorkspace(workspace))
+            );
+            assert_eq!(
+                action_for_key(Keysym::new(key), &super_shift()),
+                Some(Action::MoveToWorkspace(workspace))
+            );
+        }
+    }
+
+    #[test]
+    fn the_highest_bound_workspace_is_the_models_last_one() {
+        // A workspace with no chord is unreachable state, so the ninth digit and
+        // `MAX_WORKSPACES` have to be the same number: `Super+9` is index 8.
+        assert_eq!(crate::workspace::MAX_WORKSPACES, 9);
+        assert_eq!(
+            workspace_digit(Keysym::new(keysyms::KEY_9)),
+            Some(crate::workspace::MAX_WORKSPACES - 1)
+        );
+        // Ten has no key, so it is not a workspace the configuration can ask for
+        // either (the bound `inox-config` validates is the same number).
+        assert_eq!(workspace_digit(Keysym::new(keysyms::KEY_0)), None);
+        assert_eq!(workspace_digit(Keysym::new(keysyms::KEY_KP_1)), None);
+    }
+
+    #[test]
+    fn a_digit_without_super_does_not_switch_the_workspace() {
+        for key in [keysyms::KEY_1, keysyms::KEY_9] {
+            assert_eq!(
+                action_for_key(Keysym::new(key), &ModifiersState::default()),
+                None,
+                "a bare digit belongs to the focused client"
+            );
+        }
+    }
+
+    #[test]
+    fn alt_focus_chords_are_unaffected_by_the_new_bindings() {
+        // `Alt+Tab` must keep its meaning: the window-management chords are all
+        // under `Super`, and a shift in their implementation cannot have moved the
+        // existing ones.
+        let alt = ModifiersState {
+            alt: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(action_for_key(tab(), &alt), Some(Action::FocusNext));
+
+        let alt_shift = ModifiersState {
+            alt: true,
+            shift: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(
+            action_for_key(Keysym::new(keysyms::KEY_ISO_Left_Tab), &alt_shift),
+            Some(Action::FocusPrev)
         );
     }
 }

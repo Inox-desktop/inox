@@ -9,10 +9,12 @@
 | **Shell** | 用户可见的桌面外壳（面板、启动器、通知、设置等），与合成器以协议/DBus 通信而非 Rust 依赖 |
 | **crate** | Rust 编译单元。Inox 中每个组件是一个 crate，位于 `crates/` |
 | **工作区（workspace）** | 本仓库的 Cargo workspace，包含全部组件 crate |
+| **工作区（窗口管理）** | 窗口的虚拟桌面分组，编号从 0 开始，数量由 `[layout] workspace_count` / `--workspaces` 给出（1..=9）。与上面的「Cargo workspace」是两个不同的概念，文档里出现「工作区数量」「切工作区」时都指这个 |
 | **层级表** | 根 `Cargo.toml` 的 `[workspace.metadata.inox.layers]`，声明每个 crate 属于 L1–L4 还是测试层，是分层成员的唯一事实来源 |
 | **分层检查（B04）** | `cargo test -p inox-integration --test layering`，读取真实依赖图断言分层规则的依赖方向规则 |
 | **`inox-ipc`** | Inox 私有的不稳定 Wayland 协议，用于合成器与 Shell 之间的控制与配置重载 |
 | **`inox-glass-v1`** | Inox 私有的不稳定 Wayland 协议：客户端请求合成器处理自己表面背后的区域——v1 是背景模糊，v2（当前版本）加圆角边缘折射、可选 depth 与色散。合成器已在 headless 路径实现，物理（DRM）路径报 0 并保持场景锐利 |
+| **`inox-window-manager-v1`** | Inox 私有的不稳定 Wayland 协议（v1）：任务栏观察与驱动窗口的通道。`get_window_list` 创建观察者，事件带窗口的完整状态（句柄、标题、app_id、工作区、输出、模式、最小化/可见/焦点），六个动词是激活、最小化、关闭、切换模式、移到工作区、切换工作区。请求由状态事件确认（`request_failed` 是唯一的否定结果），句柄只在 `session_generation` 内有意义，不授予任何像素。ADR 0045（`proposed`） |
 | **ADR** | Architecture Decision Record，架构决策记录，见[架构决策记录](./architecture/decisions.md) |
 | **DoD** | Definition of Done，里程碑验收标准 |
 | **MSRV** | Minimum Supported Rust Version，最低支持的 Rust 版本；本工作区统一为 1.86 |

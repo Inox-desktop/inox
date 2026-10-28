@@ -9,8 +9,21 @@
 //! [`LayoutConfig::master_count`] windows tile the left (master) column, every
 //! remaining window tiles the right (stack) column. A gap separates the work
 //! area edge from the tiles and neighbouring tiles from each other.
+//!
+//! Tiling is one of four window modes; a floating window is placed by
+//! [`default_floating_area`] until it is given a geometry of its own. That
+//! fallback lives here, next to the tiling geometry, so all the pure placement
+//! arithmetic has one home.
 
 use smithay::utils::{Logical, Rectangle};
+
+/// Fraction of the work area a floating window without a geometry of its own gets,
+/// as a percentage of each axis.
+///
+/// Two thirds is the compromise a first-fit window wants: large enough that the
+/// content inside is usable, small enough that the window is visibly *not* tiled
+/// and the window behind stays recognisable.
+pub const DEFAULT_FLOATING_PERCENT: i32 = 66;
 
 /// Smallest accepted percentage of the work area width given to the master column.
 pub const MASTER_RATIO_MIN: u8 = 10;
@@ -29,6 +42,13 @@ pub struct LayoutConfig {
     /// Gap in logical pixels between the work area edge and its tiles, and
     /// between neighbouring tiles.
     pub gap: i32,
+    /// How many workspaces windows can be spread over, 1..=9.
+    ///
+    /// This is the layout's business rather than the window model's because it is
+    /// a configuration value: `Workspace` clamps it into its own range, and the
+    /// keyboard binds `Super+1`..=`Super+9` to reach exactly this many. The
+    /// `inox-config` model validates the same bound while parsing the file.
+    pub workspace_count: u32,
 }
 
 impl Default for LayoutConfig {
@@ -37,6 +57,7 @@ impl Default for LayoutConfig {
             master_ratio: 60,
             master_count: 1,
             gap: 8,
+            workspace_count: crate::workspace::MIN_WORKSPACES,
         }
     }
 }
@@ -51,6 +72,9 @@ impl LayoutConfig {
             master_ratio: self.master_ratio.clamp(MASTER_RATIO_MIN, MASTER_RATIO_MAX),
             master_count: self.master_count.max(1),
             gap: self.gap.max(0),
+            workspace_count: self
+                .workspace_count
+                .clamp(crate::workspace::MIN_WORKSPACES, crate::workspace::MAX_WORKSPACES),
         }
     }
 
@@ -97,6 +121,38 @@ impl LayoutConfig {
 
         tiles
     }
+}
+
+/// The geometry a floating window gets before it has been placed by the user.
+///
+/// Centred in `work_area` and sized to [`DEFAULT_FLOATING_PERCENT`] of it per axis,
+/// so the window covers most of the screen without hiding the one behind it and
+/// without ever reaching outside the work area. The result stays inside
+/// `work_area` for degenerate inputs as well: an area smaller than the rounding
+/// leaves the rectangle at the area's own top-left corner with a non-negative
+/// size rather than at a negative offset.
+///
+/// This is the documented fallback for a [`crate::workspace::WindowMode::Floating`]
+/// window that has no geometry of its own yet. It is deliberately deterministic,
+/// because the compositor does not persist floating geometry across sessions.
+pub fn default_floating_area(work_area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let scaled = |size: i32| {
+        let size = size.max(0);
+        size.saturating_mul(DEFAULT_FLOATING_PERCENT)
+            .saturating_div(100)
+            .max(1)
+            .min(size)
+    };
+    let width = scaled(work_area.size.w);
+    let height = scaled(work_area.size.h);
+
+    rect(
+        (
+            work_area.loc.x + (work_area.size.w - width) / 2,
+            work_area.loc.y + (work_area.size.h - height) / 2,
+        ),
+        (width, height),
+    )
 }
 
 /// Build a rectangle from a location and a size, both given as `i32` pairs.
@@ -201,6 +257,7 @@ mod tests {
             master_ratio: 50,
             master_count: 1,
             gap: 0,
+            ..LayoutConfig::default()
         };
 
         let tiles = config.arrange(area(1000, 400), 2);
@@ -216,6 +273,7 @@ mod tests {
             master_ratio: 50,
             master_count: 1,
             gap: 0,
+            ..LayoutConfig::default()
         };
 
         let tiles = config.arrange(area(1000, 400), 3);
@@ -231,6 +289,7 @@ mod tests {
             master_ratio: 50,
             master_count: 2,
             gap: 0,
+            ..LayoutConfig::default()
         };
 
         let tiles = config.arrange(area(1000, 400), 3);
@@ -246,6 +305,7 @@ mod tests {
             master_ratio: 50,
             master_count: 1,
             gap: 10,
+            ..LayoutConfig::default()
         };
 
         let tiles = config.arrange(area(1000, 400), 2);
@@ -263,6 +323,7 @@ mod tests {
             master_ratio: 100,
             master_count: 1,
             gap: 0,
+            ..LayoutConfig::default()
         };
 
         let tiles = extreme.arrange(area(1000, 400), 2);
@@ -285,6 +346,54 @@ mod tests {
             assert!(tile.size.w >= 0 && tile.size.h >= 0);
         }
     }
+
+    #[test]
+    fn the_default_floating_area_is_centred_two_thirds_of_the_work_area() {
+        let floating = default_floating_area(rect((100, 40), (900, 600)));
+
+        assert_eq!(floating, rect((253, 142), (594, 396)));
+    }
+
+    #[test]
+    fn the_default_floating_area_covers_its_theoretical_fraction_of_the_area() {
+        let work_area = rect((0, 0), (3000, 2000));
+        let floating = default_floating_area(work_area);
+
+        // Exactly the configured percentage on both axes.
+        assert_eq!(floating.size.w, 3000 * DEFAULT_FLOATING_PERCENT / 100);
+        assert_eq!(floating.size.h, 2000 * DEFAULT_FLOATING_PERCENT / 100);
+        // And it is centred: equal margins on each axis.
+        assert_eq!(
+            floating.loc.x - work_area.loc.x,
+            3000 - (floating.loc.x + floating.size.w)
+        );
+        assert_eq!(
+            floating.loc.y - work_area.loc.y,
+            2000 - (floating.loc.y + floating.size.h)
+        );
+    }
+
+    #[test]
+    fn the_default_floating_area_stays_inside_a_degenerate_work_area() {
+        for work_area in [
+            rect((0, 0), (0, 0)),
+            rect((-50, -50), (1, 1)),
+            rect((0, 0), (2, 900)),
+        ] {
+            let floating = default_floating_area(work_area);
+            assert!(floating.size.w >= 0 && floating.size.h >= 0);
+            assert!(floating.loc.x >= work_area.loc.x);
+            assert!(floating.loc.y >= work_area.loc.y);
+            assert!(
+                floating.loc.x + floating.size.w <= work_area.loc.x + work_area.size.w,
+                "{floating:?} escapes {work_area:?}"
+            );
+            assert!(
+                floating.loc.y + floating.size.h <= work_area.loc.y + work_area.size.h,
+                "{floating:?} escapes {work_area:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -304,6 +413,7 @@ mod proptests {
                 master_ratio,
                 master_count,
                 gap,
+                ..LayoutConfig::default()
             }
         })
     }
@@ -367,6 +477,37 @@ mod proptests {
                 for stack_tile in &tiles[master_count..] {
                     prop_assert!(stack_tile.loc.x >= master_right);
                 }
+            }
+        }
+
+        #[test]
+        fn the_default_floating_area_stays_inside_its_work_area(
+            work_area in work_area(),
+        ) {
+            let floating = default_floating_area(work_area);
+
+            prop_assert!(floating.size.w >= 0);
+            prop_assert!(floating.size.h >= 0);
+            prop_assert!(floating.loc.x >= work_area.loc.x);
+            prop_assert!(floating.loc.y >= work_area.loc.y);
+            prop_assert!(floating.loc.x + floating.size.w <= work_area.loc.x + work_area.size.w);
+            prop_assert!(floating.loc.y + floating.size.h <= work_area.loc.y + work_area.size.h);
+        }
+
+        #[test]
+        fn the_default_floating_area_never_hides_the_whole_work_area(
+            work_area in work_area(),
+        ) {
+            // A window that fills the entire area would be indistinguishable from
+            // tiling, which is the one thing a floating window must not look like.
+            let floating = default_floating_area(work_area);
+            prop_assert!(floating.size.w <= work_area.size.w);
+            prop_assert!(floating.size.h <= work_area.size.h);
+            if work_area.size.w > 2 {
+                prop_assert!(floating.size.w < work_area.size.w);
+            }
+            if work_area.size.h > 2 {
+                prop_assert!(floating.size.h < work_area.size.h);
             }
         }
     }

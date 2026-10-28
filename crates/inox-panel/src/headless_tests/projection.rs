@@ -14,8 +14,9 @@ use inox_config::{
 
 use crate::app::Message;
 use crate::dock::DockGeometry;
-use crate::layer::Point;
+use crate::layer::{Button, Point, Pointer};
 use crate::menubar::MenubarGeometry;
+use crate::tasks::{WindowMode, WorkspaceId};
 use crate::view::{EntryAction, PanelGeometry};
 use crate::view_model::PanelStatus;
 
@@ -364,6 +365,160 @@ fn the_tray_group_sits_between_the_tasks_and_the_clock() {
             .iter()
             .any(|item| number(item, "w") == crate::theme::hairline(panel.tokens())),
         "a hairline separates what the user acts on from what the panel reports"
+    );
+}
+
+#[test]
+fn the_workspace_indicator_sits_at_the_left_of_the_task_area() {
+    let mut panel = populated_surface(PanelSurface::Taskbar, Tokens::builtin_dark());
+    panel.update(Message::WorkspacesChanged {
+        active: WorkspaceId::new(1),
+        count: 3,
+    });
+
+    let scene = panel.scene();
+    let indicator = panel
+        .state()
+        .model()
+        .workspace
+        .expect("three workspaces have an indicator");
+    let label = text_item(&scene, &indicator.label).expect("the indicator is drawn");
+    let first_task = text_item(&scene, "Inox — Documentation").expect("the first task is drawn");
+
+    assert!(
+        number(label, "x") < number(first_task, "x"),
+        "the indicator opens the task area: it says which workspace the buttons belong to \
+         (ADR 0045 §4)"
+    );
+    assert_eq!(label["text"], "2/3");
+
+    let entry = scene
+        .entries
+        .iter()
+        .find(|entry| entry.action == EntryAction::SwitchWorkspace(WorkspaceId::new(2)))
+        .expect("the indicator is a click target, not a sentence");
+    assert!(
+        (entry.x - number(label, "x")).abs() <= f32::from(panel.tokens().spacing.md),
+        "the click target is the box the label is drawn in"
+    );
+}
+
+#[test]
+fn a_one_workspace_desktop_projects_no_indicator() {
+    let mut panel = populated_surface(PanelSurface::Taskbar, Tokens::builtin_dark());
+    panel.update(Message::WorkspacesChanged {
+        active: WorkspaceId::new(0),
+        count: 1,
+    });
+
+    let scene = panel.scene();
+
+    assert_eq!(panel.state().model().workspace, None);
+    assert!(
+        !scene
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.action, EntryAction::SwitchWorkspace(_))),
+        "a control that cannot change anything is not drawn"
+    );
+}
+
+#[test]
+fn clicking_the_workspace_indicator_asks_for_the_next_workspace() {
+    let mut panel = populated_surface(PanelSurface::Taskbar, Tokens::builtin_dark());
+    panel.update(Message::WorkspacesChanged {
+        active: WorkspaceId::new(0),
+        count: 3,
+    });
+
+    let entry = panel
+        .scene()
+        .entries
+        .into_iter()
+        .find(|entry| matches!(entry.action, EntryAction::SwitchWorkspace(_)))
+        .expect("the indicator is clickable");
+    let point = Point::new(entry.x + entry.width / 2.0, entry.y + entry.height / 2.0);
+
+    let messages = panel.click(point);
+
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [Message::WorkspaceSwitched { workspace }] if *workspace == WorkspaceId::new(1)
+        ),
+        "the click asks for the next workspace: {messages:?}"
+    );
+}
+
+#[test]
+fn a_task_entry_answers_close_and_mode_cycle_on_the_other_buttons() {
+    let mut panel = populated_surface(PanelSurface::Taskbar, Tokens::builtin_dark());
+    // The first group is drawn from `firefox`'s first window, which is tiled.
+    let entry = panel.scene().entries[0];
+    let point = Point::new(entry.x + entry.width / 2.0, entry.y + entry.height / 2.0);
+
+    panel.pointer(Pointer::Enter(point));
+    panel.pointer(Pointer::Press(Button::Middle));
+    let closed = panel.pointer(Pointer::Release(Button::Middle)).messages;
+
+    assert!(
+        matches!(closed.as_slice(), [Message::TaskClosed { key: closed }] if *closed == key(1)),
+        "a middle click asks the application to close: {closed:?}"
+    );
+
+    panel.pointer(Pointer::Press(Button::Right));
+    let cycled = panel.pointer(Pointer::Release(Button::Right)).messages;
+
+    assert!(
+        matches!(
+            cycled.as_slice(),
+            [Message::TaskModeCycled { key: cycled, mode }]
+                if *cycled == key(1) && *mode == WindowMode::Floating
+        ),
+        "a right click asks for the next mode in the cycle: {cycled:?}"
+    );
+}
+
+#[test]
+fn a_left_click_keeps_the_semantics_the_taskbar_always_had() {
+    // The middle and right buttons were added, the left one was not changed:
+    // an unfocused window is activated and a focused one is minimized (D03).
+    let panel = populated_surface(PanelSurface::Taskbar, Tokens::builtin_dark());
+    let activate = panel.scene().entries[0];
+    let toggle = panel
+        .scene()
+        .entries
+        .into_iter()
+        .find(|entry| matches!(entry.action, EntryAction::Toggle(_)))
+        .expect("the focused application's button inverts the click");
+
+    assert!(matches!(activate.action, EntryAction::Activate(_)));
+    assert!(matches!(toggle.action, EntryAction::Toggle(_)));
+    assert_eq!(
+        activate.middle.map(|action| matches!(action, EntryAction::Close(_))),
+        Some(true)
+    );
+    assert_eq!(
+        toggle.middle.map(|action| matches!(action, EntryAction::Close(_))),
+        Some(true),
+        "closing is a property of the window, not of whether it has focus"
+    );
+}
+
+#[test]
+fn a_side_button_on_a_task_entry_means_nothing() {
+    let mut panel = populated_surface(PanelSurface::Taskbar, Tokens::builtin_dark());
+    let entry = panel.scene().entries[0];
+    let point = Point::new(entry.x + entry.width / 2.0, entry.y + entry.height / 2.0);
+
+    panel.pointer(Pointer::Enter(point));
+    panel.pointer(Pointer::Press(Button::Back));
+    let released = panel.pointer(Pointer::Release(Button::Back));
+
+    assert!(
+        released.messages.is_empty(),
+        "the panel has no meaning for a side button, so it invents none: {:?}",
+        released.messages
     );
 }
 

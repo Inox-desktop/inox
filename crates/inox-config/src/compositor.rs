@@ -78,6 +78,22 @@ const MASTER_COUNT_MIN: u32 = 1;
 /// Smallest accepted gap, in logical pixels.
 const GAP_MIN: i32 = 0;
 
+/// Smallest accepted number of workspaces.
+///
+/// One is the floor because a desktop with no workspace has nowhere to put a
+/// window: the active workspace, every window's workspace and the task bar's
+/// workspace indicator would all be about state that cannot exist.
+const WORKSPACE_COUNT_MIN: u32 = 1;
+
+/// Largest accepted number of workspaces.
+///
+/// The upper bound is not an implementation limit but a reachability one: the
+/// compositor binds `Super+1`..=`Super+9` to workspace switches, so a tenth
+/// workspace would have no key to reach it and would be state a user cannot get
+/// to. `inox-compositor`'s own `workspace::MAX_WORKSPACES` is the same number for
+/// the same reason, and the two are pinned against each other by a unit test.
+const WORKSPACE_COUNT_MAX: u32 = 9;
+
 /// Everything `compositor.toml` describes.
 #[derive(Debug, Clone, PartialEq, Deserialize, Default, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -209,7 +225,8 @@ impl Default for InputConfig {
 /// Every parameter is checked while the file is parsed, so an out-of-range
 /// value is a parse error naming the field rather than a silent correction
 /// : a master ratio outside 10..=90, a master count below
-/// 1 and a negative gap are all rejected by [`crate::store::InoxConfig::load`].
+/// 1, a negative gap and a workspace count outside 1..=9 are all rejected by
+/// [`crate::store::InoxConfig::load`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LayoutConfig {
@@ -225,6 +242,16 @@ pub struct LayoutConfig {
     /// between neighbouring tiles; not negative.
     #[serde(deserialize_with = "validate_gap")]
     pub gap: i32,
+    /// How many workspaces windows can be spread over, between 1 and 9.
+    ///
+    /// Workspaces are numbered from 0 and the numbers are what the private
+    /// window-management protocol reports and what `Super+1`..=`Super+9` switch
+    /// to, so the count is bounded by the number of bound keys rather than by
+    /// anything the compositor could not store. The count cannot change while a
+    /// session runs: `move_to_workspace` to a number that does not exist is
+    /// refused instead of creating a workspace with no way to reach it.
+    #[serde(deserialize_with = "validate_workspace_count")]
+    pub workspace_count: u32,
 }
 
 impl Default for LayoutConfig {
@@ -233,23 +260,31 @@ impl Default for LayoutConfig {
             master_ratio: 60,
             master_count: 1,
             gap: 8,
+            // One is the backward-compatible default: a `compositor.toml` written
+            // before workspaces existed describes a desktop where every window is
+            // on the one workspace, which is exactly what a count of one means.
+            workspace_count: WORKSPACE_COUNT_MIN,
         }
     }
 }
 
 impl LayoutConfig {
     /// Clamp every parameter into its accepted range: `master_ratio` within
-    /// 10..=90, `master_count` at least 1 and `gap` at least 0.
+    /// 10..=90, `master_count` at least 1, `gap` at least 0 and
+    /// `workspace_count` within 1..=9.
     ///
     /// A defensive fallback for values that did not come from the configuration
     /// files — inox-compositor applies the same clamp to its own hard-coded
-    /// defaults. A layout that went through [`crate::store::InoxConfig::load`]
-    /// is already inside these ranges and does not need this.
+    /// defaults. A layout that went through [`crate::store::InoxConfig::load`] is
+    /// already inside these ranges and does not need this.
     pub fn sanitised(self) -> Self {
         Self {
             master_ratio: self.master_ratio.clamp(MASTER_RATIO_MIN, MASTER_RATIO_MAX),
             master_count: self.master_count.max(MASTER_COUNT_MIN),
             gap: self.gap.max(GAP_MIN),
+            workspace_count: self
+                .workspace_count
+                .clamp(WORKSPACE_COUNT_MIN, WORKSPACE_COUNT_MAX),
         }
     }
 }
@@ -395,6 +430,23 @@ where
     Ok(gap)
 }
 
+/// Reject a workspace count outside [`WORKSPACE_COUNT_MIN`]..=[`WORKSPACE_COUNT_MAX`].
+fn validate_workspace_count<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let count = u32::deserialize(deserializer)?;
+
+    if !(WORKSPACE_COUNT_MIN..=WORKSPACE_COUNT_MAX).contains(&count) {
+        return Err(serde::de::Error::custom(format!(
+            "workspace_count must be between {WORKSPACE_COUNT_MIN} and \
+             {WORKSPACE_COUNT_MAX}, found {count}"
+        )));
+    }
+
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +474,7 @@ mod tests {
         assert_eq!(config.layout.master_ratio, 60);
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.layout.gap, 8);
+        assert_eq!(config.layout.workspace_count, 1);
     }
 
     #[test]
@@ -583,6 +636,7 @@ mod tests {
         assert_eq!(layout.master_ratio, 60);
         assert_eq!(layout.master_count, 1);
         assert_eq!(layout.gap, 8);
+        assert_eq!(layout.workspace_count, 1);
         assert_eq!(layout.sanitised(), layout);
     }
 
@@ -612,7 +666,8 @@ mod tests {
              [layout]\n\
              master_ratio = 70\n\
              master_count = 2\n\
-             gap = 12\n",
+             gap = 12\n\
+             workspace_count = 4\n",
         )
         .expect("document");
 
@@ -637,6 +692,7 @@ mod tests {
         assert_eq!(config.layout.master_ratio, 70);
         assert_eq!(config.layout.master_count, 2);
         assert_eq!(config.layout.gap, 12);
+        assert_eq!(config.layout.workspace_count, 4);
     }
 
     #[test]
@@ -650,6 +706,7 @@ mod tests {
         assert_eq!(config.layout.master_ratio, 60);
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.layout.gap, 8);
+        assert_eq!(config.layout.workspace_count, 1);
         assert!(config.outputs.is_empty());
     }
 
@@ -814,6 +871,7 @@ mod tests {
             assert_eq!(layout.master_ratio, 60, "document `{document:?}`");
             assert_eq!(layout.master_count, 1, "document `{document:?}`");
             assert_eq!(layout.gap, 8, "document `{document:?}`");
+            assert_eq!(layout.workspace_count, 1, "document `{document:?}`");
         }
     }
 
@@ -986,11 +1044,13 @@ mod tests {
                     master_ratio: 0,
                     master_count: 0,
                     gap: -4,
+                    workspace_count: 0,
                 },
                 LayoutConfig {
                     master_ratio: 10,
                     master_count: 1,
                     gap: 0,
+                    workspace_count: 1,
                 },
             ),
             (
@@ -998,17 +1058,65 @@ mod tests {
                     master_ratio: 200,
                     master_count: 3,
                     gap: 12,
+                    workspace_count: 99,
                 },
                 LayoutConfig {
                     master_ratio: 90,
                     master_count: 3,
                     gap: 12,
+                    workspace_count: 9,
                 },
             ),
         ];
 
         for (written, expected) in cases {
             assert_eq!(written.sanitised(), expected, "sanitising {written:?}");
+        }
+    }
+
+    /// The workspace bound is a reachability rule, not a storage rule: the
+    /// compositor binds `Super+1`..=`Super+9`. The literal is spelled out here
+    /// rather than imported because this crate is L1 and the compositor is L2 — a
+    /// dependency on it would invert the layering. The drift in the other
+    /// direction is pinned by `inox-compositor`, which may depend *down* on this
+    /// crate and asserts that its own `MAX_WORKSPACES` is this number.
+    #[test]
+    fn the_workspace_count_bound_is_what_the_key_bindings_can_reach() {
+        assert_eq!(WORKSPACE_COUNT_MIN, 1);
+        assert_eq!(WORKSPACE_COUNT_MAX, 9);
+    }
+
+    #[test]
+    fn a_workspace_count_outside_the_bound_is_a_parse_error_naming_the_field() {
+        for count in [0, 10, u32::MAX] {
+            let document = format!("[layout]\nworkspace_count = {count}\n");
+            let error = parse_compositor(&document).expect_err("out of range");
+
+            match error {
+                ConfigError::Parse {
+                    field, line, message,
+                    ..
+                } => {
+                    assert_eq!(field, Some("layout.workspace_count".to_owned()));
+                    assert_eq!(line, Some(line_of(&document, "workspace_count")));
+                    assert!(
+                        message.contains("workspace_count"),
+                        "the message must name the field: {message}"
+                    );
+                }
+                other => panic!("expected a parse error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_workspace_count_at_the_edge_of_its_range_is_accepted() {
+        for count in [WORKSPACE_COUNT_MIN, WORKSPACE_COUNT_MAX] {
+            let config = parse_compositor(&format!("[layout]\nworkspace_count = {count}\n"))
+                .expect("a workspace count at the edge of its range");
+
+            assert_eq!(config.layout.workspace_count, count);
+            assert_eq!(config.layout.sanitised().workspace_count, count);
         }
     }
 }

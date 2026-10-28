@@ -39,7 +39,7 @@ use crate::view::TooltipPosition;
 use inox_common::i18n::Localizer;
 use inox_config::{DockConfig, Theme as Tokens};
 
-use crate::tasks::WindowKey;
+use crate::tasks::{WindowKey, WindowMode};
 use crate::theme;
 use crate::view_model::{PanelViewModel, TaskButton, TrayItemView};
 
@@ -390,6 +390,11 @@ pub struct DockTile {
     pub active: bool,
     /// Whether the panel's own navigation focus is on this tile.
     pub focused: bool,
+    /// How the compositor is showing the window the tile acts on.
+    ///
+    /// The same fact a task button carries, for the same reason: a right click
+    /// on the tile cycles from the mode the window is really in.
+    pub mode: WindowMode,
 }
 
 /// What the dock draws, derived from what the panel knows.
@@ -474,6 +479,7 @@ fn tile(task: &TaskButton, focused: Option<WindowKey>, localizer: &Localizer) ->
         enabled: task.enabled,
         active: task.active,
         focused: focused == Some(task.key),
+        mode: task.mode,
     }
 }
 
@@ -496,7 +502,7 @@ mod tests {
     use inox_common::i18n::Locale;
 
     use crate::i18n;
-    use crate::tasks::{SessionGeneration, WindowId};
+    use crate::tasks::{SessionGeneration, WindowId, WindowMode};
     use crate::view_model::PanelStatus;
 
     fn localizer(tag: &str) -> Localizer {
@@ -521,6 +527,7 @@ mod tests {
             label: "A window".to_owned(),
             active,
             minimized: false,
+            mode: WindowMode::Tiled,
             enabled: true,
             disabled_reason: None,
             tooltip: format!("{app_id}: A window"),
@@ -531,6 +538,7 @@ mod tests {
         PanelViewModel {
             status: PanelStatus::Ready,
             tasks,
+            workspace: None,
             tray: Vec::new(),
             clock: None,
             notice: None,

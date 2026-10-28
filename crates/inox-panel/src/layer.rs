@@ -138,6 +138,10 @@ use inox_protocols::{
     glass::inox_glass::client::{
         inox_glass_manager_v1::InoxGlassManagerV1, inox_glass_v1 as glass_object,
     },
+    window_manager::inox_window_manager::client::{
+        inox_window_list_v1::{self as window_list, InoxWindowListV1},
+        inox_window_manager_v1::InoxWindowManagerV1,
+    },
     standard::{
         core::client::{
             wl_buffer::{self, WlBuffer},
@@ -164,6 +168,7 @@ use crate::offscreen::{self, RenderError};
 use crate::placement::{self, Anchors, PanelPlacement};
 use crate::view::{self, EntryAction, Interaction, Scene};
 use crate::view_model::PanelViewModel;
+use crate::window_service::WindowService;
 use crate::{frost, reload, theme};
 
 /// The namespace the panel's surface claims.
@@ -446,7 +451,7 @@ impl Input {
         }
 
         let mut messages = Vec::new();
-        let mut repaint = false;
+        let repaint: bool;
 
         match event {
             Pointer::Enter(point) | Pointer::Motion(point) => {
@@ -458,25 +463,28 @@ impl Input {
                 repaint = self.interaction.hovered.take().is_some();
                 self.interaction.pressed = None;
             }
-            Pointer::Press(Button::Left) => {
-                let action = self.cursor.and_then(|point| self.action_at(point));
+            Pointer::Press(button) => {
+                // Which button means what is the *entry*'s answer, not this
+                // module's: the projection decided, from the window's state, that
+                // a left click activates, a middle click closes and a right click
+                // cycles the mode. A button the entry has no meaning for (a side
+                // button) is ignored rather than invented into behaviour.
+                let action = self.cursor.and_then(|point| self.action_at(point, button));
 
                 repaint = action.is_some();
                 self.interaction.pressed = action;
             }
-            Pointer::Press(_) => {}
-            Pointer::Release(Button::Left) => {
+            Pointer::Release(button) => {
                 let pressed = self.interaction.pressed.take();
                 repaint = pressed.is_some();
 
                 if let (Some(pressed), Some(point)) = (pressed, self.cursor)
-                    && self.action_at(point) == Some(pressed)
+                    && self.action_at(point, button) == Some(pressed)
                     && let Some(message) = message_of(pressed)
                 {
                     messages.push(message);
                 }
             }
-            Pointer::Release(_) => {}
         }
 
         for message in &messages {
@@ -486,18 +494,21 @@ impl Input {
         Produced { messages, repaint }
     }
 
-    /// The action under `point`, when it is one a click can start.
-    fn action_at(&self, point: Point) -> Option<EntryAction> {
+    /// The action a press of `button` at `point` means, when it means anything.
+    fn action_at(&self, point: Point, button: Button) -> Option<EntryAction> {
         self.scene
             .as_ref()
             .and_then(|scene| scene.entry_at(point.x, point.y))
-            .map(|entry| entry.action)
+            .and_then(|entry| entry.action_for(button))
     }
 
     /// Notes that the pointer is at `point` and reports whether that changed the
     /// entry it is over.
     fn move_hover(&mut self, point: Point) -> bool {
-        let hovered = self.action_at(point);
+        // A hover is drawn from the entry's primary (left) action: the user is
+        // about to click, and which button they will use does not change what the
+        // entry looks like while they rest on it.
+        let hovered = self.action_at(point, Button::Left);
 
         if self.interaction.hovered == hovered {
             return false;
@@ -510,10 +521,17 @@ impl Input {
 }
 
 /// The message an action becomes, when it is one [`crate::app`] understands.
-fn message_of(action: EntryAction) -> Option<Message> {
+///
+/// The whole click vocabulary of the panel, in one table: every entry the
+/// projection draws has a meaning here, and an entry action that is not listed is
+/// a variant this function has not been taught rather than one a user can reach.
+pub fn message_of(action: EntryAction) -> Option<Message> {
     Some(match action {
         EntryAction::Activate(key) => Message::TaskActivated { key },
         EntryAction::Toggle(key) => Message::TaskToggled { key },
+        EntryAction::Close(key) => Message::TaskClosed { key },
+        EntryAction::CycleMode(key, mode) => Message::TaskModeCycled { key, mode },
+        EntryAction::SwitchWorkspace(workspace) => Message::WorkspaceSwitched { workspace },
         EntryAction::Retry => Message::Retry,
     })
 }
@@ -759,8 +777,9 @@ struct Client {
     no_glass_reported: bool,
     /// Whether the "no pointer on this seat" degradation has been said.
     no_pointer_reported: bool,
-    /// Whether the "the panel's requests have nowhere to go" note has been said.
-    no_transport_reported: bool,
+    /// The window-service protocol leg: the `inox-window-manager-v1` manager and
+    /// list objects, and the requests the panel is waiting on.
+    windows: WindowService,
     /// The interface drawn on the surface, once it has been configured.
     interface: Option<Interface>,
     /// The size the compositor last configured this surface to.
@@ -830,6 +849,14 @@ impl Dispatch<WlRegistry, ()> for Client {
                     "inox_glass_manager_v1" => {
                         state.glass_manager =
                             Some(registry.bind(name, version.min(GLASS_MANAGER_VERSION), qh, ()));
+                    }
+                    // Optional by design: a compositor without it leaves the
+                    // panel with its clock and tray and a readable "window
+                    // service is not available" state plus a retry (D05). The
+                    // missing global is reported once, after the registry has
+                    // been read, not here.
+                    "inox_window_manager_v1" => {
+                        state.windows.bind_manager(registry.bind(name, version.min(1), qh, ()));
                     }
                     _ => {}
                 }
@@ -1127,6 +1154,47 @@ impl Dispatch<glass_object::InoxGlassV1, ()> for Client {
     }
 }
 
+impl Dispatch<InoxWindowManagerV1, ()> for Client {
+    fn event(
+        _state: &mut Self,
+        _manager: &InoxWindowManagerV1,
+        _event: <InoxWindowManagerV1 as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // The manager advertises no events: it is a factory for list objects,
+        // which is what carries the state.
+    }
+}
+
+impl Dispatch<InoxWindowListV1, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _list: &InoxWindowListV1,
+        event: window_list::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // The translation is the leg's (`crate::window_service`); what happens
+        // here is only the routing: the message the event means goes straight
+        // into the same `app::update` every other input uses, and the frame is
+        // marked for a redraw when the state moved.
+        let before = state.state.model();
+        let Some(message) = state.windows.event(event) else {
+            return;
+        };
+
+        app::update(&mut state.state, message);
+
+        if state.state.model() != before {
+            state.drawn = None;
+            state.pending_repaint = true;
+        }
+    }
+}
+
 impl Client {
     /// Feeds one pointer event to the interface.
     fn feed(&mut self, input: Pointer) -> Produced {
@@ -1183,6 +1251,16 @@ impl Client {
                 // valid (the protocol says so), so what stops is only the ability
                 // to ask for a new one. Nothing to do but say so.
                 info!("the compositor stopped offering inox-glass-v1; the pane keeps its tint");
+            }
+            "inox_window_manager_v1" => {
+                // The objects it created stay valid (the protocol says so), so
+                // what stops is only the ability to observe from now on. The
+                // panel's view is stale rather than wrong, and it says so.
+                info!(
+                    "the compositor stopped offering inox-window-manager-v1; the panel keeps the \
+                     window list it has and shows the service as unavailable"
+                );
+                self.windows.report_unavailable();
             }
             "wl_seat" => {
                 info!("the seat went away; the panel keeps drawing and takes no clicks");
@@ -1605,36 +1683,39 @@ impl Client {
 
     /// Carries out what the panel asked of the outside world.
     ///
-    /// The window service transport does not exist in this milestone, so nothing
-    /// can carry a request anywhere. Dropping them is not the same as forgetting
-    /// them: the state keeps each request in flight until a service answers, so
-    /// the panel does not send a second request for a window it already asked
-    /// about. The first dropped request is named once, because an operator
-    /// reading the log should not have to guess why a click did nothing.
-    fn pump(&mut self) {
+    /// This is where [`crate::app::State`]'s queued [`OutgoingCommand`]s reach
+    /// the wire: [`crate::window_service::WindowService`] turns each one into the
+    /// `inox-window-manager-v1` request of the same name. A command that names no
+    /// observer yet — the opening snapshot, or a retry after the list was
+    /// destroyed — is what asks for a fresh list, which the loop does below.
+    ///
+    /// Nothing here settles a request: the protocol confirms a request with the
+    /// state event it produced, so the confirmation arrives through the dispatch
+    /// above, not through the call that sent it.
+    fn pump(&mut self, qh: &QueueHandle<Self>) {
         for command in self.state.take_outgoing() {
-            if !self.no_transport_reported {
-                self.no_transport_reported = true;
-                info!(
-                    "no window service transport is implemented in this milestone; the panel's \
-                     requests are recorded and go nowhere"
-                );
-            }
-
-            match command {
+            match &command {
                 OutgoingCommand::Snapshot => {
-                    debug!("the panel asked for the window service's snapshot")
+                    if self.windows.request_snapshot(qh) {
+                        debug!("the panel asked the window service for its snapshot");
+                    } else {
+                        // No manager: the missing global is reported once by the
+                        // loop after binding, and the panel is already in the
+                        // unavailable state with a retry (D05). Nothing to send.
+                        debug!(
+                            "no inox-window-manager-v1; the panel's snapshot request has nowhere \
+                             to go"
+                        );
+                    }
                 }
-                OutgoingCommand::Activate { request, window } => debug!(
-                    request = request.get(),
-                    %window,
-                    "the panel asked to focus a window"
-                ),
-                OutgoingCommand::Toggle { request, window } => debug!(
-                    request = request.get(),
-                    %window,
-                    "the panel asked to put a window away"
-                ),
+                command => {
+                    if !self.windows.dispatch(command) {
+                        debug!(
+                            "no window-list observer yet; the panel's request waits for the \
+                             snapshot that creates one"
+                        );
+                    }
+                }
             }
         }
     }
@@ -1685,6 +1766,11 @@ impl Client {
     /// the role, then the surface, and finally the buffers the compositor may
     /// still be reading: this client is saying it is finished with all of them.
     fn teardown(&mut self) {
+        // The observer is an object of this client's; it goes before the surface
+        // so the compositor never has to serve events for a list whose client is
+        // already tearing down.
+        self.windows.teardown();
+
         if let Some(glass) = self.glass.take() {
             glass.destroy();
         }
@@ -1785,7 +1871,7 @@ pub fn run(
         degraded_reported: false,
         no_glass_reported: false,
         no_pointer_reported: false,
-        no_transport_reported: false,
+        windows: WindowService::new(),
         interface: None,
         configured: None,
         awaiting_configure: false,
@@ -1826,6 +1912,24 @@ pub fn run(
              translucency"
         );
         client.no_glass_reported = true;
+    }
+
+    // The window service is optional in exactly the same way, and with a rule of
+    // its own: **unavailable is a designed state, not a failure** (ADR 0045 §4).
+    // The panel says so once, moves to `ServiceState::Unavailable` — which draws
+    // the existing sentence and its retry button (D05) — and keeps running: the
+    // clock and the tray are still a usable panel. It never exits non-zero and
+    // never panics for a missing global.
+    if !client.windows.is_available() {
+        let reported = client.windows.report_unavailable();
+
+        if reported {
+            app::update(
+                &mut client.state,
+                WindowService::unavailable_message(),
+            );
+            client.pending_repaint = true;
+        }
     }
 
     client.create_surface(&qh)?;
@@ -1945,7 +2049,7 @@ fn drive(
         // Protocol events have changed the state — the compositor configured the
         // surface, the pointer moved, the glass capability arrived — and what the
         // state decided about them reaches the wire here.
-        client.pump();
+        client.pump(&qh);
         // One projection per iteration: it is what says whether the surface has
         // anything new to show, and (for a dock) how wide the pane should be.
         let model = client.state.model();

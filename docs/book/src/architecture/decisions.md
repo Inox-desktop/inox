@@ -71,6 +71,7 @@ proposed ──► accepted ──► superseded
 | 0042 | 发布制品与金丝雀渠道 | proposed |
 | 0043 | AUR 源码包与发布后自动同步 | proposed |
 | 0044 | 通知卡片采用共享玻璃组件（扩展 ADR 0040 的消费者） | proposed |
+| 0045 | 多窗口管理与任务栏显示：`inox-window-manager-v1`、窗口模式与工作区 | proposed |
 
 上表只列与当前架构直接相关的条目。当前 Shell 的 UI 栈
 （QML + Qt Quick、cxx-qt、panel/lock 离屏渲染）由 0033/0035/0036/0038/0039 固定，
@@ -78,4 +79,4 @@ proposed ──► accepted ──► superseded
 
 本页的索引表就是索引本身。
 
-配置模型与设计令牌的决策见配置模型（状态 `proposed`），应用与持久化的边界见设置保存语义（同样 `proposed`）：它们定义了 `config.toml`、`compositor.toml`、`shell.toml`、`notifications.toml` 与 `themes/<name>/theme.toml` 的字段。这些字段模型**已实现并有测试**（`inox-config`），L3 组件已经通过它们读取配置；但决策本身尚未 `accepted`，合成器也尚未读取 `compositor.toml`，因此本站在[配置](../configuration/layout.md)一节逐页标注当前的实现状态，而不是把它们当作已发布行为。
+配置模型与设计令牌的决策见配置模型（状态 `proposed`），应用与持久化的边界见设置保存语义（同样 `proposed`）：它们定义了 `config.toml`、`compositor.toml`、`shell.toml`、`notifications.toml` 与 `themes/<name>/theme.toml` 的字段。这些字段模型**已实现并有测试**（`inox-config`），L3 组件已经通过它们读取配置，`inox-compositor` 的物理后端启动时也读取 `compositor.toml`（headless 后端仍只接受命令行参数）；但决策本身尚未 `accepted`，因此本站在[配置](../configuration/layout.md)一节逐页标注当前的实现状态，而不是把它们当作已发布行为。

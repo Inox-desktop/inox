@@ -234,8 +234,13 @@ fn tile_view(
     // The click target is the badge and the mark's slot under it: the whole
     // column the user sees as one tile. Starting it at the mark instead would
     // leave the badge itself outside its own button.
+    // A tile answers the same three buttons a task entry does, with the same
+    // meanings: closing and re-moding a window are properties of the window, not
+    // of the surface that draws it.
     painter.entries.push(Entry {
         action,
+        middle: Some(EntryAction::Close(key)),
+        right: Some(EntryAction::CycleMode(key, tile.mode.cycled())),
         enabled: tile.enabled,
         x,
         y,
