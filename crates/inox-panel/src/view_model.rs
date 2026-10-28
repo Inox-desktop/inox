@@ -328,7 +328,11 @@ fn tooltip(title: &str, app: &str, mode: WindowMode, localizer: &Localizer) -> S
             } else {
                 localizer.message_with(
                     "panel-task-tooltip-mode",
-                    &[("app", app.into()), ("title", title.into()), ("mode", mode.into())],
+                    &[
+                        ("app", app.into()),
+                        ("title", title.into()),
+                        ("mode", mode.into()),
+                    ],
                 )
             }
         }

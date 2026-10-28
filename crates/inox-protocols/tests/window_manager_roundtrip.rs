@@ -60,7 +60,10 @@ enum Received {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seen {
     SessionGeneration(u32),
-    WorkspaceState { active: u32, count: u32 },
+    WorkspaceState {
+        active: u32,
+        count: u32,
+    },
     Window {
         window: u32,
         app_id: String,
@@ -74,7 +77,10 @@ enum Seen {
     },
     WindowRemoved(u32),
     SnapshotDone,
-    RequestFailed { window: u32, reason: u32 },
+    RequestFailed {
+        window: u32,
+        reason: u32,
+    },
 }
 
 #[derive(Default)]
@@ -155,9 +161,7 @@ impl Dispatch<client::inox_window_list_v1::InoxWindowListV1, ()> for App {
             Event::RequestFailed { window, reason } => {
                 // Same rule for the error enum.
                 let reason = reason.into_result().expect("a known request error") as u32;
-                state
-                    .seen
-                    .push(Seen::RequestFailed { window, reason });
+                state.seen.push(Seen::RequestFailed { window, reason });
             }
             _ => {}
         }
@@ -418,10 +422,7 @@ fn inox_window_manager_round_trips_the_snapshot_and_every_verb() {
     // Events arrive in the order the server sent them, which is what lets the
     // panel treat the stream as a single ordered log.
     server_list.window_removed(43);
-    server_list.request_failed(
-        42,
-        server::inox_window_list_v1::RequestError::UnknownWindow,
-    );
+    server_list.request_failed(42, server::inox_window_list_v1::RequestError::UnknownWindow);
     queue.roundtrip(&mut app).expect("roundtrip");
 
     assert_eq!(

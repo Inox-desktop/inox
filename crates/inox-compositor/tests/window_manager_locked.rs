@@ -41,10 +41,10 @@ use inox_compositor::{ClientState, CompositorConfig, InoxState};
 use inox_protocols::{
     ipc::inox_ipc::client::inox_ipc as ipc,
     standard::{
-        core::client::{
-            wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+        core::client::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface},
+        ext::session_lock::client::{
+            ext_session_lock_manager_v1 as lock_manager, ext_session_lock_v1 as lock,
         },
-        ext::session_lock::client::{ext_session_lock_manager_v1 as lock_manager, ext_session_lock_v1 as lock},
         xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
     },
     window_manager::inox_window_manager::client::{
@@ -120,7 +120,10 @@ impl Client {
     /// The newest record for `handle`, which is the complete state as the client
     /// currently believes it.
     fn window(&self, handle: u32) -> Option<&Record> {
-        self.windows.iter().rev().find(|record| record.handle == handle)
+        self.windows
+            .iter()
+            .rev()
+            .find(|record| record.handle == handle)
     }
 }
 
@@ -392,12 +395,7 @@ impl Peer {
         let file = tempfile::tempfile().expect("the buffer file");
         file.set_len((stride * BUFFER_SIZE) as u64)
             .expect("the buffer file size");
-        let pool = shm.create_pool(
-            file.as_fd(),
-            stride * BUFFER_SIZE,
-            &self.queue.handle(),
-            (),
-        );
+        let pool = shm.create_pool(file.as_fd(), stride * BUFFER_SIZE, &self.queue.handle(), ());
         let buffer = pool.create_buffer(
             0,
             BUFFER_SIZE,
@@ -425,7 +423,9 @@ fn step(display: &mut Display<InoxState>, state: &mut InoxState, peers: &mut [&m
     for peer in peers.iter_mut() {
         peer.pump();
     }
-    display.dispatch_clients(state).expect("the display dispatch");
+    display
+        .dispatch_clients(state)
+        .expect("the display dispatch");
     display.flush_clients().expect("the display flush");
 }
 
@@ -468,8 +468,7 @@ fn round_trip(display: &mut Display<InoxState>, state: &mut InoxState, peer: &mu
 
 #[test]
 fn a_locked_session_refuses_every_window_management_verb() {
-    let event_loop: EventLoop<'static, ()> =
-        EventLoop::try_new().expect("the event loop");
+    let event_loop: EventLoop<'static, ()> = EventLoop::try_new().expect("the event loop");
     let mut display: Display<InoxState> = Display::new().expect("the wayland display");
     let mut display_handle = display.handle();
 

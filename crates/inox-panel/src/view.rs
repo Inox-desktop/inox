@@ -54,7 +54,9 @@ use serde_json::{Value, json};
 use crate::layer::Button;
 use crate::tasks::{WindowKey, WindowMode, WorkspaceId};
 use crate::theme::{self, EntryStyle, InteractionStatus, PaneStyle, TaskEmphasis};
-use crate::view_model::{PanelStatus, PanelViewModel, TaskButton, TrayItemView, WorkspaceIndicator};
+use crate::view_model::{
+    PanelStatus, PanelViewModel, TaskButton, TrayItemView, WorkspaceIndicator,
+};
 
 /// How many extra-large spacing steps a task label may be wide.
 ///
@@ -211,7 +213,7 @@ pub(super) struct NoticeMetrics {
 /// the semantics the taskbar has always had — [`EntryAction::Activate`] on a
 /// window that is not focused, [`EntryAction::Toggle`] on the one that is (D03)
 /// — and the two new verbs are the other mouse buttons'
-/// ([`EntryAction::for_button`]): a middle click asks the application to close,
+/// ([`Entry::action_for`]): a middle click asks the application to close,
 /// a right click asks for the next window mode. The workspace indicator asks for
 /// the next workspace, and the retry action asks the window service again (D05).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,7 +305,14 @@ pub struct Entry {
 
 impl Entry {
     /// An entry whose only meaning is its left click.
-    pub const fn new(action: EntryAction, enabled: bool, x: f32, y: f32, width: f32, height: f32) -> Self {
+    pub const fn new(
+        action: EntryAction,
+        enabled: bool,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Self {
         Self {
             action,
             middle: None,
@@ -941,10 +950,8 @@ impl Painter {
         interaction: &Interaction,
     ) -> f32 {
         let action = EntryAction::SwitchWorkspace(indicator.next);
-        let style = theme::workspace_indicator(
-            tokens,
-            interaction.status(action, indicator.enabled),
-        );
+        let style =
+            theme::workspace_indicator(tokens, interaction.status(action, indicator.enabled));
         let width = estimate_width(&indicator.label, geometry.caption_size)
             .min(geometry.label_max_width)
             + geometry.entry_padding * 2.0;
@@ -964,7 +971,8 @@ impl Painter {
 
         // The indicator answers the left button only: closing or re-moding a
         // workspace is not a verb, so the two other buttons mean nothing here.
-        self.entries.push(Entry::new(action, indicator.enabled, x, y, width, height));
+        self.entries
+            .push(Entry::new(action, indicator.enabled, x, y, width, height));
 
         width
     }

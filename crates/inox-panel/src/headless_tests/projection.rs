@@ -495,11 +495,15 @@ fn a_left_click_keeps_the_semantics_the_taskbar_always_had() {
     assert!(matches!(activate.action, EntryAction::Activate(_)));
     assert!(matches!(toggle.action, EntryAction::Toggle(_)));
     assert_eq!(
-        activate.middle.map(|action| matches!(action, EntryAction::Close(_))),
+        activate
+            .middle
+            .map(|action| matches!(action, EntryAction::Close(_))),
         Some(true)
     );
     assert_eq!(
-        toggle.middle.map(|action| matches!(action, EntryAction::Close(_))),
+        toggle
+            .middle
+            .map(|action| matches!(action, EntryAction::Close(_))),
         Some(true),
         "closing is a property of the window, not of whether it has focus"
     );

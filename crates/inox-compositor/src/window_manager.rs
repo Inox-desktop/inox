@@ -28,21 +28,15 @@
 //! which is why every list receives the generation before any handle.
 
 use inox_protocols::window_manager::inox_window_manager::server::{
-    inox_window_list_v1::{
-        InoxWindowListV1, Request as ListRequest, WindowMode,
-    },
+    inox_window_list_v1::{InoxWindowListV1, Request as ListRequest, WindowMode},
     inox_window_manager_v1::{InoxWindowManagerV1, Request as ManagerRequest},
 };
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, WEnum,
-    backend::ClientId,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, WEnum, backend::ClientId,
 };
 use tracing::debug;
 
-use crate::{
-    state::InoxState,
-    workspace::WindowId,
-};
+use crate::{state::InoxState, workspace::WindowId};
 
 pub use inox_protocols::window_manager::inox_window_manager::server::inox_window_list_v1::RequestError;
 
@@ -345,11 +339,7 @@ impl WindowService {
         let generation_changed = self.last_generation != Some(generation);
         // A new generation invalidates every handle the client holds, so the window
         // changes are computed from nothing rather than from the old records.
-        let baseline: &[WindowRecord] = if generation_changed {
-            &[]
-        } else {
-            &self.last
-        };
+        let baseline: &[WindowRecord] = if generation_changed { &[] } else { &self.last };
 
         Pending {
             generation: generation_changed,
@@ -521,12 +511,7 @@ impl Dispatch<InoxWindowListV1, ()> for InoxState {
 
     /// Called for every way a list can end, `destroy` and a client disconnect
     /// included.
-    fn destroyed(
-        state: &mut Self,
-        _client: ClientId,
-        resource: &InoxWindowListV1,
-        _data: &(),
-    ) {
+    fn destroyed(state: &mut Self, _client: ClientId, resource: &InoxWindowListV1, _data: &()) {
         state.window_service().unregister(resource);
     }
 }
@@ -676,7 +661,10 @@ mod tests {
 
         for (field, changed) in mutations {
             assert_eq!(
-                diff(std::slice::from_ref(&original), std::slice::from_ref(&changed)),
+                diff(
+                    std::slice::from_ref(&original),
+                    std::slice::from_ref(&changed)
+                ),
                 vec![Change::Window(changed)],
                 "a {field} change must be announced"
             );
@@ -689,7 +677,11 @@ mod tests {
 
         assert_eq!(
             changes,
-            vec![Change::Removed(1), Change::Removed(2), Change::Window(record(3))]
+            vec![
+                Change::Removed(1),
+                Change::Removed(2),
+                Change::Window(record(3))
+            ]
         );
     }
 
@@ -723,7 +715,10 @@ mod tests {
             current
         };
 
-        assert_eq!(diff(&stale, &current), vec![Change::Window(current[0].clone())]);
+        assert_eq!(
+            diff(&stale, &current),
+            vec![Change::Window(current[0].clone())]
+        );
     }
 
     #[test]
@@ -796,7 +791,10 @@ mod tests {
         let pending = service.pending(0, 1, &[record(1), record(2)], 2);
 
         assert!(pending.generation, "the new generation goes first");
-        assert!(pending.workspace, "the workspace facts follow a new generation");
+        assert!(
+            pending.workspace,
+            "the workspace facts follow a new generation"
+        );
         assert_eq!(
             pending.changes,
             vec![Change::Window(record(1)), Change::Window(record(2))],
@@ -818,7 +816,10 @@ mod tests {
 
         assert!(!pending.generation);
         assert!(!pending.workspace);
-        assert!(pending.changes.is_empty(), "an unchanged desktop sends nothing");
+        assert!(
+            pending.changes.is_empty(),
+            "an unchanged desktop sends nothing"
+        );
     }
 
     /// A workspace change is announced even when the window set is identical,

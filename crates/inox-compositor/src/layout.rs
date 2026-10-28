@@ -72,9 +72,10 @@ impl LayoutConfig {
             master_ratio: self.master_ratio.clamp(MASTER_RATIO_MIN, MASTER_RATIO_MAX),
             master_count: self.master_count.max(1),
             gap: self.gap.max(0),
-            workspace_count: self
-                .workspace_count
-                .clamp(crate::workspace::MIN_WORKSPACES, crate::workspace::MAX_WORKSPACES),
+            workspace_count: self.workspace_count.clamp(
+                crate::workspace::MIN_WORKSPACES,
+                crate::workspace::MAX_WORKSPACES,
+            ),
         }
     }
 
