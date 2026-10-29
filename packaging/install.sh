@@ -220,6 +220,13 @@ EOF
     fi
 fi
 
+# The opener is the launcher binary under the name a caller of `xdg-open` looks
+# for: `inox-open <target>` runs the launcher's `--open` entry point (see
+# `crates/inox-launcher/src/open`). A link rather than a second binary, because
+# the two would otherwise drift; creating it here means both install paths get it.
+ln -sfn inox-launcher "$BIN_DIR/inox-open"
+log "linked $BIN_DIR/inox-open -> inox-launcher"
+
 # --- PAM stacks ------------------------------------------------------------
 
 install_pam() {

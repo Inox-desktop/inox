@@ -25,10 +25,19 @@
 //! workspace state is published to the shell over the private
 //! [`window_manager`] protocol. See [`state`] for those paths.
 //!
+//! Frame timing and idle are answered too: a client that asks when its frame was
+//! shown is told, in the monotonic clock it already knows, and `inox-idle` gets
+//! the `idled` event it turns into a session lock. Both are standard protocols, so
+//! nothing about them is Inox-specific except the policy — see [`state`] for the
+//! globals and the idle module for the rules.
+//!
 //! # Layout
 //!
 //! - [`backend`] — DRM/GBM, libinput and shared frame lifecycle.
 //! - [`config`] — command line parsing into plain configuration data.
+//! - `decorations` — the server half of `zxdg_decoration_manager_v1`: the answer
+//!   is always `client_side`, because this compositor draws no server-side
+//!   frames.
 //! - [`glass`] — the pure half of the private `inox-glass-v1` glass protocol:
 //!   the blur and refraction parameters, the two capability decisions and the
 //!   pane list the renderer draws.
@@ -52,6 +61,7 @@
 pub mod backend;
 pub mod config;
 mod cursor;
+mod decorations;
 pub mod glass;
 pub mod input;
 mod layers;

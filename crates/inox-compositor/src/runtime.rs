@@ -200,6 +200,7 @@ pub fn run(config: CompositorConfig) -> Result<(), RunError> {
 
     register_socket_source(&loop_handle, listening_socket, socket_name.clone())?;
     register_display_source(&loop_handle, display)?;
+    register_idle_source(&loop_handle)?;
     if let Some(prepared) = prepared {
         physical::register(&loop_handle, &mut data, prepared)?;
     } else {
@@ -397,6 +398,40 @@ fn register_frame_source(
         .map(drop)
         .map_err(|source| RunError::EventSource {
             name: "frame timer",
+            reason: source.to_string(),
+        })
+}
+
+/// Advance the idle clock and deliver the `ext-idle-notify` events it owes.
+///
+/// Idle deadlines are absolute instants, and this source is what compares them
+/// with the clock. It is deliberately separate from the frame timer: a compositor
+/// that is not repainting — which is the normal state of an idle desktop, and the
+/// whole point — would otherwise stop noticing that the user has been away.
+fn register_idle_source(
+    loop_handle: &calloop::LoopHandle<'static, CalloopData>,
+) -> Result<(), RunError> {
+    let interval = crate::state::IDLE_TICK;
+
+    loop_handle
+        .insert_source(
+            Timer::from_duration(interval),
+            move |_, _, data: &mut CalloopData| {
+                if data.state.tick_idle() {
+                    // The same rule as after a frame: an event only reaches the
+                    // client once the display is flushed, and the display source
+                    // fires on incoming data alone.
+                    if let Err(error) = data.display_handle.flush_clients() {
+                        warn!(%error, "failed to flush an idle notification");
+                    }
+                }
+
+                TimeoutAction::ToDuration(interval)
+            },
+        )
+        .map(drop)
+        .map_err(|source| RunError::EventSource {
+            name: "idle timer",
             reason: source.to_string(),
         })
 }

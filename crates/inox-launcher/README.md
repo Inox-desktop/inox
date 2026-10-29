@@ -41,6 +41,27 @@ main ─ QGuiApplication + QQmlApplicationEngine ─ qrc:/…/Main.qml (Window)
 | `categories` | 把 freedesktop `Categories=` 映射到固定的分类 chips（All、Development、Graphics、Internet、Office、AudioVideo、Game、Utility、System、Education、Science、Other）；chip 只列索引中确有条目的分类 | D05 |
 | `runtime`、`reload` | 本 crate 自己的 `Queue`/`Task`/`oneshot`；SIGHUP 与 `org.inox.Launcher` 的 `Reload`（失败的重新加载保留旧配置） | — |
 | `app`、`i18n`、`qml/Main.qml` | `State` / `Message` / `update`、Fluent 目录装配、声明式界面 | D05 |
+| `open`、`open::mime`、`open::mimeapps` | **打开器**（`inox-open` / `inox-launcher --open`）：把参数分成 URI（按 `x-scheme-handler/<scheme>`）或文件路径（按共享 MIME 数据库的 `mime/globs2` glob 规则定类型），在 `mimeapps.list` 的规范顺序里取默认应用、退到 `Added Associations`、扣掉 `Removed Associations`，定位并解析 `.desktop`、用 `exec` 把目标填进 `%f`/`%u`/`%U`，再启动。退出码区分「没人能打开」(3) 与「找到了但起不来」(4) | D02 的打开一半 |
+
+**打开器（`open`）**
+
+启动器本身只管「按名字找应用」；打开器是同一件事的另一种选法——目标挑应用。它复用本 crate 已有的
+`desktop_entry` 与 `exec`，因此 `Exec` 的字段码展开、终端前缀与「argv 永远不会变成 shell 命令」的
+性质对打开器同样成立。两条入口都在 Qt 初始化**之前**处理，打开一个链接不会付 GUI 工具包的启动代价：
+
+```
+inox-open TARGET          # 打包时安装的链接，指向 inox-launcher
+inox-launcher --open TARGET
+```
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 应用已启动 |
+| 1 | 命令行不对 |
+| 2 | 目标不存在 |
+| 3 | 没有应用能打开（类型未知 / 没有登记 / 登记的应用未安装） |
+| 4 | 找到了应用但起不来（`Exec` 读不懂，或进程创建失败） |
+
 
 **未实现 / 被阻塞**（不声称 E2/E3）：
 
@@ -51,6 +72,16 @@ main ─ QGuiApplication + QQmlApplicationEngine ─ qrc:/…/Main.qml (Window)
 - **图标来自已安装的图标主题，不来自本 crate。** `icons` 只按 XDG 图标主题规范查找 `Icon=` 指向的文件；主题里没有该图标（或 Qt 无法解码该文件）时，瓦片退回名称首字符的字母块，两种降级在颜色上可区分（D05）。图标主题的 `index.theme` 继承链与 `symbolic` 目录不参与查找。
 - **重载桥没有自动化测试。** SIGHUP 遮罩与 `org.inox.Launcher` 的 `Reload` 已接线（失败的重新加载保留旧配置），但驱动它们需要会话总线或信号，测试只覆盖了 SIGHUP 安装失败返回错误这一条；改动 `src/reload.rs` / `main::reload_state` 时要人工验证。
 - **`Actions` 只解析不使用。** 交互式启动器只启动条目自身的 `Exec`；动作是索引的一部分，留给后续「右键菜单」。
+- **打开器没有门户。** `org.freedesktop.portal.OpenURI` 需要 `xdg-desktop-portal` 后端，本仓库还没有
+  （`inox-portal` 只是规划中的 crate）。`open` 走的是非沙箱路径：调用方自己的环境、调用方自己的权限。
+- **打开器不嗅探文件内容。** 文件的类型只由名字（共享 MIME 数据库的 glob 规则）决定，不读 magic
+  字节：扩展名说谎的文件会按扩展名选应用。`mime.cache` 也不读——它是带版本号的二进制格式，而
+  `globs2` 是文本。
+- **打开器不验证就绪。** `activation` 会等「窗口或 D-Bus 就绪」的证据，因为启动器要把状态显示给
+  用户；打开器不能等——`xdg-open` 的契约就是启动完立刻返回。进程创建失败仍然以退出码报告。
+- **`inox-open` 是链接，不是第二个二进制。** 打包脚本（`packaging/install.sh`、AUR 与 canary 的
+  `PKGBUILD`）把它装成指向 `inox-launcher` 的符号链接；从源码直接 `cargo run` 时用 `--open`。
+  仓库里没有覆盖系统 `xdg-open` 的钩子：那要靠发行版或用户自己的选择。
 
 ## 目录结构
 

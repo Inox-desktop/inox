@@ -52,3 +52,15 @@ launcher-failure-missing-terminal = 该条目需要终端，但 shell.toml 未�
 launcher-failure-spawn-failed = 无法启动进程：{ $detail }
 launcher-failure-exited-before-ready = 进程在就绪之前就退出了：{ $detail }
 launcher-failure-not-ready-in-time = 进程在 { $seconds } 秒内没有任何运行迹象
+
+# 打开器（`inox-open`，或 `inox-launcher --open`）。这些句子出现在终端和调用方
+# 的日志里，而不是窗口中的标签。
+launcher-open-usage = 用法：inox-open 目标 —— 用登记过的应用打开一个文件或链接
+launcher-open-not-found = { $target } 不存在
+launcher-open-unknown-type = 没有任何 MIME 规则匹配 { $target }，因此无法判断它是什么
+launcher-open-no-mime-database = 缺少共享 MIME 数据库：在 { $dirs } 中找不到 mime/globs2
+launcher-open-no-handler = 没有任何应用登记为打开 { $type }
+launcher-open-handler-missing = { $type } 登记给了 { $id }，但该应用未安装
+launcher-open-entry-unusable = 无法使用 { $id }：{ $reason }
+launcher-open-exec-failed = 无法启动 { $id }：{ $reason }
+launcher-open-spawn-failed = 无法启动 { $program }：{ $detail }

@@ -51,7 +51,9 @@ CI 的 `test` 分片对每个 crate 跑的就是 `cargo test -p <crate> --all-fe
 2. 离屏的面板与锁屏**没有 QPA 无障碍桥**，AT-SPI 语义导出与真实屏幕阅读器（Q01 的人工部分）都没有覆盖；五个窗口组件走标准 QPA 路径，真实屏幕阅读器验收同样未取得。
 3. 运行测试的机器必须装有至少一种字体：文本由 Qt 在出帧时布局，没有字体时标签渲染为空，像素断言会变成在断言一张空帧（CI 的 QML 分片为此安装 `fonts-dejavu-core` 与 `fonts-noto-cjk`）。
 
-**没有截图产物这件事要说清**：Iced 时代各组件有 `tests/render.rs`，在设置 `INOX_SCREENSHOT_DIR` 时把每个场景写成 PNG，CI 作为 artifact 收集。这套装置随 Iced 一起删除，迁移后的测试**不写 PNG**，CI 的上传步骤目前取不到文件。真实截图证据要等真实宿主 job 接线后才有，本页不声称它存在。
+**没有截图产物这件事要说清**：Iced 时代各组件有 `tests/render.rs`，在设置 `INOX_SCREENSHOT_DIR` 时把每个场景写成 PNG，CI 作为 artifact 收集。这套装置随 Iced 一起删除，L3 组件的测试**不写 PNG**，它们的上传步骤目前取不到文件。真实截图证据要等真实宿主 job 接线后才有，本页不声称它存在。
+
+合成器侧的情况不同，而且要说准：`tests/glass_blur.rs` 与 `tests/layer_shell.rs` 在同一个变量下确实会写 PNG（`inox-glass-*.png`、`inox-layer-*.png`），CI 的 `test` 分片把整个目录当工件上传。但它们的画面是**测试里自己建的替身层表面**（一块纯色面板、一条黑白边缘），证明的是合成结果与协议行为对得上断言，**不是** `inox-panel` 在桌面上的外观——面板那个真实客户端还没有在没有 `QT_QPA_PLATFORM=offscreen` 的前提下被任何宿主驱动过。所以这些 PNG 不能用来回答 Q02（外观与对比度），也不能代替 waydriver。
 
 ## 合成器测试的注意事项
 
@@ -65,7 +67,7 @@ CI 的 `test` 分片对每个 crate 跑的就是 `cargo test -p <crate> --all-fe
 
 | crate | 现有测试 |
 |------|----------|
-| `inox-compositor` | 命令行解析、按键映射（含窗口模式与工作区绑定）、平铺布局与浮动默认几何、窗口簿记（模式/工作区/最小化）、窗口管理协议的 `diff` 与模式映射、合成器状态的 `#[cfg(test)]` 单元测试；布局与窗口簿记的 `proptest` 属性测试；`tests/headless_render.rs`（创建输出并渲染一帧）、`tests/signal_shutdown.rs`（终止信号与帧预算都以退出码 0 结束）、`tests/window_management.rs`（真实客户端多窗口、平铺与输入）、`tests/window_manager_end_to_end.rs`（进程级：真实客户端驱动真实二进制，断言 `inox-window-manager-v1` 的快照顺序、未绘制 toplevel 不出现、六个动词由状态事件确认、越界与未知窗口被拒；不读像素） |
+| `inox-compositor` | 命令行解析、按键映射（含窗口模式与工作区绑定）、平铺布局与浮动默认几何、窗口簿记（模式/工作区/最小化）、窗口管理协议的 `diff` 与模式映射、层几何与独占区预留（含「不关心独占区的表面仍按整个输出取尺寸」）、合成器状态的 `#[cfg(test)]` 单元测试；布局与窗口簿记的 `proptest` 属性测试；`tests/headless_render.rs`（创建输出并渲染一帧）、`tests/signal_shutdown.rs`（终止信号与帧预算都以退出码 0 结束）、`tests/window_management.rs`（真实客户端多窗口、平铺与输入）、`tests/window_manager_end_to_end.rs`（进程级：真实客户端驱动真实二进制，断言 `inox-window-manager-v1` 的快照顺序、未绘制 toplevel 不出现、六个动词由状态事件确认、越界与未知窗口被拒；不读像素）、`tests/layer_shell.rs`（替身 layer 客户端：四层合成与像素、独占区、焦点三态、卸载/重映射、协议错误、客户端崩溃与输出移除后的清理） |
 | `inox-common` | `logging` 与 `paths` 的单元测试。`XdgEnv::from_process` 刻意不做单元测试：edition 2024 下改写进程环境是 `unsafe`，而该 crate `forbid(unsafe_code)`，因此解析逻辑全部经注入的环境快照验证 |
 | `inox-config` | 默认值、解析、字段路径与行列定位、范围校验、主题解析与 `ConfigStore` 热重载的单元测试（含「重载失败保留旧值」） |
 | `inox-protocols` | `tests/standard_bindings.rs` 断言再导出的接口名与版本；`tests/ipc_roundtrip.rs` 在真实连接上跑私有协议的往返；`tests/glass_roundtrip.rs` 与 `tests/window_manager_roundtrip.rs` 在真实 socket pair 上断言私有协议的线格式（后者覆盖快照顺序、`window` 的每个字段与六个动词的参数） |

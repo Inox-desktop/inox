@@ -1,4 +1,18 @@
 //! Real Wayland clients exercise desktop layers on the software-rendered Inox host.
+//!
+//! The clients are real `wayland-client` connections, but they are **stand-ins
+//! written for this test**, not `inox-panel`. What this file proves is the
+//! protocol half and the compositing behaviour: stacking across the four layers,
+//! exclusive-zone reservation, `DontCare` surfaces still being sized against the
+//! whole output, configure/ack, focus for all three keyboard interactivities,
+//! buffer detachment and remap, protocol errors, and cleanup when a client dies or
+//! the last output goes away. It does **not** prove that a panel *appears* like
+//! this on a real desktop — that is the cross-L3 E3 evidence, which is still
+//! missing.
+//!
+//! With `INOX_SCREENSHOT_DIR` set, each asserted scene is also written there as a
+//! PNG (see [`snapshot`]), so CI can collect a picture next to the numbers. Nothing
+//! is written when the variable is unset.
 
 use std::{
     collections::HashMap,
@@ -356,6 +370,30 @@ fn pixel(state: &mut InoxState, x: usize, y: usize, expected: [u8; 4]) {
     }
 }
 
+/// Writes a frame this test asserted on, when `INOX_SCREENSHOT_DIR` is set.
+///
+/// The assertions already prove the scene numerically; the PNG exists so a human
+/// can check the part numbers cannot argue about — that the panel is a bar across
+/// the top with the window pushed below it, not a tile somewhere in the middle.
+/// Nothing is written without the variable, so a plain `cargo test` on a developer
+/// machine stays artifact-free; CI sets it and uploads the directory.
+fn snapshot(name: &str, state: &mut InoxState) {
+    let Ok(directory) = std::env::var("INOX_SCREENSHOT_DIR") else {
+        return;
+    };
+    state.render_frame().unwrap();
+    let frame = state.read_frame_rgba().unwrap();
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        panic!("the snapshot directory cannot be created: {error}");
+    }
+    let path = std::path::Path::new(&directory).join(format!("inox-layer-{name}.png"));
+    image::RgbaImage::from_raw(WIDTH as u32, HEIGHT as u32, frame)
+        .expect("the readback has the output's geometry")
+        .save(&path)
+        .expect("the snapshot is written");
+    println!("layer snapshot: {}", path.display());
+}
+
 fn click(state: &mut InoxState, x: f64, y: f64) {
     state.inject_pointer_motion(Point::from((x, y)));
     state.inject_pointer_button(0x110, ButtonState::Pressed);
@@ -503,6 +541,7 @@ fn layers_render_reserve_focus_and_release_resources() {
     pixel(&mut state, 10, 10, GREEN);
     pixel(&mut state, 310, 40, YELLOW);
     pixel(&mut state, 20, 80, RED);
+    snapshot("background-panel", &mut state);
 
     // A buffer sent without acknowledging configure only disconnects its own client.
     let mut invalid = Peer::connect(&mut handle);

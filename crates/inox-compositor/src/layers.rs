@@ -137,6 +137,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dont_care_surfaces_keep_the_whole_output() {
+        // A background with a 0×0 request and no anchor is the case that made this
+        // distinction necessary: a neutral surface placed against the output is
+        // stretched across it, not across whatever a panel left unreserved.
+        let output = Rectangle::from_size((800, 600).into());
+        let mut work = output;
+        reserve(
+            &mut work,
+            LayerSurfaceCachedState {
+                anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+                exclusive_zone: ExclusiveZone::Exclusive(30),
+                ..Default::default()
+            },
+        );
+        let background = LayerSurfaceCachedState {
+            anchor: Anchor::all(),
+            exclusive_zone: ExclusiveZone::DontCare,
+            ..Default::default()
+        };
+        assert_eq!(geometry(output, background), output);
+        assert_ne!(geometry(work, background), output);
+
+        // "Don't care" is also the `-1` zone, which asks not to be pushed by other
+        // reservations at all: it still derives its size from the whole output.
+        let negative = LayerSurfaceCachedState {
+            anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+            exclusive_zone: ExclusiveZone::DontCare,
+            ..Default::default()
+        };
+        assert_eq!(geometry(output, negative).size.w, 800);
+        assert_eq!(geometry(work, negative).size.w, 800);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1000))]
 

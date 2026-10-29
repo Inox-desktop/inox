@@ -61,6 +61,10 @@
 - **就绪以进程存活为证据**（`activation.rs` 模块文档写明）：合成器没有窗口列表接口，多数应用也没有 D-Bus 名字。
 - **重载桥没有自动化测试**：`reload.rs`（SIGHUP 遮罩 + `org.inox.Launcher` 的 `Reload`）本身只有 SIGHUP 安装会失败时返回错误这一条结构性保证；`main::reload_state` 的「过期快照 / 目录不可加载则保留旧配置」路径也没有测试驱动（需要会话总线或信号），改动这段代码要人工验证。
 - **启动辅助的 `--exec-application` 模式**只被真实启动路径覆盖，没有单独的进程级测试。
+- **打开器没有常驻宿主**：`open` 的每一步（类型判定、`mimeapps.list`、定位、argv、启动）都有单元测试，
+  `cargo run -p inox-launcher -- --open <目标>` 就是它的真实二进制入口；但**没有**进程级 E2E，也**没有**
+  `org.freedesktop.portal.OpenURI`（`inox-portal` 未创建）、没有 magic 内容嗅探（类型只由名字决定）、
+  不验证就绪（`xdg-open` 的契约是启动后立刻返回）。通知里的链接仍未接线：`Outgoing::FollowLink` 仍被丢弃。
 
 ## 目录结构
 
@@ -81,6 +85,7 @@ crates/inox-launcher/
   src/categories.rs freedesktop Categories= → 固定分类 chips
   src/desktop_entry.rs, exec.rs, index.rs, search.rs, contract.rs,
   activation.rs, placement.rs, i18n.rs
+  src/open/{mod.rs,mime.rs,mimeapps.rs}  打开器：类型判定、mimeapps.list、定位与启动（`--open` / `inox-open`）
   src/catalog_tests.rs, src/headless_tests.rs   #[cfg(test)] 证据
   i18n/{en-US,zh-CN}/launcher.ftl
   README.md         本 crate 说明

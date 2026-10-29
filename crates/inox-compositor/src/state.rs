@@ -44,6 +44,21 @@
 //!   scene draws nothing because it never reaches the layer path. A manager bound
 //!   at version 1 creates version 1 objects, which keep the blur-only behaviour
 //!   and never receive `liquid_capabilities`.
+//! - `wp_presentation` (2) — [`PresentationState`], frame presentation feedback.
+//!   A client that asks how long its frame took to reach the screen is answered
+//!   from the same walk that sends `wl_surface.frame`, in the monotonic clock
+//!   both of them use.
+//! - `zxdg_decoration_manager_v1` (1) — the decoration negotiation. Every
+//!   decoration object is answered `client_side`, because this compositor draws
+//!   no server-side frames; advertising the global is what turns "you have to
+//!   guess" into an answer.
+//! - `zwp_idle_inhibit_manager_v1` (1) — [`IdleInhibitManagerState`], the request
+//!   a client makes to hold the idle timeout off while it shows something the
+//!   user is watching.
+//! - `ext_idle_notifier_v1` (1) — the notifications `inox-idle` subscribes to;
+//!   the `idled` event is what makes the session lock itself. See the idle module
+//!   for the three rules (per-notification deadlines, what counts as a visible
+//!   inhibitor, and what happens while one is held).
 //!
 //! Client toplevels become managed windows: they are registered in a
 //! [`Workspace`], tiled by [`LayoutConfig`] and mapped into a Smithay desktop
@@ -115,7 +130,15 @@
 //! and the `inox-ipc` control protocol, so upstream versions are pinned in one
 //! place (see the workspace `AGENTS.md`).
 
+mod idle;
 mod ime;
+
+/// How often the event loop advances the idle clock, re-exported for the runtime.
+///
+/// The interval and the state that uses it belong together — an idle deadline is
+/// never more precise than this — so the loop asks the state rather than keeping a
+/// second copy of the number.
+pub(crate) use idle::TICK as IDLE_TICK;
 
 use std::{
     borrow::Cow,
@@ -149,7 +172,14 @@ use inox_protocols::{
             zwlr_layer_shell_v1::ZwlrLayerShellV1,
             zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
         },
-        xdg::shell::server::xdg_toplevel,
+        wp::presentation_time::server::wp_presentation_feedback,
+        xdg::{
+            decoration::server::{
+                zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+                zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+            },
+            shell::server::xdg_toplevel,
+        },
     },
     window_manager::inox_window_manager::server::inox_window_manager_v1::InoxWindowManagerV1,
 };
@@ -185,17 +215,19 @@ use smithay::{
         backend::{ClientData, ClientId, DisconnectReason, GlobalId},
         protocol::wl_data_source::WlDataSource,
     },
-    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
+    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform},
     wayland::{
         buffer::BufferHandler,
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-            get_parent, send_surface_state, with_states,
+            SurfaceData, get_parent, send_surface_state, with_states,
         },
         fractional_scale::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
         },
+        idle_inhibit::IdleInhibitManagerState,
         output::{OutputHandler, OutputManagerState},
+        presentation::{PresentationFeedbackCachedState, PresentationState, Refresh},
         seat::WaylandFocus,
         selection::{
             SelectionHandler, SelectionSource, SelectionTarget,
@@ -230,8 +262,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     config::CompositorConfig,
+    decorations,
     glass::{self, Frost, PaneInput},
     input::{Action, SwallowedPresses, action_for_key},
+    layers,
     layout::LayoutConfig,
     render::{HeadlessRenderer, RenderError, Scene, SceneElement},
     session_lock::{Claim, LockCoverage, claim},
@@ -374,6 +408,29 @@ pub struct InoxState {
 
     /// Owns the `ext_session_lock_manager_v1` global.
     session_lock_state: SessionLockManagerState,
+
+    /// Owns the `wp_presentation` global.
+    ///
+    /// Like [`InoxState::output_manager_state`], Smithay's presentation dispatch
+    /// is generic over the compositor state, so the value is never read: keeping
+    /// it is what keeps the global alive. The events themselves are sent from the
+    /// same walk that sends frame callbacks.
+    #[allow(dead_code)]
+    presentation_state: PresentationState,
+
+    /// Owns the `zxdg_decoration_manager_v1` global.
+    ///
+    /// The manager answers every decoration request itself; see
+    /// [`crate::decorations`] for why the answer is always client-side.
+    #[allow(dead_code)]
+    decoration_state: decorations::DecorationState,
+
+    /// Owns the `zwp_idle_inhibit_manager_v1` global.
+    #[allow(dead_code)]
+    idle_inhibit_state: IdleInhibitManagerState,
+
+    /// The `ext_idle_notifier_v1` global and the notifications it created.
+    idle: idle::IdleState,
     /// The token a client must present to be allowed to lock, or `None`.
     ///
     /// `None` means this run cannot be locked at all: a compositor with no token
@@ -701,6 +758,23 @@ impl InoxState {
         // reads the registry on the same connection, so the claim necessarily
         // follows the advertisement.
         let session_lock_state = SessionLockManagerState::new::<Self, _>(display_handle, |_| true);
+
+        // Frame presentation feedback. The clock is named once, here, and every
+        // `presented` event afterwards is a timestamp in it; see
+        // [`monotonic_clock_id`] for why it is the same clock frame callbacks use.
+        let presentation_state =
+            PresentationState::new::<Self>(display_handle, monotonic_clock_id());
+
+        // The decoration negotiation. Advertised even though the answer is always
+        // "client-side": the answer is what a toolkit cannot otherwise learn. See
+        // [`crate::decorations`].
+        let decoration_state = decorations::DecorationState::new::<Self>(display_handle);
+
+        // Idle management: one global for clients that want to hold the timeout
+        // off, one for clients that want to know when it expires.
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(display_handle);
+        let idle = idle::IdleState::new(display_handle);
+
         let ipc_version = inox_ipc_version();
         let ipc_global = display_handle.create_global::<Self, InoxIpc, ()>(ipc_version, ());
         debug!(
@@ -779,6 +853,10 @@ impl InoxState {
             next_output_id: 0,
             fractional_scale_state,
             session_lock_state,
+            presentation_state,
+            decoration_state,
+            idle_inhibit_state,
+            idle,
             lock_token: config.lock_token.clone(),
             lock_authorized: HashSet::new(),
             lock: SessionLock::default(),
@@ -1223,7 +1301,7 @@ impl InoxState {
             // waiting on. Sending the callbacks here — rather than once for every
             // output after the loop — keeps a surface's callback tied to the
             // output it is drawn on, which is what `wl_surface.frame` means.
-            self.send_frame_callbacks(Some(id));
+            self.send_frame_feedback(Some(id));
         }
 
         Ok(())
@@ -1610,7 +1688,7 @@ impl InoxState {
     ///
     /// Frame callbacks are **not** sent here: `wl_surface.frame` is per output, so
     /// the backend that presented names the output it presented (see
-    /// [`InoxState::frame_callbacks_for`]). A single global "a frame happened"
+    /// [`InoxState::frame_presented_on`]). A single global "a frame happened"
     /// signal would hand an output's clients a callback every time *another*
     /// output presented, which makes a multi-head desktop run every client at the
     /// combined rate of all displays.
@@ -1618,9 +1696,15 @@ impl InoxState {
         self.frames_rendered = self.frames_rendered.saturating_add(1);
         self.settle_lock();
     }
-    /// Send the frame callbacks of one output, for the frame it just presented.
-    pub(crate) fn frame_callbacks_for(&mut self, output: OutputId) {
-        self.send_frame_callbacks(Some(output));
+    /// Tell one output's clients that the frame it just presented is on screen.
+    ///
+    /// Two protocols answer that question and they are answered from the same
+    /// walk, because they are the same set of surfaces: `wl_surface.frame` (the
+    /// client may draw again) and `wp_presentation.feedback` (the client learns
+    /// *when* its content was shown). Splitting them would let the two disagree
+    /// about which surfaces an output composited.
+    pub(crate) fn frame_presented_on(&mut self, output: OutputId) {
+        self.send_frame_feedback(Some(output));
     }
 
     /// The id of the output advertised under `name`, if any.
@@ -1638,19 +1722,24 @@ impl InoxState {
         self.exit_after_frames.is_some()
     }
 
-    /// Send a `wl_surface.frame` callback to the mapped surfaces of one output,
-    /// or of every output when `only` is `None`.
+    /// Send a `wl_surface.frame` callback and the `wp_presentation` feedback to
+    /// the mapped surfaces of one output, or of every output when `only` is
+    /// `None`.
     ///
-    /// Without this a client that waits for its frame callback before drawing the next
-    /// frame never gets one, so it never repaints: a real client (an XWayland toplevel,
-    /// a GTK application) that asks for a frame first would stay blank. Note that the
-    /// callbacks only reach the client once the display is flushed, which the event loop
-    /// does after every frame it renders.
+    /// Without the frame callback a client that waits for it before drawing the
+    /// next frame never gets one, so it never repaints: a real client (an
+    /// XWayland toplevel, a GTK application) that asks for a frame first would
+    /// stay blank. Without the presentation feedback the same client cannot tell
+    /// when its frame reached the screen, which is what `wp_presentation` is for;
+    /// a client that requested it and never hears back stalls on the same
+    /// boundary.
     ///
-    /// Each surface is told about the output it is on, which is the output whose
-    /// frame it is waiting for.
-    fn send_frame_callbacks(&mut self, only: Option<OutputId>) {
+    /// Both only reach the client once the display is flushed, which the event
+    /// loop does after every frame it renders. Each surface is told about the
+    /// output it is on, which is the output whose frame it is waiting for.
+    fn send_frame_feedback(&mut self, only: Option<OutputId>) {
         let time = self.start_time.elapsed();
+        let seq = self.frames_rendered;
         let outputs: Vec<(OutputId, Output)> = self
             .outputs
             .iter()
@@ -1665,6 +1754,7 @@ impl InoxState {
 
         for (id, output) in &outputs {
             self.ime_send_frames(output, time);
+            let refresh = presentation_refresh(output);
             // The closures report the output the surface is actually on, so the
             // throttle never gates a callback; `ZERO` states that rather than
             // leaving it to depend on the output comparison alone.
@@ -1672,6 +1762,12 @@ impl InoxState {
                 if let Some((_, window)) = windows.iter().find(|(id, _)| *id == window_id) {
                     window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
                         Some(output.clone())
+                    });
+                    // `with_surfaces` walks the whole tree — the toplevel, its
+                    // subsurfaces and its popups — which is exactly the set the
+                    // frame callback above just reached.
+                    window.with_surfaces(|_, states| {
+                        send_presentation_feedback(states, output, time, refresh, seq);
                     });
                 }
             }
@@ -1685,6 +1781,9 @@ impl InoxState {
                     .send_frame(output, time, Some(Duration::ZERO), |_, _| {
                         Some(output.clone())
                     });
+                entry.surface.with_surfaces(|_, states| {
+                    send_presentation_feedback(states, output, time, refresh, seq);
+                });
             }
         }
     }
@@ -1906,6 +2005,7 @@ impl InoxState {
     }
 
     pub(crate) fn inject_pointer_axis(&mut self, frame: AxisFrame) {
+        self.idle.note_activity();
         if self.seat.get_pointer().is_none() {
             return;
         }
@@ -1997,6 +2097,9 @@ impl InoxState {
     /// the compositor's, [`SwallowedPresses`] carries that decision to the release, and
     /// only a press can trigger an [`Action`].
     pub fn inject_key(&mut self, keycode: Keycode, state: KeyState) -> Option<Action> {
+        // Idle tracking sees every key before any of it is intercepted: a bound
+        // chord is still the user being at the keyboard.
+        self.idle.note_activity();
         self.seat.get_keyboard()?;
         self.ime_sync_grab();
         let keyboard = self.keyboard.clone();
@@ -2045,6 +2148,10 @@ impl InoxState {
 
     /// Move the pointer to `location` and deliver the resulting enter/motion events.
     pub fn inject_pointer_motion(&mut self, location: Point<f64, Logical>) {
+        // The re-sync after a topology change or an unlock goes through here too,
+        // and counting it is right: both are consequences of something the user
+        // did.
+        self.idle.note_activity();
         self.repaint |= self.cursor_visible && self.pointer_location != location;
         self.pointer_location = location;
         if self.seat.get_pointer().is_none() {
@@ -2068,6 +2175,7 @@ impl InoxState {
 
     /// Deliver a pointer button press or release at the current location.
     pub fn inject_pointer_button(&mut self, button: u32, state: ButtonState) {
+        self.idle.note_activity();
         if self.seat.get_pointer().is_none() {
             return;
         }
@@ -2911,11 +3019,18 @@ impl InoxState {
                         let source = if cached.exclusive_zone
                             == smithay::wayland::shell::wlr_layer::ExclusiveZone::DontCare
                         {
+                            // A surface that does not care about other clients' zones
+                            // is placed on the whole output, so it also derives its
+                            // size from the whole output. Centring and stretching it
+                            // inside the shrunken work area instead would ask a
+                            // 0×0 background to be exactly as tall as the panel left
+                            // over, and a full-output surface would stop covering the
+                            // bar it is supposed to sit behind.
                             *output_area
                         } else {
                             area
                         };
-                        entry.geometry = crate::layers::geometry(source, cached);
+                        entry.geometry = layers::geometry(source, cached);
                         let surface = entry.surface.layer_surface();
                         surface.with_pending_state(|state| state.size = Some(entry.geometry.size));
                         if entry.initial_configure.is_none() {
@@ -2924,7 +3039,7 @@ impl InoxState {
                             surface.send_pending_configure();
                         }
                         if entry.mapped {
-                            crate::layers::reserve(&mut area, cached);
+                            layers::reserve(&mut area, cached);
                         }
                     }
                 }
@@ -3064,6 +3179,74 @@ fn keyboard_config(input: &inox_config::InputConfig) -> XkbConfig<'_> {
         layout: &input.keyboard_layout,
         variant: &input.keyboard_variant,
         options: None,
+    }
+}
+
+/// The `clockid_t` value `wp_presentation.clock_id` is advertised with.
+///
+/// `wp_presentation` names its clock once, when a client binds the global, and
+/// every `presented` timestamp afterwards is in that clock. This compositor
+/// timestamps frames with `std::time::Instant`, which is `CLOCK_MONOTONIC` on
+/// Linux, so that is the clock a client is told about — the same one the
+/// `wl_surface.frame` callback time is measured against.
+fn monotonic_clock_id() -> u32 {
+    // `ClockId::Monotonic` *is* `CLOCK_MONOTONIC`. A `clockid_t` is an `int` and
+    // the POSIX clocks are numbered from zero, so neither cast can lose anything;
+    // they exist because the protocol carries the id as a `uint`.
+    Clock::<Monotonic>::new().id() as i32 as u32
+}
+
+/// How often `output` presents, as `wp_presentation` reports it.
+///
+/// An output with no mode has no rate to report, which the protocol has a value
+/// for (`Refresh::Unknown`) rather than a guess. A mode with a nonsensical rate
+/// is treated the same way instead of dividing by zero.
+fn presentation_refresh(output: &Output) -> Refresh {
+    let Some(mode) = output.current_mode() else {
+        return Refresh::Unknown;
+    };
+    if mode.refresh <= 0 {
+        return Refresh::Unknown;
+    }
+
+    // `Mode::refresh` is in millihertz, so a period in nanoseconds is 1e12 / mHz.
+    let period = 1_000_000_000_000_u64 / u64::try_from(mode.refresh).unwrap_or(1);
+
+    Refresh::Fixed(Duration::from_nanos(period))
+}
+
+/// Send the `wp_presentation` feedback one surface is waiting for.
+///
+/// The callbacks are drained from the surface's *current* state, which is where a
+/// commit moved them: a client asks for feedback before it commits, and the frame
+/// that commit produced is the one it is told about. `seq` is the compositor's
+/// frame counter, so two feedbacks never share one.
+fn send_presentation_feedback(
+    states: &SurfaceData,
+    output: &Output,
+    time: Duration,
+    refresh: Refresh,
+    seq: u64,
+) {
+    // `mem::take` rather than `drain(..).collect()`: the guard's vector is
+    // exactly what the client is waiting on, and moving it out is one allocation
+    // less on a path that runs once per surface per frame.
+    let callbacks = std::mem::take(
+        &mut states
+            .cached_state
+            .get::<PresentationFeedbackCachedState>()
+            .current()
+            .callbacks,
+    );
+
+    for callback in callbacks {
+        callback.presented(
+            output,
+            time,
+            refresh,
+            seq,
+            wp_presentation_feedback::Kind::Vsync,
+        );
     }
 }
 
@@ -4197,6 +4380,12 @@ smithay::delegate_shm!(InoxState);
 smithay::delegate_viewporter!(InoxState);
 smithay::delegate_data_device!(InoxState);
 smithay::delegate_primary_selection!(InoxState);
+smithay::delegate_presentation!(InoxState);
+smithay::delegate_idle_inhibit!(InoxState);
+
+smithay::reexports::wayland_server::delegate_global_dispatch!(InoxState: [ZxdgDecorationManagerV1: ()] => decorations::DecorationState);
+smithay::reexports::wayland_server::delegate_dispatch!(InoxState: [ZxdgDecorationManagerV1: ()] => decorations::DecorationState);
+smithay::reexports::wayland_server::delegate_dispatch!(InoxState: [ZxdgToplevelDecorationV1: ()] => decorations::DecorationState);
 
 #[cfg(test)]
 mod tests {

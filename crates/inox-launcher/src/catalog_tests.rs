@@ -82,16 +82,35 @@ fn defined_ids() -> BTreeSet<String> {
 ///
 /// A source scan rather than a list to maintain: the point is to catch the call
 /// site that says `launcher-state-loadng`, and only reading the sources does
-/// that. The test modules are skipped — they contain ids as *fixtures*, not as
-/// messages the component asks for, and counting them would make the check pass
-/// for a message nothing shows.
+/// that. Subdirectories are scanned too, because a module that lives in one
+/// (`src/open/`) asks for messages like any other and must not be able to define
+/// a catalog entry nothing shows. The dedicated test modules are skipped — they
+/// contain ids as *fixtures*, not as messages the component asks for, and
+/// counting them would make the check pass for a message nothing shows.
 fn referenced_ids() -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
-    let sources = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
-        .expect("the crate has a src directory");
+    collect_ids(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut ids,
+    );
+    ids
+}
 
-    for entry in sources {
-        let path = entry.expect("a readable directory entry").path();
+/// Collects the ids mentioned by every source file under `directory`.
+fn collect_ids(directory: &std::path::Path, ids: &mut BTreeSet<String>) {
+    let Ok(sources) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut paths: Vec<std::path::PathBuf> = sources
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        if path.is_dir() {
+            collect_ids(&path, ids);
+            continue;
+        }
         if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
             continue;
         }
@@ -113,8 +132,6 @@ fn referenced_ids() -> BTreeSet<String> {
             ids.insert(id);
         }
     }
-
-    ids
 }
 
 /// The contents of every double-quoted string literal in `source`.

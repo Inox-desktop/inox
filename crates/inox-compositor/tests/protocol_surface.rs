@@ -21,8 +21,14 @@ use std::{
 
 use inox_protocols::standard::{
     core::client::wl_compositor::WlCompositor,
+    ext::idle_notify::client::ext_idle_notifier_v1::ExtIdleNotifierV1,
     wlr::layer_shell::client::zwlr_layer_shell_v1::ZwlrLayerShellV1,
-    wp::fractional_scale::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp::{
+        fractional_scale::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        idle_inhibit::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+        presentation_time::client::wp_presentation::WpPresentation,
+    },
+    xdg::decoration::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
 };
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
@@ -62,6 +68,14 @@ const EXPECTED_GLOBALS: &[&str] = &[
     "zwp_text_input_manager_v3",
     // M4, window management: the task bar's view of the managed windows.
     "inox_window_manager_v1",
+    // M5, frame timing: `wp_presentation` answers "when was my frame shown".
+    "wp_presentation",
+    // M5, idle: one global to hold the timeout off, one to hear it expire.
+    "zwp_idle_inhibit_manager_v1",
+    "ext_idle_notifier_v1",
+    // The decoration negotiation. The answer is always client-side; the global is
+    // what makes that answer available instead of guessed.
+    "zxdg_decoration_manager_v1",
 ];
 
 /// A private `XDG_RUNTIME_DIR` for one compositor process.
@@ -177,6 +191,10 @@ wayland_client::delegate_noop!(RegistryClient: ignore WpFractionalScaleManagerV1
 wayland_client::delegate_noop!(RegistryClient: ignore WlDataDeviceManager);
 wayland_client::delegate_noop!(RegistryClient: ignore ZwpPrimarySelectionDeviceManagerV1);
 wayland_client::delegate_noop!(RegistryClient: ignore ZwlrLayerShellV1);
+wayland_client::delegate_noop!(RegistryClient: ignore WpPresentation);
+wayland_client::delegate_noop!(RegistryClient: ignore ZxdgDecorationManagerV1);
+wayland_client::delegate_noop!(RegistryClient: ignore ZwpIdleInhibitManagerV1);
+wayland_client::delegate_noop!(RegistryClient: ignore ExtIdleNotifierV1);
 
 /// What the client observed while talking to the compositor.
 #[derive(Debug, Default)]
@@ -211,6 +229,12 @@ fn talk_to_compositor(socket_path: &Path) -> anyhow::Result<ClientOutcome> {
     let _data_device: WlDataDeviceManager = globals.bind(&queue_handle, 3..=3, ())?;
     let _primary: ZwpPrimarySelectionDeviceManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
     let _layers: ZwlrLayerShellV1 = globals.bind(&queue_handle, 4..=4, ())?;
+    // `wp_presentation` v1 and v2 differ only in what `presented` may report for a
+    // variable refresh rate; this compositor advertises 2.
+    let _presentation: WpPresentation = globals.bind(&queue_handle, 1..=2, ())?;
+    let _decorations: ZxdgDecorationManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
+    let _idle_inhibit: ZwpIdleInhibitManagerV1 = globals.bind(&queue_handle, 1..=1, ())?;
+    let _idle_notify: ExtIdleNotifierV1 = globals.bind(&queue_handle, 1..=1, ())?;
 
     // The compositor answers the sync only if every request above was accepted.
     queue.roundtrip(&mut state)?;
@@ -298,6 +322,28 @@ fn the_protocol_surface_is_advertised_and_bindable() {
         version_of(globals, "zwp_primary_selection_device_manager_v1"),
         Some(1),
         "middle-click paste needs the primary selection manager"
+    );
+
+    // M5: idle and frame timing.
+    assert_eq!(
+        version_of(globals, "ext_idle_notifier_v1"),
+        Some(1),
+        "version 2's `get_input_idle_notification` is not implemented, so it must not be advertised"
+    );
+    assert_eq!(
+        version_of(globals, "zwp_idle_inhibit_manager_v1"),
+        Some(1),
+        "the idle inhibitor global is what lets a video player hold the timeout off"
+    );
+    assert_eq!(
+        version_of(globals, "zxdg_decoration_manager_v1"),
+        Some(1),
+        "version 2's `orphaned` rule is not implemented, so the global stops at 1"
+    );
+    assert_eq!(
+        version_of(globals, "wp_presentation"),
+        Some(2),
+        "`presented` reports a variable refresh rate only from version 2"
     );
 }
 

@@ -45,6 +45,19 @@
 //!   Qt's QPA bridge; the headless test only asserts that the items exist, so
 //!   acceptance Q01 is not claimed as verified.
 //!
+//! ## The opener is the same binary
+//!
+//! [`open`] is the desktop's `xdg-open`: it opens a file or a link with the
+//! application the session has registered for it. It lives here because it is
+//! the launcher's own job with a different selection rule — the target picks the
+//! application instead of the user — and because it needs the same two modules
+//! ([`desktop_entry`], [`exec`]) that this crate already owns. It is reached two
+//! ways, both handled **before** Qt is initialised so that opening a link never
+//! pays for a GUI toolkit: as `inox-open …` (installed as a link to this
+//! binary), and as `inox-launcher --open …` for scripts that would rather not
+//! depend on that name. See [`open`] for the steps, the exit codes and the two
+//! things it deliberately does not do (portals and content sniffing).
+//!
 //! ## Why `dead_code` is allowed crate-wide
 //!
 //! This binary is the crate (see above): what used to be the library's public API
@@ -87,6 +100,7 @@ mod exec;
 mod i18n;
 mod icons;
 mod index;
+mod open;
 mod placement;
 mod reload;
 mod runtime;
@@ -206,18 +220,31 @@ pub(crate) fn take_boot() -> Option<Boot> {
 }
 
 fn main() -> Result<()> {
-    let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == "--exec-application") {
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let program = arguments.first().cloned();
+    let rest = arguments.get(1..).unwrap_or_default();
+
+    if rest
+        .first()
+        .is_some_and(|arg| arg == std::ffi::OsStr::new("--exec-application"))
+    {
         let signals = calloop::signals::Signals::new(&[calloop::signals::Signal::SIGHUP])?;
         drop(signals);
-        let program = args
+        let mut tail = rest.iter().skip(1);
+        let program = tail
             .next()
             .context("application launcher requires a program")?;
         use std::os::unix::process::CommandExt;
-        return Err(std::process::Command::new(program).args(args).exec().into());
+        return Err(std::process::Command::new(program).args(tail).exec().into());
     }
 
     inox_common::logging::init().context("installing the tracing subscriber")?;
+
+    // The opener reports an exit code and exits; it must not build a QGuiApplication
+    // first, because a link click has no display to wait for and no window to show.
+    if let Some(opener_arguments) = open::opener_arguments(program.as_deref(), rest) {
+        std::process::exit(i32::from(open::run_cli(&opener_arguments)));
+    }
 
     let boot = boot()?;
     if !install_boot(boot) {

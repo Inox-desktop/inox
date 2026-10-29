@@ -30,6 +30,13 @@ pub const ENV_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
 /// Environment variable holding the system-wide data directory search path.
 pub const ENV_DATA_DIRS: &str = "XDG_DATA_DIRS";
 
+/// Environment variable holding the system-wide configuration search path.
+///
+/// Same shape as [`ENV_DATA_DIRS`]: a colon-separated list of directories read
+/// in order, with the first answer winning. It is what `mimeapps.list` is
+/// looked up in (XDG mime-apps specification), so the file opener needs it.
+pub const ENV_CONFIG_DIRS: &str = "XDG_CONFIG_DIRS";
+
 /// Environment variable overriding the wallpaper search path.
 ///
 /// A single absolute directory, searched before the XDG locations. It exists so
@@ -41,6 +48,10 @@ pub const ENV_WALLPAPER_DIR: &str = "INOX_WALLPAPER_DIR";
 /// The data directory search path the specification prescribes when
 /// [`ENV_DATA_DIRS`] is unset or yields nothing usable.
 const DEFAULT_DATA_DIRS: &str = "/usr/local/share:/usr/share";
+
+/// The configuration search path the specification prescribes when
+/// [`ENV_CONFIG_DIRS`] is unset or yields nothing usable.
+const DEFAULT_CONFIG_DIRS: &str = "/etc/xdg";
 
 /// Directory Inox uses below each XDG base directory.
 pub const APP_DIR: &str = "inox";
@@ -81,6 +92,7 @@ pub struct XdgEnv {
     cache_home: Option<PathBuf>,
     runtime_dir: Option<PathBuf>,
     data_dirs: Option<Vec<PathBuf>>,
+    config_dirs: Option<Vec<PathBuf>>,
     wallpaper_dir: Option<PathBuf>,
 }
 
@@ -100,6 +112,7 @@ impl XdgEnv {
                 ENV_CACHE_HOME,
                 ENV_RUNTIME_DIR,
                 ENV_DATA_DIRS,
+                ENV_CONFIG_DIRS,
                 ENV_WALLPAPER_DIR,
             ]
             .into_iter()
@@ -142,16 +155,8 @@ impl XdgEnv {
                 ENV_STATE_HOME => env.state_home = Some(value),
                 ENV_CACHE_HOME => env.cache_home = Some(value),
                 ENV_RUNTIME_DIR => env.runtime_dir = Some(value),
-                ENV_DATA_DIRS => {
-                    env.data_dirs = Some(
-                        value
-                            .as_os_str()
-                            .to_string_lossy()
-                            .split(':')
-                            .map(PathBuf::from)
-                            .collect(),
-                    );
-                }
+                ENV_DATA_DIRS => env.data_dirs = Some(split_list(&value)),
+                ENV_CONFIG_DIRS => env.config_dirs = Some(split_list(&value)),
                 ENV_WALLPAPER_DIR => env.wallpaper_dir = Some(value),
                 _ => {}
             }
@@ -261,22 +266,18 @@ impl XdgEnv {
     /// (`/usr/local/share:/usr/share`) is returned instead.
     #[must_use]
     pub fn data_dirs(&self) -> Vec<PathBuf> {
-        let entries: Vec<PathBuf> = self
-            .data_dirs
-            .as_ref()
-            .map(|dirs| {
-                dirs.iter()
-                    .filter(|dir| dir.is_absolute())
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
+        search_path(self.data_dirs.as_ref(), DEFAULT_DATA_DIRS)
+    }
 
-        if entries.is_empty() {
-            DEFAULT_DATA_DIRS.split(':').map(PathBuf::from).collect()
-        } else {
-            entries
-        }
+    /// Resolve `$XDG_CONFIG_DIRS`, the system-wide configuration directories in
+    /// the order they are searched.
+    ///
+    /// The rules are [`XdgEnv::data_dirs`]' rules: empty and relative entries
+    /// are dropped, and a value that leaves nothing falls back to the
+    /// specification's default (`/etc/xdg`).
+    #[must_use]
+    pub fn config_dirs(&self) -> Vec<PathBuf> {
+        search_path(self.config_dirs.as_ref(), DEFAULT_CONFIG_DIRS)
     }
 
     /// The directories searched for wallpapers, highest priority first.
@@ -337,6 +338,38 @@ impl XdgEnv {
     }
 }
 
+/// Splits a colon-separated search path into the entries it names.
+fn split_list(value: &std::path::Path) -> Vec<PathBuf> {
+    value
+        .as_os_str()
+        .to_string_lossy()
+        .split(':')
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Applies the specification's rules to one `*_DIRS` search path.
+///
+/// `value` is the list as it was read (or `None` when the variable was unset);
+/// empty and relative entries are dropped, and `default` — itself a
+/// colon-separated list — is used when nothing usable remains.
+fn search_path(value: Option<&Vec<PathBuf>>, default: &str) -> Vec<PathBuf> {
+    let entries: Vec<PathBuf> = value
+        .map(|dirs| {
+            dirs.iter()
+                .filter(|dir| dir.is_absolute())
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if entries.is_empty() {
+        default.split(':').map(PathBuf::from).collect()
+    } else {
+        entries
+    }
+}
+
 /// Resolve `$XDG_CONFIG_HOME` from the environment of the current process.
 ///
 /// # Errors
@@ -355,6 +388,13 @@ pub fn config_home() -> Result<PathBuf, PathsError> {
 /// determined; see [`XdgEnv::data_home`].
 pub fn data_home() -> Result<PathBuf, PathsError> {
     XdgEnv::from_process().data_home()
+}
+
+/// Resolve `$XDG_CONFIG_DIRS` from the environment of the current process;
+/// see [`XdgEnv::config_dirs`].
+#[must_use]
+pub fn config_dirs() -> Vec<PathBuf> {
+    XdgEnv::from_process().config_dirs()
 }
 
 /// Resolve `$XDG_STATE_HOME` from the environment of the current process.
@@ -618,6 +658,46 @@ mod tests {
             env.data_dirs(),
             vec![PathBuf::from("/usr/share"), PathBuf::from("/opt/share")]
         );
+    }
+
+    #[test]
+    fn config_dirs_are_split_and_searched_in_order() {
+        let env =
+            XdgEnv::from_pairs([(ENV_HOME, HOME), (ENV_CONFIG_DIRS, "/etc/xdg:/opt/etc/xdg")]);
+
+        assert_eq!(
+            env.config_dirs(),
+            vec![PathBuf::from("/etc/xdg"), PathBuf::from("/opt/etc/xdg")]
+        );
+    }
+
+    #[test]
+    fn config_dirs_fall_back_to_the_specification_default() {
+        // Unset, empty, and set-but-entirely-unusable all mean `/etc/xdg`.
+        for value in [None, Some(""), Some("relative:./also-relative")] {
+            let env = match value {
+                Some(value) => XdgEnv::from_pairs([(ENV_HOME, HOME), (ENV_CONFIG_DIRS, value)]),
+                None => home_only(),
+            };
+
+            assert_eq!(
+                env.config_dirs(),
+                vec![PathBuf::from("/etc/xdg")],
+                "expected `{value:?}` to fall back to the default search path"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_search_paths_do_not_borrow_each_other_s_values() {
+        let env = XdgEnv::from_pairs([
+            (ENV_HOME, HOME),
+            (ENV_CONFIG_DIRS, "/etc/xdg"),
+            (ENV_DATA_DIRS, "/usr/share"),
+        ]);
+
+        assert_eq!(env.config_dirs(), vec![PathBuf::from("/etc/xdg")]);
+        assert_eq!(env.data_dirs(), vec![PathBuf::from("/usr/share")]);
     }
 
     #[test]

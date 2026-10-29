@@ -149,6 +149,9 @@ package() {
   for binary in "${binaries[@]}"; do
     install -m 0755 "target/release/$binary" "$pkgdir/usr/bin/$binary"
   done
+  # The opener is the launcher under the name an `xdg-open` caller looks for:
+  # `inox-open <target>` is the launcher's `--open` entry point.
+  ln -s inox-launcher "$pkgdir/usr/bin/inox-open"
 
   install -Dm 0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 

@@ -53,3 +53,15 @@ launcher-failure-missing-terminal = the entry needs a terminal, but launcher.ter
 launcher-failure-spawn-failed = the process could not be started: { $detail }
 launcher-failure-exited-before-ready = the process exited before it was ready: { $detail }
 launcher-failure-not-ready-in-time = the process gave no sign of running within { $seconds } s
+
+# The opener (`inox-open`, or `inox-launcher --open`). These are the sentences a
+# terminal and a caller's log see, not labels in the window.
+launcher-open-usage = Usage: inox-open TARGET — open a file or a link with the application registered for it
+launcher-open-not-found = { $target } does not exist
+launcher-open-unknown-type = No MIME rule matches { $target }, so its type cannot be named
+launcher-open-no-mime-database = The shared MIME database is missing: no mime/globs2 was found in { $dirs }
+launcher-open-no-handler = No application is registered to open { $type }
+launcher-open-handler-missing = { $type } is registered to { $id }, but that application is not installed
+launcher-open-entry-unusable = { $id } cannot be used: { $reason }
+launcher-open-exec-failed = { $id } cannot be started: { $reason }
+launcher-open-spawn-failed = { $program } could not be started: { $detail }

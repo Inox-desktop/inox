@@ -399,7 +399,7 @@ fn on_drm_event(
                     // Sending the callbacks to every output would run each client at
                     // the combined refresh rate of all displays.
                     if let Some(output) = data.state.output_id_named(connector_of(&key)) {
-                        data.state.frame_callbacks_for(output);
+                        data.state.frame_presented_on(output);
                     }
                 }
                 if !physical.ready {
@@ -622,7 +622,7 @@ fn paint(handle: &Handle, data: &mut CalloopData, key: &str) {
                 frames.schedule.complete(token);
             }
             if let Some(output) = data.state.output_id_named(connector_of(key)) {
-                data.state.frame_callbacks_for(output);
+                data.state.frame_presented_on(output);
             }
         }
         Err(error) => {
