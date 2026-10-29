@@ -9,6 +9,11 @@
 
 ## 表面模式：真实锁表面 + 离屏 QML
 
+> **这一段是过渡态。** [ADR 0046](../../docs/adr/0046-shell-surfaces-and-native-qt.md) 的 P4 之后，
+> 锁表面改由 Qt 的 wayland 平台插件**直接渲染**（同一个表面、逐输出、configure 尺寸仍是硬要求），
+> 离屏宿主与 `wl_shm` 帧管线一起删除。锁屏**不会**因此接上 IME：输入法进程是普通客户端，口令不得
+> 经它组合。安全语义不变，仍是 `ext-session-lock-v1`。
+
 锁表面是真实的 `ext_session_lock_v1` 表面（`src/session.rs` 创建、认领、按 configure 提交帧），界面由 QML 渲染，但渲染目标是**离屏**的：
 
 ```text

@@ -1,0 +1,681 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="inox_shell">
+  <copyright>
+    Copyright (c) 2026, Inox Desktop Contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="inox_shell_v1" version="1">
+    <description summary="shell surfaces for Inox's own desktop components">
+      Private, unstable Inox protocol for the surfaces that *are* the desktop:
+      the panel, its menu bar, the dock, and the menus they open.
+
+      Why this protocol exists at all. `zwlr-layer-shell-unstable-v1` and
+      `xdg-shell` can place a surface at the edge of an output and can hang an
+      `xdg_popup` off it, and for a third-party panel that is enough. They stop
+      being enough the moment the shell wants to behave like one continuous
+      object instead of a set of unrelated rectangles:
+
+      - A layer surface is placed but never *animated*. A panel and the menu it
+        opens are two surfaces; when one becomes the other, or when a menu
+        grows out of the button that opened it, only the compositor can draw
+        the frames in between, because only it knows when a surface is actually
+        shown, at what scale, over which backdrop. Layer-shell has no way to
+        ask for that, and a client cannot animate across its own surface
+        boundary — everything it draws is clipped to the rectangle it was
+        configured to.
+      - An `xdg_popup` exists inside `xdg-shell`'s model of a menu: it is
+        grabbed with a serial that came from a real input event, its positioner
+        is fixed at creation, and it is only legal after the parent mapped.
+        A shell menu opened from the keyboard, re-laid-out when the work area
+        changes, or nested three levels deep does not fit that model, and a
+        panel that is deliberately not keyboard-interactive (D01: ordinary
+        presentation must not steal focus) cannot hand its popup a keyboard at
+        all.
+      - The work area a panel has to lay itself out against is not something a
+        layer surface is ever told. It changes when another surface reserves
+        space, when the output is resized, when the panel is reloaded, and the
+        shell has to guess or poll.
+      - A shell surface whose backdrop is frosted (`inox-glass-v1`) is frost
+        eligible only because it has a *layer* role. Popups and any future
+        shell surface would each need an exception, and a menu that opens over
+        a frosted panel double-frosts the same pixels.
+
+      So this protocol owns the shell role end to end: placement, the shell
+      keyboard model, popups with compositor-driven dismissal, the work-area
+      event, and motion hints the compositor draws. It is deliberately narrow:
+      it only describes surfaces with a desktop layer, and it grants no
+      readback, no capture and no input injection.
+
+      Relationship to the standard protocols. `zwlr-layer-shell-unstable-v1`
+      stays advertised for third-party panels and bars; Inox's own components
+      use this protocol instead, and support for layer-shell is not a
+      fallback for them. Session locking does *not* move here: `ext-session-
+      lock-v1` carries security semantics (no content may be visible before the
+      locked frame is presented on every output) that must not be
+      re-implemented by an unstable private protocol. Lock surfaces stay
+      `ext_session_lock_v1` surfaces; the lock client's *rendering* becomes a
+      native Qt client like the panel's, without a new role.
+
+      Two objects, two kinds of "menu". A `menu`-role *surface* is the shell's
+      own placed surface that belongs to another shell surface — a launcher
+      anchored to the panel button that opened it, or a popover that needs its
+      own work area and its own animation. It is placed like any shell surface
+      and is not grabbed. A `inox_shell_popup_v1` is the transient kind: the
+      compositor dismisses it on a click outside, on Escape, or when its parent
+      hides. The two exist separately because their lifetimes differ — a
+      launcher that closed whenever the user clicked elsewhere would not be a
+      launcher.
+
+      Lifetime and failure. A `inox_shell_surface_v1` describes a role for one
+      `wl_surface`; the surface belongs to the compositor's shell layer stack
+      until it is destroyed, the client disconnects, or the compositor closes
+      it. A compositor that cannot honour a request (no room for the exclusive
+      zone, an effect it does not implement, a popup whose parent is gone)
+      reports it through `capabilities`, `configure` or `dismissed` — never by
+      silently drawing something else, because the shell decides its fallback
+      from those answers.
+
+      This protocol is an Inox extension and is not part of the upstream
+      wayland-protocols. It is unstable until Inox 1.0: interfaces may change
+      in a backwards-incompatible way, and consumers must negotiate through the
+      `capabilities` event instead of assuming a fixed revision.
+
+      Warning! The protocol described in this file is currently in the testing
+      phase. Backward compatible changes may be added together with the
+      corresponding interface version bump. Backward incompatible changes can
+      be done by creating a new version of this protocol.
+    </description>
+
+    <enum name="error">
+      <description summary="fatal errors raised on this interface"/>
+      <entry name="role" value="0"
+             summary="the wl_surface already has a role"/>
+      <entry name="invalid_role" value="1"
+             summary="the requested shell role is not one this compositor knows"/>
+      <entry name="invalid_surface" value="2"
+             summary="the wl_surface is not a plain, unmapped surface"/>
+    </enum>
+
+    <enum name="capability" bitfield="true">
+      <description summary="optional parts of this protocol a compositor implements">
+        Reported by the `capabilities` event. A compound compositor sets every
+        bit it implements; a client must check the bits it depends on and fall
+        back to an instant, unanimated presentation for anything missing. Bits
+        this client does not know are ignored, so the field can grow without a
+        version bump.
+      </description>
+      <entry name="transitions" value="1"
+             summary="enter/exit transitions are drawn by the compositor"/>
+      <entry name="popup_keyboard" value="2"
+             summary="a popup can be granted the keyboard independently of its parent"/>
+      <entry name="workarea" value="4"
+             summary="the workarea event is sent and kept up to date"/>
+      <entry name="nested_popups" value="8"
+             summary="a popup may be the parent of another popup (submenus)"/>
+    </enum>
+
+    <enum name="surface_role">
+      <description summary="what the shell surface is, semantically">
+        A role is a semantic label, not a position: where the surface goes is
+        described by `set_placement`. The compositor uses the role for policy
+        that must not be guessable from geometry — which surfaces a lock hides,
+        which ones the shell's own keyboard model reaches, and which ones a
+        future shell animation may move as one group.
+      </description>
+      <entry name="panel" value="0"
+             summary="a standing bar: taskbar, menu bar, status area"/>
+      <entry name="dock" value="1"
+             summary="an application dock, usually floating above the work area"/>
+      <entry name="overlay" value="2"
+             summary="a full-output shell surface: launcher, switcher, a morph host"/>
+      <entry name="menu" value="3"
+             summary="a shell-owned surface that belongs to another shell surface"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the shell object">
+        Destroy the factory. Shell surfaces it created stay valid: they belong
+        to the surfaces they were created for, not to this object.
+      </description>
+    </request>
+
+    <request name="get_surface">
+      <description summary="assign the shell role to a surface">
+        Assign a shell role to `surface` and return the object that describes
+        it. The surface must not have a role yet and must not have been
+        committed with a buffer: the compositor decides the size, and a client
+        that already drew at its own size has guessed wrong.
+
+        A shell surface is *placed* by its client and *sized* by the
+        compositor: the client sends `set_placement` and commits without a
+        buffer, the compositor answers `configure`, and from then on the
+        surface is mapped and drawn at the configured size. A client that
+        detaches its buffer unmaps the surface and must go through
+        `configure` again, exactly as a layer surface does.
+      </description>
+      <arg name="id" type="new_id" interface="inox_shell_surface_v1"
+           summary="the new shell surface"/>
+      <arg name="surface" type="object" interface="wl_surface"
+           summary="the surface that becomes a shell surface"/>
+      <arg name="role" type="uint" enum="surface_role"
+           summary="what the surface is, semantically"/>
+    </request>
+
+    <event name="capabilities">
+      <description summary="what this compositor implements of this protocol">
+        Sent once when the object is created, before any request on it is
+        answered. `capabilities` is a bitfield of `capability`;
+        `max_transition_duration` is the longest enter/exit transition the
+        compositor will animate, in milliseconds, and is 0 when it animates
+        none.
+
+        A client must not ask for an effect it was not offered: requesting a
+        slide where the compositor only fades would make the shell and the
+        compositor disagree about what the user is looking at, and the shell is
+        the half that has to keep its own animations consistent with it.
+      </description>
+      <arg name="capabilities" type="uint" enum="capability"
+           summary="implemented optional parts of this protocol"/>
+      <arg name="max_transition_duration" type="uint"
+           summary="longest animated transition, milliseconds; 0 if none"/>
+    </event>
+  </interface>
+
+  <interface name="inox_shell_surface_v1" version="1">
+    <description summary="one shell surface: placement, keyboard model and motion">
+      One shell surface. It is created by `inox_shell_v1.get_surface` and lives
+      as long as its `wl_surface`.
+
+      State is committed, not applied on arrival: `set_placement`,
+      `set_keyboard` and `set_transition` describe the surface's desired state
+      and take effect on the next `wl_surface.commit`. This is the same rule
+      layer-shell uses, and it is what makes a reload that changes four values
+      at once look like one change rather than four.
+
+      Placement is sent as one request rather than as six setters. A shell
+      surface is placed as a unit — anchor and margin and exclusive zone only
+      mean something together — and splitting them lets a compositor observe
+      half of a placement, reserve the wrong strip, and then correct itself on
+      the next commit. One request, one consistent state.
+    </description>
+
+    <enum name="error">
+      <description summary="fatal errors raised on this interface"/>
+      <entry name="invalid_anchor" value="0"
+             summary="the anchor mask contains an unknown bit"/>
+      <entry name="invalid_keyboard_mode" value="1"
+             summary="the keyboard mode is not one this compositor knows"/>
+      <entry name="popup_cycle" value="2"
+             summary="a popup would become its own ancestor"/>
+    </enum>
+
+    <enum name="layer">
+      <description summary="the shell layer this surface is drawn in">
+        Layers are ordered back to front. Shell surfaces of different roles may
+        share a layer; within a layer the compositor keeps its own stacking
+        order, which the client must not depend on.
+      </description>
+      <entry name="background" value="0" summary="wallpaper-like content"/>
+      <entry name="bottom" value="1" summary="below ordinary windows"/>
+      <entry name="top" value="2" summary="above ordinary windows"/>
+      <entry name="overlay" value="3" summary="above everything, including other shell surfaces"/>
+    </enum>
+
+    <enum name="anchor" bitfield="true">
+      <description summary="which edges of the work area the surface is attached to">
+        Anchor bits are combined. Anchoring to one edge pins that edge and
+        leaves the other axis to the surface's own size; anchoring to opposite
+        edges stretches the surface between them unless a size was requested;
+        anchoring to nothing centres the surface.
+      </description>
+      <entry name="top" value="1" summary="the top edge"/>
+      <entry name="bottom" value="2" summary="the bottom edge"/>
+      <entry name="left" value="4" summary="the left edge"/>
+      <entry name="right" value="8" summary="the right edge"/>
+    </enum>
+
+    <enum name="keyboard_mode">
+      <description summary="how this surface gets the keyboard">
+        `none` is the default and the right choice for a panel that only
+        presents: D01 requires ordinary presentation not to steal focus, so a
+        panel must be able to exist without ever being focused. A popup that
+        needs keys asks for them itself through
+        `inox_shell_popup_v1.set_keyboard`, which is what makes a keyboard-
+        navigated menu possible out of a panel that never holds the keyboard.
+
+        `on_demand` gives the surface ordinary focus semantics: the compositor
+        may focus it when the user clicks it or navigates to it, and may take
+        the focus away again. `exclusive` asks for the keyboard whenever the
+        surface is mapped and on top; a compositor may still refuse, and it
+        must report what it did through `keyboard_state`.
+      </description>
+      <entry name="none" value="0" summary="never focused; pointer only"/>
+      <entry name="on_demand" value="1" summary="ordinary focus semantics"/>
+      <entry name="exclusive" value="2" summary="wants the keyboard whenever mapped on top"/>
+    </enum>
+
+    <enum name="effect">
+      <description summary="an enter or exit transition">
+        Effects are drawn by the compositor over the surface's own frames: the
+        client renders its final state once, and the compositor fades, slides
+        or scales it into place. A client that animates the same movement
+        itself would fight the compositor for the same pixels, which is why
+        requesting an effect and animating it client-side are alternatives,
+        not layers.
+
+        `none` means "appear and disappear instantly" and is always available.
+        A compositor reports which of the others it implements through
+        `inox_shell_v1.capabilities`.
+      </description>
+      <entry name="none" value="0" summary="no transition"/>
+      <entry name="fade" value="1" summary="cross-fade against the backdrop"/>
+      <entry name="slide" value="2" summary="move in from, and out towards, the origin edge"/>
+      <entry name="scale" value="4" summary="grow from, and shrink towards, the origin point"/>
+    </enum>
+
+    <enum name="curve">
+      <description summary="the timing curve of a transition">
+        Named curves rather than parameters: the shell must not have to know
+        the compositor's spring stiffness to get the same feel as the rest of
+        the desktop, and a compositor that implements its own motion language
+        maps these names onto it.
+      </description>
+      <entry name="linear" value="0" summary="constant speed"/>
+      <entry name="ease_out" value="1" summary="fast start, settled end"/>
+      <entry name="spring" value="2" summary="slight overshoot, settled end"/>
+    </enum>
+
+    <request name="set_placement">
+      <description summary="place the surface in the work area">
+        Describe where the surface goes. `layer` is the shell layer, `anchor`
+        the edges it is attached to, `exclusive_zone` the strip the compositor
+        must keep clear for it, `margin_*` the distances from those edges, and
+        `width`/`height` the surface's requested size in its own logical
+        coordinates, where 0 means "the compositor decides".
+
+        `exclusive_zone` follows layer-shell's meaning because users' muscle
+        memory does: a positive value is the thickness to reserve on the
+        anchored edge, 0 means "I want to be moved out of other surfaces'
+        reserved strips but reserve nothing myself", and -1 means "do not move
+        me, let me extend to the edge I am anchored to". A positive value on a
+        surface that is not anchored to exactly one edge (or one edge plus its
+        two perpendiculars) reserves nothing, because there is no strip that
+        value could describe.
+
+        The compositor clamps the result to the output: a margin that pushes
+        the surface off-screen is reduced, never honoured. The size in
+        `configure` is authoritative — a client that asked for 1000x28 and is
+        configured 800x28 must lay itself out for 800.
+      </description>
+      <arg name="layer" type="uint" enum="layer" summary="shell layer"/>
+      <arg name="anchor" type="uint" enum="anchor" summary="anchor bitfield"/>
+      <arg name="exclusive_zone" type="int"
+           summary="strip to reserve, 0 for none, -1 to extend to the edge"/>
+      <arg name="margin_top" type="int" summary="distance from the top anchor"/>
+      <arg name="margin_right" type="int" summary="distance from the right anchor"/>
+      <arg name="margin_bottom" type="int" summary="distance from the bottom anchor"/>
+      <arg name="margin_left" type="int" summary="distance from the left anchor"/>
+      <arg name="width" type="uint" summary="requested width, 0 to let the compositor decide"/>
+      <arg name="height" type="uint" summary="requested height, 0 to let the compositor decide"/>
+    </request>
+
+    <request name="set_keyboard">
+      <description summary="how this surface wants the keyboard">
+        Set the keyboard mode. The compositor answers with `keyboard_state`
+        whenever it changes, and a popup's own request overrides what it would
+        otherwise inherit — a panel that never takes focus can still own a menu
+        that does.
+      </description>
+      <arg name="mode" type="uint" enum="keyboard_mode" summary="the keyboard mode"/>
+    </request>
+
+    <request name="set_transition">
+      <description summary="ask the compositor to animate this surface in and out">
+        Ask for enter and exit transitions. The compositor animates the
+        surface's own frames: it does not ask the client for intermediate
+        states, so the client must render the final state and leave the motion
+        to the compositor.
+
+        `duration` is in milliseconds and is clamped to the maximum reported by
+        `inox_shell_v1.capabilities`; a duration of 0 disables the transition,
+        which is also what a client that was not offered the requested effect
+        must fall back to. `origin` is an anchor bitfield naming the point the
+        slide or scale grows from — an empty mask means "the centre". `origin`
+        has no meaning for `fade` and is ignored there.
+
+        Transitions are a hint, not a promise about pixels: a compositor that
+        is shutting down, running without a renderer, or honouring the user's
+        reduced-motion preference may drop them entirely. The shell must look
+        right when every transition is instantaneous, which is why the protocol
+        has no "transition finished" event for a client to wait on.
+      </description>
+      <arg name="enter" type="uint" enum="effect" summary="effect when the surface maps"/>
+      <arg name="exit" type="uint" enum="effect" summary="effect when the surface unmaps"/>
+      <arg name="duration" type="uint" summary="transition duration, milliseconds"/>
+      <arg name="curve" type="uint" enum="curve" summary="timing curve"/>
+      <arg name="origin" type="uint" enum="anchor"
+           summary="anchor point the transition grows from; empty means centre"/>
+    </request>
+
+    <request name="get_popup">
+      <description summary="create a popup belonging to this surface">
+        Create a popup whose parent is this surface. The popup is a normal
+        `wl_surface` that gains the popup role; it is positioned relative to
+        this surface, drawn above it, and dismissed with it.
+
+        Unlike `xdg_popup`, no input serial is involved: a shell menu is
+        frequently opened from the keyboard, from a timer, or from a protocol
+        event, and there is no serial to grab with. The popup's grab is a
+        *policy* the compositor applies — see `set_dismissable` — not a
+        transaction the client has to authorise.
+      </description>
+      <arg name="id" type="new_id" interface="inox_shell_popup_v1"
+           summary="the new popup"/>
+      <arg name="surface" type="object" interface="wl_surface"
+           summary="the surface that becomes the popup"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the shell surface object">
+        Destroy the object. The `wl_surface` loses its shell role and is
+        unmapped; the buffer is not touched. Popups of this surface are
+        dismissed first, so a client does not have to tear down a menu tree by
+        hand.
+      </description>
+    </request>
+
+    <event name="configure">
+      <description summary="the size the surface should have">
+        Sent after every commit that changed placement, and whenever the
+        compositor's own constraints changed (a work-area change, an output
+        resize, a scale change). The client must ack the serial before the
+        commit that answers it, exactly as a layer surface does.
+
+        `width` and `height` are in the surface's logical coordinates and are
+        the size the surface will be given; they are not a maximum. A client
+        that draws at another size is showing the wrong thing, not a smaller
+        version of the right thing.
+      </description>
+      <arg name="serial" type="uint" summary="serial for ack_configure"/>
+      <arg name="width" type="uint" summary="configured width, logical pixels"/>
+      <arg name="height" type="uint" summary="configured height, logical pixels"/>
+    </event>
+
+    <event name="workarea">
+      <description summary="the area this surface's output leaves to clients">
+        The rectangle this surface may be laid out against, in the output's
+        logical coordinates: the output minus every exclusive zone on it. It is
+        sent once when the surface is created, and again whenever it changes —
+        another shell surface reserving space, a window going fullscreen, an
+        output being resized, the panel itself being reloaded with a different
+        thickness.
+
+        This is the event layer-shell does not have. A shell that has to place
+        a menu, clamp a tooltip or size a launcher needs the same rectangle the
+        compositor used, and re-deriving it from configuration drifts the
+        moment anything else reserves space.
+      </description>
+      <arg name="x" type="int" summary="work area origin, output-logical"/>
+      <arg name="y" type="int" summary="work area origin, output-logical"/>
+      <arg name="width" type="int" summary="work area width, output-logical"/>
+      <arg name="height" type="int" summary="work area height, output-logical"/>
+    </event>
+
+    <event name="keyboard_state">
+      <description summary="whether this surface currently has the keyboard">
+        Sent whenever the answer changes: 1 when this surface is receiving key
+        events, 0 when it is not. A shell uses it to draw focus rings and to
+        decide whether Escape belongs to it or to the window underneath, and it
+        must not assume that asking for `exclusive` was granted.
+      </description>
+      <arg name="focused" type="uint" summary="1 when focused, 0 otherwise"/>
+    </event>
+
+    <event name="closed">
+      <description summary="the compositor will not show this surface">
+        The surface is going away: its output was removed, the compositor is
+        shutting this shell surface down, or the role no longer applies. After
+        this event the object is inert and the client should destroy it. Unlike
+        a layer surface's `closed`, this is also how the compositor reports that
+        it refused the role outright, so a client that receives it before its
+        first `configure` must not retry in a loop.
+      </description>
+    </event>
+  </interface>
+
+  <interface name="inox_shell_popup_v1" version="1">
+    <description summary="a shell popup: a menu, a tooltip, a nested submenu">
+      A popup of a shell surface. It is drawn directly above its parent,
+      positioned by its client, dismissed by the compositor, and it may itself
+      be the parent of another popup — which is what makes submenus a nesting
+      of the same object instead of a special case.
+
+      What a popup does *not* do is decide its own fate. It does not grab the
+      pointer or the keyboard by asking for them at a moment of its choosing;
+      it declares whether it is dismissable and whether it needs keys, and the
+      compositor applies its policy: a click outside dismisses it, Escape
+      dismisses it, its parent unmapping dismisses it. The client learns that it
+      happened through `dismissed`, which is also the only signal it should use
+      to animate its own exit — the compositor may have already started one.
+
+      Sizing. A popup is sized the way a shell surface is: the client asks for
+      a size in `set_size`, the compositor answers `configure`, and the
+      configured size is authoritative. A popup that is wider than the
+      remaining work area is clamped by the compositor, and the client must lay
+      out for the clamped width rather than assume its request.
+    </description>
+
+    <enum name="error">
+      <description summary="fatal errors raised on this interface"/>
+      <entry name="invalid_anchor" value="0"
+             summary="the anchor mask contains an unknown bit"/>
+      <entry name="parent_gone" value="1"
+             summary="the parent surface no longer exists"/>
+    </enum>
+
+    <enum name="anchor" bitfield="true">
+      <description summary="which edge or corner a position is measured from">
+        Used twice in `set_position`: once for the parent and once for the
+        popup. A single bit names an edge (the midpoint of that edge), two
+        perpendicular bits name a corner, and an empty mask means the centre.
+      </description>
+      <entry name="top" value="1" summary="the top edge"/>
+      <entry name="bottom" value="2" summary="the bottom edge"/>
+      <entry name="left" value="4" summary="the left edge"/>
+      <entry name="right" value="8" summary="the right edge"/>
+    </enum>
+
+    <enum name="effect">
+      <description summary="an enter or exit transition">
+        The same vocabulary `inox_shell_surface_v1.effect` uses. It is repeated
+        here rather than referenced because a protocol's enum lives in the
+        interface that declares it, and a popup is its own interface: a client
+        that only ever creates popups must not have to know the surface object's
+        enum to read the one it was given.
+      </description>
+      <entry name="none" value="0" summary="no transition"/>
+      <entry name="fade" value="1" summary="cross-fade against the backdrop"/>
+      <entry name="slide" value="2" summary="move in from, and out towards, the anchor"/>
+      <entry name="scale" value="4" summary="grow from, and shrink towards, the anchor"/>
+    </enum>
+
+    <enum name="curve">
+      <description summary="the timing curve of a transition">
+        Named curves, as on `inox_shell_surface_v1.curve`.
+      </description>
+      <entry name="linear" value="0" summary="constant speed"/>
+      <entry name="ease_out" value="1" summary="fast start, settled end"/>
+      <entry name="spring" value="2" summary="slight overshoot, settled end"/>
+    </enum>
+
+    <enum name="dismiss_reason">
+      <description summary="why the compositor dismissed a popup">
+        Reported by `dismissed`. The reason matters to the shell because the
+        animation differs: a click outside should collapse a submenu back
+        towards the item that opened it, while Escape unwinds the whole stack.
+      </description>
+      <entry name="outside" value="0" summary="the pointer was pressed outside the popup"/>
+      <entry name="escape" value="1" summary="the user pressed Escape"/>
+      <entry name="parent_hidden" value="2" summary="the parent surface unmapped or was closed"/>
+      <entry name="policy" value="3" summary="the compositor closed it for another reason"/>
+    </enum>
+
+    <request name="set_position">
+      <description summary="position the popup relative to its parent">
+        Place the popup's `popup_anchor` edge or corner at the parent's
+        `parent_anchor` edge or corner, offset by `x` and `y` in the popup's
+        logical coordinates. Two anchors rather than one is what makes a menu
+        that flips — a submenu that would leave the work area opens to the left
+        of its parent instead of the right — expressible without the client
+        guessing where the compositor put the parent.
+
+        The compositor clamps the result to the work area and may flip the
+        offset if that is the only way to fit. It never moves the popup into a
+        position the client did not name without saying so: the popup's
+        `configure` reports the size, and a client that must know the position
+        reads it back from its own item geometry, not from the wire.
+      </description>
+      <arg name="parent_anchor" type="uint" enum="anchor"
+           summary="the parent's edge or corner"/>
+      <arg name="popup_anchor" type="uint" enum="anchor"
+           summary="the popup's edge or corner placed on it"/>
+      <arg name="x" type="int" summary="horizontal offset, popup-logical"/>
+      <arg name="y" type="int" summary="vertical offset, popup-logical"/>
+    </request>
+
+    <request name="set_size">
+      <description summary="request a size for the popup">
+        Request the popup's size in its own logical coordinates; 0 lets the
+        compositor decide that axis. The configured size is authoritative and
+        may be smaller — a menu wider than the screen is clamped, not scaled.
+      </description>
+      <arg name="width" type="uint" summary="requested width, 0 to let the compositor decide"/>
+      <arg name="height" type="uint" summary="requested height, 0 to let the compositor decide"/>
+    </request>
+
+    <request name="set_keyboard">
+      <description summary="whether the popup needs the keyboard">
+        Ask for the keyboard while the popup is open. This is deliberately
+        separate from the parent's keyboard mode: a panel that never takes focus
+        (D01) still owns menus that must be navigated with Tab and Escape, and
+        a compositor that grants keys to the popup must take them back when it
+        dismisses the popup. The answer arrives as `keyboard_state` on this
+        object, and a compositor that does not implement popup keyboards
+        reports 0 forever rather than silently stealing focus from a window.
+      </description>
+      <arg name="needed" type="uint" summary="1 to ask for the keyboard, 0 to release it"/>
+    </request>
+
+    <request name="set_dismissable">
+      <description summary="whether the compositor may dismiss this popup">
+        Declare whether a click outside this popup, an Escape key, or the parent
+        going away should dismiss it. A menu sets 1; a passive tooltip sets 0 and
+        closes itself.
+
+        A dismissable popup implies a pointer grab that only the compositor can
+        take: it must see the click that lands outside the popup even though
+        that click belongs to another client's surface, and it must consume it
+        so the window underneath does not also act on it. This is why dismissal
+        is a compositor policy in this protocol instead of the client-owned
+        grab xdg-shell describes.
+      </description>
+      <arg name="dismissable" type="uint" summary="1 if the compositor may dismiss it"/>
+    </request>
+
+    <request name="dismiss">
+      <description summary="close the popup">
+        Ask the compositor to close this popup and everything nested in it. The
+        compositor runs the popup's exit transition and then discards the
+        surface; the client must not destroy the `wl_surface` itself while the
+        exit is running, and must wait for the object's destruction instead of
+        assuming the request was immediate.
+      </description>
+    </request>
+
+    <request name="set_transition">
+      <description summary="animate this popup in and out">
+        Same semantics as `inox_shell_surface_v1.set_transition`, with one
+        difference: the default origin is the anchor this popup was positioned
+        with, so a menu grows out of the item that opened it without the client
+        having to repeat the anchor here.
+      </description>
+      <arg name="enter" type="uint" enum="effect"
+           summary="effect when the popup opens"/>
+      <arg name="exit" type="uint" enum="effect"
+           summary="effect when the popup closes"/>
+      <arg name="duration" type="uint" summary="transition duration, milliseconds"/>
+      <arg name="curve" type="uint" enum="curve"
+           summary="timing curve"/>
+    </request>
+
+    <request name="get_popup">
+      <description summary="create a nested popup (a submenu) of this popup">
+        Create a popup whose parent is this popup. Nesting is the same object
+        again: a submenu is positioned relative to the item that opened it,
+        drawn above its parent, dismissed with it, and counted in the same
+        dismissal stack the compositor unwinds.
+      </description>
+      <arg name="id" type="new_id" interface="inox_shell_popup_v1"
+           summary="the new nested popup"/>
+      <arg name="surface" type="object" interface="wl_surface"
+           summary="the surface that becomes the nested popup"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the popup object">
+        Destroy the object and unmap its surface. Nested popups are dismissed
+        first.
+      </description>
+    </request>
+
+    <event name="configure">
+      <description summary="the size the popup should have">
+        Sent after the popup's placement or size request was committed, and
+        whenever the work area changed such that the clamp changed. The client
+        must ack the serial before the commit that answers it.
+      </description>
+      <arg name="serial" type="uint" summary="serial for the ack"/>
+      <arg name="width" type="uint" summary="configured width, logical pixels"/>
+      <arg name="height" type="uint" summary="configured height, logical pixels"/>
+    </event>
+
+    <event name="dismissed">
+      <description summary="the compositor dismissed this popup">
+        The compositor is closing this popup. The surface will be unmapped
+        after its exit transition; the client should drop whatever state it was
+        showing and must not try to re-open the same popup as part of handling
+        this event, because that is how a menu that refuses to close is written.
+      </description>
+      <arg name="reason" type="uint" enum="dismiss_reason"
+           summary="why it was dismissed"/>
+    </event>
+
+    <event name="keyboard_state">
+      <description summary="whether this popup currently has the keyboard">
+        Sent whenever the answer changes: 1 while key events reach the popup, 0
+        when they do not. A menu uses it to decide whether it owns Escape and
+        the arrow keys, or whether those belong to the window underneath.
+      </description>
+      <arg name="focused" type="uint" summary="1 when focused, 0 otherwise"/>
+    </event>
+  </interface>
+</protocol>

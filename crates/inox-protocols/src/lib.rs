@@ -19,6 +19,14 @@
 //!   minimize, close, set mode, move to a workspace, switch workspace). It
 //!   exists because the compositor owns windows and the panel draws them, while
 //!   a Cargo dependency between the two is forbidden.
+//! - [`shell`] provides the bindings for `inox-shell-v1`, the protocol that gives
+//!   Inox's own desktop components their shell role: placement in the work area,
+//!   the shell keyboard model, popups the compositor dismisses (submenus are
+//!   nested popups), the work-area event a panel has to lay out against, and
+//!   enter/exit transitions the compositor draws. It exists because a panel and
+//!   the menu it opens are one visual object, and no standard protocol can ask
+//!   for the frames between two of its states; see ADR 0046.
+
 //! - [`control`] is `session-control-v1`, the one-line private contract a session's
 //!   own desktop uses to ask it to start the trusted lock client. It lives here
 //!   rather than beside its server because its client is L3 (`inox-lock`) and its
@@ -31,6 +39,7 @@
 pub mod control;
 pub mod glass;
 pub mod ipc;
+pub mod shell;
 pub mod standard;
 pub mod window_manager;
 

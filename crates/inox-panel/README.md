@@ -8,6 +8,11 @@ Inox 桌面的面板：任务栏、系统托盘与时钟。属于 Inox 桌面环
 
 面板**没有自己的窗口**。它持有的是真实的 `zwlr_layer_shell_v1` 表面（`src/layer.rs` 创建、摆放并提交帧），界面由 QML 渲染，但渲染目标是**离屏**的：
 
+> **这一段是过渡态。** [ADR 0046](../../docs/adr/0046-shell-surfaces-and-native-qt.md) 把终点定在
+> 「Qt 原生 wayland 表面 + 私有协议 `inox-shell-v1`」：离屏帧没有 `wl_surface.frame` 时间线、没有
+> 第二个表面，因此面板长成菜单、菜单从按钮里钻出这类跨表面过渡，以及子菜单与键盘导航的菜单，
+> 在离屏路径上做不到；它也没有输入与 AT-SPI。P3 落地前，下面的管线仍是真实情况。
+
 ```text
 calloop 主循环（layer.rs）
   └─ 状态变化 → view.rs 投影成一份 JSON（矩形 + 文本 + 点击区域）

@@ -27,6 +27,13 @@
 
 panel/lock 的输入、放置、安全边界、`calloop` 循环**不动**；QML 只负责画。详见离屏 QML。
 
+> **表面模式的后续方向（ADR 0046，进行中）。** panel 与 lock 的离屏宿主是**迁移期的过渡态**，
+> 不是终点：离屏帧没有 `wl_surface.frame` 时间线、没有第二个表面、没有输入、没有 AT-SPI，
+> 因此跨表面的过渡（面板长成菜单、菜单从按钮里钻出）与子菜单在架构上做不到。ADR 0046 的结论是
+> 两者都改成 **Qt 的原生 wayland 表面**，并新增私有协议 `inox-shell-v1` 承载合成器侧的动效、
+> popup 关闭权与工作区事件；锁屏保留 `ext-session-lock-v1`，只换渲染器。
+> 在 P3/P4 落地之前，上表仍是实现的真实情况；本文件的其余条款（尤其 §6 安全边界）继续按现状执行。
+
 ## 2. crate 结构（统一形态）
 
 ```text
@@ -153,3 +160,9 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
   Qt Quick、私有 ABI 的范围在 crate 级 `AGENTS.md` 记录、GPL-only Qt 模块仍然禁止。
 - 已知缺口（不得在文档里声称已解决）：panel/lock 的离屏表面没有 AT-SPI 语义桥；真实合成器宿主上的
   waydriver 截图断言仍未接线；QML 侧每次状态变化整体重发 JSON 投影。
+- **表面模式不是收尾的一部分（2026-10-29 追加）**：ADR 0046 把 panel/lock 的终点从「离屏 QML 帧 +
+  Rust 持有的表面」改为「Qt 原生 wayland 表面 + 私有协议 `inox-shell-v1`」，并说明了为什么离屏路径
+  的上限是架构性的（没有 frame 时间线、没有第二个表面、没有输入、没有 AT-SPI）。P0 只落了协议
+  （`crates/inox-protocols/protocol/inox-shell-v1.xml`、`src/shell.rs`、`tests/shell_roundtrip.rs`），
+  合成器与两个组件都还没变；在 P3/P4 之前，§1 的表格仍是实现的真实情况，「QML 不接输入」也仍然
+  生效。§1 的离屏条目会在 P5 删除，届时本节的这条也一并删除。
