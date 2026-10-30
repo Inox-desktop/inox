@@ -62,7 +62,6 @@ inox-launcher --open TARGET
 | 3 | 没有应用能打开（类型未知 / 没有登记 / 登记的应用未安装） |
 | 4 | 找到了应用但起不来（`Exec` 读不懂，或进程创建失败） |
 
-
 **未实现 / 被阻塞**（不声称 E2/E3）：
 
 - **它是普通窗口，不是 layer 表面。** `inox-compositor` 尚未广告 `zwlr_layer_shell_v1`，`placement::Placement` 已经把该策略算好并写进日志，但没有任何宿主会应用它；启动时会以**恰好一条** `tracing::warn!` 说明这一点。
