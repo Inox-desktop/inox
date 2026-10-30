@@ -48,11 +48,11 @@
 //! Which leg runs is [`run`]'s compile-time choice, and the two legs differ in
 //! exactly one place: who owns the `wl_surface`.
 //!
-//! - **Native** ([`native_run`], `cfg(native_surface)`): Qt's wayland platform
+//! - **Native** (`native_run`, `cfg(native_surface)`): Qt's wayland platform
 //!   plugin creates the surface, `native_surface` gives it an
 //!   `inox_shell_surface_v1` role, and the compositor composites Qt's own frames.
 //!   QML receives the pointer and reports *which entry* it landed on
-//!   ([`native_run::parse_action`]); Rust still decides what that entry means.
+//!   (`native_run::parse_action`); Rust still decides what that entry means.
 //! - **Offscreen** ([`layer`], the CI build): [`layer`] creates a real
 //!   `wlr-layer-shell` surface itself — anchors, layer, exclusive zone, keyboard
 //!   interactivity, the glass request, pointer input and the `calloop` loop are
@@ -90,6 +90,12 @@
 //! | [`reload`] | `SIGHUP` and `org.inox.Panel` reload requests |
 //! | [`i18n`] | the `en-US` and `zh-CN` catalogs this component ships |
 //!
+//! The three `native_*` rows are code spans rather than links on purpose: the
+//! modules are `cfg(native_surface)`, so an intra-doc link to them does not
+//! resolve on an offscreen build (CI is one), and `RUSTDOCFLAGS=-D warnings`
+//! turns that into a failed `cargo doc`. Every module that exists
+//! unconditionally is linked.
+//!
 //! # Why there is no `src/lib.rs`
 //!
 //! cxx-qt 0.10 emits its bridge initialisers into the target that *declares* the
@@ -122,7 +128,7 @@
 //!
 //! `src/headless_tests/native.rs` is the native leg's equivalent, and goes one
 //! step further still: it starts a real `inox-compositor --headless` and drives
-//! (a) a bare surface and (b) [`native_run`]'s panel through it, asserting the
+//! (a) a bare surface and (b) `native_run`'s panel through it, asserting the
 //! role, the placement the compositor adopted, `configure`, `workarea`, the
 //! capability events, a configured popup, and a glass object created on Qt's
 //! connection being answered. It needs `INOX_SHELL_E2E=1` and the compositor

@@ -49,7 +49,7 @@
 //!   popups they open. A shell surface is placed by its client and sized by this
 //!   compositor, is told the work area it has to lay itself out against, and gets
 //!   its popups dismissed by the compositor rather than by a grab it would have
-//!   to authorise. ADR 0046 is the reasoning; [`crate::shell`] is the state
+//!   to authorise. ADR 0046 is the reasoning; `crate::shell` is the state
 //!   machine, and this module is the protocol surface and the scene.
 //! - `wp_presentation` (2) — [`PresentationState`], frame presentation feedback.
 //!   A client that asks how long its frame took to reach the screen is answered
@@ -4724,8 +4724,8 @@ fn fallback_client_state() -> &'static CompositorClientState {
 /// The `inox-shell-v1` factory: the only request hands a `wl_surface` a role.
 ///
 /// Every capability bit this build sets is backed by code: transitions by
-/// [`crate::render`], popup keyboards by [`InoxState::sync_focus`], the work area
-/// by [`InoxState::arrange_layers`] and nested popups by [`InoxShellPopupV1`]'s
+/// [`crate::render`], popup keyboards by `InoxState::sync_focus`, the work area
+/// by `InoxState::arrange_layers` and nested popups by [`InoxShellPopupV1`]'s
 /// own `get_popup`. Advertising a bit without the code behind it would make the
 /// shell request an effect nobody draws.
 impl Dispatch<InoxShellV1, ()> for InoxState {
