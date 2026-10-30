@@ -218,7 +218,7 @@ Ubuntu noble 上，那里的 Qt 是 **6.4.2**，低于上面的闸门；私有�
 | **P2** | 过渡：`set_transition` 在 map/unmap 上由合成器插帧（淡入淡出、滑入、缩放，命名曲线），并遵守减少动态偏好 | 帧序列断言：中间帧的 alpha/偏移严格介于首末帧之间；减少动态时只有一帧 | E1+E2 |
 | **P3** | 面板切原生 Qt：C++ 壳集成（`inox_shell_surface_v1` 角色 + `inox_shell_popup_v1` 子菜单）、玻璃经 Qt 连接、QML 接输入并 `dispatch`、删除 `offscreen.cpp`/`offscreen.rs`/`wl_shm` 帧管线/alpha 重建/指针命中。**前置：CI 的 Qt 基线 ≥ 6.5（§10），否则私有头闸门直接 `#error`** | `QT_QPA_PLATFORM=offscreen` 的 QML 加载测试仍跑；**真实合成器宿主**上：面板出图、点击落到面板、菜单开着时点击外部关闭、子菜单两级、玻璃窗格像素与 `glass.tint` 一致 | E2，E3 需真实宿主截图 |
 | **P4** | 锁屏切原生 Qt：`ext_session_lock_v1` 不变，Qt 原生锁表面（逐输出），删除 `inox-lock` 的离屏帧管线；锁屏**不接 IME** | 多输出锁表面尺寸等于 configure、`locked` 前已有锁定帧、锁屏期间普通客户端像素不存在、崩溃仍锁定（既有断言全保留） | E2；S02 的认证腿仍缺 |
-| **P5** | 清理：删除两条离屏路径的残留、`INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 钩子、契约 §1 的离屏条目；QML 投影从「整份 JSON 每变化重发」改为按区块更新 | `rg -n "offscreen|reconstruct_alpha|grabWindow" crates/` 零命中；投影测试仍绿 | E0+E1 |
+| **P5** | 清理：删除两条离屏路径的残留、`INOX_PANEL_OFFSCREEN_NO_ALPHA_GRAB` 钩子、契约 §1 的离屏条目；QML 投影从「整份 JSON 每变化重发」改为按区块更新 | `rg -n "offscreen\|reconstruct_alpha\|grabWindow" crates/` 零命中；投影测试仍绿 | E0+E1 |
 
 **P3/P4 之前不得宣称的能力**（写在这里，防止后续 PR 顺手把它们说成已解决）：无缝跨表面 morph、
 AT-SPI 语义树、IME 文本输入（锁屏永不）、真机截图证据（wayland driver 作业仍未接线）。
@@ -282,7 +282,7 @@ ABI 的翻译单元（`qt_shell_surface.cpp`，三道闸门齐全）、一个 QM
 
 ## 后果
 
-**正面**
+### 正面
 
 - 面板/锁屏拿到真实表面：`wl_surface.frame` 驱动的绘制、硬件合成、popup、输入、AT-SPI、IME（面板）
   全部变成「默认就有」，而不是逐项自造。
@@ -292,7 +292,7 @@ ABI 的翻译单元（`qt_shell_surface.cpp`，三道闸门齐全）、一个 QM
 - 玻璃窗格不再需要「面板自己铺色带」的妥协：真实 alpha + 合成器模糊/折射。
 - 工作区成为一条事件，而不是配置推算：`workarea` 让菜单与 launcher 的翻转/夹取有真实输入。
 
-**负面 / 限制**
+### 负面 / 限制
 
 - **Qt 私有 ABI 会漂移。** 私有类布局每个 Qt 次版本都可能变，这是本 ADR 主动接受的维护成本；
   缓解手段只有版本闸门与单点隔离，没有「一劳永逸」。

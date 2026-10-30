@@ -148,30 +148,35 @@ Applications (Wayland/X11 clients)
 ## Hard Rules (Must Follow)
 
 ### 1. **No Local Compilation Verification**
+
 - All validation MUST pass in GitHub Actions CI
 - Local builds/tests are for convenience only, not acceptance criteria
 - CI jobs: `fmt`, `clippy`, `deny`, `doc`, `build`, `test`, `m3-e2e`, `xwayland-e2e`, `session-e2e`, `license-audit`, `package`, `aur`, `book`
 
 ### 2. **Unsafe Code Policy**
+
 - **Default**: `#[forbid(unsafe_code)]` workspace-wide
-- **Exceptions only in**: 
+- **Exceptions only in**:
   - `inox-compositor` (FFI glue, EGL/GLES rendering, calloop Generic source)
   - `inox-xwayland` (X11 FFI)
 - All unsafe blocks MUST have `// SAFETY:` comments explaining correctness
 - Do NOT add new unsafe code without explicit justification
 
 ### 3. **Error Handling**
+
 - Non-test code: NO `unwrap()`, `expect()`, `panic!()`, `todo!()`, `unimplemented!()`
 - Use proper error propagation with `thiserror` (library) + `anyhow` (application)
 - Silent failures forbidden - errors must be logged or propagated
 
 ### 4. **Logging**
+
 - MUST use `tracing` framework
 - NO `println!` / `eprintln!` in production code
 - Default log level: `info` (not verbose per-frame logging)
 - Structured logs with appropriate events/levels
 
 ### 5. **License Compliance**
+
 - Project license: LGPL-3.0
 - **Allowed**: Permissive licenses + LGPL modules only
 - **Forbidden**: AGPL/SSPL, GPL-only Qt modules (Qt Wayland Compositor, Qt Virtual Keyboard, Qt QML Compiler)
@@ -179,18 +184,21 @@ Applications (Wayland/X11 clients)
 - `license-audit` CI job checks system Qt `.so` linkage
 
 ### 6. **Internationalization**
+
 - ALL user-visible text MUST go through Fluent localization
 - NO hardcoded strings (product/component names除外)
 - Must support `en-US` and `zh-CN`
 - Use design tokens for colors/sizes (never hardcode RGB values)
 
 ### 7. **Code Style**
+
 - Identifiers/comments: English ONLY
 - Human-facing docs (README, AGENTS): Chinese allowed
 - Follow existing comment density and naming patterns
 - Consistent directory structure per crate
 
 ### 8. **Layering Rules**
+
 - Every crate MUST belong to exactly one layer (defined in root `Cargo.toml`)
 - Dependency violations cause CI failure (`cargo test -p inox-integration --test layering`)
 - Same-layer exceptions must be documented in `[workspace.metadata.inox.rules]`
@@ -202,6 +210,7 @@ Applications (Wayland/X11 clients)
 ## ADR Process
 
 **Architecture Decision Records required for**:
+
 - Adding/deleting component crates
 - Changing layer structure or dependency directions
 - Introducing new protocol strategies
@@ -210,6 +219,7 @@ Applications (Wayland/X11 clients)
 - Any change requiring `unsafe` exceptions
 
 **Process**:
+
 1. Create new ADR in `docs/adr/` (template: `<number>-<title>.md`)
 2. Status: `proposed` → discussion → `accepted`
 3. Link ADR in PR description affecting architecture
@@ -282,6 +292,7 @@ The CI pipeline consists of parallel and sequential jobs:
 ### System Dependencies
 
 Jobs install system packages dynamically based on crate requirements:
+
 - `graphics` crates (with `smithay`): EGL, Mesa, DRM libs
 - `ui` crates (with `cxx-qt`): Qt 6 dev packages, fonts
 - PAM-support crates: clang for libpam bindings
@@ -318,12 +329,14 @@ Most crates follow this structure:
 ### Key Patterns by Layer
 
 #### L1 (Infrastructure)
+
 - Pure logic, no GUI dependencies
 - Error handling with `thiserror`
 - Shared types exported to upper layers
 - Thread-safe, testable in isolation
 
 #### L2 (Compositor)
+
 - Smithay-based state management
 - `src/state.rs` lists advertised globals
 - Real clients in tests via socket pair
@@ -331,6 +344,7 @@ Most crates follow this structure:
 - EGL surfaceless for offscreen rendering
 
 #### L3 (Shell/QML)
+
 - cxx-qt bridge for Rust↔QML communication
 - Offscreen rendering with `QT_QPA_PLATFORM=offscreen`
 - JSON projection from Rust state to QML
@@ -338,6 +352,7 @@ Most crates follow this structure:
 - Design tokens for theming
 
 #### L4 (Session)
+
 - System-level services
 - D-Bus endpoints
 - Process supervision
@@ -426,6 +441,7 @@ See [`docs/quality/acceptance.md`](./docs/quality/acceptance.md) and individual 
 ### Doc Validation
 
 CI validates:
+
 - `mdbook build docs/book` succeeds
 - All SUMMARY.md chapters exist
 - All relative links resolve
@@ -450,6 +466,7 @@ Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `ci`
 Scopes match crate names: `compositor`, `panel`, `common`, `config`, etc.
 
 Example:
+
 ```
 feat(compositor): add fractional scale manager v1 support
 
@@ -466,6 +483,7 @@ Closes: #123
 ### Failed Installation
 
 If package installation fails mid-way:
+
 ```bash
 # Rollback to greetd
 sudo packaging/rollback-to-greetd.sh
@@ -477,6 +495,7 @@ sudo packaging/uninstall.sh
 ### Session Hang
 
 If graphical session hangs:
+
 ```bash
 # From VT3 rescue console (always available)
 systemctl --user-stop Inox-*  # Stop Inox user services
