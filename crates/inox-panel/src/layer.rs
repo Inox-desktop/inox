@@ -248,6 +248,20 @@ pub enum LegError {
     /// The event loop could not be built or failed while running.
     #[error("the panel's event loop failed: {0}")]
     EventLoop(String),
+    /// The native shell surface could not be created, or lost the role that
+    /// places it.
+    ///
+    /// The message is the host's own (`src/native/host.cpp`), which is where the
+    /// answer to "why can this compositor not serve a shell surface" lives. It is
+    /// carried through this type unchanged so `main` has one error type for both
+    /// legs and one place to decide the exit status (ADR 0046 §10).
+    ///
+    /// A build without the native leg (`cfg(not(native_surface))`, which is what
+    /// CI builds) never constructs it, so it is allowed to be unconstructed
+    /// there rather than removed: the two legs' errors are one type on purpose.
+    #[cfg_attr(not(native_surface), allow(dead_code))]
+    #[error("{0}")]
+    Surface(String),
     /// A shared-memory frame could not be built.
     #[error("failed to prepare a panel frame: {0}")]
     Frame(#[from] io::Error),

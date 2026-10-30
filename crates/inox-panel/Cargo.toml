@@ -10,8 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[dependencies]
-# The panel's event loop, its signal sources and its clock (root AGENTS.md §4).
+[dependencies]# The panel's event loop, its signal sources and its clock (root AGENTS.md §4).
 calloop.workspace = true
 zbus.workspace = true
 anyhow.workspace = true
@@ -53,6 +52,10 @@ serde_json.workspace = true
 
 [build-dependencies]
 cxx-qt-build.workspace = true
+# `build.rs` generates `inox-shell-v1`'s C client bindings and compiles them,
+# together with `src/native/*.cpp`, on a host whose Qt can carry the private ABI
+# (`cfg(native_surface)`, decided by the build script — see ADR 0046 §10).
+cc.workspace = true
 # `build.rs` compiles `inox-glass`'s QML assets into this crate's own QML
 # module (`inox_glass::qml_files()`), because a QML module belongs to the
 # binary that registers it (KDAB/cxx-qt#770).

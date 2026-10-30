@@ -69,6 +69,7 @@ pub mod layout;
 pub mod render;
 pub mod runtime;
 pub mod session_lock;
+mod shell;
 pub mod state;
 #[cfg(feature = "test-input")]
 pub mod test_input;

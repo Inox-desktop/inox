@@ -13,7 +13,8 @@
 | `wl_data_device`（`wl_data_device_manager` v3） | 必须 | 剪贴板与拖放；读取权跟随键盘焦点 | 已支持（M3；Smithay `wayland::selection`） |
 | `xdg-shell` | 必须 | 标准窗口 | 已支持（toplevel 作为窗口） |
 | `xdg-decoration` | 必须 | 服务端/客户端装饰协商；合成器不画服务端装饰，所以恒答 `client_side`——答案本身就是 toolkit 拿不到的信息，X11 窗口标题栏仍由 satellite 自绘 | 已支持（v1；`crates/inox-compositor/src/decorations.rs`，真实 toplevel 的协商断言在 `tests/presentation.rs`） |
-| `wlr-layer-shell-unstable-v1` v4 | 必须 | 面板等桌面层；不用于安全锁屏 | 合成器已接入（v4）：四层合成、锚点/边距/独占区、configure/ack、空缓冲卸载与重映射、销毁与断连清理；客户端是全进程内的真实 `wayland-client`，像素、工作区与焦点断言在 `tests/layer_shell.rs`，`INOX_SCREENSHOT_DIR` 下另写 `inox-layer-*.png`（CI 作为工件收集）。`inox-panel` 是真实 layer 客户端，界面由离屏 QML 渲染进 `wl_shm` 帧；启动器、通知与壁纸是普通窗口。**仍缺**：`inox-panel` 本身没有在合成器宿主上被驱动过，跨 L3 的 E3（面板真的出现在合成的画面里、点击真的落到面板上）仍未取得——画面证据目前只有测试里的替身客户端 |
+| `wlr-layer-shell-unstable-v1` v4 | 必须 | 面板等桌面层；不用于安全锁屏 | 合成器已接入（v4）：四层合成、锚点/边距/独占区、configure/ack、空缓冲卸载与重映射、销毁与断连清理；客户端是全进程内的真实 `wayland-client`，像素、工作区与焦点断言在 `tests/layer_shell.rs`，`INOX_SCREENSHOT_DIR` 下另写 `inox-layer-*.png`（CI 作为工件收集）。`inox-panel` 在**没有原生宿主的构建**（CI 就是）里是真实 layer 客户端，界面由离屏 QML 渲染进 `wl_shm` 帧；Inox 自己的壳在能编原生宿主时改用下面的 `inox-shell-v1`（ADR 0046 §9：不保留退回 layer-shell 的路径）。**仍缺**：跨 L3 的 E3（面板真的出现在合成的画面里、点击真的落到面板上）仍未取得——画面证据目前只有测试里的替身客户端 |
+| `inox-shell-v1`（Inox 私有） | 必须（Inox 自己的壳） | 面板/菜单栏/Dock 的角色、放置、`workarea`、合成器侧 popup 关闭与过渡 | 协议在 `crates/inox-protocols/protocol/inox-shell-v1.xml`，合成器侧在 `crates/inox-compositor/src/shell.rs`（证据 `tests/shell_surface.rs`，E1+E2）；客户端是 `inox-panel` 的原生腿，证据是 `crates/inox-panel/src/headless_tests/native.rs` 对真实 `inox-compositor` 的六个用例（角色/放置/`configure`/`workarea`/能力事件/popup/面板循环/玻璃对象）。**缺**：出图证据（无 DRI 的宿主上 Qt 不附着 buffer）与 CI 覆盖（CI 的 Qt < 6.5） |
 | `viewporter`（`wp_viewporter`） | 必须 | 缩放与裁剪；`xwayland-satellite` 的宿主硬前提（缺失即启动失败） | 已支持（M3；Smithay `wayland::viewporter`） |
 | `linux-dmabuf` | 必须 | GPU 缓冲零拷贝 | 尚未实现 |
 | `presentation-time` | 必须 | 帧同步反馈：`presented`/`discarded`、时钟与刷新周期 | 已支持（`wp_presentation` v2，时钟为 `CLOCK_MONOTONIC`；feedback 与 `wl_surface.frame` 在**同一次遍历**里发出，因此两者对「这个输出画了哪些表面」不会各说一套；headless 与 DRM 的确认路径都走 `frame_presented_on`。`tests/presentation.rs` 用真实 toplevel 断言时钟、周期与 vsync 位，`tests/protocol_surface.rs` 断言可绑定） |
@@ -26,8 +27,8 @@
 | `zwp_primary_selection_device_manager_v1` | 必须 | 主选区（X11 中键粘贴兼容） | 已支持（M3；与 `wl_data_device_manager` 一并广告） |
 | `xwayland-shell` | 计划 | XWayland 集成 | 尚未实现 |
 | `text-input-v3` / `input-method-v2` / `virtual-keyboard-v1` | 提前实现 | 输入法与候选窗 | 管理器接口 v1，受信连接与锁屏隔离已接入；新增 CI 用例待运行，见[输入法](../usage/input-methods.md) |
-| `inox-shell-v1`（**私有 Inox 协议**，全局 `inox_shell_v1` v1） | 实验性（私有、unstable，非上游） | Inox 自己的壳的表面角色：`get_surface(role)` 分配角色，`set_placement` 一次原子地给出 layer/锚点/独占区/边距/尺寸，`set_keyboard` 决定键盘模式，`set_transition` 请求合成器画进/出过渡，`get_popup` 创建**可嵌套**的菜单（子菜单就是同一对象的嵌套），popup 的关闭权在合成器（`set_dismissable`/`dismiss`/`dismissed(reason)`），另有 `workarea`（工作区矩形）与 `keyboard_state` 事件 | **只有绑定**（ADR 0046 的 P0）：XML `protocol/inox-shell-v1.xml`、`src/shell.rs` 的元数据测试与 `tests/shell_roundtrip.rs` 的 socket 往返（角色只能分配一次、放置九个字段逐字到达、popup 定位/尺寸/可关闭/嵌套、`dismissed` 带原因、被拒角色以 `closed` 到达）。**合成器尚未广告该全局（P1）、面板尚未使用（P3）**，因此不得读作「子菜单已可用」。锁屏**不在**本协议内：`ext-session-lock-v1` 的安全语义不重写，锁屏只换渲染器（P4） |
-| `inox-glass-v1`（**私有 Inox 协议**，全局 `inox_glass_manager_v1` v2） | 实验性（私有、unstable，非上游） | 液态玻璃材质：v1 请求背景模糊（`set_radius`/`set_region`），v2 加边缘折射（`set_corner_radii`/`set_refraction`，含 `depth`/`dispersion` 位）与 `liquid_capabilities` 事件。像素**不**回传、区域裁剪到该表面、仅 layer 角色生效、锁定会话报 0 | 绑定与两个版本的 socket 往返（`inox-protocols`，E0+E1）、`[glass]` 折射令牌、L3 的 `inox-glass` 材质决策与 QML 组件、合成器在 **headless** 路径的模糊 + 折射 pass（E1 参数测试 + E2 离屏像素判别性证据 `tests/glass_blur.rs`：边缘外移、内部不变、圆角遮罩、色散分离；`INOX_GLASS_ARTIFACT` 可导出 PPM）均已实现；**物理（DRM）路径报 0 且场景保持锐利**（未决项）。面板绑定 v2 并按 `inox-glass` 的决策请求（见 ADR 0040，状态 `proposed`）。ADR 0046 的 P1/P3 会把资格从「layer 角色」扩为「layer 或 Inox shell 角色」，`workarea` 与 popup 亦然 |
+| `inox-shell-v1`（**私有 Inox 协议**，全局 `inox_shell_v1` v1） | 实验性（私有、unstable，非上游） | Inox 自己的壳的表面角色：`get_surface(role)` 分配角色，`set_placement` 一次原子地给出 layer/锚点/独占区/边距/尺寸，`set_keyboard` 决定键盘模式，`set_transition` 请求合成器画进/出过渡，`get_popup` 创建**可嵌套**的菜单（子菜单就是同一对象的嵌套），popup 的关闭权在合成器（`set_dismissable`/`dismiss`/`dismissed(reason)`），另有 `workarea`（工作区矩形）与 `keyboard_state` 事件 | 绑定（P0：XML `protocol/inox-shell-v1.xml`、`src/shell.rs` 的元数据测试、`tests/shell_roundtrip.rs` 的 socket 往返）+ **合成器侧实现（P1/P2）**：全局 `inox_shell_v1` v1 可绑定、放置与独占区、`workarea`/`closed`/`keyboard_state`、popup 的合成与合成器侧关闭、popup 键盘、合成器插帧的过渡，证据为 `crates/inox-compositor/tests/shell_surface.rs`（E1+E2）。**面板尚未使用（P3）**，因此不得读作「子菜单已可用」；锁屏**不在**本协议内：`ext-session-lock-v1` 的安全语义不重写，锁屏只换渲染器（P4） |
+| `inox-glass-v1`（**私有 Inox 协议**，全局 `inox_glass_manager_v1` v2） | 实验性（私有、unstable，非上游） | 液态玻璃材质：v1 请求背景模糊（`set_radius`/`set_region`），v2 加边缘折射（`set_corner_radii`/`set_refraction`，含 `depth`/`dispersion` 位）与 `liquid_capabilities` 事件。像素**不**回传、区域裁剪到该表面、仅具有桌面层角色（layer 或 Inox shell）的表面生效、锁定会话报 0 | 绑定与两个版本的 socket 往返（`inox-protocols`，E0+E1）、`[glass]` 折射令牌、L3 的 `inox-glass` 材质决策与 QML 组件、合成器在 **headless** 路径的模糊 + 折射 pass（E1 参数测试 + E2 离屏像素判别性证据 `tests/glass_blur.rs`：边缘外移、内部不变、圆角遮罩、色散分离；`INOX_GLASS_ARTIFACT` 可导出 PPM）均已实现；**物理（DRM）路径报 0 且场景保持锐利**（未决项）。面板绑定 v2 并按 `inox-glass` 的决策请求（见 ADR 0040，状态 `proposed`）。ADR 0046 的 P1 已把资格从「layer 角色」扩为「layer 或 Inox shell 角色」（含 popup），`workarea` 与 popup 亦然 |
 
 「当前状态」依据本仓库 `crates/inox-compositor/` 的实现：它在 headless 路径上向客户端广告的全局为 `wl_compositor`（v6）/ `wl_subcompositor`（Smithay `CompositorState`）、`wl_shm`、`wl_seat`、`wl_output`（每个输出一个）与 `xdg_wm_base`；M4 起新增 `wp_fractional_scale_manager_v1`（v1），M3 新增 `wp_viewporter`（Smithay `wayland::viewporter`）、`wl_data_device_manager`（v3）与 `zwp_primary_selection_device_manager_v1`（后两者来自 Smithay `wayland::selection`），随本分支合入，决策已记录（状态仍为 `proposed`）。L2 后续补齐 `zwlr_layer_shell_v1` v4：四层合成与输入命中、锚点/边距/独占区、configure/ack、空缓冲卸载与重映射、销毁和断连清理；键盘焦点覆盖 None、Exclusive、OnDemand，选择权限仍跟随实际焦点。M5 补上三条**必须**级协议：`wp_presentation`（v2）、`zxdg_decoration_manager_v1`（v1）、`zwp_idle_inhibit_manager_v1` + `ext_idle_notifier_v1`（各 v1）。`tests/protocol_surface.rs` 逐条断言这些全局都广告且可绑定，下面各节说明各自的取舍。其余标为未实现的行（`linux-dmabuf`、`wlr-output-management`、`wlr-screencopy`、`xwayland-shell`、`pointer-constraints`/`relative-pointer`）尚无对应实现。
 
@@ -100,15 +101,20 @@ popup，于是键盘导航的菜单在 layer-shell 上不可表达）；**面板
 不得等它），并且**不携带任何回读**。锁屏刻意不在其中：`ext-session-lock-v1` 的「锁定帧先于 `locked`」
 是安全语义，不该被一条 unstable 私有协议重写。
 
-**这条协议今天只有绑定**：合成器尚未广告 `inox_shell_v1`（P1 才广告），面板与锁屏尚未使用它
-（P3/P4），因此「子菜单可用」「跨表面过渡可用」都**还不能**声称。一条相邻的既有缺口也记在这里，免得
+**进度：P0、P1、P2 已落地，P3/P4 未做**。合成器广告 `inox_shell_v1` v1 并实现了角色分配、放置
+（复用 `layers.rs` 的纯函数，与 layer-shell 同一套独占区算术）、configure/ack、`workarea`、`closed`、
+popup 的合成（紧跟父表面之后，不画在更高层之上）与合成器侧关闭（外部点击、Escape、父表面消失，并
+**吞掉**那次点击）、popup 的独立键盘授予，以及由合成器插帧的入场/退场过渡（`fade`/`slide`/`scale`
+三条命名曲线，遵守 `theme.motion.reduce_motion`）。证据是 `crates/inox-compositor/tests/shell_surface.rs`
+（E1+E2）与 `src/shell.rs` 的纯单元测试。**面板与锁屏仍未使用它**（P3/P4），所以「面板真的长这样」
+「跨表面过渡可用」仍然**不能**声称——那需要真实宿主上的截图（E3）。一条相邻的既有缺口也记在这里，免得
 把它的工作量记到错的地方：标准 popup 的**渲染**是好的（Smithay 的 `AsRenderElements` 会把
 `PopupManager::popups_for_surface` 与父表面一起画，窗口的菜单因此是正常的），缺的是合成器的
 `WlrLayerShellHandler::new_popup` —— 以 layer 表面为父的 `xdg_popup` 不被追踪、也收不到 initial
 configure，所以**今天 layer 表面（面板）的菜单不可能出现**。Inox 自己的壳换用 `inox_shell_popup_v1`
 之后不再依赖这条；要支持第三方面板自己的 xdg_popup 才需要补，并要自带测试。
 
-`inox-glass-v1` 让客户端请求合成器处理自己表面背后的区域（液态玻璃材质）：`inox_glass_manager_v1.get_glass(surface)` 创建每表面一个的 `inox_glass_v1`。v1 的 `set_radius`/`set_region` 描述模糊，唯一事件 `capabilities` 报告合成器接受的最大半径。v2（当前接口版本）是加法式的：`set_corner_radii` 给出折射轮廓的四个圆角，`set_refraction(height, amount, flags)` 给出折射带厚度、轮廓峰值位移与可选位（`depth`、`dispersion`），`liquid_capabilities` 报告两个折射上限与实际支持的位；`capabilities` 仍然先发，v1 对象收不到 v2 事件、也发不出 v2 请求。像素**不**回传客户端，区域与折射轮廓裁剪到该表面，所有数值被钳制到上限，普通（非 layer 角色）表面与锁定会话都得到 0。合成器在 **headless** 路径实现了模糊与折射两个 pass（`tests/glass_blur.rs` 用无 glass 对象的对照帧做判别性像素断言：v1 边被抹开，v2 轮廓外的条纹向外推移、pane 内部与对照帧一致、圆角外不被覆盖、色散把 R/B 分开）；**物理（DRM）路径报 0 且把场景保持锐利**（它还没有诚实的 damage 描述）。决策、安全与生命周期见 ADR 0040（`proposed`）；L3 的 `inox-glass` 是唯一决定「要多少、拿不到怎么降级」的地方，面板经它绑定 v2。由于合成器只在 headless 路径真的画效果，这份实现仍不能被读作「真机上的液态玻璃已可用」。
+`inox-glass-v1` 让客户端请求合成器处理自己表面背后的区域（液态玻璃材质）：`inox_glass_manager_v1.get_glass(surface)` 创建每表面一个的 `inox_glass_v1`。v1 的 `set_radius`/`set_region` 描述模糊，唯一事件 `capabilities` 报告合成器接受的最大半径。v2（当前接口版本）是加法式的：`set_corner_radii` 给出折射轮廓的四个圆角，`set_refraction(height, amount, flags)` 给出折射带厚度、轮廓峰值位移与可选位（`depth`、`dispersion`），`liquid_capabilities` 报告两个折射上限与实际支持的位；`capabilities` 仍然先发，v1 对象收不到 v2 事件、也发不出 v2 请求。像素**不**回传客户端，区域与折射轮廓裁剪到该表面，所有数值被钳制到上限，普通（没有桌面层角色的）表面与锁定会话都得到 0。合成器在 **headless** 路径实现了模糊与折射两个 pass（`tests/glass_blur.rs` 用无 glass 对象的对照帧做判别性像素断言：v1 边被抹开，v2 轮廓外的条纹向外推移、pane 内部与对照帧一致、圆角外不被覆盖、色散把 R/B 分开）；**物理（DRM）路径报 0 且把场景保持锐利**（它还没有诚实的 damage 描述）。决策、安全与生命周期见 ADR 0040（`proposed`）；L3 的 `inox-glass` 是唯一决定「要多少、拿不到怎么降级」的地方，面板经它绑定 v2。由于合成器只在 headless 路径真的画效果，这份实现仍不能被读作「真机上的液态玻璃已可用」。
 
 - 私有协议状态为 **unstable**：破坏性变更必须版本化，并同步更新 PRD 的协议矩阵。
 - 新增或改动私有协议同样属于「引入新的协议策略」，需要 ADR（PRD §5.4）。

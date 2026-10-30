@@ -368,6 +368,17 @@ impl Scene {
             .rev()
             .find(|entry| entry.enabled && entry.contains(x, y))
     }
+
+    /// The action entry `id` means, for a click the renderer reported.
+    ///
+    /// The id is the one the projection carries under `entries`, which is the
+    /// entry's index. An id out of range is not an error a renderer can cause on
+    /// purpose — it means the projection changed under a click that was already
+    /// in flight — so it answers `None`, and the click is dropped exactly as a
+    /// click on no entry at all is.
+    pub fn action_of(&self, id: usize) -> Option<EntryAction> {
+        self.entries.get(id).map(|entry| entry.action)
+    }
 }
 
 /// Projects the surface `shell.panel.surface` asks for at `width` × `height`.
@@ -1036,6 +1047,29 @@ impl Painter {
         // the dock are glass panes whose backdrop has to show through. That is
         // the "no design colour" sentinel `theme::TRANSPARENT`, not a token a
         // theme could set.
+        //
+        // `entries` carries the clickable rectangles with the id the setter
+        // gives them. The renderer draws from `items` and reports a click as
+        // `{"type":"tap","id":…}`; which action that id means is decided here,
+        // by the same `EntryAction` the layer-surface leg resolved on its own
+        // (ADR 0046 §5). The projection is therefore one document: what is
+        // drawn, and what the pointer can land on, cannot disagree.
+        let entries = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(id, entry)| {
+                json!({
+                    "id": id,
+                    "x": entry.x,
+                    "y": entry.y,
+                    "w": entry.width,
+                    "h": entry.height,
+                    "enabled": entry.enabled,
+                })
+            })
+            .collect::<Vec<_>>();
+
         let json = json!({
             "surface": surface_name(self.surface),
             "width": width,
@@ -1043,6 +1077,7 @@ impl Painter {
             "font_family": self.font_family,
             "background": theme::TRANSPARENT,
             "items": std::mem::take(&mut self.items),
+            "entries": entries,
         });
 
         Scene {
@@ -1311,6 +1346,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The renderer reports a click as an id, and the id has to come back as the
+    /// action the projection decided. That is the whole contract between
+    /// `qml/Main.qml`'s hit test and `app::Message` (ADR 0046 §5), so it is
+    /// asserted on a scene that actually has an entry: the retry button, which
+    /// is the one entry a model with no windows still draws (D05).
+    #[test]
+    fn a_click_the_renderer_reports_names_the_entry_it_landed_on() {
+        let tokens = Tokens::builtin_dark();
+        let config = PanelConfig::default();
+
+        let mut model = model();
+        model.status = PanelStatus::Unavailable;
+        model.notice = Some("the window service is not reachable".to_owned());
+        model.retry = Some("Retry".to_owned());
+
+        let scene = panel(
+            &model,
+            &tokens,
+            &config,
+            640.0,
+            40.0,
+            &Interaction::default(),
+        );
+
+        assert!(!scene.entries.is_empty(), "the retry button is clickable");
+
+        let entries = scene.json["entries"]
+            .as_array()
+            .expect("the projection carries the clickable rectangles");
+
+        assert_eq!(entries.len(), scene.entries.len());
+
+        for (id, entry) in scene.entries.iter().enumerate() {
+            assert_eq!(entries[id]["id"].as_u64(), Some(id as u64));
+            assert_eq!(scene.action_of(id), Some(entry.action));
+        }
+
+        assert_eq!(
+            scene.action_of(scene.entries.len()),
+            None,
+            "an id the scene no longer has is a click that is dropped"
+        );
     }
 
     #[test]

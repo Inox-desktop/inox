@@ -44,6 +44,13 @@
 //!   scene draws nothing because it never reaches the layer path. A manager bound
 //!   at version 1 creates version 1 objects, which keep the blur-only behaviour
 //!   and never receive `liquid_capabilities`.
+//! - `inox_shell_v1` — the private shell protocol from `inox-protocols`: the
+//!   surfaces that *are* the desktop (a panel, a dock, a launcher) and the
+//!   popups they open. A shell surface is placed by its client and sized by this
+//!   compositor, is told the work area it has to lay itself out against, and gets
+//!   its popups dismissed by the compositor rather than by a grab it would have
+//!   to authorise. ADR 0046 is the reasoning; [`crate::shell`] is the state
+//!   machine, and this module is the protocol surface and the scene.
 //! - `wp_presentation` (2) — [`PresentationState`], frame presentation feedback.
 //!   A client that asks how long its frame took to reach the screen is answered
 //!   from the same walk that sends `wl_surface.frame`, in the monotonic clock
@@ -159,6 +166,15 @@ use inox_protocols::{
     ipc::inox_ipc::server::inox_ipc::{
         InoxIpc, LockState as IpcLockState, ReloadResult, Request as InoxIpcRequest,
     },
+    shell::inox_shell::server::{
+        inox_shell_popup_v1::{
+            Error as ShellPopupError, InoxShellPopupV1, Request as ShellPopupRequest,
+        },
+        inox_shell_surface_v1::{
+            Error as ShellSurfaceError, InoxShellSurfaceV1, Request as ShellSurfaceRequest,
+        },
+        inox_shell_v1::{Error as ShellError, InoxShellV1, Request as ShellRequest},
+    },
     standard::{
         core::server::{
             wl_buffer::WlBuffer, wl_output::WlOutput, wl_seat::WlSeat, wl_surface::WlSurface,
@@ -190,7 +206,7 @@ use smithay::{
             element::{
                 AsRenderElements, Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-                surface::render_elements_from_surface_tree,
+                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             },
             gles::{GlesError, GlesRenderer},
             utils::{on_commit_buffer_handler, with_renderer_surface_state},
@@ -203,7 +219,7 @@ use smithay::{
     },
     input::{
         Seat, SeatHandler, SeatState,
-        keyboard::{FilterResult, KeyboardHandle, Keycode, XkbConfig},
+        keyboard::{FilterResult, KeyboardHandle, Keycode, Keysym, XkbConfig, keysyms},
         pointer::{
             AxisFrame, ButtonEvent, CursorImageStatus, CursorImageSurfaceData, MotionEvent,
             PointerHandle,
@@ -220,7 +236,7 @@ use smithay::{
         buffer::BufferHandler,
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-            SurfaceData, get_parent, send_surface_state, with_states,
+            SurfaceData, get_parent, give_role, send_surface_state, with_states,
         },
         fractional_scale::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
@@ -267,8 +283,9 @@ use crate::{
     input::{Action, SwallowedPresses, action_for_key},
     layers,
     layout::LayoutConfig,
-    render::{HeadlessRenderer, RenderError, Scene, SceneElement},
+    render::{HeadlessRenderer, RenderError, Scene, SceneElement, TransitionElement},
     session_lock::{Claim, LockCoverage, claim},
+    shell::{self, ShellLayer, ShellState},
     topology::{self, OutputId, Placement},
     window_manager::{RequestError, WindowRecord},
     workspace::{OutputArrangement, WindowId, WindowMode, Workspace},
@@ -465,6 +482,9 @@ pub struct InoxState {
     layer_shell_state: WlrLayerShellState,
     layers: Vec<LayerEntry>,
     layer_focus: Option<WlSurface>,
+    /// The compositor's own shell surfaces (`inox-shell-v1`): the panel, its
+    /// menus and the popups of both.
+    shell: ShellState,
     popups: PopupManager,
     shm_state: ShmState,
 
@@ -651,6 +671,11 @@ impl InoxState {
         });
         self.cursor_buffer = crate::cursor::fallback(&config.theme);
         self.background = rgba_floats(config.theme.colors.background);
+        // The user's motion preference is part of the theme, and it is applied
+        // here so a live reload that turns animations off stops the ones already
+        // running.
+        self.shell
+            .set_reduce_motion(config.theme.motion.reduce_motion);
         self.arrange_windows();
         self.repaint = true;
         Ok(())
@@ -819,6 +844,19 @@ impl InoxState {
             "advertised inox_window_manager_v1 global"
         );
 
+        // The private shell protocol: the surfaces that *are* the desktop.
+        // Advertised like the other Inox globals — a compositor that cannot place
+        // a shell surface answers `closed` or refuses the role, which is a
+        // first-class answer; hiding the global would only make the shell guess
+        // why it cannot start. See ADR 0046.
+        let shell_version = inox_shell_version();
+        let shell_global = display_handle.create_global::<Self, InoxShellV1, ()>(shell_version, ());
+        debug!(
+            ?shell_global,
+            version = shell_version,
+            "advertised inox_shell_v1 global"
+        );
+
         let viewporter_state = ViewporterState::new::<Self>(display_handle);
         let data_device_state = DataDeviceState::new::<Self>(display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(display_handle);
@@ -841,6 +879,9 @@ impl InoxState {
         // so it is derived from the clock of this process's start; the protocol
         // documents it as advisory for exactly this reason.
         let window_generation = window_generation();
+
+        let mut shell = ShellState::default();
+        shell.set_reduce_motion(theme.motion.reduce_motion);
 
         let mut state = Self {
             compositor_state,
@@ -883,6 +924,7 @@ impl InoxState {
             layer_shell_state,
             layers: Vec::new(),
             layer_focus: None,
+            shell,
             popups: PopupManager::default(),
             awaiting_buffer: Vec::new(),
             shm_state,
@@ -1135,6 +1177,20 @@ impl InoxState {
             // frosting parameters go with the placement that gave them meaning.
             self.frost.remove(entry.surface.wl_surface());
         }
+
+        // Shell surfaces of the same output are told the same thing through
+        // `closed`, which is the only way this protocol says "I cannot show you
+        // here". Their own frost parameters go with them.
+        let shell_surfaces: Vec<WlSurface> = self
+            .shell
+            .surfaces_of(output)
+            .into_iter()
+            .map(|entry| entry.wl_surface().clone())
+            .collect();
+        for surface in shell_surfaces {
+            self.frost.remove(&surface);
+        }
+        self.shell.close_output(output, std::time::Instant::now());
     }
 
     /// The output the pointer is over, if any.
@@ -1243,6 +1299,10 @@ impl InoxState {
         self.renderer = Some(renderer);
         result?;
         self.frame_presented();
+        // A transition that is still running needs another frame, and nothing
+        // else will ask for one: an idle desktop schedules frames only when
+        // something changed, and the frame after this one is the change.
+        self.repaint |= self.shell.is_animating(std::time::Instant::now());
         Ok(())
     }
 
@@ -1329,6 +1389,11 @@ impl InoxState {
         self.popups.cleanup();
         self.ime_update_popups();
         self.prune_frost();
+        // Transition frames are timed here rather than on a timer of their own:
+        // the compositor is already drawing, and an animation that outlived the
+        // frame it belongs to would keep the loop awake with nothing to show.
+        let now = std::time::Instant::now();
+        self.shell.tick(now);
 
         let Some(entry) = self.outputs.iter().find(|entry| &entry.output == output) else {
             return Ok(Scene::default());
@@ -1403,8 +1468,20 @@ impl InoxState {
         }
 
         self.ime_render_elements(renderer, geometry, scale, &mut elements);
+        let pass = ShellPass {
+            output: id,
+            region: geometry,
+            scale,
+        };
         let mut panes = Vec::new();
         for layer in [Layer::Overlay, Layer::Top] {
+            panes.extend(self.shell_render_elements(
+                shell_layer(layer),
+                pass,
+                renderer,
+                &mut elements,
+                now,
+            ));
             panes.extend(self.layer_render_elements(
                 layer,
                 id,
@@ -1421,6 +1498,13 @@ impl InoxState {
                 .map(SceneElement::Surface),
         );
         for layer in [Layer::Bottom, Layer::Background] {
+            panes.extend(self.shell_render_elements(
+                shell_layer(layer),
+                pass,
+                renderer,
+                &mut elements,
+                now,
+            ));
             panes.extend(self.layer_render_elements(
                 layer,
                 id,
@@ -1487,6 +1571,133 @@ impl InoxState {
         panes
     }
 
+    /// Push one shell layer's render elements and report the frosted panes among
+    /// them.
+    ///
+    /// A shell surface's popups are pushed **before** the surface itself. The
+    /// element list is front to back, so "before" is "in front of": a menu hangs
+    /// over the bar that opened it, and a submenu hangs over the menu. Pushing
+    /// them at the top of the whole scene instead would put a menu above a
+    /// floating window that overlaps its parent, which is exactly the stacking
+    /// mistake ADR 0046 §3 warns about.
+    fn shell_render_elements(
+        &self,
+        layer: ShellLayer,
+        pass: ShellPass,
+        renderer: &mut GlesRenderer,
+        elements: &mut Vec<SceneElement>,
+        now: std::time::Instant,
+    ) -> Vec<PaneInput> {
+        let mut panes = Vec::new();
+        for entry in self.shell.surfaces_in(pass.output, layer) {
+            for popup in self.shell.popup_stack(entry.wl_surface(), now) {
+                let index = elements.len();
+                self.push_shell_elements(
+                    pass,
+                    popup.wl_surface(),
+                    popup.geometry,
+                    popup.sample(now),
+                    renderer,
+                    elements,
+                );
+                if elements.len() == index {
+                    continue;
+                }
+                // Glass on a popup is clipped to the popup: one surface, one
+                // pane, which is what keeps a menu from blurring the same pixels
+                // its parent already blurred.
+                let Some(frost) = self.frost.get(popup.wl_surface()).copied() else {
+                    continue;
+                };
+                if frost.is_effective() {
+                    panes.push(PaneInput {
+                        at: elements.len() - 1,
+                        geometry: popup.geometry,
+                        frost,
+                    });
+                }
+            }
+
+            let index = elements.len();
+            self.push_shell_elements(
+                pass,
+                entry.wl_surface(),
+                entry.geometry,
+                entry.sample(now),
+                renderer,
+                elements,
+            );
+            if elements.len() == index {
+                continue;
+            }
+            let Some(frost) = self.frost.get(entry.wl_surface()).copied() else {
+                continue;
+            };
+            if frost.is_effective() {
+                panes.push(PaneInput {
+                    at: elements.len() - 1,
+                    geometry: entry.geometry,
+                    frost,
+                });
+            }
+        }
+
+        panes
+    }
+
+    /// Push one shell surface's render elements at its transition sample.
+    ///
+    /// Opacity is baked into the elements at creation time (that is where
+    /// Smithay's `alpha` argument goes), while a scale needs the wrapper in
+    /// [`crate::render`] because it changes where the element lands. A surface
+    /// that is fully transparent pushes nothing at all.
+    fn push_shell_elements(
+        &self,
+        pass: ShellPass,
+        surface: &WlSurface,
+        geometry: Rectangle<i32, Logical>,
+        sample: shell::Sample,
+        renderer: &mut GlesRenderer,
+        elements: &mut Vec<SceneElement>,
+    ) {
+        if sample.alpha <= 0.0 {
+            return;
+        }
+        let location = ((geometry.loc.to_f64() + sample.offset) - pass.region.loc.to_f64())
+            .to_physical_precise_round(pass.scale);
+        if sample.is_full() {
+            elements.extend(render_elements_from_surface_tree::<
+                GlesRenderer,
+                SceneElement,
+            >(
+                renderer,
+                surface,
+                location,
+                pass.scale,
+                sample.alpha,
+                Kind::Unspecified,
+            ));
+
+            return;
+        }
+        let origin = Point::from((
+            f64::from(location.x) + f64::from(geometry.size.w) * pass.scale / 2.0,
+            f64::from(location.y) + f64::from(geometry.size.h) * pass.scale / 2.0,
+        ));
+        let inner: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            render_elements_from_surface_tree(
+                renderer,
+                surface,
+                location,
+                pass.scale,
+                sample.alpha,
+                Kind::Unspecified,
+            );
+        elements.extend(inner.into_iter().map(|element| {
+            SceneElement::Transition(TransitionElement::new(element, sample.scale, origin))
+        }));
+    }
+
     /// Drop frosting parameters whose surface is gone.
     ///
     /// `CompositorHandler::destroyed`, the glass object's `Dispatch::destroyed`
@@ -1509,11 +1720,20 @@ impl InoxState {
     /// `max_radius` from this struct and the version 2 `liquid_capabilities` event
     /// reports the rest, so the two can never disagree about the blur.
     fn glass_capabilities(&self, surface: &WlSurface) -> glass::LiquidCapabilities {
-        let layer_role = self
+        // The eligibility rule is "the compositor knows which desktop layer this
+        // surface is on" (ADR 0046 §6): a layer surface and a shell surface both
+        // answer that, and a plain window, an `xdg_popup` or a lock surface does
+        // not.
+        let desktop_layer = self
             .layers
             .iter()
-            .any(|entry| entry.surface.wl_surface() == surface);
-        glass::liquid_capabilities(layer_role, self.lock.accepted(), self.frosting_supported())
+            .any(|entry| entry.surface.wl_surface() == surface)
+            || self.shell.has_role(surface);
+        glass::liquid_capabilities(
+            desktop_layer,
+            self.lock.accepted(),
+            self.frosting_supported(),
+        )
     }
 
     /// Whether this compositor draws frosting at all.
@@ -2122,6 +2342,20 @@ impl InoxState {
                     if data.lock.accepted() {
                         return FilterResult::Forward;
                     }
+                    // Escape closes an open menu before it reaches anything else.
+                    // This is the second half of "the compositor owns
+                    // dismissal": the popup is told `dismissed(escape)`, and the
+                    // key is consumed so the window underneath does not also act
+                    // on it.
+                    if state == KeyState::Pressed
+                        && keysym.modified_sym() == Keysym::new(keysyms::KEY_Escape)
+                        && data.shell.has_dismissable_popups()
+                    {
+                        data.shell.dismiss_escape(std::time::Instant::now());
+                        data.repaint = true;
+
+                        return FilterResult::Intercept(None);
+                    }
                     let action = match state {
                         KeyState::Pressed => action_for_key(keysym.modified_sym(), modifiers),
                         KeyState::Released => None,
@@ -2177,6 +2411,22 @@ impl InoxState {
     pub fn inject_pointer_button(&mut self, button: u32, state: ButtonState) {
         self.idle.note_activity();
         if self.seat.get_pointer().is_none() {
+            return;
+        }
+        // A press outside a dismissable popup closes the menu and belongs to the
+        // menu, not to whatever is underneath it. Swallowing it here is the
+        // compositor half of `set_dismissable`: the client that owns the menu
+        // never sees the click, and neither does the window the user clicked
+        // "through".
+        if state == ButtonState::Pressed
+            && !self.lock.accepted()
+            && self
+                .shell
+                .dismiss_outside(self.pointer_location, std::time::Instant::now())
+        {
+            self.arrange_layers();
+            self.repaint = true;
+
             return;
         }
         if state == ButtonState::Pressed && !self.pointer.is_grabbed() {
@@ -2752,10 +3002,16 @@ impl InoxState {
         // to nothing else. The candidates above are discarded, not merged: a layer
         // surface asking for exclusive focus, or the workspace's own idea of the
         // focused window, must not survive a lock.
+        //
+        // A shell popup that asked for keys wins over every one of them: a panel
+        // that never takes focus (D01) still owns menus that are navigated with
+        // Tab and Escape, and that is the whole reason the popup carries its own
+        // keyboard request.
+        let shell = self.shell.keyboard_target();
         let focused = if self.lock.accepted() {
             self.lock.focus.clone().filter(|surface| surface.is_alive())
         } else {
-            exclusive.or(on_demand).or_else(|| {
+            shell.or(exclusive).or(on_demand).or_else(|| {
                 self.workspace
                     .focused()
                     .and_then(|id| self.windows.get(&id))
@@ -2793,6 +3049,9 @@ impl InoxState {
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, focused.clone(), serial);
         }
+        // Every shell surface and popup whose answer changed is told here, so a
+        // client never has to assume that asking for `exclusive` was granted.
+        self.shell.announce_keyboard(focused.as_ref());
 
         // `xdg_toplevel.activated` follows the surface the keyboard actually has,
         // not the workspace's idea of the focused window: when a layer surface takes
@@ -2880,7 +3139,27 @@ impl InoxState {
         if let Some(surface) = self.ime_surface_under(location) {
             return Some(surface);
         }
+        // Shell popups are hit first: a menu drawn over the bar that opened it is
+        // also the thing the pointer is over, and a click that landed on the menu
+        // must reach the menu rather than the bar underneath.
+        if !self.shell.is_empty()
+            && let Some(popup) = self.shell.popup_under(location)
+        {
+            // The subtree walk starts at the popup's own origin, so a subsurface
+            // of it is hit at the right place too.
+            if let Some(found) = smithay::desktop::utils::under_from_surface_tree(
+                popup.wl_surface(),
+                location,
+                popup.geometry.loc,
+                WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+            ) {
+                return Some((found.0, found.1.to_f64()));
+            }
+        }
         for layer in [Layer::Overlay, Layer::Top] {
+            if let Some(surface) = self.shell_layer_under(shell_layer(layer), location) {
+                return Some(surface);
+            }
             if let Some(surface) = self.layer_under(layer, location) {
                 return Some(surface);
             }
@@ -2893,9 +3172,27 @@ impl InoxState {
                 return Some((surface, (window_location + surface_location).to_f64()));
             }
         }
-        [Layer::Bottom, Layer::Background]
-            .iter()
-            .find_map(|layer| self.layer_under(*layer, location))
+        [Layer::Bottom, Layer::Background].iter().find_map(|layer| {
+            self.shell_layer_under(shell_layer(*layer), location)
+                .or_else(|| self.layer_under(*layer, location))
+        })
+    }
+
+    /// The mapped shell surface of `layer` under `location`.
+    fn shell_layer_under(
+        &self,
+        layer: ShellLayer,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let entry = self.shell.surface_under(layer, location)?;
+        let found = smithay::desktop::utils::under_from_surface_tree(
+            entry.wl_surface(),
+            location,
+            entry.geometry.loc,
+            WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+        )?;
+
+        Some((found.0, found.1.to_f64()))
     }
 
     /// The lock surface covering `location`, if the lock client has one there.
@@ -2963,6 +3260,15 @@ impl InoxState {
         if self.ime_surface_under(self.pointer_location).is_some() {
             return;
         }
+        // A click on a shell surface or one of its popups is what gives it
+        // `on_demand` focus; the shell remembers it and `sync_focus` hands the
+        // keyboard over on the next pass.
+        if self.shell.has_role(&surface) {
+            self.shell.note_click(&surface);
+            self.sync_focus();
+
+            return;
+        }
         if let Some(entry) = self.layers.iter().find(|entry| {
             entry.mapped
                 && entry
@@ -2983,12 +3289,20 @@ impl InoxState {
         self.sync_focus();
     }
 
-    /// Place every committed layer surface and recompute each output's work area.
+    /// Place every committed layer surface and shell surface, and recompute each
+    /// output's work area.
     ///
     /// Each output has its own area and its own reservation chain, so a panel on
-    /// one display never shrinks the work area of another. The pure
-    /// placement and reservation rules in [`crate::layers`] are unchanged; only
-    /// the area they are applied to differs per output.
+    /// one display never shrinks the work area of another. The pure placement and
+    /// reservation rules in [`crate::layers`] are unchanged and shared by both
+    /// surface families; only the area they are applied to differs per output.
+    ///
+    /// The two families are walked in one order — reserving surfaces before
+    /// neutral ones, layers back to front within each pass — because a shell
+    /// surface and a layer surface that both reserve space on the same edge must
+    /// not land in an order that depends on which protocol they used. The layer
+    /// list is walked by index so that `self.layers` and `self.shell` can be
+    /// borrowed separately.
     fn arrange_layers(&mut self) {
         self.repaint = true;
 
@@ -3005,9 +3319,12 @@ impl InoxState {
             // Reservations precede neutral surfaces regardless of creation order.
             for exclusive in [true, false] {
                 for layer in LAYER_ORDER {
-                    for entry in self.layers.iter_mut().rev().filter(|entry| {
-                        entry.output == *id && entry.committed && entry.surface.layer() == layer
-                    }) {
+                    for index in (0..self.layers.len()).rev() {
+                        let entry = &mut self.layers[index];
+                        if entry.output != *id || !entry.committed || entry.surface.layer() != layer
+                        {
+                            continue;
+                        }
                         let cached = entry.surface.cached_state();
                         let reserves = matches!(
                             cached.exclusive_zone,
@@ -3042,10 +3359,24 @@ impl InoxState {
                             layers::reserve(&mut area, cached);
                         }
                     }
+                    // The shell surfaces of this output and layer take part in
+                    // the same pass, after the layer surfaces of that layer.
+                    self.shell.arrange_pass(
+                        *id,
+                        shell_layer(layer),
+                        exclusive,
+                        &mut area,
+                        *output_area,
+                    );
                 }
             }
             work_areas.push((*id, area));
         }
+
+        // Popups are placed last: their geometry is derived from a parent that
+        // has only just been placed, and they reserve nothing themselves.
+        self.shell.arrange_popups(&work_areas);
+        self.shell.announce_work_area(&work_areas);
 
         let mut changed = false;
         for entry in &mut self.outputs {
@@ -3060,6 +3391,30 @@ impl InoxState {
             self.arrange_windows();
         }
         self.sync_focus();
+    }
+
+    /// Apply a shell surface's or popup's committed state.
+    ///
+    /// The arrange runs unconditionally, exactly like the layer-shell path: a
+    /// commit is where a client says "this is my state now", and a popup that
+    /// asked for a position and a size in that commit has to be answered with a
+    /// `configure` even though it is not mapped yet — that configure is the only
+    /// way it can learn the size it will be drawn at.
+    fn commit_shell(&mut self, surface: &WlSurface) {
+        if !self.shell.has_role(surface) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let has_buffer =
+            with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+        let _ = self.shell.commit(surface, has_buffer, now);
+        // A finished exit transition stops being drawn here, so the scene is
+        // never one frame behind.
+        self.shell.tick(now);
+        // A popup cannot outlive the surface it hangs off; this is the only place
+        // the compositor can notice that the parent unmapped.
+        self.shell.dismiss_orphans(now);
+        self.arrange_layers();
     }
 
     fn commit_layer(&mut self, surface: &WlSurface) {
@@ -3156,6 +3511,32 @@ fn output_of(outputs: &[OutputEntry], id: OutputId) -> Option<&Output> {
         .iter()
         .find(|entry| entry.id == id)
         .map(|entry| &entry.output)
+}
+
+/// One output's view of the shell scene: where it is and how large a logical
+/// pixel is.
+#[derive(Debug, Clone, Copy)]
+struct ShellPass {
+    /// The output being composited.
+    output: OutputId,
+    /// Its area in the global logical coordinate space.
+    region: Rectangle<i32, Logical>,
+    /// Its fractional scale.
+    scale: f64,
+}
+
+/// The shell layer that corresponds to a `wlr-layer-shell` layer.
+///
+/// The two protocols share the four desktop layers so that a shell surface and a
+/// third-party layer surface of the same layer stack consistently, instead of
+/// living in two unrelated stacks that happen to be drawn next to each other.
+fn shell_layer(layer: Layer) -> ShellLayer {
+    match layer {
+        Layer::Background => ShellLayer::Background,
+        Layer::Bottom => ShellLayer::Bottom,
+        Layer::Top => ShellLayer::Top,
+        Layer::Overlay => ShellLayer::Overlay,
+    }
 }
 
 /// The toplevel surface backing `window`, if it is a Wayland window.
@@ -3397,6 +3778,7 @@ impl CompositorHandler for InoxState {
             warn!(%error, "failed to configure popup");
         }
         self.commit_layer(surface);
+        self.commit_shell(surface);
         self.update_surface_scale(surface);
 
         if let Some(id) = self.window_id_for_surface(surface)
@@ -3415,6 +3797,12 @@ impl CompositorHandler for InoxState {
         // parameters on to whatever object reuses its id.
         self.frost.remove(surface);
         self.remove_layer(surface);
+        // A shell surface or popup is identified by its `wl_surface`, so this is
+        // also where a client that died mid-menu is forgotten: the objects are
+        // gone, and no `closed`/`dismissed` event can be delivered to them.
+        self.shell
+            .remove_surface(surface, std::time::Instant::now());
+        self.shell.remove_popup(surface, std::time::Instant::now());
     }
 }
 
@@ -3844,10 +4232,25 @@ fn inox_window_manager_version() -> u32 {
     <InoxWindowManagerV1 as Resource>::interface().version
 }
 
-/// The `inox_ipc` protocol version the compositor advertises and answers with.
+/// The `inox-shell-v1` protocol version the compositor advertises.
 ///
-/// Read from the interface generated in `inox-protocols` so the reported version
-/// can never drift from the protocol definition.
+/// Read from the generated interface so the advertised version can never drift
+/// from the XML, exactly like [`inox_ipc_version`].
+fn inox_shell_version() -> u32 {
+    <InoxShellV1 as Resource>::interface().version
+}
+
+/// A fresh serial for a configure or any other event that needs one.
+///
+/// The same counter the seat and the layer shell use, so two configures that a
+/// client compares can never be mistaken for each other. A shell surface's
+/// configure is acknowledged by the next `wl_surface.commit`, and a serial that
+/// repeated would make "did the client answer *this* configure" unanswerable.
+pub(crate) fn next_serial() -> u32 {
+    u32::from(SERIAL_COUNTER.next_serial())
+}
+
+/// The `inox_ipc` protocol version the compositor advertises and answers with.
 fn inox_ipc_version() -> u32 {
     <InoxIpc as Resource>::interface().version
 }
@@ -4316,6 +4719,348 @@ fn fallback_client_state() -> &'static CompositorClientState {
         warn!("client without the Inox client state, using a shared default");
         CompositorClientState::default()
     })
+}
+
+/// The `inox-shell-v1` factory: the only request hands a `wl_surface` a role.
+///
+/// Every capability bit this build sets is backed by code: transitions by
+/// [`crate::render`], popup keyboards by [`InoxState::sync_focus`], the work area
+/// by [`InoxState::arrange_layers`] and nested popups by [`InoxShellPopupV1`]'s
+/// own `get_popup`. Advertising a bit without the code behind it would make the
+/// shell request an effect nobody draws.
+impl Dispatch<InoxShellV1, ()> for InoxState {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        _resource: &InoxShellV1,
+        request: ShellRequest,
+        _data: &(),
+        _display_handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let ShellRequest::GetSurface { id, surface, role } = request {
+            let role: u32 = role.into();
+            let shell_surface = data_init.init(id, surface.clone());
+            if !shell::role_is_known(role) {
+                shell_surface.post_error(ShellError::InvalidRole, "unknown shell role");
+            } else if let Err(error) = give_role(&surface, "inox_shell_surface_v1") {
+                // `give_role` is where "this `wl_surface` already has a role" is
+                // caught: a surface that is already a layer surface, a window or
+                // a popup cannot also be a shell surface, and two roles on one
+                // surface is how a compositor ends up drawing one client's buffer
+                // in two places.
+                warn!(
+                    ?error,
+                    "refused a shell role on a surface that already has one"
+                );
+                shell_surface.post_error(ShellError::Role, "the wl_surface already has a role");
+            } else if let Some(output) = state.outputs.first().map(|entry| entry.id) {
+                state.shell.insert_surface(shell::ShellSurface::new(
+                    output,
+                    &surface,
+                    shell_surface,
+                ));
+                state.update_surface_scale(&surface);
+                state.repaint = true;
+            } else {
+                // No output, nowhere to place it. `closed` is the protocol's
+                // answer for "I will not show this"; a shell that retries in a
+                // loop after it has a bug of its own.
+                shell_surface.closed();
+            }
+        }
+    }
+}
+
+impl GlobalDispatch<InoxShellV1, ()> for InoxState {
+    fn bind(
+        _state: &mut Self,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: New<InoxShellV1>,
+        _global_data: &(),
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let factory = data_init.init(resource, ());
+        // The capability event is the first thing the object says: a shell that
+        // asked for a slide before being told the compositor only fades would be
+        // entitled to complain.
+        factory.capabilities(shell::capabilities(), shell::MAX_TRANSITION_MS);
+    }
+}
+
+/// Read a `uint` size from the wire as the signed logical size Smithay uses.
+///
+/// A value past `i32::MAX` is not a size any output has; saturating it keeps the
+/// later arithmetic from wrapping, and the configure the compositor sends back is
+/// what the client actually lays out for.
+fn logical_size(width: u32, height: u32) -> Size<i32, Logical> {
+    Size::from((
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
+    ))
+}
+
+/// The placed shell surface: placement, keyboard model and motion.
+impl Dispatch<InoxShellSurfaceV1, WlSurface> for InoxState {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &InoxShellSurfaceV1,
+        request: ShellSurfaceRequest,
+        surface: &WlSurface,
+        _display_handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        match request {
+            ShellSurfaceRequest::SetPlacement {
+                layer,
+                anchor,
+                exclusive_zone,
+                margin_top,
+                margin_right,
+                margin_bottom,
+                margin_left,
+                width,
+                height,
+            } => {
+                let anchor: u32 = anchor.into();
+                if !shell::anchor_is_known(anchor) {
+                    resource.post_error(
+                        ShellSurfaceError::InvalidAnchor,
+                        "the anchor mask contains an unknown bit",
+                    );
+
+                    return;
+                }
+                let Some(layer) = ShellLayer::from_wire(layer.into()) else {
+                    // The interface has no error for an unknown layer, and drawing
+                    // it in a layer of our choosing would be worse than not
+                    // applying the request: the surface keeps the placement it
+                    // had, and its configure still tells it the size it really
+                    // got.
+                    warn!("ignored a placement naming an unknown shell layer");
+
+                    return;
+                };
+                state.shell.stage_placement(
+                    surface,
+                    shell::Placement {
+                        layer,
+                        anchor,
+                        exclusive_zone,
+                        margins: [margin_top, margin_right, margin_bottom, margin_left],
+                        size: logical_size(width, height),
+                    },
+                );
+            }
+            ShellSurfaceRequest::SetKeyboard { mode } => {
+                let mode: u32 = mode.into();
+                if mode > 2 {
+                    resource.post_error(
+                        ShellSurfaceError::InvalidKeyboardMode,
+                        "unknown keyboard mode",
+                    );
+
+                    return;
+                }
+                state.shell.stage_keyboard(surface, mode);
+            }
+            ShellSurfaceRequest::SetTransition {
+                enter,
+                exit,
+                duration,
+                curve,
+                origin,
+            } => {
+                let origin: u32 = origin.into();
+                if !shell::anchor_is_known(origin) {
+                    resource.post_error(
+                        ShellSurfaceError::InvalidAnchor,
+                        "the transition origin contains an unknown bit",
+                    );
+
+                    return;
+                }
+                state.shell.stage_transition(
+                    surface,
+                    shell::Transition {
+                        enter: enter.into(),
+                        exit: exit.into(),
+                        duration_ms: duration,
+                        curve: curve.into(),
+                        origin,
+                    },
+                );
+            }
+            ShellSurfaceRequest::GetPopup {
+                id,
+                surface: nested,
+            } => {
+                // The popup object exists before anything is decided about it,
+                // because its own dispatch is what answers `set_position` and
+                // `set_size` — an object created without data would be one the
+                // compositor cannot address.
+                let popup = data_init.init(id, (nested.clone(), surface.clone()));
+                if let Err(error) = give_role(&nested, "inox_shell_popup_v1") {
+                    warn!(
+                        ?error,
+                        "refused a popup role on a surface that already has one"
+                    );
+                    popup.post_error(
+                        ShellPopupError::ParentGone,
+                        "the wl_surface already has a role",
+                    );
+
+                    return;
+                }
+                let Some(output) = state.shell.output_of(surface) else {
+                    popup.post_error(ShellPopupError::ParentGone, "the parent surface is gone");
+
+                    return;
+                };
+                state
+                    .shell
+                    .insert_popup(shell::ShellPopup::new(output, &nested, popup, surface));
+                state.update_surface_scale(&nested);
+                state.repaint = true;
+            }
+            // `destroy` is a destructor: the object goes away by itself, and the
+            // `wl_surface` it described is unmapped by the next commit that
+            // carries no buffer.
+            ShellSurfaceRequest::Destroy => {}
+            _ => {}
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        _resource: &InoxShellSurfaceV1,
+        surface: &WlSurface,
+    ) {
+        state
+            .shell
+            .remove_surface(surface, std::time::Instant::now());
+        state.repaint = true;
+    }
+}
+
+/// One popup of a shell surface: position, size, dismissal and nesting.
+impl Dispatch<InoxShellPopupV1, (WlSurface, WlSurface)> for InoxState {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &InoxShellPopupV1,
+        request: ShellPopupRequest,
+        data: &(WlSurface, WlSurface),
+        _display_handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let (surface, parent) = data;
+        match request {
+            ShellPopupRequest::SetPosition {
+                parent_anchor,
+                popup_anchor,
+                x,
+                y,
+            } => {
+                let parent_anchor: u32 = parent_anchor.into();
+                let popup_anchor: u32 = popup_anchor.into();
+                if !shell::anchor_is_known(parent_anchor) || !shell::anchor_is_known(popup_anchor) {
+                    resource.post_error(
+                        ShellPopupError::InvalidAnchor,
+                        "the anchor mask contains an unknown bit",
+                    );
+
+                    return;
+                }
+                state.shell.stage_popup_position(
+                    surface,
+                    shell::PopupPosition {
+                        parent_anchor,
+                        popup_anchor,
+                        offset: Point::from((x, y)),
+                    },
+                );
+            }
+            ShellPopupRequest::SetSize { width, height } => state
+                .shell
+                .stage_popup_size(surface, logical_size(width, height)),
+            ShellPopupRequest::SetKeyboard { needed } => {
+                state.shell.set_popup_keyboard(surface, needed != 0);
+                // The grant is a focus decision, and there is one place focus
+                // changes.
+                state.sync_focus();
+            }
+            ShellPopupRequest::SetDismissable { dismissable } => {
+                state.shell.set_popup_dismissable(surface, dismissable != 0)
+            }
+            ShellPopupRequest::Dismiss => {
+                state
+                    .shell
+                    .dismiss_requested(surface, std::time::Instant::now());
+                state.repaint = true;
+            }
+            ShellPopupRequest::SetTransition {
+                enter,
+                exit,
+                duration,
+                curve,
+            } => state.shell.stage_popup_transition(
+                surface,
+                shell::Transition {
+                    enter: enter.into(),
+                    exit: exit.into(),
+                    duration_ms: duration,
+                    curve: curve.into(),
+                    // A popup's default origin is the anchor it was positioned
+                    // with, so the client does not have to repeat it here.
+                    origin: 0,
+                },
+            ),
+            ShellPopupRequest::GetPopup {
+                id,
+                surface: nested,
+            } => {
+                let popup = data_init.init(id, (nested.clone(), surface.clone()));
+                if let Err(error) = give_role(&nested, "inox_shell_popup_v1") {
+                    warn!(
+                        ?error,
+                        "refused a popup role on a surface that already has one"
+                    );
+                    popup.post_error(
+                        ShellPopupError::ParentGone,
+                        "the wl_surface already has a role",
+                    );
+
+                    return;
+                }
+                let Some(output) = state.shell.output_of(parent) else {
+                    popup.post_error(ShellPopupError::ParentGone, "the parent surface is gone");
+
+                    return;
+                };
+                state
+                    .shell
+                    .insert_popup(shell::ShellPopup::new(output, &nested, popup, surface));
+                state.update_surface_scale(&nested);
+                state.repaint = true;
+            }
+            ShellPopupRequest::Destroy => {}
+            _ => {}
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        _resource: &InoxShellPopupV1,
+        data: &(WlSurface, WlSurface),
+    ) {
+        state.shell.remove_popup(&data.0, std::time::Instant::now());
+        state.repaint = true;
+    }
 }
 
 smithay::delegate_compositor!(InoxState);

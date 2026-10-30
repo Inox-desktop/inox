@@ -275,6 +275,16 @@ pub struct Motion {
     pub normal_ms: u32,
     /// Duration of an entering or leaving surface.
     pub slow_ms: u32,
+    /// Whether the user asked for as little motion as possible.
+    ///
+    /// This is an accessibility preference, not a duration: when it is set the
+    /// compositor draws every transition — entering, leaving, and the shell's
+    /// menus — as an instantaneous state change, and the durations above stay in
+    /// the theme so a shell that draws its own motion has one place to read them.
+    /// It is spelled `reduce_motion` rather than the platform's
+    /// "prefers-reduced-motion" because it is the same answer, stored where the
+    /// durations already live.
+    pub reduce_motion: bool,
 }
 
 impl Default for Motion {
@@ -283,6 +293,7 @@ impl Default for Motion {
             fast_ms: 100,
             normal_ms: 200,
             slow_ms: 400,
+            reduce_motion: false,
         }
     }
 }
@@ -693,6 +704,7 @@ mod tests {
                     fast_ms: 100,
                     normal_ms: 200,
                     slow_ms: 400,
+                    reduce_motion: false,
                 }
             );
         }
@@ -1040,6 +1052,7 @@ mod tests {
                 fast_ms: 100,
                 normal_ms: 200,
                 slow_ms: 400,
+                reduce_motion: false,
             }
         );
 

@@ -223,6 +223,63 @@ Ubuntu noble 上，那里的 Qt 是 **6.4.2**，低于上面的闸门；私有�
 **P3/P4 之前不得宣称的能力**（写在这里，防止后续 PR 顺手把它们说成已解决）：无缝跨表面 morph、
 AT-SPI 语义树、IME 文本输入（锁屏永不）、真机截图证据（wayland driver 作业仍未接线）。
 
+### 落地状态（2026-10-30）
+
+**P0、P1、P2 已落地。** 协议绑定与元数据测试在 `inox-protocols`；合成器侧的角色分配、放置、
+`configure`/`workarea`/`closed`、shell popup 的合成与关闭权（外部点击、Escape、父表面消失）、popup
+键盘授予、以及合成器插帧的入场/退场过渡都在 `inox-compositor`，由 `tests/shell_surface.rs` 与
+`src/shell.rs` 的单元测试钉住。
+
+**P3 已落地：面板整条路径都跑在原生表面上。** `inox-panel` 新增了 `src/native/`——一个只含私有
+ABI 的翻译单元（`qt_shell_surface.cpp`，三道闸门齐全）、一个 QML 宿主（`host.cpp`）与
+`src/native_surface.rs` 的 Rust 桥。**两条宿主由构建期探针二选一，不是运行时开关**：`build.rs` 读
+`qmake -query QT_VERSION` 与四个模块的私有头目录，都在才打开 `cfg(native_surface)`，否则只编离屏宿主
+并打一条 `cargo:warning` 说明缺什么。不为它设 cargo feature，因为本工作区用 `--all-features` 验收——
+那样会在每一台 CI 上打开一个「需要更新 Qt」的开关。
+
+宿主只是一半，另一半是**`main`**：`cfg(native_surface)` 时走 `src/native_run.rs`，否则走
+`src/layer.rs`。`native_run` 是这一轮的实质内容：
+
+- **循环归属（§8）**：`calloop` 仍拥有进程（信号、reload 的 ping、窗口服务的第二条连接），Qt 的连接
+  由 `pump()` 驱动；`event_loop.dispatch(Some(16ms))` 是唯一的等待，16 ms 就是帧间隔——原生表面本来就
+  画在 `wl_surface.frame` 时钟上，所以这是同一节奏，不是轮询补丁。
+- **输入（§5、§7）**：QML 的 `TapHandler`/`HoverHandler` 把坐标映射成投影里的条目 id，
+  `dispatch('{"type":"tap","id":7,"button":272}')`；Rust 侧 `parse_action` 把它变回 `Button`，再用
+  `Scene::entries` 翻成 `EntryAction`、`message_of` 翻成既有 `Message`。「坐标归 Qt，语义归 Rust」。
+- **玻璃（§8）**：`inox-glass-v1` 的 C 绑定也由 `wayland-scanner` 生成，对象在 Qt 的连接上创建
+  （协议代理只能属于创建了那个 `wl_surface` 的连接）。决策仍在 Rust（`frost::decide` + `inox-glass`
+  的 clamp/v1-v2 协商），发送由 C++ 完成，能力事件回传给 Rust 再决策一轮。
+- **`workarea`、过渡、键盘模式**：`workarea` 落成一条事件（层 shell 没有的那条）；过渡按
+  `theme.motion` 与 `capabilities` 决定——减少动态或合成器不支持时发 0，即瞬时；键盘模式仍取
+  `placement.rs` 的 `None`（D01）。
+
+证据是 `src/headless_tests/native.rs`，六个用例，`INOX_SHELL_E2E=1` 才跑，全部对着真实
+`inox-compositor --headless`：裸表面拿角色/被放置/收 `configure`、`workarea` 与四项能力；popup 被配置
+180×240；**面板循环**在任务栏上把自己放成 1280×32、发出投影、收到工作区、读到 250 ms 的过渡上限；
+菜单栏这个 pane 建出玻璃对象并收到合成器的能力回答。`crates/inox-panel/src/native/shell_surface.h`
+与 Rust 桥之间只有整数与 JSON 通过，私有类型没有出现在任何头文件或边界上（§10）。
+
+**P3 仍未完成的一件事，原因写清楚：**
+
+- **原生路径没有出图的证据。** 在本机（无 GPU、Mesa llvmpipe）上，Qt 的 wayland 客户端能连上合成器、
+  能拿角色、能被 configure，但 `QWindow::isExposed()` 始终为假、`QQuickWindow::frameSwapped` 一次都
+  没有触发，也就是**没有附着任何 buffer**，所以合成器侧看不到「已映射」的表面、`dismissed(*_hidden)`
+  也不会发生（它只对可见的 popup 生效）。这不是协议层的失败，是渲染层的空白，只能在有 DRI 的宿主上
+  确认。谁接这一条：先让一个最小的 QQuickWindow 在 `inox-compositor` 上出帧，再谈像素断言与 E3 截图。
+
+**P4 与 P5 未做。** 锁屏仍走 `session.rs` 的 `ext_session_lock_v1` + 离屏帧管线；`src/layer.rs` 与
+`src/offscreen.cpp` 仍在，因为 **CI 建的就是它们**。这带来两条纪律上的后果，都写在这里免得后来者误会：
+
+1. `headless_tests::protocol`（假 `wlr-layer-shell` 合成器驱动二进制的那 40 多个用例）只在
+   `cfg(not(native_surface))` 下编译——在原生构建里 `main` 建的是 shell 表面，拿 layer-shell 的替身去
+   驱动它，断言的就是「面板不是它自己」。原生构建的线上证据由 `native` 那六个真实合成器用例承担。
+2. **`layer::run`/`Client` 在原生构建里不可达**，因此 crate 的 `dead_code` 允许条件从 `not(test)` 放宽到
+   `any(not(test), native_surface)`。P5 删掉那半之后这一条也随之消失。
+
+**CI 基线仍是阻塞项。** 私有 ABI 要 Qt ≥ 6.5 与 qtbase/QtWayland 两套私有头，CI 镜像两样都不够，
+所以 CI 目前编译的是离屏宿主、原生路径**在 CI 里没有任何覆盖**。抬基线（换镜像或按固定版本装 Qt +
+改 `license-audit` 的 `ldd` 白名单 + 一个跑 `INOX_SHELL_E2E` 的作业）仍是**独立评审**，不在本轮。
+
 ## 后果
 
 **正面**

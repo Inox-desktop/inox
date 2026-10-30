@@ -153,6 +153,11 @@ cxx-qt-build = "0.10.0"
 # needs `QResourceFile` (not re-exported by cxx-qt-build) to give QML resources
 # an explicit alias. Same 0.10.0 `cxx-qt-build` already resolves.
 qt-build-utils = "0.10.0"
+# `cxx-qt-build` compiles C++ through this, but a crate that also has to build C
+# it generated itself (the panel's `inox-shell-v1` client bindings) needs the
+# same compiler with its own flags. One `cc` version, so the two builds cannot
+# disagree about the toolchain.
+cc = "1.2"
 
 # The notification daemon is the process behind `org.freedesktop.Notifications`,
 # so it needs a real D-Bus client and server (M5, acceptance D06). zbus is the

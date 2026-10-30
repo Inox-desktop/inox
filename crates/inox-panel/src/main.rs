@@ -8,10 +8,20 @@
 //! - a **system tray** of StatusNotifierItems ([`tray`]);
 //! - a **clock** ([`clock`]).
 //!
-//! It has no window of its own. The real surface is the `zwlr_layer_shell_v1`
-//! one this crate creates ([`layer`]), and the QML tree is rendered *offscreen*
-//! into that surface's `wl_shm` frames: there is no Qt window, no
-//! `xdg_toplevel`, and no Qt Wayland client anywhere in the process.
+//! It has no window of its own in the sense that matters: nothing here is an
+//! `xdg_toplevel`, and the desktop never guesses where the panel belongs. Two
+//! hosts can draw it, and which one a build contains is decided at compile time
+//! (ADR 0046 §10):
+//!
+//! - the **native host** (`native_surface`, `native_run`, `cfg(native_surface)`)
+//!   gives a real Qt Quick window an `inox_shell_surface_v1` role on Qt's own
+//!   Wayland connection, so the compositor sizes it, animates it and draws it —
+//!   the destination ADR 0046 describes, and what [`run`] calls where the build
+//!   host's Qt can carry the private ABI that role needs;
+//! - the **offscreen host** ([`offscreen`]) renders the QML tree into RGBA frames
+//!   and copies them into the `wl_shm` buffer of the `zwlr_layer_shell_v1`
+//!   surface [`layer`] creates — the migration path, and what a build host
+//!   without Qt's private headers gets (CI is one).
 //!
 //! Those three things are presented on one of three surfaces, chosen by
 //! `[panel] surface`:
@@ -35,21 +45,25 @@
 //!
 //! # The surface, the renderer and the division of labour
 //!
-//! [`layer`] is a real `wlr-layer-shell` surface that this process creates
-//! itself, and it stays that way: anchors, layer, exclusive zone,
-//! keyboard interactivity, the frosted-glass request, pointer input and the
-//! `calloop` loop are all the protocol's and all this crate's.
+//! Which leg runs is [`run`]'s compile-time choice, and the two legs differ in
+//! exactly one place: who owns the `wl_surface`.
 //!
-//! The *drawing* is QML. [`view`] projects the state into a Qt-free JSON scene,
-//! and [`offscreen`] renders that scene through Qt Quick's software scene graph
-//! in an `offscreen` platform window, then hands the pixels back to [`layer`],
-//! which copies them into the existing `wl_shm` frame. There is no Qt Wayland
-//! client and no LayerShellQt in this process: the QML window never becomes an
-//! `xdg_toplevel`, and the panel's placement is still the protocol's answer.
+//! - **Native** ([`native_run`], `cfg(native_surface)`): Qt's wayland platform
+//!   plugin creates the surface, `native_surface` gives it an
+//!   `inox_shell_surface_v1` role, and the compositor composites Qt's own frames.
+//!   QML receives the pointer and reports *which entry* it landed on
+//!   ([`native_run::parse_action`]); Rust still decides what that entry means.
+//! - **Offscreen** ([`layer`], the CI build): [`layer`] creates a real
+//!   `wlr-layer-shell` surface itself — anchors, layer, exclusive zone, keyboard
+//!   interactivity, the glass request, pointer input and the `calloop` loop are
+//!   all the protocol's and all this crate's — and [`offscreen`] renders the QML
+//!   tree into `wl_shm` frames. QML receives no input at all there: the pointer
+//!   is matched against the scene's own entries ([`layer::Input`]).
 //!
-//! QML is a **renderer only**. Input, focus, placement and state live in Rust:
-//! the pointer is matched against the scene's own entries ([`layer::Input`]) and
-//! produces the same [`app::Message`] the keyboard navigation does.
+//! The *drawing* is QML on both. [`view`] projects the state into a Qt-free JSON
+//! scene, so neither leg has a second implementation of the layout, and the
+//! meanings a click can have are one table ([`layer::message_of`]) whichever leg
+//! produced the click.
 //!
 //! # How the crate is organised
 //!
@@ -67,8 +81,12 @@
 //! | [`view`] | the Qt-free JSON scene the QML renderer draws |
 //! | [`theme`] | design tokens turned into the scene's colours and sizes |
 //! | [`frost`] | the frosted-glass decisions — pure, fully tested |
-//! | [`layer`] | the protocol leg: a real `wlr-layer-shell` surface |
+//! | [`layer`] | the offscreen leg: a real `wlr-layer-shell` surface, `wl_shm` frames, `wl_pointer` |
 //! | [`offscreen`] | the offscreen QML host, behind a cxx-qt bridge |
+//! | `native_surface` | the native leg's Rust side: role, placement, events, glass (`cfg(native_surface)`) |
+//! | `native_run` | the native leg's loop and state machine (`cfg(native_surface)`) |
+//! | `native_bridge` | the `cxx` bridge to `src/native/host.h` (`cfg(native_surface)`) |
+//! | [`window_service`] | the `inox-window-manager-v1` leg |
 //! | [`reload`] | `SIGHUP` and `org.inox.Panel` reload requests |
 //! | [`i18n`] | the `en-US` and `zh-CN` catalogs this component ships |
 //!
@@ -94,40 +112,56 @@
 //! sentences from Fluent), and one test renders a real frame through the
 //! offscreen host and asserts that pixels came back.
 //!
-//! `src/headless_tests/protocol.rs` goes one step further: it plays the
-//! compositor side of `wlr-layer-shell`, `wl_shm`, `wl_seat` and `inox-glass-v1`
-//! on a real socket pair and drives this binary, so the placement, the
-//! shared-memory frame and the glass request are asserted **on the wire** rather
-//! than in a comment.
+//! `src/headless_tests/protocol.rs` goes one step further on the offscreen leg: it
+//! plays the compositor side of `wlr-layer-shell`, `wl_shm`, `wl_seat` and
+//! `inox-glass-v1` on a real socket pair and drives this binary, so the placement,
+//! the shared-memory frame and the glass request are asserted **on the wire**
+//! rather than in a comment. It is compiled only where `main` runs that leg — on
+//! a native build, `main` creates a shell surface and a layer-shell peer would be
+//! asserting that the panel is something it is not.
+//!
+//! `src/headless_tests/native.rs` is the native leg's equivalent, and goes one
+//! step further still: it starts a real `inox-compositor --headless` and drives
+//! (a) a bare surface and (b) [`native_run`]'s panel through it, asserting the
+//! role, the placement the compositor adopted, `configure`, `workarea`, the
+//! capability events, a configured popup, and a glass object created on Qt's
+//! connection being answered. It needs `INOX_SHELL_E2E=1` and the compositor
+//! binary, so it reports that it did nothing without them.
 //!
 //! Not delivered, and not claimed:
 //!
 //! - **The transports.** The window service (inox-ipc or Wayland) and the
 //!   StatusNotifierItem protocol (D-Bus) are not implemented: [`app`] queues what
 //!   it wants in [`app::OutgoingCommand`] and [`app::Message`] is the interface a
-//!   transport will feed. [`layer`] drops those commands with one log line
+//!   transport will feed. Both legs drop those commands with one log line
 //!   explaining that nothing can carry them yet, and [`app`] opens no bus.
-//! - **One surface per process, on one output.** [`layer`] asks the compositor to
-//!   place the surface on the output it considers active (the `wlr-layer-shell`
-//!   null-output request); it does not enumerate `wl_output`s and create one
-//!   surface per output.
-//! - **Tooltips.** The projection still carries the hover text (it is what a
-//!   disabled entry says, D05), but an offscreen renderer never receives a
-//!   pointer, so nothing draws it; tooltips need a popup surface, which is
-//!   separate work.
-//! - **AT-SPI.** An `offscreen` Qt platform has no accessibility bridge, so the
-//!   semantic tree Q01 asks for is still missing.
-//! - **E3 GUI evidence** on real hardware, which CI cannot provide.
+//! - **One surface per process, on one output.** Neither leg enumerates
+//!   `wl_output`s: a session that wants a menu bar and a dock runs two processes.
+//! - **Menus and tooltips.** A shell popup exists at the protocol level
+//!   (`native_surface::Surface::open_popup`, and the compositor's
+//!   `tests/shell_surface.rs` covers its placement and dismissal), but the panel
+//!   has no menu to open yet: the projection still carries the hover text a
+//!   disabled entry says (D05), and nothing draws it.
+//! - **AT-SPI on the native leg.** A real Qt window is a window Qt's accessibility
+//!   bridge can see, which is what ADR 0046 §1 bought; the semantic tree Q01 asks
+//!   for is still not asserted anywhere, so it is not claimed.
+//! - **E3 GUI evidence** on real hardware, which CI cannot provide — and, on the
+//!   native leg, even a local frame: see the ADR's "P3 未完成项".
 
 // The domain modules expose rules this binary does not exercise yet: the window
 // service and StatusNotifierItem transports are not implemented, so `app`'s
 // accessors, the `Message` variants a transport will feed and the parts of the
 // projection only a test drives are all unreachable from `main`. Their tests are
 // the specification until then, so the API is kept and this allowance keeps
-// `cargo check` from calling the specification dead. It applies to the shipped
-// build only: under `cfg(test)` the whole surface is used, and anything that is
-// not is still reported.
-#![cfg_attr(not(test), allow(dead_code))]
+// `cargo check` from calling the specification dead.
+//
+// The same allowance covers the leg this build does **not** run. Where `main`
+// runs the native surface, [`layer`]'s protocol half (its `Client`, its frames,
+// its `run`) is unreachable from any test in this configuration: the tests that
+// drive it (`headless_tests::protocol`) are compiled only where `main` runs it.
+// ADR 0046 P5 deletes that half; until then, saying "not reachable *here*" is
+// more honest than deleting coverage CI still uses.
+#![cfg_attr(any(not(test), native_surface), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -146,6 +180,12 @@ mod frost;
 mod i18n;
 mod layer;
 mod menubar;
+#[cfg(native_surface)]
+mod native_bridge;
+#[cfg(native_surface)]
+mod native_run;
+#[cfg(native_surface)]
+mod native_surface;
 mod offscreen;
 mod placement;
 mod reload;
@@ -239,7 +279,7 @@ fn main() -> Result<()> {
          milestone: the panel will report that it is waiting for it"
     );
 
-    match layer::run(shell, config.theme.clone(), localizer, paths) {
+    match run(shell, config.theme.clone(), localizer, paths) {
         Ok(Outcome::Stopped) => {
             info!("the panel stopped");
 
@@ -263,6 +303,38 @@ fn main() -> Result<()> {
             std::process::exit(EXIT_NO_SURFACE);
         }
     }
+}
+
+/// Runs the panel on the leg this build contains.
+///
+/// Which leg a binary has is a property of the **build host's** Qt, decided once
+/// by `build.rs` (`cfg(native_surface)`), not a runtime choice. That is
+/// deliberate: ADR 0046 §9 forbids falling back to `layer-shell` when
+/// `inox_shell_v1` is missing, and a runtime switch would put both paths in one
+/// binary where neither can be tested on its own.
+///
+/// Both legs have the same contract — connect to the session, place the surface,
+/// draw the projection, route input into [`app`], serve reloads — so `main` does
+/// not know or care which one it got.
+#[cfg(native_surface)]
+fn run(
+    shell: inox_config::ShellConfig,
+    tokens: inox_config::Theme,
+    localizer: Rc<inox_common::i18n::Localizer>,
+    paths: ConfigPaths,
+) -> std::result::Result<Outcome, crate::layer::LegError> {
+    native_run::run(shell, tokens, localizer, paths)
+}
+
+/// The offscreen leg (see the module docs, and ADR 0046 P5 for its removal).
+#[cfg(not(native_surface))]
+fn run(
+    shell: inox_config::ShellConfig,
+    tokens: inox_config::Theme,
+    localizer: Rc<inox_common::i18n::Localizer>,
+    paths: ConfigPaths,
+) -> std::result::Result<Outcome, crate::layer::LegError> {
+    layer::run(shell, tokens, localizer, paths)
 }
 
 /// The arguments after the program name.

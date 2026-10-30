@@ -22,7 +22,7 @@
 | crate | 表面 | QML 宿主 |
 |-------|------|----------|
 | `inox-wallpaper`、`inox-launcher`、`inox-notifications`、`inox-settings`、`inox-greet` | 普通窗口（Iced 下本来也是） | `QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window` |
-| `inox-panel` | 真实 `zwlr_layer_surface_v1`（`src/layer.rs`） | **离屏** Qt Quick：QML 渲染成 RGBA 帧，写进现有 `wl_shm` |
+| `inox-panel` | 真实 `zwlr_layer_surface_v1`（`src/layer.rs`，**CI 构建走这条腿**）；能编原生宿主时是 `inox_shell_surface_v1`（`src/native/`，ADR 0046） | 离屏 Qt Quick：QML 渲染成 RGBA 帧，写进现有 `wl_shm`；原生腿是 Qt wayland 平台的真实窗口，不再有帧拷贝 |
 | `inox-lock` | 真实 `ext_session_lock_v1`（`src/session.rs`） | 同上 |
 
 panel/lock 的输入、放置、安全边界、`calloop` 循环**不动**；QML 只负责画。详见离屏 QML。
@@ -32,7 +32,31 @@ panel/lock 的输入、放置、安全边界、`calloop` 循环**不动**；QML 
 > 因此跨表面的过渡（面板长成菜单、菜单从按钮里钻出）与子菜单在架构上做不到。ADR 0046 的结论是
 > 两者都改成 **Qt 的原生 wayland 表面**，并新增私有协议 `inox-shell-v1` 承载合成器侧的动效、
 > popup 关闭权与工作区事件；锁屏保留 `ext-session-lock-v1`，只换渲染器。
-> 在 P3/P4 落地之前，上表仍是实现的真实情况；本文件的其余条款（尤其 §6 安全边界）继续按现状执行。
+> **进度（2026-10-29）：P0 与 P1/P2 已落地**——协议绑定、合成器侧的
+> 角色/放置/configure/ack/`workarea`/`closed`、popup 的合成与关闭权、popup 键盘、以及合成器插帧的
+> 入场/退场过渡都在 `inox-compositor` 里，由 `tests/shell_surface.rs` 与 `src/shell.rs` 的单元测试
+> 钉住。
+>
+> **P3 已落地（面板整条路径）。** `inox-panel` 有两个宿主，由**构建期探针**二选一（`build.rs` 检查
+> Qt ≥ 6.5 与私有头是否都在，然后给出 `cfg(native_surface)`）：`src/offscreen.cpp`（离屏）与
+> `src/native/`（Qt 原生 wayland 表面 + `inox-shell-v1` 角色 + popup + `inox-glass-v1` 玻璃对象）。
+> 宿主只是其中一半，**`main` 也随之分叉**：`cfg(native_surface)` 时走 `src/native_run.rs`（面板的状态机
+> 与循环：放置、投影、QML 动作、玻璃决策、第二条连接上的窗口服务、`calloop` 驱动 + 16 ms pump），否则
+> 仍走 `src/layer.rs`。这不是运行时开关，而是两条腿各自编译一次。
+>
+> 证据（`INOX_SHELL_E2E=1` 才跑，需要真实 `inox-compositor --headless`）：
+> `src/headless_tests/native.rs` 里六个用例——裸表面拿角色/被放置/收 `configure`+`workarea`+能力、
+> popup 被配置、面板循环在任务栏上把自己放成 1280×32 并发出投影、菜单栏建出玻璃对象并收到合成器的
+> 能力回答。不用 cargo feature 是因为本工作区以 `--all-features` 验收，那会把一个「需要更新 Qt」的
+> 开关在每一台 CI 上都打开。
+>
+> **CI 仍然编离屏腿。** CI 镜像的 Qt 更旧、也没有私有头，所以那里的 `cfg(native_surface)` 不成立、
+> `main` 走 `layer.rs`，上表就是那次构建的真实情况，`headless_tests::protocol`（假 layer-shell 客户端
+> 驱动二进制）也只在那种构建下编译。抬基线必须单独评审（ADR 0046 §10）。
+>
+> **仍未做：P4（锁屏换渲染器）与 P5（删离屏腿）**，以及原生路径的**像素证据**：本机没有 GPU，Qt 的
+> wayland 客户端报告窗口 not exposed、`frameSwapped` 一次都没有，所以「出图」这件事在有 DRI 的宿主上
+> 才能确认（ADR 0046 的「P3 未完成项」）。
 
 ## 2. crate 结构（统一形态）
 
@@ -96,6 +120,10 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
 
   动作形如 `{"type":"activate","id":7}` / `{"type":"set-query","value":"foo"}`。Rust 端用 `serde_json` 解析成 crate 内的 `UiAction` 枚举，再转成既有 `Message`；解析失败只 `warn!`，不 panic。
 - 定时器：QML 侧 `Timer { interval: 16; running: true; repeat: true; onTriggered: app.pump() }`。`pump()` 排空后台线程送来的 `Message` 队列、跑 `update`、必要时刷新 `model_json`，并返回/暴露 `needs_repaint`（离屏宿主用）。panel/lock 不用 QML Timer，由 `calloop` 的 timer 调 `pump()`。
+- 输入：**离屏腿上 QML 不接输入**（没有真实表面，指针事件根本不进 Qt）。原生腿上（ADR 0046 §5、§7）QML 接指针事件，但语义仍然只有一条：把坐标映射成 Rust 指定的条目 id 再交回去——
+  `TapHandler` 发 `{"type":"tap","id":7,"button":272}`，`HoverHandler` 发 `{"type":"hover","id":7}`（`-1` 表示离开），
+  Rust 用最近一次投影的 `Scene::entries` 把 id 翻成 `EntryAction`、再翻成既有 `Message`。QML 仍然不知道「id 7 是什么」，
+  也不知道一个点击意味着激活还是最小化（`crates/inox-panel/src/native_run.rs` 的 `parse_action` 是这条边界的全部）。
 - 文本输入 / 按键：QML `Keys.onPressed` 调 `app.key(json)`；**密码永远不进入 QML 属性**（见 §6）。文本框的显示值由 Rust 投影（锁屏只给掩码长度/掩码串）。
 
 ## 4. 颜色、尺寸、文案
@@ -162,7 +190,13 @@ panel/lock 另外 `.cpp_file("src/offscreen.cpp").include_dir("src")`，并保�
   waydriver 截图断言仍未接线；QML 侧每次状态变化整体重发 JSON 投影。
 - **表面模式不是收尾的一部分（2026-10-29 追加）**：ADR 0046 把 panel/lock 的终点从「离屏 QML 帧 +
   Rust 持有的表面」改为「Qt 原生 wayland 表面 + 私有协议 `inox-shell-v1`」，并说明了为什么离屏路径
-  的上限是架构性的（没有 frame 时间线、没有第二个表面、没有输入、没有 AT-SPI）。P0 只落了协议
-  （`crates/inox-protocols/protocol/inox-shell-v1.xml`、`src/shell.rs`、`tests/shell_roundtrip.rs`），
-  合成器与两个组件都还没变；在 P3/P4 之前，§1 的表格仍是实现的真实情况，「QML 不接输入」也仍然
-  生效。§1 的离屏条目会在 P5 删除，届时本节的这条也一并删除。
+  的上限是架构性的（没有 frame 时间线、没有第二个表面、没有输入、没有 AT-SPI）。P0 落了协议
+  （`crates/inox-protocols/protocol/inox-shell-v1.xml`、`src/shell.rs`、`tests/shell_roundtrip.rs`）；
+  P1/P2 落了合成器的一半：`crates/inox-compositor/src/shell.rs`（放置复用 `layers.rs`、commit 时生效
+  的状态、popup 锚点与关闭栈、纯过渡采样）与 `src/state.rs` 里的三个协议对象、场景与输入接线，
+  `crates/inox-compositor/tests/shell_surface.rs` 是它唯一的证据（E1+E2）。P3 已落地（面板整条路径，
+  含原生宿主、`native_run` 循环、QML 输入通道与经 Qt 连接的玻璃对象；证据在
+  `crates/inox-panel/src/headless_tests/native.rs`）。P4/P5 未做：锁屏仍在离屏宿主上，`src/layer.rs` 与
+  `src/offscreen.cpp` 仍在（CI 构建的就是它们），§1 的表格因此按「构建哪条腿」分两栏写。
+  「QML 不接输入」在离屏腿上仍然生效，在原生腿上由 §3 的 `outbox` 通道取代。§1 的离屏条目会在 P5 删除，
+  届时本节的这条也一并删除。

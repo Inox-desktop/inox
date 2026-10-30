@@ -38,10 +38,13 @@ Inox 采用四层架构，**依赖只能向下**（`L4 → L3 → L2 → L1`）�
 
 七个 GUI 组件（面板、启动器、通知、设置、锁屏、壁纸、登录界面）的界面**不是 Rust 代码**：QML + Qt Quick 负责声明式界面，Rust 保留领域模型、Fluent 文案与设计令牌，两者经选定的 **cxx-qt** 绑定连接。边界只有两条：Rust 把「当前状态 + 令牌 + 文案」投影成一份 JSON（`model_json`）交给 QML，QML 把用户动作写成一条窄 JSON 指令（`dispatch`）交回 Rust；不为每个字段单独开一个 `qproperty`。
 
-表面有两种模式：
+表面有三种模式：
 
 - **普通窗口**：壁纸、启动器、通知、设置与登录界面用 `QGuiApplication` + `QQmlApplicationEngine` 打开一个 Qt 窗口，QML 根是 `Window`；
-- **离屏渲染**：面板与锁屏**不**变成 Qt 窗口。它们仍由自己的代码创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，仍由 `calloop` 驱动主循环；Qt Quick 在 `offscreen` 平台把 QML 渲染成 RGBA 帧，帧被复制进这两个组件各自持有的 `wl_shm` 缓冲。QML 在这里只是渲染器，输入、焦点、放置与安全边界全部在 Rust。
+- **原生 shell 表面**（ADR 0046，面板的终点）：面板进程用 Qt 的 wayland 平台建一个**真实窗口**，再由 crate 内的私有 ABI 给它 `inox_shell_surface_v1` 角色；合成器负责放置、插帧与合成，Qt 自己按 `wl_surface.frame` 出帧，没有 `grabWindow()`、没有 `wl_shm` 上传。协议层没有"动画完成"事件，所以减少动态或合成器不支持时整段过渡都会被丢掉，面板必须在"所有过渡都是瞬时"下也好看。
+- **离屏渲染**（面板在没有私有头的构建上、以及锁屏现在仍然走的路）：组件自己创建 `zwlr_layer_shell_v1` / `ext_session_lock_v1` 表面，仍由 `calloop` 驱动主循环；Qt Quick 在 `offscreen` 平台把 QML 渲染成 RGBA 帧，帧被复制进组件自己持有的 `wl_shm` 缓冲。QML 在这里只是渲染器，输入、焦点、放置与安全边界全部在 Rust。
+
+原生与离屏这两条腿由**构建期探针**二选一（`build.rs` 看 Qt 版本与私有头），不是运行时开关：ADR 0046 §9 明确禁止"拿不到 `inox_shell_v1` 就退回 layer-shell"，因为那会让两套放置代码在半数机器上分叉。
 
 合成器始终是 **Smithay**，绝不用 Qt Wayland Compositor（GPL-only）；Iced 已从依赖图移除。逐组件的表面模式与已知缺口见[组件清单](./components.md)。
 
@@ -117,4 +120,4 @@ systemd
 
 ## 当前实现边界
 
-架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与窗口管理（四种窗口模式、≥2 工作区，并广告私有 `inox-window-manager-v1` 供任务栏观察与驱动；证据 E1+E2，见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现。L3 的七个组件已从 Iced 迁到 QML + Qt Quick：面板与锁屏仍持有真实的 layer-shell / 会话锁表面（QML 离屏渲染进 `wl_shm` 帧），其余五个是普通 Qt 窗口。L3 新增共享的 `inox-glass`（ADR 0040）：面板经它向合成器请求模糊与折射，并和通知栈一起用它的玻璃 QML 组件绘制自己的外壳（面板的窗格与通知的卡片，后者见 ADR 0044）；通知栈是普通窗口，拿不到 layer 角色，因此它的卡片在真实会话里是**纯半透明**而不是磨砂。**仍未取得**的是真实宿主上的截图证据——waydriver 宿主 job 尚未接线；离屏的面板与锁屏也没有 AT-SPI 语义桥。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按登录链落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。
+架构图描述的是目标形态。就本工作区当前状态而言：L2 的 `inox-compositor` 在 headless 路径上实现了输出创建、输入事件与窗口管理（四种窗口模式、≥2 工作区，并广告私有 `inox-window-manager-v1` 供任务栏观察与驱动；证据 E1+E2，见[里程碑与路线图](../roadmap.md)）；`inox-common` 提供 `logging` 与 `paths` 模块；`inox-protocols`、`inox-config`、`inox-xwayland`、`inox-auth`、`inox-greet` 均有实现。L3 的七个组件已从 Iced 迁到 QML + Qt Quick：面板能编原生宿主时拿 `inox_shell_surface_v1` 角色（Qt 的真实窗口，ADR 0046 P3），否则仍持有真实的 `zwlr_layer_shell_v1` 表面（QML 离屏渲染进 `wl_shm` 帧）；锁屏仍持有真实的会话锁表面并把 QML 离屏渲染进去；其余五个是普通 Qt 窗口。L3 新增共享的 `inox-glass`（ADR 0040）：面板经它向合成器请求模糊与折射，并和通知栈一起用它的玻璃 QML 组件绘制自己的外壳（面板的窗格与通知的卡片，后者见 ADR 0044）；通知栈是普通窗口，拿不到 layer 角色，因此它的卡片在真实会话里是**纯半透明**而不是磨砂。**仍未取得**的是真实宿主上的截图证据——waydriver 宿主 job 尚未接线；离屏的面板与锁屏也没有 AT-SPI 语义桥。L4 的登录链（`inox-host` 的编排、`inox-auth` 的会话负责人与 VT 交回、`packaging/` 的三个 PAM 栈与三个单元）已按登录链落地，但**真机登录尚未被验证**（E4 证据未取得）；`inox-session` 与合成器之间的数据流仍不完整。

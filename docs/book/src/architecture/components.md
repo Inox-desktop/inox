@@ -27,7 +27,7 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 | `inox-compositor` | L2 | `crates/inox-compositor` | 基于 Smithay 的 Wayland 合成器（广告 `wl_output`/`wl_compositor`、M3 的 `wp_viewporter`/`wl_data_device_manager`/主选区、`wp_presentation`/`xdg-decoration`/空闲两条全局、私有 `inox_ipc`、`inox-glass-v1` v2 与 `inox-window-manager-v1` v1） | 二进制 `inox-compositor` | 已实现（M1、M2、M3 的协议面与数据互通；layer-shell v4 宿主已接入；窗口管理有四种窗口模式、≥2 工作区、`xdg-shell` 模式请求与私有窗口管理协议，证据 E1+E2；headless 路径的玻璃模糊与圆角折射 pass 有像素证据；帧反馈、装饰协商与空闲通知已接入并有真实客户端用例；单输出真实后端已实现，E4 尚未执行；DRM 路径不实现玻璃并诚实报 0。W05/D03 的截图与真机证据仍缺，不得读作通过） |
 | `inox-xwayland` | L2 | `crates/inox-xwayland` | XWayland 集成（监督 xwayland-satellite 进程） | 二进制/服务 | 已实现（进程监督、真实 X11 连接往返的就绪判定、生命周期） |
 | `inox-shell` | L3 | `crates/inox-shell` | Shell 主框架与插件系统 | 二进制 `inox-shell` | 部分实现（跨入口导航、服务契约、内部入口注册表；不绘制界面） |
-| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、菜单栏、Dock、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型；界面为 QML，经**离屏渲染**写入自己创建的 `zwlr_layer_shell_v1` 表面；菜单栏与 Dock 的窗格由 `inox-glass` 的 `GlassPane` 绘制，并绑定 `inox-glass-v1` v2，headless 路径上有模糊与折射；窗口服务与 SNI 传输尚未实现） |
+| `inox-panel` | L3 | `crates/inox-panel` | 面板（任务栏、菜单栏、Dock、系统托盘、时钟） | 二进制 `inox-panel` | 部分实现（任务/托盘/时钟模型；界面为 QML，**能编原生宿主时**是 Qt 的 wayland 窗口 + `inox_shell_surface_v1` 角色（ADR 0046 P3，放置/投影/QML 输入/经 Qt 连接的玻璃对象都在 `native_run`，证据是对真实合成器的六个 E2 用例），否则离屏渲染进自己创建的 `zwlr_layer_shell_v1` 表面；菜单栏与 Dock 的窗格由 `inox-glass` 的 `GlassPane` 绘制，并绑定 `inox-glass-v1` v2，headless 路径上有模糊与折射；窗口服务与 SNI 传输尚未实现） |
 | `inox-launcher` | L3 | `crates/inox-launcher` | 应用启动器，兼作打开器（`xdg-open` 的非门户实现） | 二进制 `inox-launcher`（打包时另装指向它的 `inox-open` 链接） | 部分实现（XDG 条目解析、Exec 展开、带代次的搜索；打开器按共享 MIME 数据库的 `globs2` 判类型、按 `mimeapps.list` 的规范顺序选应用并启动，退出码区分「没人能打开」与「起不来」；**没有**门户、没有 magic 嗅探、不验证就绪；界面为 QML **普通窗口**，`placement.rs` 的层表面策略只建模、未应用） |
 | `inox-notifications` | L3 | `crates/inox-notifications` | 通知守护进程 | 二进制 `inox-notifications` | 部分实现（协议契约、有界队列与策略、文本脱敏；`org.freedesktop.Notifications` 服务由 `zbus` 提供；界面为 QML **普通窗口**，通知卡片是 `inox-glass` 的 `GlassPane`（ADR 0044），但普通窗口拿不到模糊，真实会话里表现为纯半透明） |
 | `inox-settings` | L3 | `crates/inox-settings` | 系统设置应用 | 二进制 `inox-settings`（另有 `inoxctl`） | 部分实现（草稿/校验/原子保存/回读状态机；界面为 QML **普通窗口**，无需 layer-shell） |
@@ -58,21 +58,21 @@ Inox 采用**单一仓库（Cargo workspace）**：全部组件都是本仓库 `
 
 | 组件 | UI | 表面模式 | QML 宿主 |
 |------|----|----------|----------|
-| `inox-panel` | QML | 真实 `zwlr_layer_shell_v1` 表面（`src/layer.rs` 自己创建） | **离屏**：Qt Quick 软件场景图 + `grabWindow()`，帧写进自己的 `wl_shm` 缓冲 |
-| `inox-lock` | QML | 真实 `ext_session_lock_v1` 表面（`src/session.rs` 自己创建） | **离屏**：每个锁表面一个 `QQmlApplicationEngine` + `QQuickWindow`，各自按 configure 尺寸出帧 |
+| `inox-panel` | QML | 原生构建：`inox_shell_surface_v1`（`src/native/qt_shell_surface.cpp`，Qt 的 wayland 连接）；CI 构建：真实 `zwlr_layer_shell_v1` 表面（`src/layer.rs` 自己创建） | 原生：Qt wayland 平台建的真实窗口，合成器直接画；CI：**离屏** Qt Quick 软件场景图 + `grabWindow()`，帧写进自己的 `wl_shm` 缓冲（ADR 0046） |
+| `inox-lock` | QML | 真实 `ext_session_lock_v1` 表面（`src/session.rs` 自己创建） | **离屏**：每个锁表面一个 `QQmlApplicationEngine` + `QQuickWindow`，各自按 configure 尺寸出帧（ADR 0046 P4 尚未做） |
 | `inox-wallpaper` | QML | 普通 Qt 窗口（预览） | `QGuiApplication` + `QQmlApplicationEngine`，QML 根是 `Window` |
 | `inox-launcher` | QML | 普通 Qt 窗口 | 同上 |
 | `inox-notifications` | QML | 普通 Qt 窗口（通知栈） | 同上 |
 | `inox-settings` | QML | 普通 Qt 窗口 | 同上 |
 | `inox-greet` | QML | 普通 Qt 窗口（登录界面） | 同上 |
 
-- **面板与锁屏不得退化为普通窗口**：它们的 `calloop` 主循环、协议表面、放置、输入与安全边界都不动，QML 只是渲染器；缺 layer/会话锁协议时以可读错误与非零退出，而不是把摆放策略当作已应用。
+- **面板与锁屏不得退化为普通窗口**：它们的 `calloop` 主循环、协议表面、放置、输入与安全边界都不动，QML 只是渲染器；缺 layer/会话锁协议时以可读错误与非零退出，而不是把摆放策略当作已应用。原生面板（ADR 0046）**不是**普通窗口：它的窗口拿的是 `inox_shell_surface_v1` 角色，拿不到就失败退出，不退回 `xdg_toplevel` 也不退回 layer-shell。
 - **其余五个是普通窗口**：Qt 事件循环驱动它们，QML 同时负责渲染与交互；`placement.rs` 里的层表面策略仍只是数据，没有宿主会应用它。
 - **绑定是 bin-only**：含 `#[cxx_qt::bridge]` 的 crate 没有 `lib.rs`，原有 `tests/*.rs` 迁进 bin 内的 `#[cfg(test)]` 模块；含 bridge 的 crate 在自己的 `[lints.rust]` 里把 `unsafe_code` 放开为 `allow`（cxx-qt 绑定的例外），Inox 手写的 Rust 仍然不写 `unsafe`。
 
 ### 已知缺口
 
-- **离屏的面板与锁屏没有 AT-SPI 语义桥**：Qt 的 `offscreen` 平台没有 QPA 无障碍桥，因此这两处的 role/name/state 导出仍是 Q01 的缺口；五个窗口组件走标准 QPA 路径，但真实屏幕阅读器验收也未取得。Iced 时代同样缺这条桥，这不是回归。
+- **离屏的面板与锁屏没有 AT-SPI 语义桥**：Qt 的 `offscreen` 平台没有 QPA 无障碍桥，因此这两处的 role/name/state 导出仍是 Q01 的缺口；五个窗口组件走标准 QPA 路径，但真实屏幕阅读器验收也未取得。Iced 时代同样缺这条桥，这不是回归。原生面板（ADR 0046 P3）是真实窗口，Qt 的无障碍桥接得上——但语义树**没有任何断言**，所以同样不得读作已解决。
 - **真实宿主证据未取得**：waydriver 在真实合成器宿主上启动 L3 表面、截图并断言的 job **尚未接线**，所以「组件在真实 layer 表面上的样子」没有 E2 证据。
 - **投影整体重发**：每次状态变化都重新序列化整份 JSON，QML 重新 `JSON.parse`；先保证边界干净与正确性，性能取舍等实测数据再决定是否做增量。
 
@@ -150,9 +150,9 @@ L2 与 L3 之间的边界不是「暂时没有依赖」，而是分层规则 3 �
 PRD §2.3 把 `wlr-layer-shell-unstable-v1` 列为**必须**，面板要用它；锁屏用的是 `ext-session-lock-v1`。这两条协议腿现在都在位：
 
 - `inox-compositor` 已接入并广告 `zwlr_layer_shell_v1` v4（`tests/layer_shell.rs` 用真实客户端覆盖四层、独占区、焦点与隔离）；
-- `inox-panel` 自己创建 `zwlr_layer_shell_v1` 表面，`inox-lock` 自己创建 `ext_session_lock_v1` 表面；两者都用离屏 QML 出帧，缺协议即以可读错误和非零码退出。
+- **`inox-panel` 有两条腿**：能编原生宿主时它自己拿 `inox_shell_surface_v1` 角色（Qt 的连接，ADR 0046 P3，证据是 `headless_tests/native.rs` 对真实 `inox-compositor` 的六个用例）；否则退回 `src/layer.rs` 自己创建 `zwlr_layer_shell_v1` 表面并把离屏 QML 帧写进 `wl_shm`（CI 构建的就是这条）。`inox-lock` 仍自己创建 `ext_session_lock_v1` 表面并用离屏 QML 出帧。两处缺协议都以可读错误和非零码退出。
 
-**仍然缺的是真实宿主证据**（不是协议腿）：CI 里没有「启动真实 L3 Qt 表面 → 截图 → 断言」的 waydriver 宿主 job，`weston` 也不支持 layer-shell。所以面板与锁屏的像素与交互只在离屏路径与真实协议 peer（socket pair / 子进程）中得到断言，它们在真实合成器上的样子**没有 E2 证据**。
+**仍然缺的是真实宿主证据**（不是协议腿）：CI 里没有「启动真实 L3 Qt 表面 → 截图 → 断言」的 waydriver 宿主 job，`weston` 也不支持 layer-shell。所以面板与锁屏的像素与交互只在离屏路径与真实协议 peer（socket pair / 子进程）中得到断言，它们在真实合成器上的样子**没有 E2 证据**。原生面板另有一层更硬的空白：在没有 DRI 的宿主上 Qt 的 wayland 客户端不附着 buffer，连本机都拿不到出图证据（见 ADR 0046「落地状态」）。
 
 历史备注：迁移前这里记录的两个缺口，一是合成器尚未广告 layer-shell、二是 `iced_layershell` 0.19.1/0.19.0 **无法编译**（其 `iced_exdevtools` 依赖对 `winit-core` 0.31.0-beta.3 的 `non_exhaustive` 枚举做穷尽匹配，`error[E0004]`）。第一条已由合成器补齐，第二条随 Iced 退出依赖图而失效——它是走离屏 QML 这条路的现实动因之一，不是当前架构。
 

@@ -100,9 +100,9 @@ use smithay::{
         allocator::Fourcc,
         egl::{EGLContext, EGLDisplay, Error as EglError, native::EGLSurfacelessDisplay},
         renderer::{
-            Bind, ExportMem, Frame, Offscreen, Renderer, Texture,
+            Bind, ExportMem, Frame, Offscreen, Renderer, RendererSuper, Texture,
             element::{
-                Kind, RenderElement,
+                Element, Id, Kind, RenderElement, UnderlyingStorage,
                 memory::MemoryRenderBufferRenderElement,
                 surface::WaylandSurfaceRenderElement,
                 texture::{TextureBuffer, TextureRenderElement},
@@ -111,10 +111,10 @@ use smithay::{
                 GlesError, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType, UniformValue, element::TextureShaderElement,
             },
-            utils::draw_render_elements,
+            utils::{CommitCounter, draw_render_elements},
         },
     },
-    utils::{Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Size, Transform},
+    utils::{Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
 
 use crate::glass::{GlassPane, LensPass};
@@ -402,6 +402,96 @@ smithay::backend::renderer::element::render_elements! {
     pub(crate) SceneElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Transition=TransitionElement,
+}
+
+/// One surface's elements drawn at a scale other than their own.
+///
+/// The compositor draws shell transitions itself (ADR 0046 §2), and `scale` is
+/// the one effect that cannot be expressed by moving an element: the surface has
+/// to be drawn smaller or larger than the size it configured itself for. The
+/// wrapper only changes *where and how large* the inner element lands — the
+/// pixels, the buffer and the alpha it was built with are untouched, which is
+/// what keeps the glass panes' element indices meaningful.
+pub(crate) struct TransitionElement {
+    inner: WaylandSurfaceRenderElement<GlesRenderer>,
+    /// Uniform scale about [`Self::origin`].
+    scale: f64,
+    /// The point the scale is measured from, in this output's physical pixels.
+    origin: Point<f64, Physical>,
+}
+
+impl TransitionElement {
+    /// Wrap `inner` so it is drawn `scale` times its size about `origin`.
+    pub(crate) fn new(
+        inner: WaylandSurfaceRenderElement<GlesRenderer>,
+        scale: f64,
+        origin: Point<f64, Physical>,
+    ) -> Self {
+        Self {
+            inner,
+            scale,
+            origin,
+        }
+    }
+}
+
+impl Element for TransitionElement {
+    fn id(&self) -> &Id {
+        self.inner.id()
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.inner.current_commit()
+    }
+
+    fn src(&self) -> Rectangle<f64, BufferCoord> {
+        self.inner.src()
+    }
+
+    fn transform(&self) -> Transform {
+        self.inner.transform()
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        let geometry = self.inner.geometry(scale);
+        if (self.scale - 1.0).abs() < f64::EPSILON {
+            return geometry;
+        }
+        let about = |value: i32, origin: f64| -> i32 {
+            (origin + (f64::from(value) - origin) * self.scale).round() as i32
+        };
+        let loc = Point::from((
+            about(geometry.loc.x, self.origin.x),
+            about(geometry.loc.y, self.origin.y),
+        ));
+        // A surface scaled to nothing would still be asked to draw; one pixel is
+        // the smallest rectangle GLES will accept, and at that size the element
+        // is invisible anyway.
+        let size = Size::from((
+            ((f64::from(geometry.size.w) * self.scale).round() as i32).max(1),
+            ((f64::from(geometry.size.h) * self.scale).round() as i32).max(1),
+        ));
+
+        Rectangle::new(loc, size)
+    }
+}
+
+impl RenderElement<GlesRenderer> for TransitionElement {
+    fn draw(
+        &self,
+        frame: &mut <GlesRenderer as RendererSuper>::Frame<'_, '_>,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        self.inner.draw(frame, src, dst, damage, opaque_regions)
+    }
+
+    fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        self.inner.underlying_storage(renderer)
+    }
 }
 /// Everything one output composites: the render elements plus the glass panes.
 ///

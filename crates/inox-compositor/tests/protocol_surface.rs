@@ -76,6 +76,10 @@ const EXPECTED_GLOBALS: &[&str] = &[
     // The decoration negotiation. The answer is always client-side; the global is
     // what makes that answer available instead of guessed.
     "zxdg_decoration_manager_v1",
+    // ADR 0046: the private shell protocol. Advertised to everyone like the other
+    // Inox globals — whether a surface may have a shell role is a decision about
+    // a request, and a compositor that refuses one has `closed` to say so with.
+    "inox_shell_v1",
 ];
 
 /// A private `XDG_RUNTIME_DIR` for one compositor process.

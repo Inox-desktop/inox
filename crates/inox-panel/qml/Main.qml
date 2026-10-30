@@ -26,6 +26,54 @@ Window {
 
     readonly property var vm: JSON.parse(root.modelJson)
 
+    // Actions waiting to be handed to Rust (`src/native/host.cpp` empties this
+    // on every loop pass). A queue rather than a signal because a signal would
+    // need a `Q_OBJECT` receiver in the host, and because two clicks that happen
+    // between two loop passes must both arrive.
+    property var outbox: []
+
+    // Hands one action to Rust. It is the whole of what QML decides about input:
+    // that a click landed on entry 7, not what entry 7 *means* — the meaning is
+    // `src/app.rs`'s, reached through the same `Message` the keyboard produces
+    // (migration contract §3, ADR 0046 §5).
+    function dispatch(payload) {
+        root.outbox = root.outbox.concat([payload])
+    }
+
+    // The entry under a point, as its id, or -1. The rectangles come from the
+    // projection (`vm.entries`), so QML is mapping a coordinate onto an id Rust
+    // assigned — it is not deciding the layout.
+    function entryAt(x, y) {
+        const entries = root.vm.entries
+
+        if (!entries)
+            return -1
+
+        for (let index = entries.length - 1; index >= 0; --index) {
+            const entry = entries[index]
+
+            if (entry.enabled && x >= entry.x && x < entry.x + entry.w
+                    && y >= entry.y && y < entry.y + entry.h)
+                return entry.id
+        }
+
+        return -1
+    }
+
+    // Which button produced a click, as the integer `wl_pointer` uses: 272 left,
+    // 274 middle, 273 right. Sending the number rather than a name keeps the
+    // wire vocabulary in one place, and it is the same number the layer-shell
+    // leg received.
+    function buttonCode(button) {
+        if (button === Qt.MiddleButton)
+            return 274
+
+        if (button === Qt.RightButton)
+            return 273
+
+        return 272
+    }
+
     // The colour the window is *cleared* with. It is a host input rather than a
     // drawing: the projection's own background is painted by the canvas below,
     // so a host may swap the clear colour (the alpha reconstruction in
@@ -35,7 +83,14 @@ Window {
     // before every grab.
     property color hostBackdrop: "transparent"
 
-    visible: true
+    // Shown by the offscreen host, which is handed a finished window to grab.
+    // The native host (`src/native/host.cpp`) installs the shell role first and
+    // shows the window itself: a window that is already visible has an
+    // `xdg_toplevel` role, and a `wl_surface` has exactly one (ADR 0046 §1).
+    // `inoxHostNative` is a context property the native host sets; a document
+    // loaded without it treats the value as undefined, which is false, and shows
+    // the window.
+    visible: !inoxHostNative
     color: root.hostBackdrop
 
     Item {
@@ -102,6 +157,57 @@ Window {
                                        : modelData.align === "right" ? Text.AlignRight
                                        : Text.AlignLeft
                 }
+            }
+        }
+    }
+
+    // Pointer input. This is the whole of QML's input vocabulary: map a point
+    // onto an entry id and hand the id over. `TapHandler` sees every button the
+    // surface is configured for, and the button is passed through as the number
+    // the protocol uses, so a middle click means the same thing here as it did
+    // when the layer-surface leg read `wl_pointer` itself (ADR 0046 §7).
+    TapHandler {
+        acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+
+        onTapped: (eventPoint, button) => {
+            const id = root.entryAt(eventPoint.position.x, eventPoint.position.y)
+
+            if (id >= 0)
+                root.dispatch(JSON.stringify({
+                                                 type: "tap",
+                                                 id: id,
+                                                 button: root.buttonCode(button)
+                                             }))
+        }
+    }
+
+    // Hover changes what an entry looks like, so it is dispatched when the entry
+    // under the pointer *changes* — not on every motion, which would be a
+    // message per pixel and a repaint per message.
+    HoverHandler {
+        id: hover
+
+        property int lastId: -1
+
+        onHoveredChanged: {
+            if (hover.hovered)
+                return
+
+            if (hover.lastId !== -1) {
+                hover.lastId = -1
+                root.dispatch(JSON.stringify({ type: "hover", id: -1 }))
+            }
+        }
+
+        onPointChanged: {
+            if (!hover.hovered)
+                return
+
+            const id = root.entryAt(point.position.x, point.position.y)
+
+            if (id !== hover.lastId) {
+                hover.lastId = id
+                root.dispatch(JSON.stringify({ type: "hover", id: id }))
             }
         }
     }

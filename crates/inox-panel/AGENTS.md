@@ -110,12 +110,61 @@ src/reload.rs          SIGHUP 与 org.inox.Panel 的重载请求
 src/cxxqt_object.rs    cxx-qt 桥（唯一 QML↔Rust 边界）
 src/offscreen.rs       离屏宿主的 Rust 面（含测试用的 `Host::with_url`）
 src/offscreen.cpp/h    C++ 宿主：QGuiApplication + QQmlApplicationEngine + grabWindow
+src/native_surface.rs  原生宿主的 Rust 面（`cfg(native_surface)`）：Surface、Event、Geometry
+src/native_bridge.rs   cxx 桥（只在 `cfg(native_surface)` 下编译）
+src/native/host.cpp/h  原生宿主：QGuiApplication + QML 窗口 + shell 角色 + popup
+src/native/qt_shell_surface.cpp  唯一允许出现 QtWaylandClient 私有 ABI 的翻译单元
+src/native/shell_surface.h       该翻译单元的公共面（只有 Qt 公开类型与整数）
 src/i18n.rs            内嵌 Fluent 目录
 qml/Main.qml           QML 渲染器（`kind: "pane"` 的图元实例化 `inox-glass` 的 `GlassPane`）
 i18n/en-US/panel.ftl, i18n/zh-CN/panel.ftl
-src/headless_tests/    binary / catalog / projection / protocol / qml / support
-build.rs               CxxQtBuilder：QML 模块 + 桥 + C++ 宿主 + inox-glass 的玻璃组件（显式 qrc 别名）
+src/headless_tests/    binary / catalog / projection / protocol（仅离屏腿）/ qml / support / native（仅原生腿）
+build.rs               CxxQtBuilder：QML 模块 + 桥 + C++ 宿主 + inox-glass 的玻璃组件（显式 qrc 别名）；
+                       特性开启时另生成 inox-shell-v1 的 C 绑定并编译 src/native/
 ```
+
+## 两条宿主路径（ADR 0046 P3）
+
+默认构建只有一条：`layer.rs` 的 `wlr-layer-shell` 表面 + `offscreen.cpp` 的离屏 QML 帧，`main` 调用
+`layer::run`。
+
+构建宿主能承载私有 ABI（Qt ≥ 6.5 且私有头已安装）时，`build.rs` 打开 `cfg(native_surface)`，
+宿主换成 `src/native/`：Qt 的 wayland 平台插件建真实表面，`inox_shell_v1` 给角色，`configure` 决定
+尺寸，合成器插帧；`main` 改调 `src/native_run.rs::run`（状态机 + 循环，见下一节）。**不用 cargo feature
+表达这件事**：本工作区用 `--all-features` 验收，那会把一个「需要更新 Qt」的特性在每一台 CI 上都打开。
+`INOX_NATIVE_SURFACE=0` 可以强制走离屏（排查用）。
+三条硬规则：
+
+1. **私有 ABI 只允许出现在 `src/native/qt_shell_surface.cpp` 一个翻译单元里。**
+   `rg 'QtWaylandClient/private' crates/inox-panel/src` 必须只命中它；私有类型不得出现在任何头文件或
+   cxx 边界上。新增私有调用时同时更新 ADR 0046 §10 的清单，并加一道闸门。
+2. **闸门三道，缺一不可**：编译期 `#if QT_VERSION < 6.5 #error`、运行期 `qVersion()` 比较、失败即非零
+   退出（不退回 `offscreen`、不退回 `xdg_toplevel`、不退回 layer-shell）。
+3. **角色必须在窗口第一次 `show` 之前安装。** 一个 `wl_surface` 只有一个角色，先成 `xdg_toplevel` 就没
+   得改。QML 的 `visible` 绑在 `inoxHostNative` 上，由原生宿主负责显示。
+
+**已知缺口，不得在文档里声称已解决**：锁屏（P4）与删离屏腿（P5）未做；原生路径在无 GPU 的宿主上
+`QWindow::isExposed()` 为假、`frameSwapped` 从不触发（没有附着 buffer），所以原生路径**没有出图证据**，
+只有协议层与状态机的证据（`headless_tests/native.rs` 六个用例）。细节与原因见 ADR 0046 的「落地状态」一节。
+
+### 运行路径（`main` 选哪条腿）
+
+`src/main.rs` 里的 `run()` 有两个 `cfg` 版本，**编译期二选一，没有运行时开关**（ADR 0046 §9 禁止
+「拿不到 `inox_shell_v1` 就退回 layer-shell」）：
+
+| `cfg(native_surface)` | `main` 调用 | 表面 | 输入 | 玻璃 |
+|---|---|---|---|---|
+| 成立 | `src/native_run.rs::run` | `inox_shell_surface_v1`（Qt 的连接） | QML `TapHandler`/`HoverHandler` → `dispatch` → `Message` | `inox_glass_v1`，建在 Qt 的连接上 |
+| 不成立 | `src/layer.rs::run` | `zwlr_layer_surface_v1`（Rust 自己的连接） | `wl_pointer` + `Scene::entry_at` | `inox_glass_v1`，建在 Rust 的连接上 |
+
+两条腿共享**除表面以外的一切**：`app` 的状态与 `Message`、`placement` 的放置数据、`view` 的投影、
+`frost`/`inox-glass` 的玻璃决策、`window_service` 的协议对象、`reload` 的配置重载。改语义时先问
+「这是哪一层的问题」：坐标与表面归表面腿，其余都不该分叉。
+
+`native_run` 的循环里有一条不显然的规则：**`event_loop.dispatch(Some(16ms))` 是唯一的等待**。Qt 有自己的
+事件线程，只有 `pump()` 才会把表面的答案搬进这个线程；16 ms 是帧间隔（原生表面本来就画在
+`wl_surface.frame` 上），不是轮询补丁。改成 `dispatch(None)` 会让点击在 Qt 的队列里一直等到下一个
+`calloop` 事件——通常是下一分钟的时钟 tick。
 
 工作区级文件（`Cargo.toml`、`Cargo.lock`、`deny.toml`、`rust-toolchain.toml`、`LICENSE`、CI 工作流）在仓库根目录，**各 crate 不再各自保留一份**。
 
